@@ -1,0 +1,29 @@
+{
+  "name": "@botto/push-relay",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run && npm run test:restart",
+    "test:restart": "npm run deploy:dry-run && node --test test/restart.mjs && node test/crash.mjs",
+    "check": "tsc --noEmit && npm test",
+    "dev": "wrangler dev",
+    "deploy:dry-run": "wrangler deploy --dry-run --outdir .artifacts/deploy",
+    "deploy": "npm run check && wrangler deploy",
+    "test:crash": "npm run deploy:dry-run && node test/crash.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.10",
+    "@cloudflare/workers-types": "5.20261029.1",
+    "miniflare": "5.20261023.2-beta",
+    "typescript": "~5.9.3",
+    "vitest": "~4.1.12",
+    "wrangler": "4.155.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261023.1": true,
+    "fsevents@2.3.3": true
+  }
+}

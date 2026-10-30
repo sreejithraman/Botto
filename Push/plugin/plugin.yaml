@@ -1,0 +1,16 @@
+name: botto-push
+version: 0.1.0
+description: Per-device encrypted push notifications for Botto
+license: MIT
+requires_hermes: ">=0.22.5"
+provides_hooks:
+  - on_native_session_event
+python_dependencies:
+  - "cryptography>=46.0.3,<51"
+  - "fastapi>=0.133.1,<1"
+config_schema:
+  relay_url:
+    type: str
+    default: ""
+    description: HTTPS origin of the Botto APNs relay
+

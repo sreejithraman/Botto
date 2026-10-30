@@ -1,0 +1,23 @@
+{
+  "description": "Synthetic AES-256-GCM combined-box interoperability fixture; the key and nonce are public test data only.",
+  "key_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": {
+    "v": 1,
+    "title": "Milo",
+    "body": "Hello from Hermes.",
+    "profile_id": "default",
+    "root_id": "root-exact",
+    "stored_id": "stored-exact"
+  },
+  "aad": "botto-push:v1\n1111111111111111111111111111111111111111111111111111111111111111\n22222222222222222222222222222222\n7\n3333333333333333333333333333333333333333333333333333333333333333",
+  "envelope": {
+    "v": 1,
+    "installation_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "device_id": "22222222222222222222222222222222",
+    "generation": 7,
+    "event_id": "3333333333333333333333333333333333333333333333333333333333333333",
+    "kind": "reply",
+    "expires_at": 1800003600,
+    "sealed": "AAECAwQFBgcICQoLPCC0dKGc4CGvCfLn3YZYC/G56hS4Hi0RXRTLpzFLcMBudseQyp57/FaeXYnt4UlNgi1CoXikzLVLyEN9OtnXnJ9Tsle2qUcCaHaGTJz7YZpd7pYLEkFpSo6J8b4dlJTos5k6koZt6m73aFLXak8DMtMLDYnP51O4d84qg4pVHxjD6i7Xxg3AvXZpiw=="
+  }
+}

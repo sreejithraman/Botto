@@ -1,0 +1,10 @@
+# Keep local drafting history and execution logs out of source releases.
+/docs/botto-preparation.md export-ignore
+/docs/overnight-brief.md export-ignore
+/docs/research/** export-ignore
+/docs/drafting/** export-ignore
+/docs/ui-direction.md export-ignore
+/Push/upstream/verification-tests.log export-ignore
+/Push/upstream/verification-lint.log export-ignore
+
+/docs/specs/** export-ignore

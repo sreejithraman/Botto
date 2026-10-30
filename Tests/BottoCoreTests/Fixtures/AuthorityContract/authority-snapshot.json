@@ -1,0 +1,8 @@
+{
+  "session_id": "stored-1", "stored_session_id": "stored-1",
+  "messages": [], "message_count": 0, "running": false,
+  "authority_epoch": 2, "replay_epoch": "session-epoch", "last_sequence": 0,
+  "subscription_id": "subscription-1", "revision": 3, "execution_generation": 7,
+  "pending": [], "prompts": [],
+  "info": {"desktop_protocol":"hermes-gateway-v1", "profile_name":"inbox-triage", "profile_id":"/profiles/inbox-triage", "source":"gui"}
+}

@@ -1,0 +1,115 @@
+name: Botto
+options:
+  bundleIdPrefix: com.sree
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  postGenCommand: python3 scripts/normalize-project.py
+  xcodeVersion: "27.0"
+packages:
+  BottoCore:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+    CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED: YES
+    BOTTO_APP_BUNDLE_IDENTIFIER: com.sree.botto
+    BOTTO_PUSH_KEYCHAIN_GROUP: "$(AppIdentifierPrefix)$(BOTTO_APP_BUNDLE_IDENTIFIER).push"
+    BOTTO_PUSH_PLUGIN_SOURCE: ""
+    BOTTO_PUSH_PLUGIN_REF: ""
+  configs:
+    Debug:
+      BOTTO_APNS_ENVIRONMENT: development
+      BOTTO_PUSH_ENVIRONMENT: sandbox
+    Release:
+      BOTTO_APNS_ENVIRONMENT: production
+      BOTTO_PUSH_ENVIRONMENT: production
+targets:
+  Botto:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes: [Resources/Info.plist, NotificationService, "**/*.entitlements", "**/AGENTS.md"]
+      - path: LICENSES
+        buildPhase: resources
+      - path: LICENSE
+        buildPhase: resources
+      - path: THIRD_PARTY_NOTICES.md
+        buildPhase: resources
+    dependencies:
+      - package: BottoCore
+      - target: BottoNotifications
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER)"
+        CODE_SIGN_ENTITLEMENTS: App/Push/Botto.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Resources/Info.plist
+        SUPPORTS_MACCATALYST: NO
+  BottoNotifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: App/NotificationService
+        excludes: [Info.plist, "*.entitlements"]
+      - path: App/Push/PushPairingVault.swift
+    dependencies:
+      - package: BottoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/NotificationService/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/NotificationService/BottoNotifications.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+  BottoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AppTests
+      - path: Tests/BottoCoreTests/MessagePresentationPerformanceTests.swift
+    dependencies:
+      - target: Botto
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).tests"
+        GENERATE_INFOPLIST_FILE: YES
+  BottoUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: AppUITests
+      - path: App/Pairing/HermesSetupPrompt.swift
+    dependencies:
+      - target: Botto
+      - package: BottoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).uitests"
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Botto:
+    build:
+      targets:
+        Botto: all
+        BottoTests: [test]
+        BottoUITests: [test]
+    test:
+      targets: [BottoTests, BottoUITests]
+      gatherCoverageData: true

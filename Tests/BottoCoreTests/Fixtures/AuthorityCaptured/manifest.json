@@ -1,0 +1,14 @@
+{
+  "source_repository": "https://github.com/NousResearch/hermes-agent",
+  "source_commit": "4a0eaf7989b6804319ddb94fa5d96c5a716080a1",
+  "capture_date": "2026-10-23",
+  "capture": "Hot HermesBotService through NativeHermesTransport against the isolated real gateway in docs/dev-host.md; only the local LLM is simulated",
+  "profile": "hot-core-probe-04f29a24",
+  "sanitization": "HTTP, cookies, tickets and credentials were never captured. Snapshot info retains only profile_name, profile_id and title. session.info payload retains running, execution_generation, pending and prompts. All other included JSON values are unchanged from the host. Duplicate replay events are keyed by sequence. Unsequenced platforms.changed notifications are excluded.",
+  "files": [
+    "empty-snapshot",
+    "approval-snapshot",
+    "final-snapshot",
+    "turn-events"
+  ]
+}

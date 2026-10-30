@@ -1,0 +1,79 @@
+{
+  "profiles": {
+    "install_id": "fixture-install",
+    "bot_mode_protocol": true,
+    "profiles": [
+      {
+        "name": "inbox-triage",
+        "canonical_session": {
+          "id": "bot-root",
+          "resolved_id": "bot-tip",
+          "root_title": "Bot Chat",
+          "title": "Bot Chat #1",
+          "preview": "Waiting for approval",
+          "last_active": 1790000000
+        }
+      },
+      {
+        "name": "research",
+        "canonical_session": {
+          "id": "research-root",
+          "resolved_id": "research-root",
+          "root_title": "Bot Chat",
+          "title": "Bot Chat",
+          "preview": "Ready",
+          "last_active": 1790000000
+        }
+      }
+    ]
+  },
+  "activity": {
+    "inbox-triage": {
+      "sessions": [
+        {
+          "current": false,
+          "id": "bot-tip",
+          "session_key": "bot-tip",
+          "last_active": 1790000000,
+          "started_at": 1790000000,
+          "message_count": 2,
+          "model": "fixture-model",
+          "preview": "",
+          "title": "Bot Chat #1",
+          "status": "waiting",
+          "source": "gui"
+        }
+      ]
+    },
+    "research": {
+      "sessions": [
+        {
+          "current": false,
+          "id": "research-root",
+          "session_key": "research-root",
+          "last_active": 1790000000,
+          "started_at": 1790000000,
+          "message_count": 2,
+          "model": "fixture-model",
+          "preview": "",
+          "title": "Bot Chat",
+          "status": "idle",
+          "source": "gui"
+        },
+        {
+          "current": false,
+          "id": "ordinary",
+          "session_key": "ordinary",
+          "last_active": 1790000000,
+          "started_at": 1790000000,
+          "message_count": 2,
+          "model": "fixture-model",
+          "preview": "",
+          "title": "Ordinary chat",
+          "status": "waiting",
+          "source": "gui"
+        }
+      ]
+    }
+  }
+}

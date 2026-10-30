@@ -1,0 +1,42 @@
+Hermes observer and explicit-profile installer verification
+
+Base: fcc26fbd9f1641755e49793d7ed608f3b7214c3d
+Patch SHA-256: b5e0c8482232ae00d699754e47862c04e7391c2864ab5a5fd2c7dfadc727c1f3
+Source: .artifacts/push-upstream/hermes (disposable public clone)
+Environment: macOS, source-owned .venv built with official pm.build_env dev+test.
+
+Red/green:
+- Original real-authority completion test failed on unpatched base: expected one
+  canonical observer event, received none. Same test passed with observer patch.
+- The new explicit-profile installer HTTP tests failed against the prior observer
+  source because the new endpoint was absent (405). Same tests pass with this patch.
+- Botto client regression rejects legacy/wrong/missing profile confirmation; native
+  store regression preserves prior chat/draft across an authorized failed open.
+
+Final behavior suite:
+- Official scripts/run_tests.sh over the 11 files listed in README.
+- 66 passed, 0 failed, 11 files, no file retries. Raw execution logs are not included in source releases.
+- Existing real lost managed worker/compression/profile/redaction/prompt/isolated
+  observer controls remain included.
+- Real authenticated ASGI HTTP handler, real local Git clone at an immutable ref,
+  installation and enablement in default/named temporary profiles. No installer
+  mock. Other-profile files/config remain untouched. Empty/current/missing/path
+  scopes and absent ordinary dashboard authentication fail without installation.
+- The legacy route keeps launch/effective-profile semantics; Botto calls only the
+  new explicit-profile endpoint and does not fall back on 404/405.
+
+Static and artifact checks:
+- Official scripts/check: 14 checks passed in that historical run.
+- git diff --check passed.
+- Current patch apply --check and actual apply on pristine base files succeed
+  with whitespace=error; all 18 applied file bytes match the tested clone.
+- Applying the prior observer patch separately confirms all 15 original observer
+  source/test/doc files remain byte-identical. Prior native-host smoke remains
+  applicable to those unchanged observer files, not to live installer UI.
+
+Limits:
+- Proposed upstream contracts, not released capabilities.
+- Observer dispatcher remains bounded/best-effort, with no source exactly-once promise.
+- Installer uses real in-process HTTP dispatch and local Git, not a production
+  dashboard, public repository, signed Botto installation UI, or external provider.
+- No real APNs, signed device, banner, deployment or upstream release is proven.

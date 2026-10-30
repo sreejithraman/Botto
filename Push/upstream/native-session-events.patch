@@ -1,0 +1,992 @@
+diff --git a/agent/plugin_stream_hooks.py b/agent/plugin_stream_hooks.py
+index daa9281e09..a23cdf4c9e 100644
+--- a/agent/plugin_stream_hooks.py
++++ b/agent/plugin_stream_hooks.py
+@@ -9,6 +9,7 @@ registered are stopped lazily on the next lookup.
+ from __future__ import annotations
+ 
+ import contextvars
++import copy
+ import logging
+ import queue
+ import threading
+@@ -72,7 +73,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
+                 # secrets), not an unbound context that fail-closed plugin bindings refuse (#118538).
+                 # ``copy()``: one snapshot fans out to N consumer threads and a Context can only be
+                 # entered by one thread at a time.
+-                context.copy().run(dispatcher.callback, **payload)
++                context.copy().run(dispatcher.callback, **copy.deepcopy(payload))
+             except Exception as exc:
+                 # Fires once per streaming delta: a mis-declared callback fails identically every
+                 # time, so it goes through the manager's warn-once reporter (#111922).
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 9a6410cd17..bfb3bf7007 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1220,6 +1220,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+                 result = self._run_sync_scoped()
+             from gateway.session_results import execution_result
+             captured = execution_result.get()
++            result['_notification_reply_muted'] = self._ctx.mute_notification_reply
+             if captured is not None:
+                 cli_fields = self.__dict__.pop("_cli_result_fields", None)
+                 # A classic CLI viewer reads the run_conversation-shaped dict from the receipt; the
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index 1629fa5b5a..f4cb454598 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -1015,13 +1015,17 @@ class SessionAuthority:
+         live = self.sessions[session_id]
+         with live.event_stream.lock:
+             self.check_approval_generation(session_id, generation)
+-            live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
++            from gateway.session_plugin_events import control_observer
++            live.controls.register(session_id, route, generation, data, timeout_s=timeout_s,
++                                   observer=control_observer(self, session_id, generation))
+ 
+     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
+         live = self.sessions[session_id]
+         with live.event_stream.lock:
+             self.check_approval_generation(session_id, generation)
+-            live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s)
++            from gateway.session_plugin_events import control_observer
++            live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s,
++                                           observer=control_observer(self, session_id, generation))
+ 
+     async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
+         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)
+diff --git a/gateway/session_managed_worker.py b/gateway/session_managed_worker.py
+index 12ea1cdf18..5be76cfb78 100644
+--- a/gateway/session_managed_worker.py
++++ b/gateway/session_managed_worker.py
+@@ -362,11 +362,7 @@ def _prompt_frame(authority, ref, row, worker, frame):
+     kind = frame.get('type')
+     if kind == 'prompt_settled' and set(frame) == {'type', 'prompt_id'}:
+         prompt_id = frame['prompt_id']
+-        controls.remote_responders.pop(prompt_id, None)
+-        saved = controls.pending.pop(prompt_id, None)
+-        if saved:
+-            live.event_stream.publish(ref.session_id, {'prompt_id': prompt_id,
+-                'execution_generation': row['generation']}, event_type=saved[1]['kind'] + '.settled')
++        controls.settled(ref.session_id, prompt_id)
+         return True
+     if kind not in {'approval', 'clarify'}:
+         return False
+@@ -706,7 +702,8 @@ async def execute_managed(authority, ref, row, policy):
+                 accepted = _with_stop_cause(accepted, worker)
+                 # Like in-process execution, settlement belongs to the drain's stream lock.
+                 authority.pending_results[row['admission_id']] = {
+-                    'result': {**accepted, 'local_viewer': True}, 'usage': usage,
++                    'result': {**accepted, 'local_viewer': True,
++                               '_notification_reply_muted': _muted_presentation(row, policy)}, 'usage': usage,
+                     **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
+                 return accepted['final_response']
+             raise RuntimeStoreError('invalid_worker_frame')
+@@ -730,6 +727,8 @@ async def execute_managed(authority, ref, row, policy):
+             live.event_stream.publish(ref.session_id, {'text': 'Worker execution is unknown.',
+                 'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown',
+                 'status': 'error'})  # the message.complete TurnStatus: never painted as a normal finish
++            from gateway.session_plugin_events import completed
++            completed(authority, ref, row, {'outcome': 'unknown'}, None, None)
+         waiter = authority.waiters.pop(row['admission_id'], None)
+         if waiter is not None and not waiter.done():
+             waiter.set_result('Worker execution is unknown.')
+@@ -739,3 +738,10 @@ async def execute_managed(authority, ref, row, policy):
+     finally:
+         workers.pop(ref.session_id, None)
+         await asyncio.to_thread(worker.close)
++
++
++def _muted_presentation(row, policy):
++    from gateway.warning_notifications import diagnostic_turn_muted
++    payload = row.get('payload') or {}
++    automation = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
++    return diagnostic_turn_muted(automation, policy.platform, policy.config())
+diff --git a/gateway/session_pending_controls.py b/gateway/session_pending_controls.py
+index 4ff9879080..eb3c66363b 100644
+--- a/gateway/session_pending_controls.py
++++ b/gateway/session_pending_controls.py
+@@ -14,8 +14,9 @@ class PendingControls:
+         self.events = events
+         self.pending = {}
+         self.remote_responders = {}
++        self._observers = {}
+ 
+-    def register(self, session_id, route, generation, data, *, timeout_s=None):
++    def register(self, session_id, route, generation, data, *, timeout_s=None, observer=None):
+         from gateway.run import _redact_approval_command
+         with self.events.lock:
+             prompt_id = data['request_id']
+@@ -36,8 +37,9 @@ class PendingControls:
+                 prompt['timeout_s'] = timeout_s
+             self.pending[prompt_id] = (route, prompt)
+             self.events.publish(session_id, prompt, event_type='approval.request')
++            self._opened(prompt_id, prompt, observer)
+ 
+-    def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
++    def register_clarify(self, session_id, generation, entry, *, timeout_s=None, observer=None):
+         from gateway.run import _redact_approval_command
+         with self.events.lock:
+             prompt = {"kind": "clarify", "prompt_id": entry.clarify_id,
+@@ -49,6 +51,26 @@ class PendingControls:
+                 prompt["timeout_s"] = timeout_s
+             self.pending[entry.clarify_id] = (entry, prompt)
+             self.events.publish(session_id, prompt, event_type="clarify.request")
++            self._opened(entry.clarify_id, prompt, observer)
++
++    def _opened(self, prompt_id, prompt, observer):
++        if observer is not None:
++            self._observers[prompt_id] = observer
++            observer("request.waiting", deepcopy(prompt))
++
++    def settled(self, session_id, prompt_id):
++        with self.events.lock:
++            saved = self.pending.pop(prompt_id, None)
++            self.remote_responders.pop(prompt_id, None)
++            if saved is None:
++                return False
++            prompt = saved[1]
++            self.events.publish(session_id, {'prompt_id': prompt_id,
++                'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
++            observer = self._observers.pop(prompt_id, None)
++            if observer is not None:
++                observer("request.resolved", deepcopy(prompt))
++            return True
+ 
+     def snapshot(self, session_id, generation):
+         with self.events.lock:
+@@ -57,10 +79,7 @@ class PendingControls:
+                           (not route.event.is_set() if prompt['kind'] == 'clarify' else
+                            any(p['request_id'] == prompt_id for p in list_gateway_approvals(route))))
+                 if prompt['execution_generation'] != generation or not active:
+-                    del self.pending[prompt_id]
+-                    self.remote_responders.pop(prompt_id, None)
+-                    self.events.publish(session_id, {'prompt_id': prompt_id,
+-                        'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
++                    self.settled(session_id, prompt_id)
+             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
+ 
+     def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
+@@ -79,10 +98,7 @@ class PendingControls:
+                         or (kind == 'approval' and response[field] not in prompt['choices'])):
+                     raise RuntimeStoreError('invalid_params')
+                 self.remote_responders[prompt_id](kind, prompt_id, response[field])
+-                del self.remote_responders[prompt_id]
+-                del self.pending[prompt_id]
+-                self.events.publish(session_id, {'prompt_id': prompt_id, 'execution_generation': generation},
+-                                    event_type=kind + '.settled')
++                self.settled(session_id, prompt_id)
+                 return {'status': 'resolved', 'prompt_id': prompt_id}
+             if kind == 'clarify':
+                 from tools.clarify_gateway import resolve_gateway_clarify
+diff --git a/gateway/session_plugin_events.py b/gateway/session_plugin_events.py
+new file mode 100644
+index 0000000000..cad7fc255b
+--- /dev/null
++++ b/gateway/session_plugin_events.py
+@@ -0,0 +1,117 @@
++"""Supported observer facts from the canonical authority, independent of attached viewers."""
++from __future__ import annotations
++
++import hashlib
++import logging
++from pathlib import Path
++import time
++
++logger = logging.getLogger(__name__)
++NATIVE_SESSION_EVENTS_VERSION = 1
++
++
++def _bounded(value, limit):
++    from agent.redact import redact_sensitive_text
++    text = redact_sensitive_text(value, force=True, redact_url_credentials=True) if isinstance(value, str) else ""
++    return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
++
++
++def _base(authority, session_id, generation, turn_id):
++    from gateway.session_authorities import served_profile_name
++    from gateway.session_contract import SessionRef
++    profile = served_profile_name(authority.profile_id)
++    stored = authority.physical_target(SessionRef(authority.profile_id, session_id))
++    record = authority.db.get_session(session_id) or authority.db.get_session(stored) or {}
++    return {"v": NATIVE_SESSION_EVENTS_VERSION, "profile_id": profile, "root_id": session_id,
++            "stored_id": stored, "execution_generation": generation, "turn_id": turn_id,
++            "is_subagent": record.get("source") == "subagent", "title": profile,
++            "created_at": int(time.time())}
++
++
++def _emit(authority, event):
++    from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
++    from gateway.run import _profile_runtime_scope
++    identity = [event[key] for key in ("profile_id", "root_id", "execution_generation", "turn_id", "type")]
++    identity.append(event.get("request_id"))
++    import json
++    event["event_id"] = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
++    # Settlement and prompt cleanup can run after the turn's executor scope ended.
++    # The existing bounded observer dispatcher carries this explicit owner scope
++    # into its callback thread without marking the session as viewed/delivered.
++    with _profile_runtime_scope(Path(authority.profile_id)):
++        from gateway.session_policy import policy_for_source
++        live = authority.sessions.get(event["root_id"])
++        policy = policy_for_source(authority.runner, live.source) if live is not None else None
++        if policy is not None and policy.ignore_user_config:
++            return
++        event["title"] = _bounded(event["title"], 160)
++        event["preview"] = _bounded(event["preview"], 1024)
++        enqueue_plugin_stream_hook("on_native_session_event", event=event)
++
++
++def completed(authority, ref, row, settled, response, captured):
++    """Observe a committed terminal result; failures never become completed replies."""
++    if not Path(authority.profile_id).is_absolute() or not Path(authority.profile_id).is_dir():
++        return  # only a live, resolved profile may enter a plugin's scope
++    try:
++        outcome = settled["outcome"]
++        event_type = {"completed": "turn.completed", "failed": "turn.failed",
++                      "unknown": "turn.unknown", "interrupted": "turn.interrupted",
++                      "cancelled": "turn.interrupted"}.get(outcome)
++        if event_type is None:
++            return
++        if type(row.get("generation")) is not int or row["generation"] < 1:
++            return  # an unstarted cancellation is not a completed execution
++        result = (captured or {}).get("result") or {}
++        text = response or result.get("final_response") or ""
++        from gateway.response_filters import is_intentional_silence_agent_result, silence_allowed
++        # This flag is owned by the turn's presentation policy, never inferred by
++        # an external plugin from transcript text or private agent attributes.
++        muted = result.get("_notification_reply_muted") is True
++        payload = row.get("payload") or {}
++        automation = payload.get("local_automation_v1") or (payload.get("native_text_v1") or {}).get("automation") or {}
++        quiet_marker = (silence_allowed(automation.get("display_kind") or ("internal_notification" if automation else None))
++                        and is_intentional_silence_agent_result(result, text))
++        meaningful = (outcome in {"failed", "unknown"} or outcome == "completed" and bool(text.strip())
++                      and not muted and not quiet_marker)
++        preview = {"failed": "The turn failed.", "unknown": "The turn's outcome is unknown."}.get(
++            outcome, text if meaningful else "")
++        event = _base(authority, ref.session_id, row["generation"], row["admission_id"])
++        event.update(type=event_type, kind="failure" if outcome in {"failed", "unknown"} else "reply",
++                     request_id=None, meaningful=meaningful,
++                     preview=preview)
++        _emit(authority, event)
++    except Exception:
++        # Observers cannot change an already committed execution or withhold its frame.
++        logger.exception("Native session terminal observer failed")
++
++
++def control_observer(authority, session_id, generation):
++    """Capture canonical coordinates once, before the prompt can resolve or compress."""
++    if not Path(authority.profile_id).is_absolute() or not Path(authority.profile_id).is_dir():
++        return None
++    try:
++        live = authority.sessions[session_id]
++        stamp = live.event_stream.execution
++        turn_id = stamp.get("admission_id")
++        if not turn_id or stamp.get("execution_generation") != generation:
++            return None
++        base = _base(authority, session_id, generation, turn_id)
++    except Exception:
++        logger.exception("Native session prompt observer capture failed")
++        return None
++
++    def observe(event_type, prompt):
++        try:
++            kind = "question" if prompt["kind"] == "clarify" else "approval"
++            # Commands and answers are deliberately excluded from the preview contract.
++            preview = prompt.get("question", "") if kind == "question" else "Approval needed"
++            timeout = prompt.get("timeout_s")
++            lifetime = min(300, max(1, int(timeout))) if isinstance(timeout, (int, float)) else 300
++            event = {**base, "type": event_type, "request_id": prompt["prompt_id"], "kind": kind,
++                     "meaningful": event_type == "request.waiting", "preview": preview,
++                     "expires_at": base["created_at"] + lifetime}
++            _emit(authority, event)
++        except Exception:
++            logger.exception("Native session prompt observer failed")
++    return observe
+diff --git a/gateway/session_settlement_recovery.py b/gateway/session_settlement_recovery.py
+index eda70cbb2f..5439fe9960 100644
+--- a/gateway/session_settlement_recovery.py
++++ b/gateway/session_settlement_recovery.py
+@@ -119,6 +119,8 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
+         # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+         complete['warning'] = notice
+     live.event_stream.publish(ref.session_id, complete)
++    from gateway.session_plugin_events import completed
++    completed(authority, ref, row, settled, response, captured)
+ 
+ 
+ RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+diff --git a/hermes_cli/plugin_host.py b/hermes_cli/plugin_host.py
+index b4687026a8..a9810500e4 100644
+--- a/hermes_cli/plugin_host.py
++++ b/hermes_cli/plugin_host.py
+@@ -233,6 +233,7 @@ class PluginHost:
+             "plugin_key": plugin_key, "plugin_id": ctx.plugin_id, "name": manifest.name,
+             "path": manifest.path, "module_name": module_name, "entrypoint": entrypoint,
+             "profile_name": self._base_context.copy().run(lambda: ctx.profile_name),
++            "native_session_events_version": ctx.native_session_events_version,
+             "manifest": {k: getattr(manifest, k, None) for k in (
+                 "name", "version", "description", "author", "source", "path", "key", "kind",
+                 "data_namespace")},
+@@ -285,6 +286,7 @@ class PluginHost:
+             "plugin_key": plugin_key, "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
+             "name": Path(plugin_dir).name, "path": str(plugin_dir), "module_name": module_name,
+             "base": base_ref, "capture": capture, "forward": ctx is not None,
++            "native_session_events_version": getattr(ctx, "native_session_events_version", 0),
+             "manifest": {"name": Path(plugin_dir).name, "path": str(plugin_dir), "source": "user"},
+             "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
+         }
+diff --git a/hermes_cli/plugin_host_child.py b/hermes_cli/plugin_host_child.py
+index ffc903e07c..e83af3cbb7 100644
+--- a/hermes_cli/plugin_host_child.py
++++ b/hermes_cli/plugin_host_child.py
+@@ -93,6 +93,7 @@ class RemotePluginContext:
+         self.manifest = types.SimpleNamespace(**(info.get("manifest") or {}))
+         self.plugin_id = info.get("plugin_id") or plugin_key
+         self.profile_name = info.get("profile_name")
++        self.native_session_events_version = info.get("native_session_events_version", 0)
+ 
+     def __getattr__(self, name: str) -> Any:
+         if name.startswith("_"):
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index eda71a0ee4..37ee25f814 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -106,7 +106,10 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
+ 
+ _install_plugin_debug_handler()
+ 
++from gateway.session_plugin_events import NATIVE_SESSION_EVENTS_VERSION
++
+ VALID_HOOKS: set[str] = {
++    "on_native_session_event",
+     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+     # transform_llm_output: return a replacement string (first non-None wins) or None.
+     "transform_llm_output", "pre_llm_call", "post_llm_call",
+@@ -408,11 +411,6 @@ class PluginContext(PluginCapabilityCtxMixin):
+         except Exception:
+             return "default"
+ 
+-    def current_cron_execution(self) -> Any:
+-        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
+-        from cron.execution_identity import current_cron_execution
+-        return current_cron_execution()
+-
+     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
+         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
+         with registration teardown; exceptions are logged, never propagated."""
+diff --git a/hermes_cli/plugins_capability_ctx.py b/hermes_cli/plugins_capability_ctx.py
+index 8aa55ff30f..4134f2aaa8 100644
+--- a/hermes_cli/plugins_capability_ctx.py
++++ b/hermes_cli/plugins_capability_ctx.py
+@@ -4,7 +4,7 @@
+ from __future__ import annotations
+ 
+ import logging
+-from typing import Optional
++from typing import Any, Optional
+ 
+ from hermes_cli.plugin_capabilities import plugin_capability_granted
+ from hermes_cli.plugins_loader import _plugin_home_scope
+@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
+ class PluginCapabilityCtxMixin:
+     """Mixed into :class:`hermes_cli.plugins.PluginContext` (``manifest``, ``_manager``, ``plugin_id``)."""
+ 
++    @property
++    def native_session_events_version(self) -> int:
++        """Version of canonical native terminal/prompt event payloads (zero when unavailable)."""
++        from gateway.session_plugin_events import NATIVE_SESSION_EVENTS_VERSION
++        return NATIVE_SESSION_EVENTS_VERSION
++
++    def current_cron_execution(self) -> Any:
++        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
++        from cron.execution_identity import current_cron_execution
++        return current_cron_execution()
++
+     # -- capability probing (#64228) -----------------------------------------
+     def has_capability(self, capability: str) -> bool:
+         """True when *capability* is live for this plugin (probe, then degrade gracefully). Bundled
+diff --git a/hermes_cli/web_models.py b/hermes_cli/web_models.py
+index b2b395cf97..4536c0fcc7 100644
+--- a/hermes_cli/web_models.py
++++ b/hermes_cli/web_models.py
+@@ -572,6 +572,10 @@ class _AgentPluginInstallBody(BaseModel):
+     # Pin a custom source to one full 40-hex commit SHA (same contract as ``--ref``).
+     ref: Optional[str] = None
+ 
++class _ProfileAgentPluginInstallBody(_AgentPluginInstallBody):
++    profile: str
++
++
+ class _PluginProvidersPutBody(BaseModel):
+     memory_provider: Optional[str] = None
+     context_engine: Optional[str] = None
+diff --git a/hermes_cli/web_routers/dashboard_ui.py b/hermes_cli/web_routers/dashboard_ui.py
+index dd774f8a1e..1070ba1e1b 100644
+--- a/hermes_cli/web_routers/dashboard_ui.py
++++ b/hermes_cli/web_routers/dashboard_ui.py
+@@ -21,7 +21,7 @@ from hermes_cli.web_server_dashboard import (
+ )
+ from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
+ from hermes_cli.web_models import (
+-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
++    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _ProfileAgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+ )
+ 
+ _log = logging.getLogger("hermes_cli.web_server")
+@@ -181,8 +181,8 @@ async def get_plugins_catalog(request: Request):
+         raise HTTPException(status_code=500, detail="Failed to build plugins catalog.") from exc
+ 
+ 
+-async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
+-    """Run a dashboard plugin mutation inside the dashboard profile's home + secret scope, off the
++async def _plugin_mutation(fn: Callable[[], dict], *, profile: Optional[str] = None) -> dict:
++    """Run a dashboard plugin mutation inside the chosen profile's home + secret scope, off the
+     event loop.
+ 
+     Scope: the git-credential path reaches ``get_secret("GITHUB_TOKEN")``, which fails closed once
+@@ -192,17 +192,18 @@ async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
+     skills lock for the whole (network-bound) body.
+     """
+     def _run():
+-        with _config_profile_scope(None):
++        with _config_profile_scope(profile):
+             return fn()
+ 
+     return await asyncio.to_thread(_run)
+ 
+ 
+-@router.post("/api/dashboard/agent-plugins/install")
+-async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
++async def _install_agent_plugin(request: Request, body: _AgentPluginInstallBody, *, profile: Optional[str] = None):
+     _require_token(request)
+     from hermes_cli.plugins_cmd import dashboard_install_plugin
+ 
++    if profile is not None and (not profile or profile != profile.strip() or profile.lower() == "current"):
++        raise HTTPException(status_code=400, detail="Provide an explicit profile name.")
+     catalog_name = (body.catalog_name or "").strip()
+     identifier = body.identifier.strip()
+     if not identifier and not catalog_name:
+@@ -211,12 +212,23 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
+         dashboard_install_plugin(
+             identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
+             ref=body.ref),
+-        "Install failed.", rescan=True))
++        "Install failed.", rescan=True), profile=profile)
+     # Strip internal paths from the response
+     result.pop("after_install_path", None)
+     return result
+ 
+ 
++@router.post("/api/dashboard/agent-plugins/install")
++async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
++    return await _install_agent_plugin(request, body)
++
++
++@router.post("/api/dashboard/agent-plugins/install-profile")
++async def post_agent_plugin_install_profile(request: Request, body: _ProfileAgentPluginInstallBody):
++    result = await _install_agent_plugin(request, body, profile=body.profile)
++    return {**result, "profile": body.profile}
++
++
+ def _validate_plugin_name(name: str) -> str:
+     """Reject path-traversal attempts in plugin name URL parameters."""
+     name = name.strip("/")
+diff --git a/tests/gateway/test_native_session_events.py b/tests/gateway/test_native_session_events.py
+new file mode 100644
+index 0000000000..357a6c63a3
+--- /dev/null
++++ b/tests/gateway/test_native_session_events.py
+@@ -0,0 +1,305 @@
++"""Native notification observers consume committed authority facts, not agent guesses."""
++import asyncio
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.session_authority import LiveSession, SessionAuthority
++from gateway.session_contract import Principal, SessionRef, Submission
++from hermes_state import SessionDB
++from hermes_state_runtime import begin_runtime_epoch
++
++
++def _owner(tmp_path, monkeypatch, *, profile="default", capture=True):
++    home = tmp_path if profile == "default" else tmp_path / "profiles" / profile
++    home.mkdir(parents=True, exist_ok=True)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    db = SessionDB(db_path=home / "state.db")
++    db.create_session("root", source="cli")
++    runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
++                             _adapter_for_source=lambda source: None)
++    authority = SessionAuthority(runner, profile_id=str(home), instance_id="test", db=db,
++                                 epoch=begin_runtime_epoch(db, instance_id="test"))
++    authority.sessions["root"] = LiveSession(SimpleNamespace(platform=None, user_id="owner"), "route")
++    monkeypatch.setattr(authority, "_schedule", lambda ref: None)
++    ref = SessionRef(str(home), "root")
++    actor = Principal("owner", str(home), frozenset({"session:submit", "session:control"}), "test")
++    events = []
++
++    def observe(hook, **payload):
++        from hermes_constants import get_hermes_home
++        events.append((hook, payload["event"], str(get_hermes_home())))
++        return True
++    if capture:
++        monkeypatch.setattr("agent.plugin_stream_hooks.enqueue_plugin_stream_hook", observe)
++    return db, authority, ref, actor, events
++
++
++@pytest.mark.asyncio
++async def test_native_completion_names_canonical_root_and_physical_tip_without_a_viewer(tmp_path, monkeypatch):
++    db, authority, ref, actor, events = _owner(tmp_path, monkeypatch, profile="research")
++
++    async def execute(owner, ref, row):
++        db.publish_compression_child(parent_session_id="root", child_session_id="tip", source="cli",
++            messages=[{"role": "assistant", "content": "summary"}], require_compression_lease=False)
++        owner.pending_results[row["admission_id"]] = {
++            "result": {"final_response": "The answer is ready.", "session_id": "tip"}, "usage": {}}
++        return "The answer is ready."
++    monkeypatch.setattr("gateway.session_finite.execute_finite_admission", execute)
++    with db:
++        receipt = await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++        await asyncio.wait_for(authority._drain(ref), 5)
++    assert len(events) == 1
++    hook, event, scope = events[0]
++    assert hook == "on_native_session_event"
++    assert event["type"] == "turn.completed"
++    assert (event["profile_id"], event["root_id"], event["stored_id"]) == ("research", "root", "tip")
++    assert event["turn_id"] == receipt.admission_id and event["execution_generation"] == 1
++    assert event["meaningful"] is True and event["preview"] == "The answer is ready."
++    assert scope == str(tmp_path / "profiles" / "research")
++    assert event["v"] == 1 and event["request_id"] is None
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("result,expected,meaningful", [
++    ({"final_response": "answer", "_notification_reply_muted": True}, "turn.completed", False),
++    ({"final_response": "partial", "interrupted": True}, "turn.interrupted", False),
++    ({"final_response": "", "failed": True, "error": "private details"}, "turn.failed", True),
++])
++async def test_terminal_observer_preserves_outcome_and_quiet_policy(tmp_path, monkeypatch, result, expected, meaningful):
++    db, authority, ref, actor, events = _owner(tmp_path, monkeypatch)
++
++    async def execute(owner, ref, row):
++        owner.pending_results[row["admission_id"]] = {"result": result, "usage": {}}
++        return result["final_response"]
++    monkeypatch.setattr("gateway.session_finite.execute_finite_admission", execute)
++    with db:
++        await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++        await asyncio.wait_for(authority._drain(ref), 5)
++    event = events[0][1]
++    assert event["type"] == expected and event["meaningful"] is meaningful
++    assert "private details" not in event["preview"]
++    if not meaningful:
++        assert event["preview"] == ""
++
++
++@pytest.mark.asyncio
++async def test_a_human_marker_is_not_proof_of_quiet_automation(tmp_path, monkeypatch):
++    db, authority, ref, actor, events = _owner(tmp_path, monkeypatch)
++
++    async def execute(owner, ref, row):
++        owner.pending_results[row["admission_id"]] = {"result": {"final_response": "[SILENT]"}, "usage": {}}
++        return "[SILENT]"
++    monkeypatch.setattr("gateway.session_finite.execute_finite_admission", execute)
++    with db:
++        await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++        await asyncio.wait_for(authority._drain(ref), 5)
++    assert events[0][1]["meaningful"] is True
++
++
++@pytest.mark.asyncio
++async def test_actual_pending_prompt_and_resolution_keep_native_identity(tmp_path, monkeypatch):
++    db, authority, ref, actor, events = _owner(tmp_path, monkeypatch)
++    with db:
++        receipt = await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++        row, _ = await authority._claim_next(ref, authority.sessions[ref.session_id])
++        prompt = SimpleNamespace(clarify_id="native-prompt", question="Which region?", choices=["east", "west"],
++                                 multi_select=False, event=threading.Event())
++        authority.register_clarify(ref.session_id, row["generation"], prompt, timeout_s=30)
++        prompt.event.set()
++        assert authority.sessions[ref.session_id].controls.snapshot(ref.session_id, row["generation"]) == ()
++        authority.sessions[ref.session_id].controls.snapshot(ref.session_id, row["generation"])
++    assert [item[1]["type"] for item in events] == ["request.waiting", "request.resolved"]
++    waiting, resolved = [item[1] for item in events]
++    assert waiting["request_id"] == resolved["request_id"] == "native-prompt"
++    assert waiting["turn_id"] == resolved["turn_id"] == receipt.admission_id
++    assert waiting["kind"] == "question" and waiting["preview"] == "Which region?"
++    assert waiting["event_id"] != resolved["event_id"]
++    assert waiting["expires_at"] == resolved["expires_at"] == waiting["created_at"] + 30
++
++
++@pytest.mark.asyncio
++async def test_managed_prompt_resolution_cancels_the_exact_request_without_command_preview(tmp_path, monkeypatch):
++    from gateway.session_managed_worker import _prompt_frame
++    db, authority, ref, actor, events = _owner(tmp_path, monkeypatch)
++    with db:
++        await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++        row, _ = await authority._claim_next(ref, authority.sessions[ref.session_id])
++        worker = SimpleNamespace(respond=lambda *_: None)
++        assert _prompt_frame(authority, ref, row, worker, {"type": "approval", "data": {
++            "request_id": "approve-one", "command": "secret command", "description": "private arguments"}})
++        assert _prompt_frame(authority, ref, row, worker, {"type": "prompt_settled", "prompt_id": "approve-one"})
++    assert [item[1]["type"] for item in events] == ["request.waiting", "request.resolved"]
++    assert all(item[1]["request_id"] == "approve-one" and item[1]["kind"] == "approval" for item in events)
++    assert all(item[1]["preview"] == "Approval needed" for item in events)
++
++
++def test_proven_silent_automation_is_quiet_and_unknown_outcome_is_explicit(tmp_path, monkeypatch):
++    from gateway.session_settlement_recovery import publish_terminal
++    db, authority, ref, _actor, events = _owner(tmp_path, monkeypatch)
++    row = {"admission_id": "turn", "request_id": "submission", "generation": 1,
++           "payload": {"text": "work", "local_automation_v1": {"display_kind": "internal_notification"}}}
++    with db:
++        publish_terminal(authority, ref, row, {"outcome": "completed"}, "[SILENT]",
++                         {"result": {"final_response": "[SILENT]"}})
++        from gateway.session_plugin_events import completed
++        completed(authority, ref, row, {"outcome": "unknown"}, None, None)
++    assert events[0][1]["meaningful"] is False and events[0][1]["preview"] == ""
++    unknown = events[1][1]
++    assert unknown["type"] == "turn.unknown" and unknown["kind"] == "failure"
++    assert unknown["preview"] == "The turn's outcome is unknown." and unknown["meaningful"] is True
++
++
++@pytest.mark.asyncio
++async def test_a_discovered_consumer_receives_native_events_in_its_profile_scope(tmp_path, monkeypatch):
++    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
++    from hermes_cli import plugins
++    from tests.waiting import wait_until
++    db, authority, ref, actor, _ = _owner(tmp_path, monkeypatch, profile="research", capture=False)
++    home = tmp_path / "profiles" / "research"
++    plugin = home / "plugins" / "native-contract"
++    plugin.mkdir(parents=True)
++    (plugin / "plugin.yaml").write_text("name: native-contract\nversion: 0.1.0\nprovides_hooks: [on_native_session_event]\n")
++    (plugin / "__init__.py").write_text('''received = []
++def register(ctx):
++    assert ctx.native_session_events_version == 1
++    def observe(event, **kwargs):
++        from hermes_constants import get_hermes_home
++        received.append((event, str(get_hermes_home())))
++    ctx.register_hook("on_native_session_event", observe)
++''')
++    (home / "config.yaml").write_text("plugins:\n  enabled: [native-contract]\n")
++    empty = tmp_path / "empty-bundled"
++    empty.mkdir()
++    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(empty))
++    manager = plugins.PluginManager()
++    monkeypatch.setattr(plugins, "_plugin_manager", manager)
++    manager.discover_and_load()
++    loaded = manager._plugins["native-contract"]
++    assert loaded.error is None
++
++    async def execute(owner, ref, row):
++        owner.pending_results[row["admission_id"]] = {"result": {"final_response": "finished"}, "usage": {}}
++        return "finished"
++    monkeypatch.setattr("gateway.session_finite.execute_finite_admission", execute)
++    try:
++        with db:
++            await authority.submit(actor, Submission("one", ref, {"text": "work"}, "queue"))
++            await asyncio.wait_for(authority._drain(ref), 5)
++            wait_until(lambda: loaded.module.received, timeout=5)
++        event, scope = loaded.module.received[0]
++        assert event["profile_id"] == "research" and event["preview"] == "finished"
++        assert scope == str(home)
++    finally:
++        shutdown_plugin_stream_hook_dispatcher()
++
++
++def test_native_observers_cannot_mutate_another_consumers_destination(monkeypatch):
++    from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
++    from tests.waiting import wait_until
++    changed, received = threading.Event(), []
++
++    def corrupt(event, **kwargs):
++        event["root_id"] = "different-chat"
++        changed.set()
++
++    def read(event, **kwargs):
++        assert changed.wait(5)
++        received.append(event["root_id"])
++
++    shutdown_plugin_stream_hook_dispatcher()
++    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", lambda name: (corrupt, read))
++    original = {"root_id": "intended-chat"}
++    try:
++        enqueue_plugin_stream_hook("on_native_session_event", event=original)
++        wait_until(lambda: received, timeout=5)
++        assert received == ["intended-chat"] and original == {"root_id": "intended-chat"}
++    finally:
++        shutdown_plugin_stream_hook_dispatcher()
++
++
++@pytest.mark.platforms("posix")
++def test_real_lost_managed_worker_observes_unknown_without_fabricating_failure(tmp_path, monkeypatch):
++    from gateway import session_managed_worker as managed
++    from hermes_state_runtime import claim_session_input
++    from tests.gateway.test_managed_worker_unknown_status import _authority_with_a_lost_worker
++    authority, _, policy, _, _, db = _authority_with_a_lost_worker(tmp_path, monkeypatch)
++    authority.profile_id = str(tmp_path)
++    ref = SessionRef(str(tmp_path), "s")
++    actor = Principal("human", str(tmp_path), frozenset({"session:submit", "session:control"}), "test")
++    events = []
++    monkeypatch.setattr("agent.plugin_stream_hooks.enqueue_plugin_stream_hook",
++                        lambda hook, **payload: events.append(payload["event"]))
++
++    async def scenario():
++        await authority.submit(actor, Submission("lost", ref, {"text": "work"}, "queue"))
++        row = claim_session_input(db, epoch=authority.epoch, session_id="s")
++        authority.executing["s"] = row["generation"]
++        with pytest.raises(managed.ManagedExecutionUnknown):
++            async with asyncio.timeout(30):
++                await managed.execute_managed(authority, ref, row, policy)
++    with db:
++        asyncio.run(scenario())
++    assert len(events) == 1
++    assert events[0]["type"] == "turn.unknown" and events[0]["kind"] == "failure"
++    assert events[0]["meaningful"] is True and events[0]["root_id"] == "s"
++
++
++@pytest.mark.asyncio
++async def test_subagent_classification_survives_physical_compression(tmp_path, monkeypatch):
++    db, authority, _, actor, events = _owner(tmp_path, monkeypatch)
++    db.create_session("delegated", source="subagent")
++    ref = SessionRef(authority.profile_id, "delegated")
++    authority.sessions[ref.session_id] = LiveSession(SimpleNamespace(platform=None, user_id="owner"), "child-route")
++
++    async def execute(owner, ref, row):
++        db.publish_compression_child(parent_session_id=ref.session_id, child_session_id="delegated-tip", source="cli",
++            messages=[{"role": "assistant", "content": "summary"}], require_compression_lease=False)
++        owner.pending_results[row["admission_id"]] = {"result": {"final_response": "child finished"}, "usage": {}}
++        return "child finished"
++    monkeypatch.setattr("gateway.session_finite.execute_finite_admission", execute)
++    with db:
++        await authority.submit(actor, Submission("child", ref, {"text": "work"}, "queue"))
++        await asyncio.wait_for(authority._drain(ref), 5)
++    assert events[0][1]["is_subagent"] is True
++    assert events[0][1]["stored_id"] == "delegated-tip"
++
++
++def test_preview_redaction_uses_the_owning_profile_after_executor_scope_ends(tmp_path, monkeypatch):
++    from agent.redact import register_vault_redaction_value
++    from gateway.session_settlement_recovery import publish_terminal
++    db, authority, ref, _actor, events = _owner(tmp_path, monkeypatch, profile="research")
++    register_vault_redaction_value("private vault phrase")
++    different = tmp_path / "different"
++    different.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(different))
++    row = {"admission_id": "turn", "request_id": "submission", "generation": 1, "payload": {"text": "work"}}
++    with db:
++        publish_terminal(authority, ref, row, {"outcome": "completed"}, "The private vault phrase is ready.",
++                         {"result": {"final_response": "The private vault phrase is ready."}})
++    assert events[0][1]["preview"] == "The «redacted-vault-secret» is ready."
++
++
++def test_native_observation_honors_the_frozen_ignore_user_config_policy(tmp_path, monkeypatch):
++    from dataclasses import replace
++    from gateway.config import Platform
++    from gateway.session import SessionSource
++    from gateway.session_local import LocalSessionAdapter
++    from gateway.session_policy import build_policy
++    from gateway.session_settlement_recovery import publish_terminal
++    db, authority, ref, _actor, events = _owner(tmp_path, monkeypatch)
++    source = SessionSource(platform=Platform.LOCAL, chat_id=ref.session_id, user_id="owner")
++    authority.sessions[ref.session_id].source = source
++    adapter = LocalSessionAdapter(authority)
++    adapter.register_source(source)
++    policy = build_policy({"cwd": str(tmp_path), "model": "m"}, {})
++    adapter.policies[source.chat_id] = policy
++    authority.runner._adapter_for_source = lambda _: adapter
++    row = {"admission_id": "turn", "request_id": "submission", "generation": 1, "payload": {"text": "work"}}
++    with db:
++        publish_terminal(authority, ref, row, {"outcome": "completed"}, "normal output", None)
++        assert len(events) == 1
++        adapter.policies[source.chat_id] = replace(policy, ignore_user_config=True)
++        publish_terminal(authority, ref, row, {"outcome": "completed"}, "isolated output", None)
++    assert len(events) == 1 and events[0][1]["preview"] == "normal output"
+diff --git a/tests/hermes_cli/test_native_session_events.py b/tests/hermes_cli/test_native_session_events.py
+new file mode 100644
+index 0000000000..6d4b8e3625
+--- /dev/null
++++ b/tests/hermes_cli/test_native_session_events.py
+@@ -0,0 +1,27 @@
++"""An isolated notification consumer can detect and consume the native event contract."""
++import pytest
++
++from hermes_cli.plugins import PluginManager
++from tests.hermes_cli.test_plugin_host import _home_with_plugins
++
++
++@pytest.mark.platforms("any")
++def test_isolated_consumer_sees_native_event_capability_and_payload(tmp_path, monkeypatch):
++    _home_with_plugins(tmp_path, monkeypatch, {"native-contract": '''
++def register(ctx):
++    version = getattr(ctx, "native_session_events_version", 0)
++    if version != 1:
++        raise RuntimeError("Native session events are unavailable")
++    def observe(event, **kwargs):
++        return {"version": version, "root_id": event["root_id"], "profile_id": ctx.profile_name}
++    ctx.register_hook("on_native_session_event", observe)
++'''})
++    manager = PluginManager()
++    try:
++        manager.discover_and_load()
++        assert manager._plugins["native-contract"].error is None
++        result = manager.invoke_hook("on_native_session_event", event={"v": 1, "root_id": "canonical-chat"})
++        assert result == [{"version": 1, "root_id": "canonical-chat", "profile_id": "default"}]
++    finally:
++        manager.unload()
++        manager._plugin_host().shutdown()
+diff --git a/tests/hermes_cli/test_profile_plugin_install.py b/tests/hermes_cli/test_profile_plugin_install.py
+new file mode 100644
+index 0000000000..e655086da8
+--- /dev/null
++++ b/tests/hermes_cli/test_profile_plugin_install.py
+@@ -0,0 +1,71 @@
++"""Explicit-profile installation uses normal dashboard auth and real isolated plugin I/O."""
++
++from pathlib import Path
++import subprocess
++
++import pytest
++
++
++@pytest.fixture
++def installation(tmp_path, monkeypatch):
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    home = tmp_path / ".hermes"
++    home.mkdir(exist_ok=True)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    from hermes_cli import profiles
++    from hermes_cli.config import atomic_config_write
++    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
++    from starlette.testclient import TestClient
++
++    target = profiles.create_profile("push-target", no_alias=True, no_skills=True)
++    atomic_config_write(home / "config.yaml", {"plugins": {"enabled": []}})
++    source = tmp_path / "plugin-source"
++    source.mkdir()
++    (source / "plugin.yaml").write_text("name: scope-probe\nversion: 1.0.0\n")
++    (source / "__init__.py").write_text("def register(ctx):\n    pass\n")
++    subprocess.run(["git", "init", "-q", str(source)], check=True)
++    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
++    subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
++                    "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"], check=True)
++    ref = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
++    client = TestClient(app, raise_server_exceptions=False, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
++    return client, home, target, {"identifier": source.as_uri(), "ref": ref, "enable": True, "force": False}
++
++
++@pytest.mark.parametrize("profile", ["default", "push-target"])
++def test_scoped_install_changes_only_the_confirmed_profile(installation, profile):
++    client, home, target, body = installation
++    launch_before = (home / "config.yaml").read_bytes()
++    from hermes_cli.config import load_config
++    from hermes_cli.web_server_profiles import _config_profile_scope
++
++    response = client.post("/api/dashboard/agent-plugins/install-profile", json={**body, "profile": profile})
++
++    assert response.status_code == 200, response.text
++    assert response.json()["ok"] is True and response.json()["profile"] == profile
++    selected = target if profile == "push-target" else home
++    untouched = home if profile == "push-target" else target
++    assert (selected / "plugins" / "scope-probe" / "plugin.yaml").is_file()
++    assert not (untouched / "plugins" / "scope-probe").exists()
++    with _config_profile_scope(profile):
++        assert "scope-probe" in load_config()["plugins"]["enabled"]
++    if profile == "push-target":
++        assert (home / "config.yaml").read_bytes() == launch_before
++
++
++@pytest.mark.parametrize("profile", ["", "current", "missing-profile", "../escape"])
++def test_scoped_install_refuses_ambiguous_or_missing_profiles(installation, profile):
++    client, home, target, body = installation
++    response = client.post("/api/dashboard/agent-plugins/install-profile", json={**body, "profile": profile})
++    assert response.status_code in {400, 404, 422}
++    assert not (home / "plugins" / "scope-probe").exists()
++    assert not (target / "plugins" / "scope-probe").exists()
++
++
++def test_scoped_install_requires_existing_dashboard_authentication(installation):
++    client, home, target, body = installation
++    client.headers.clear()
++    response = client.post("/api/dashboard/agent-plugins/install-profile", json={**body, "profile": "push-target"})
++    assert response.status_code in {401, 403}
++    assert not (home / "plugins" / "scope-probe").exists()
++    assert not (target / "plugins" / "scope-probe").exists()
+diff --git a/website/docs/developer-guide/plugins/index.md b/website/docs/developer-guide/plugins/index.md
+index ffa5f10f8c..3a2b674714 100644
+--- a/website/docs/developer-guide/plugins/index.md
++++ b/website/docs/developer-guide/plugins/index.md
+@@ -1540,6 +1540,7 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
+ | `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
+ | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
+ | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
++| `on_native_session_event` | Canonical authority terminal publication or actual pending prompt/resolution; independent of viewers | `event: dict` with versioned canonical destination, outcome, presentation disposition and safe preview | ignored; queued off the authority path |
+ | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+ | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+ | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
+@@ -1895,6 +1896,7 @@ This is the public, stable interface for tool dispatch from plugin commands. Plu
+ `ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `hermes chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Two stable, session-agnostic APIs cover what hooks actually need:
+ 
+ - **`ctx.profile_name`** — the active profile name (e.g. `"default"`, or the assignee profile in a kanban worker). Derived from `HERMES_HOME`, so it works everywhere with no `_cli_ref` dependency.
++- **`ctx.native_session_events_version`** — supported version of `on_native_session_event` payloads. Present in the isolated plugin host too; use `getattr(ctx, "native_session_events_version", 0)` to detect older hosts. This is a local event-contract version, not a manifest-wide plugin API version.
+ - **`ctx.dispatch_tool(name, args)`** — invoke any registered tool (built-in or plugin), including the `kanban_*` tools, `delegate_task`, `terminal`, `read_file`, etc. Works from hook callbacks regardless of which process the hook fires in.
+ 
+ Together these let a kanban lifecycle hook observe a transition and act on the board without touching framework internals:
+diff --git a/website/docs/user-guide/features/hooks.md b/website/docs/user-guide/features/hooks.md
+index dfb103090c..6a961447fc 100644
+--- a/website/docs/user-guide/features/hooks.md
++++ b/website/docs/user-guide/features/hooks.md
+@@ -946,6 +946,53 @@ def register(ctx):
+ 
+ ---
+ 
++### `on_native_session_event`
++
++Observe canonical native-session outcomes and real pending prompts independently
++of attached viewers. A concrete consumer is an optional notification plugin:
++it can persist encrypted delivery work without wrapping gateway internals.
++Register with `ctx.register_hook("on_native_session_event", callback)` and probe
++`getattr(ctx, "native_session_events_version", 0)` before enabling the feature.
++The capability is also available in the isolated plugin host. The documented
++`hermes_cli.plugins.NATIVE_SESSION_EVENTS_VERSION` constant exposes the same
++local payload version to a separately loaded dashboard backend.
++
++The callback receives `event: dict` (and additive telemetry keyword fields).
++Version 1 contains:
++
++| Field | Meaning |
++| --- | --- |
++| `v` | `1`, the local event contract version |
++| `type` | `turn.completed`, `turn.failed`, `turn.interrupted`, `turn.unknown`, `request.waiting`, or `request.resolved` |
++| `event_id` | Stable SHA-256 identity over the canonical coordinates, outcome type and optional prompt; replay-safe, not a delivery guarantee |
++| `profile_id` | Served profile label (`default` for the root), never its filesystem home |
++| `root_id`, `stored_id` | Canonical authority root and current physical compression tip |
++| `turn_id`, `execution_generation` | Committed admission identity and its exact execution generation |
++| `request_id` | Actual native prompt ID for waiting/resolved events, otherwise null |
++| `kind` | `reply`, `failure`, `approval`, or `question`; unknown execution is failure-category attention, not a fabricated failed outcome |
++| `meaningful` | Whether this fact represents visible attention; interrupted and successful quiet turns are false; resolved requests cancel earlier waiting work |
++| `is_subagent` | Whether the stored session is explicitly classified as a subagent |
++| `title`, `preview` | Profile label and safe preview, redacted in the owning profile and bounded to 160/1,024 UTF-8 bytes; approval commands, responses and raw errors are excluded |
++| `created_at` | Unix seconds when this observation was captured |
++| `expires_at` | Waiting/resolved request expiry (same value for the pair), bounded by its timeout or five minutes |
++
++Terminal observations follow committed authority settlement, including failures
++before an agent runs. A lost managed worker emits `turn.unknown` only after its
++unknown state is committed. Actual native pending controls produce request
++observations; smart approvals and mere tool-call attempts do not. A request
++may resolve immediately, so consumers must cancel queued waiting alerts.
++Unstarted queued cancellations are not completed execution events.
++
++Callbacks use the existing bounded, per-consumer observer dispatcher off the
++authority path. Each consumer receives its own payload copy and owning-profile
++context. Hook return values never alter execution and never mark a session as
++viewed or delivered. A slow consumer can exhaust its queue, and observers are
++not a durable journal: persist accepted work promptly and reconcile canonical
++state on reconnect. An observer cannot promise exactly-once or always-visible
++delivery, and notification infrastructure must remain opt-in. Local sessions
++whose frozen policy bypasses user configuration (including safe mode) emit no
++profile-plugin observations.
++
+ ### `on_session_end`
+ 
+ Fires at the **very end** of every `run_conversation()` call, regardless of outcome. Also fires from the CLI's exit handler if the agent was mid-turn when the user quit.

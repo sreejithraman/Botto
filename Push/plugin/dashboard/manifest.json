@@ -1,0 +1,9 @@
+{
+  "name": "botto-push",
+  "label": "Botto Push",
+  "version": "0.1.0",
+  "tab": { "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
+

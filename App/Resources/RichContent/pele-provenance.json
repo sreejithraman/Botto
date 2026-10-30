@@ -1,0 +1,42 @@
+{
+  "package": "pele",
+  "version": "1.9.0",
+  "repository": "https://github.com/obsidianmd/pele",
+  "commit": "e7f092a4de147cc32210913c20e36eaa5fcd0ef1",
+  "tarball": "https://registry.npmjs.org/pele/-/pele-1.9.0.tgz",
+  "tarballIntegrity": "sha512-KUmBt7P5JduVKQaP6FKfXiRgH3LBVIKsmdgPJZU7jD3ye6F+Z8fbms+OjivE7rWY09Qx+5X65VKe/9ywKFJ9Sw==",
+  "tarballSHA256": "d9dd5bc81e8d4d5747a2af07d54e2b8b9e897bff49cc4af7612d219c3d70ba33",
+  "distribution": "dist/pele.global.js",
+  "resource": "pele-1.9.0.js",
+  "resourceBytes": 706153,
+  "resourceSHA256": "323c16de7844d4b609743f70449ebce041a531e4f48f23b1e9e7ec9d3b917287",
+  "modifications": "None. Resource is byte-identical to the published all-types IIFE.",
+  "licenseFile": "LICENSES/Pele.txt",
+  "licenseSHA256": "311bccc30de6f7b9cbfb64232bb0c911ccb2191abe316550813ae25b2c7925b9",
+  "licenses": [
+    "MIT (Pele, copyright 2026 kepano)",
+    "ISC (Lucide v1.14.0 rotate-ccw icon, copyright 2026 Lucide Icons and Contributors)"
+  ],
+  "declaredRuntimeDependencies": [],
+  "provenanceVerification": "Registry archive SHA-512 verified. Upstream commit recorded; attestations not independently signature-validated.",
+  "hostOptions": {
+    "links": false,
+    "images": false,
+    "limit": 16384,
+    "maxEdges": 100,
+    "outputLimit": 524288,
+    "responsive": true
+  },
+  "boundsNotes": [
+    "Botto additionally limits UTF-8 source to 16384 bytes. Pele limit counts JavaScript code units.",
+    "maxEdges applies to flowchart/agentflow, not every diagram type.",
+    "outputLimit checks the completed SVG; it does not bound CPU time or peak allocation.",
+    "Native execution deadlines and opaque-frame isolation remain required."
+  ],
+  "unsupported": [
+    "External plugins including ZenUML",
+    "Remote images, links, fonts and icon packs",
+    "Custom icon and math resolvers (TeX stays source)",
+    "Mermaid themes/themeVariables and exact layout parity, including ELK"
+  ]
+}

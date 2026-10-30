@@ -1,0 +1,60 @@
+{
+  "kind": "source-shaped contract examples and adversarial examples; not live captures",
+  "captured_transcripts": [],
+  "sources": [
+    {
+      "repository": "https://github.com/uzairansaruzi/hermex",
+      "sha": "47809f2cd1f07bcbe592ee8960cf9c63e88b734c",
+      "files": [
+        "HermesMobile/Features/Chat/TranscriptMedia.swift:TranscriptMediaParser",
+        "HermesMobile/Features/Workspace/FileReference.swift:fileTarget",
+        "HermesMobile/Models/MessageAttachment.swift:hermesReferences"
+      ],
+      "evidence": "Read from the pinned Hermex source revision. MEDIA, bare file URL, balanced/escaped Markdown destinations, explicit path prefixes and standalone quoted @file reference syntax."
+    },
+    {
+      "repository": "https://github.com/uzairansaruzi/hermex",
+      "sha": "1a12ab2b90d7459c96c45598936b671af412c04f",
+      "file": "HermesMobile/Features/Chat/TranscriptMedia.swift",
+      "sha256": "93d89d99440a5e1e0238180fcf90407ee1bbb6a9f38830811e19400bc8351825",
+      "evidence": "Fetched via gh API at the exact revision; byte-identical to the older pinned TranscriptMedia.swift. No runtime dependency."
+    },
+    {
+      "sha": "4a0eaf7989b6804319ddb94fa5d96c5a716080a1",
+      "files": [
+        "tui_gateway/methods_prompt.py:file.attach ref_text response",
+        "tui_gateway/prompt_attachments.py:_format_ref_value and _attachment_ref_path"
+      ],
+      "evidence": "Read from the pinned Hermes authority source revision. @file paths may be workspace-relative; the formatter selects a quote absent from the filename."
+    },
+    {
+      "sha": "ca6782850432927f33df4775cb6dd45bb51460d2",
+      "file": "gateway/platforms/base.py:MEDIA_TAG_CLEANUP_RE and MEDIA_EXTENSIONLESS_TAG_RE",
+      "evidence": "Read from the pinned Hermes sidecar source revision. MEDIA values may be quoted. No filesystem validation or automatic bare-path delivery is adopted."
+    }
+  ],
+  "fixtures": {
+    "preserved-text.json": "Synthetic unsupported links, malformed/streaming references, prose and code examples. Every entry must survive verbatim as text.",
+    "../../ArtifactReferenceTests.swift": "Literal mixed text/reference examples at the public projection seam; source-shaped examples plus synthetic delimiter, identity and mutation regressions."
+  },
+  "intentional_differences": [
+    "Read-only native paragraph projection; the caller supplies assistant paragraphs after separating fenced blocks.",
+    "Unexpected backtick or tilde fences preserve the entire input as text; no second whole-transcript fence engine.",
+    "Local paths retain spelling and relative/home identity; no workspace resolution, URL loading, filesystem probes, containment decisions or network requests.",
+    "Only explicit ./, ../ and ~/ relative Markdown paths qualify; bare relative Markdown URLs stay text. Standalone @file ref_text can name bare relative paths.",
+    "Complete quoted and angle-wrapped MEDIA paths are accepted. Unquoted paths end at whitespace; ambiguous spaced filenames require delimiters.",
+    "Remote HTTP, custom, sandbox, data, javascript and protocol-relative destinations remain text. File URLs require an empty or localhost host and no credentials, port, query or fragment.",
+    "All file types can become cards; extension-based MIME and basename are display metadata. Unknown MIME is application/octet-stream.",
+    "Intentional repeated placements stay ordered; ChatAttachment identity is the full server path.",
+    "Malformed Markdown or delimited MEDIA values preserve the remainder of their line; incomplete backtick spans preserve the remainder of input."
+  ],
+  "unsupported_forms": [
+    "Reference-style or multiline Markdown links/images and autolinks",
+    "Bare relative Markdown URLs such as assets/report.pdf",
+    "Windows drive/UNC paths",
+    "MEDIA paths with a whitespace gap after the colon, emphasis wrappers or ambiguous unquoted spaces",
+    "Host inference, workspace/home expansion, Markdown line/column suffix interpretation and filesystem existence checks",
+    "Actual artifact downloads and preview presentation"
+  ],
+  "license": "Hermex syntax/delimiter attribution is retained in source and tests; full MIT notice already exists in LICENSES/Hermex.txt."
+}

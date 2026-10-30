@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "botto-push-relay",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {"enabled": false},
+  "ratelimits": [{"name":"REQUEST_LIMITER","namespace_id":"1001","simple":{"limit":120,"period":60}}],
+  "vars": {
+    "ALLOWED_BUNDLE_IDS": "com.sree.botto",
+    "ALLOWED_ENVIRONMENTS": "sandbox,production"
+  },
+  "durable_objects": {
+    "bindings": [{"name": "INSTALLATIONS", "class_name": "Installation"}]
+  },
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["Installation"]}]
+}

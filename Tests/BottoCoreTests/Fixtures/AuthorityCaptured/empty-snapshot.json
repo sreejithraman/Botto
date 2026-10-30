@@ -1,0 +1,22 @@
+{
+  "authority_epoch": 1,
+  "execution_generation": 0,
+  "info": {
+    "profile_id": "/private/tmp/hot-runtime-current/hermes/profiles/hot-core-probe-04f29a24",
+    "profile_name": "hot-core-probe-04f29a24",
+    "title": "Bot Chat"
+  },
+  "last_sequence": 0,
+  "message_count": 0,
+  "messages": [],
+  "pending": [],
+  "pending_connection": null,
+  "prompts": [],
+  "replay_epoch": "4cabbd11e1a44fc08de9ebf12f42bfa6",
+  "revision": 0,
+  "running": false,
+  "session_id": "local-cd1c2c13651e4c02e781960b81f775b71d310c61884a137929ddb72fd1ab55a4",
+  "stored_session_id": "local-cd1c2c13651e4c02e781960b81f775b71d310c61884a137929ddb72fd1ab55a4",
+  "subscription_id": "e9786fb2c982488cbd1848da83e39cc6",
+  "todo_state": null
+}

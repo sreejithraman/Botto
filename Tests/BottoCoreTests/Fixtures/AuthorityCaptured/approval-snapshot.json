@@ -1,0 +1,112 @@
+{
+  "authority_epoch": 1,
+  "execution_generation": 2,
+  "info": {
+    "profile_id": "/private/tmp/hot-runtime-current/hermes/profiles/hot-core-probe-04f29a24",
+    "profile_name": "hot-core-probe-04f29a24",
+    "title": "Bot Chat"
+  },
+  "last_sequence": 31,
+  "message_count": 4,
+  "messages": [
+    {
+      "_db_persisted": true,
+      "content": "Reply with one brief greeting.",
+      "display_metadata": {
+        "gateway_input_owner": "eb584322-cbaf-5566-8277-7ffab9aff3f0"
+      },
+      "message_id": "b1441a91c06647e1a85184db6ad10bc1",
+      "message_uid": "33284595971f4590b821aeda80c17b63",
+      "role": "user",
+      "row_id": 1,
+      "timestamp": 1792733806.8108
+    },
+    {
+      "_db_persisted": true,
+      "content": "HOT_LOCAL_ACK Reply with one brief greeting.",
+      "finish_reason": "stop",
+      "message_uid": "954de52848dc428c9ba57ae6be565ff6",
+      "role": "assistant",
+      "row_id": 2,
+      "timestamp": 1792733806.938713
+    },
+    {
+      "_db_persisted": true,
+      "content": "HOT_APPROVAL",
+      "display_metadata": {
+        "gateway_input_owner": "d5356ad1-3898-5046-ac67-f3a624dc0ce7"
+      },
+      "message_id": "52ba10568f84483fbd3b311cd434f4cb",
+      "message_uid": "7af3ca3f489f4e3ba8384910d3dd7755",
+      "role": "user",
+      "row_id": 3,
+      "timestamp": 1792733807.173137
+    },
+    {
+      "_db_persisted": true,
+      "_tool_call_uids": {
+        "call_hot_4": "e943fec2f8cd4af180bf161bb963c357"
+      },
+      "content": "Running the disposable check.",
+      "finish_reason": "tool_calls",
+      "message_uid": "48f2b046ef6242df98b9031d7347f79b",
+      "role": "assistant",
+      "row_id": 4,
+      "timestamp": 1792733807.20489,
+      "tool_calls": [
+        {
+          "call_id": "call_hot_4",
+          "function": {
+            "arguments": "{\"command\": \"python3 -c \\\"print('HOT_APPROVAL_OK')\\\"\"}",
+            "name": "terminal"
+          },
+          "id": "call_hot_4",
+          "response_item_id": "fc_hot_4",
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "pending": [
+    {
+      "admission_id": "52ba10568f84483fbd3b311cd434f4cb",
+      "authority_epoch": 1,
+      "controls": [],
+      "execution_generation": 2,
+      "input_id": "B508C2E9-0452-42DD-93C5-A7A009AD912A",
+      "outcome": null,
+      "ref": {
+        "profile_id": "/private/tmp/hot-runtime-current/hermes/profiles/hot-core-probe-04f29a24",
+        "session_id": "local-cd1c2c13651e4c02e781960b81f775b71d310c61884a137929ddb72fd1ab55a4"
+      },
+      "sequence": 2,
+      "status": "started",
+      "steering": false,
+      "text": "HOT_APPROVAL"
+    }
+  ],
+  "pending_connection": null,
+  "prompts": [
+    {
+      "choices": [
+        "once",
+        "deny",
+        "session",
+        "always"
+      ],
+      "command": "python3 -c \"print('HOT_APPROVAL_OK')\"",
+      "description": "script execution via -e/-c flag",
+      "execution_generation": 2,
+      "kind": "approval",
+      "prompt_id": "a63538b64b484b949cbb2c19362606d9",
+      "timeout_s": 300
+    }
+  ],
+  "replay_epoch": "4cabbd11e1a44fc08de9ebf12f42bfa6",
+  "revision": 1,
+  "running": true,
+  "session_id": "local-cd1c2c13651e4c02e781960b81f775b71d310c61884a137929ddb72fd1ab55a4",
+  "stored_session_id": "local-cd1c2c13651e4c02e781960b81f775b71d310c61884a137929ddb72fd1ab55a4",
+  "subscription_id": "f97999aa4c4f4345aed6bf5dc4f03446",
+  "todo_state": null
+}

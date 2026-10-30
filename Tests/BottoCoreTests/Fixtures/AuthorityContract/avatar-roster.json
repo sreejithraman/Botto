@@ -1,0 +1,43 @@
+{
+  "evidence": "Response key sets and shared look from /tmp/hot-avatar-authority-roster-evidence.jsonl, 2026-10-23. Paths and install ID are synthetic. Source: hermes-agent 4a0eaf7989b6804319ddb94fa5d96c5a716080a1 gateway/session_group_controls.py:_profiles.",
+  "discovered": {
+    "name": "hot-core-probe-8c008ace",
+    "path": "/profiles/hot-core-probe-8c008ace",
+    "is_default": false,
+    "model": "",
+    "provider": "",
+    "description": "",
+    "display_name": "hot-core-probe-8c008ace",
+    "skill_count": 0,
+    "ui_meta": {
+      "hermes-bots": {
+        "custom": true,
+        "shape": "cloud",
+        "imageKind": "shape",
+        "title": "Hot Core Probe 8c008ace",
+        "color": "#14b8a6"
+      }
+    }
+  },
+  "own": {
+    "name": "hot-core-probe-8c008ace",
+    "path": "/profiles/hot-core-probe-8c008ace",
+    "is_default": false,
+    "model": "",
+    "provider": "",
+    "description": "",
+    "display_name": "hot-core-probe-8c008ace",
+    "skill_count": 0,
+    "ui_meta_revisions": { "hermes-bots": 1 },
+    "ui_meta": {
+      "hermes-bots": {
+        "custom": true,
+        "shape": "cloud",
+        "imageKind": "shape",
+        "title": "Hot Core Probe 8c008ace",
+        "color": "#14b8a6"
+      }
+    },
+    "has_avatar": false
+  }
+}

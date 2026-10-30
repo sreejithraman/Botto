@@ -1,0 +1,9 @@
+{
+  "source_revision": "ca6782850432927f33df4775cb6dd45bb51460d2",
+  "capture": "/tmp/hot-multichat-service-live/sidecar-empty-snapshot.json",
+  "capture_date": "2026-10-23",
+  "resume_source": "tui_gateway/methods_session.py:_resume_live_unpersisted (630-653), _Resume.messages (604-605)",
+  "resume_shape": "The live unpersisted response omits running, status and inflight. With omit_messages=true its wire message_count is zero even though history may not be empty.",
+  "live_proof_source": "tui_gateway/methods_session.py:session.activate (1018-1030); tui_gateway/server.py:_live_session_payload (2876-2917)",
+  "live_proof_shape": "activate with omit_messages=true supplies running, message_count from actual in-memory history, session_key and optional inflight, queued, pending_approval, open_requests, pending_connection. This independent live snapshot must confirm an empty idle draft before a REST404 exception."
+}

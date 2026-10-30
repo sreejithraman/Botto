@@ -1,0 +1,180 @@
+# BottoCore integration
+
+`HermesBotService()` implements `BotService` on the main actor. The app supplies
+connection persistence and a conversation workspace; the service owns live access.
+
+Decision rationale: [direct Hermes access](adr/0002-direct-hermes-backend.md),
+[durable identity and live access](adr/0003-durable-identity-live-access.md), and
+[uncertain mutations](adr/0005-uncertain-mutations.md).
+
+- Set `onEvent` before connecting. `.configuration(updated)` must synchronously save the entire updated connection to Keychain. A rotated native refresh token is consumed by the host; saving it is required even if its connection is no longer selected. On save failure, call `disconnect()` before returning. The core checks retirement immediately after this callback before using the access token. Do not log these events.
+- The core owns reconnect attempts (1, 2, 4, 8, 16, 30 seconds). `.connected(info)` follows successful reconnect and selected-chat reattachment. `.disconnected(reason)` disables controls. Permanent identity/auth/protocol refusals stop retries. Explicit `disconnect()` cancels reconnect and closes only the client socket; server work continues. Call it for background, and reconnect/open on foreground. Do not reconnect on `.inactive` alone.
+- `SessionIdentity` separates exact profile, lineage root, current stored transcript and proven aliases. `ExactID` compares UTF-8 bytes. `Conversation.id` remains the live RPC runtime; `storedID` is its durable transcript. `openChat` returns `OpenedConversation` with a non-Codable service-issued access value. All mutations take that access, never a raw cached Conversation. Capture app presentation intents before creating asynchronous tasks. Cache records use connection-scoped local chat UUIDs; cached requests cannot authorize actions.
+- Calls return an error for lost mutation acknowledgments and never automatically repeat a write. `.uncertain` means possibly accepted: retain the draft, display the message, and inspect the refreshed conversation before another send. Authority submission UUIDs are saved before dispatch in Application Support, without text or credentials; this journal is not an outbox.
+- Bot creation uses host model defaults and shared host credentials (`share_auth:true`). A nonempty `BotDraft.model` is refused because the interface lacks the required provider identity. SOUL instructions, name and emoji are saved. Current authority creation waits up to 45 seconds for the name in `/api/status.gateway_shared_with`, polling reads only. `model_inherited:false` also means a model was already seeded; `profiles.describe` confirms it before reporting a missing default. Partial creation reports a specific error; refresh the list before trying again.
+- Unknown/credential/Desktop requests remain visible as `.unsupported`; never auto-answer or hide them. Approval choices come from the host. Batch clarification questions become separate cards. Multi-select can use a free-text answer until the UI supports choosing several labels.
+- Both protocol adapters are selected by `gateway.ready.payload.session_authority`. Sidecar uses verified `close_on_disconnect:false`. Authority omits that key, negotiates `runtime.describe`, creates with advertised `gui`, uses durable submission IDs and current generation fences, and restores atomic `pending/prompts`. The `gui` source is accepted by both inspected implementations; Botto never writes Hermex's platform note.
+- Password and native-refresh auth validate the reviewed origin, status/version and any public installation identity before credentials. Webapp may hide `install_id` before sign-in; Botto then requires authenticated `/api/status` identity and compares any saved pin before opening the workspace. In that case the reviewed origin is the credential-delivery trust boundary; installation pinning follows authentication. See [the identity decision](adr/0008-authenticated-installation-identity.md). Known versions below 0.21.5 are rejected. Explicit `version:unknown` is accepted for source installations; gateway capabilities are still validated. Only `CF-Access-Client-Id` and `CF-Access-Client-Secret` custom headers are allowed. Access credentials necessarily accompany `/api/status` to pass the proxy. Redirects are refused, including same-origin redirects. Use the final origin URL.
+- Upload is scoped to the live service/connection/profile/stored chat. Pass complete returned `ChatAttachment` values unchanged to `send`, including optional `stagingID`. The service registry validates the unique token and complete descriptor. Unconsumed uploads survive ordinary A→B→A navigation and can use fresh A access; old A access itself is retired. Historical paths or decoded tokens alone grant nothing. Admission consumes only submitted tokens. Reconnect, incompatible stored-origin change and process restart require reattachment. Client limits are eight files, 25 MiB each and 50 MiB per prompt. Images are resized/re-encoded off-main; authority sends explicit per-prompt image references; sidecar uses its verified vision-tool text reference. File references are taken verbatim from `file.attach`.
+- Native transport caps each history HTTP response (`GET /api/sessions/{id}/messages`) and WebSocket message at 96 MiB. Two 25 MiB images require 69,905,072 base64 bytes, leaving about 29 MiB for JSON, text and other rows. Other HTTP responses retain their 32 MiB ceiling; native sign-in separately validates a 128 KiB response limit. HTTP receipt checks delivered chunks before appending, regardless of missing or understated Content-Length. Botto requests 100 rows per REST page; both inspected hosts support row pagination (maximum 500), but a single image-bearing row cannot be divided this way. A response page or WebSocket snapshot above 96 MiB is refused before projection. These bounds do not guarantee restoration of arbitrary-length or arbitrarily image-heavy histories.
+
+## Inbox message previews
+
+The inbox excerpt follows the chat that tapping the bot opens: preferred, last
+selected, then Main. It uses `ConversationPreview` from typed user/assistant
+messages. Silent replies, hidden rows, tools and routine internal scaffolding do
+not replace the last readable message. Useful replies, attributed bot messages,
+attachments and real failures remain eligible. Raw roster and directory preview
+strings are inventory metadata, not display-ready latest-message evidence.
+
+`conversationPreview(_:)` reads up to three latest pages of 100 history rows,
+without attaching a chat, changing live access or creating read acknowledgment.
+It uses the host's display metadata and display content on a temporary projection;
+canonical transcripts stay intact. A complete search found a readable message or
+exhausted history. An incomplete search or failed request preserves the saved
+excerpt. Legacy sidecar history cannot prove absence before a compressed tip.
+
+The workspace refreshes opening-chat excerpts in the background, with at most four
+concurrent lookups per batch. Live selected-chat publications supply their own
+preview. Cached excerpts remain available offline; read identity, connection,
+opening choice and newer transcript checks reject stale completions. Preview
+reads never change unread or seen evidence. The row uses the message timestamp
+when a projected message is available.
+
+## Cached activity presentation
+
+The workspace persists the last successful `ActivityObservation` with its check
+time, independently of inert transcripts, live access, and refresh state.
+`ActivityPresentation` supplies the inbox and chat picker with these states:
+
+- Unobserved activity stays quiet while a check is pending or no observation exists.
+- Current observations drive live attention and show **Working** or **Needs you**;
+  idle stays quiet.
+- Restored observations and observations from a retired connection are historical.
+  They show **Previously working** or **Previously waiting**, with the check time
+  in the accessibility label; historical idle stays quiet.
+- Failed or ambiguous checks retain the last successful observation and its time.
+  They show **Activity unavailable** only when no prior observation exists.
+
+Roster reads publish ordered activity samples in one `activityBatch` event so the
+workspace can update its observable state once. Individual `activity` events still
+apply immediately; no observations wait across an asynchronous roster read.
+Activity sampling never acknowledges unread content or grants action authority.
+See [cache-first presentation](adr/0007-cache-first-activity-presentation.md)
+for the shared decision and its trade-off.
+
+## Live avatar activity
+
+`OpenedConversation.activity` carries optional, non-Codable `ConversationActivity`:
+a motion lineage, current work phase and stable start times, plus a newly observed
+`TurnReaction`. These presentation facts never enter `Conversation` or the saved
+chat book. Existing exact identity, replay epoch and contiguous sequence gates
+admit events before projection. Tool IDs track overlapping work; text chunks and
+thinking hints change phase without restarting the work clock.
+
+A reaction requires an observed live start and a matching explicit successful or
+failed terminal status. Authority additionally requires a nonempty matching
+admission and execution generation. Queued cancellations, interruption, unknown
+status and replayed/restored events do not create success. Actual socket reset
+retires motion lineage; ordinary same-runtime/epoch canonical refresh preserves
+it. The app workspace retains an accepted reaction's original time through that
+refresh, independently of rotated mutation access. No new network subscription
+or background multi-chat phase observation is introduced.
+
+## Multiple conversations
+
+`conversations(profile:)` reads Main and ordinary chats. `createConversation`
+omits a title: a title can mean resolve-existing on the authority host. Main is
+the canonical Bot Chat and remains separate from Botto’s local preferred opening
+selection. Directory paging advances fixed requested offsets, deduplicates proven
+lineages and reports partial reads. Full inventory reads are distinct from
+lightweight activity sampling. Ambiguous sidecar runtime ownership stays unknown.
+
+The inbox loads current bots' directories once per connection. Later roster reads
+check one creation-ordered metadata window per catalogued profile (`limit=1`,
+plus host pin backfills). A changed filtered total or an uncovered lineage/tip
+emits `.conversationDirectoryChanged` and refreshes only that profile through
+the existing directory path. Unchanged streaming metadata does not rescan full
+inventories. Failed or malformed probes retain previously covered facts and retry
+on a later roster read. A legacy live-only chat becomes discoverable after the
+host persists it; unknown runtime keys do not establish profile ownership.
+
+Directory invalidation retires the profile's pending read in both core and app.
+Request identities prevent an old completion from clearing a replacement read;
+connection and presentation fences still protect newer chats and live access.
+
+Switching detaches the exact authority subscription without an end reason. It
+never sends sidecar `session.close`, Stop or a cancellation of server work. The
+service retains private provenance for newly created empty sidecar chats, which
+may not yet exist in REST. A cached live-only flag cannot authorize a history-404
+exception. Explicit stored targets remain stored targets during recovery.
+
+Mutation receipts identify the original source and operation after a positive
+host acknowledgment, even if selection changed while the reply was pending. A
+local journal failure after admission is `needsLocalRepair`; do not resend that
+message. Lost acknowledgments remain uncertain, with no automatic mutation retry.
+The app clears only the submitted source draft revision and unique staged IDs.
+
+`OpenedConversation.readEvidence` is optional runtime evidence from a complete
+read. It carries the exact inventory summary observed before that read, for the
+same verified profile, lineage root and stored tip. Inventory counts describe
+physical rows in the active tip; they cannot be compared with projected message
+counts or compacted history length. The workspace acknowledges a matching
+observation only after current live display. Directory callbacks, cached history,
+incremental publications and access rotation do not create that evidence. Missing
+or changed metadata stays conservative; later metadata cannot enrich an earlier
+read retroactively. This is causal ordering, not an atomic server revision.
+For an idle authority chat, complete history and an atomic snapshot watermark
+covering the replay head also prove the read when old replay entries have expired.
+Active chats still require complete replay to account for unfinished content.
+
+When a visible selected chat needs newer evidence, the workspace can perform one
+same-chat read per distinct returned-directory observation. It waits for captured
+actions, imports and artifact consumers to settle. The new read retires old
+actions, artifacts and renderers; it preserves the draft and visual selection.
+Only a subsequent current display can acknowledge the result. Failed or
+incomplete reads do not retry the same observation automatically. This reuses
+the existing directory queries and adds a full selected-chat read when needed,
+not inventory polling for each streamed token.
+
+## Coverage boundary
+
+Authority contracts: official Hermes `4a0eaf7989b6804319ddb94fa5d96c5a716080a1`. Sidecar captured fixtures: official Hermes `ca6782850432927f33df4775cb6dd45bb51460d2` / 0.21.5. Donor algorithms: Hermex `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (MIT).
+
+The fixture manifests preserve their capture source and filtering rules.
+`AuthorityCaptured` contains a disposable real-gateway capture;
+`HermesAgent` contains upstream's captured 0.21.5 data; `AuthorityContract`
+contains explicitly labeled synthetic edge cases. Historical fixture bytes
+retain their original capture names. These fixtures support protocol tests,
+not complete product acceptance of the current revision. See the
+[verification record](verification.md) for recorded checks and limits.
+
+The opt-in live test creates a new disposable profile each run. It runs only
+when `BOTTO_TEST_HERMES_URL` is set; optional user/password environment values
+override fixture defaults. `BOTTO_TEST_CAPTURE_PATH` optionally exports filtered
+session traffic, never auth HTTP or tickets. Use it only on a disposable host,
+following the [authority](dev-host.md) or [sidecar](dev-host-sidecar.md) recipe.
+The runtime's owner is responsible for teardown.
+
+## Remaining coverage and interface limits
+
+- Source pins and fixture coverage are specific to the authority and sidecar
+  recipes above. The public service selects the adapter from the actual
+  capability handshake; do not describe arbitrary Hermes releases as tested.
+- Native refresh rotation and Cloudflare headers have boundary tests. External PKCE and real Cloudflare Access tunnels require separate live verification. Authenticated HTTP 401 is surfaced with reconnect guidance; writes are not retried automatically.
+- Stop and clarification routing have simulated boundary tests. A fixture reconnect does not establish gateway process-restart recovery. Background/iOS interaction, real model providers, authority restart/unknown-admission recovery and long compacted histories still need broader interoperability testing.
+- A truncated authority replay ring can omit unfinished text that has not reached durable history. Botto restores the available durable rows and current prompts; later stream events or completion restore the remaining text. It cannot reconstruct bytes the host no longer supplies.
+- The submission journal retains up to 500 identities without prompt text or credentials. It is not an offline outbox or a user-facing receipt inspector. Unknown admissions exposed by the host remain visible and require Desktop resolution.
+- Unknown and credential requests are unsupported cards. The Domain interface has no secret-entry, model/provider catalog or multi-select response type. Those features need deliberate interface additions before exposing them in the UI. Artifact downloads use captured live access and the authenticated bounded transport; see [rich replies and files](rich-content.md).
+- Authority does not include true one-shot server request envelopes in its snapshot. During automatic recovery, Botto retains previously seen envelopes as unsupported reminders and consumes replayed/live cancellations. They cannot authorize an answer from cached state. A process relaunch cannot recover request parameters the host does not publish; use Desktop for those requests.
+
+## Existing profile edits
+
+`updateProfile` edits the shared bot title and description without renaming the
+profile ID. It rereads the profile and rejects changes to fields the editor is
+about to overwrite. Title writes merge fresh appearance metadata and use its
+namespace revision. Hermes does not expose a description compare-and-swap;
+a concurrent description write after that read remains a server limitation.
+Profile sections and avatar image clearing are independent operations. A
+partial or unconfirmed save requires reload and a deliberate new save; recovery
+never replays the mutation.

@@ -1,0 +1,6 @@
+{
+  "kind": "synthetic contract example, not a live capture",
+  "hermes_agent_sha": "4a0eaf7989b6804319ddb94fa5d96c5a716080a1",
+  "source": "tui_gateway/contracts/canonical_sessions.py:CanonicalSnapshot; gateway/session_controls.py:resume",
+  "purpose": "Exercise authority-only session fields separately from the captured legacy Hermes fixtures."
+}
