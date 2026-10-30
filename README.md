@@ -4,6 +4,8 @@
 
 Botto is a simple native iPhone and iPad app for your Hermes bots.
 
+[![iOS checks](https://github.com/sreejithraman/Botto/actions/workflows/ios.yml/badge.svg?branch=main)](https://github.com/sreejithraman/Botto/actions/workflows/ios.yml)
+
 <p>
   <img src="docs/screenshots/welcome.png" width="240" alt="Botto welcome screen with three bots and the tagline Big ideas. Little sidekicks.">
   <img src="docs/screenshots/inbox.png" width="240" alt="Botto inbox with sample bots and their activity">

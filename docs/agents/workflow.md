@@ -18,8 +18,8 @@ project; [project.yml](../../project.yml) owns its generated settings.
   Python tooling, and unsigned Simulator/native unit-test checks. The
   [workflow](../../.github/workflows/ios.yml) runs automatically for public
   repositories and supports manual dispatch once Actions is enabled. Private
-  repositories use manual dispatch. Hosted execution of the prepared
-  configuration has not yet been verified.
+  repositories use manual dispatch. Hosted results appear in the repository's
+  Actions tab.
 - Before selecting a Simulator, preparing fixtures, or investigating test
   startup, read [shared setup and readiness](verification/index.md#shared-setup-and-readiness).
   [Hosted native accessibility setup](../local-checks.md#hosted-native-accessibility-tests)

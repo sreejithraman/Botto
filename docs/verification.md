@@ -63,8 +63,8 @@ source pins remain intact. Repeat the audit after any source or media change.
 
 ## Limits
 
-- Hosted GitHub Actions has not run for this candidate. Require a successful run
-  on the exact source commit before tagging a release.
+- Hosted CI results are available in the [iOS workflow](https://github.com/sreejithraman/Botto/actions/workflows/ios.yml).
+  Release tags must point to a commit with a successful run.
 - Physical APNs delivery remains unverified. It requires Apple provisioning,
   the documented Hermes observer and optional plugin, and an operator-hosted
   relay. Local component tests do not prove delivery or a device banner.
