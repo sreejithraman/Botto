@@ -103,8 +103,44 @@ custom icon provider loads; TeX labels remain source. See
 
 ## File previews
 
-Tap a file card in either a user message or a bot reply to download it from its
-originating Hermes conversation. Botto recognizes explicit Hermes `MEDIA:` and
+The **Artifacts** tab gathers delivered files, explicit terminal deliveries,
+structured generation results,
+and complete HTML, SVG, and Mermaid previews across chats. **Filter** limits the
+list by bot or file type. **Include references** also shows user-supplied files
+and local file links without an explicit delivery signal. Ordinary web links,
+generic tool logs, and code examples do not become outputs. An output can be an
+existing file the bot deliberately shared; the label does not prove authorship.
+
+Tap an artifact to preview, Save, or Share without switching the selected chat.
+The reader identifies its bot and chat; **Open chat** goes to that exact chat.
+The separate **Search** tab finds bots, chat titles, message text, and artifacts
+in available history. Search and library reads never mark a chat read. Partial
+or unavailable history has a visible warning; pull to refresh retries reads.
+Botto retains a bounded local index, inline source, downloaded originals, and
+thumbnails across launches. Accepted chat updates feed that index without a
+separate history scan. An offline relaunch shows retained content; it does not
+claim a complete host library. Live updates omit unsettled assistant tails
+from the disk index until completion. Device storage pressure can evict captures.
+
+Ordinary browsing checks the chat directory and reuses complete history when
+its tip, message count, timestamp, and exact preview are unchanged. Summaries
+missing that evidence require a newest-page check; reused older history carries
+a freshness warning. Pull to refresh checks history again. Partial history
+remains partial and cannot certify an unchanged complete result.
+
+Previewing a captured file reuses its original bytes, including offline.
+**Reload from Bot** explicitly downloads the current host file; failure keeps
+the previous capture visible. Save and Share wait for Reload to finish, and an
+active export keeps its captured copy. A new producing message or source revision gets
+a separate capture. A host path alone does not identify immutable contents.
+The cache stays within its saved connection, installation, profile, and chat;
+confirmed Forget removes that connection's captures. Cached identity never
+grants network access. See [artifact capture scope](adr/0009-scoped-artifact-captures.md).
+
+Tap a file card in either a user message or a bot reply to preview its captured
+copy or download it from its originating Hermes conversation. Historical cards
+keep their own producing occurrence, even when a later reply reuses the path.
+Botto recognizes explicit Hermes `MEDIA:` and
 `@file:` references, local `file://` links, and Markdown links to explicit server
 paths. Ordinary web links and code examples remain text. Host paths identify
 files on Hermes; they never open as local iPhone paths.

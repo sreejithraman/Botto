@@ -78,3 +78,41 @@ See [Contributing](../CONTRIBUTING.md) for repeatable checks, the
 [verification map](agents/verification/index.md) for workflow assertions, and the
 [release checklist](releasing.md) for source publication requirements. A recipe
 records required coverage; it is not a passing result by itself.
+
+## Hot feature import — 30 October 2026
+
+The artifact library and Search delta from Hot base `6699e1d` and export-only
+commit `65f479ae` was integrated onto Botto `e9e17b8`. The import retains Botto's
+notification routing, chat overview and local close/reopen behavior. Four
+independent required reviews covered the final 55-file code snapshot
+`5774bf6c1f49100f4c206b3c1890ea96645d9e6c06a82d874606ac3d964b7b4d`
+and returned no material findings after repairs.
+
+Fresh checks used Xcode 27.1 and an iPhone 17e Simulator running iOS 26.5,
+with unsigned Debug native builds:
+
+- The core run completed 394 tests, with three live-host opt-ins skipped;
+  the MainActor-default compatibility build passed. All 41 Python tooling
+  tests passed.
+- The initial complete native run exposed three assertions in two notification
+  recovery methods. Repairs keep automatic restoration separate from manual
+  navigation, preserve a cold notification's local picker owner, and retain
+  editable drafts after failed lookups without restoring retired action grants.
+  Existing assertions remain intact, with additional integration regressions.
+- The final native rerun passed 669 tests, with two opt-in transcript benchmarks
+  skipped. Its 18 unchanged avatar-layout tests passed in the initial run and
+  were excluded from the rerun. The final run includes 644 Swift Testing tests
+  across 63 suites and 27 XCTest tests; the Swift Testing count includes the two
+  skips.
+- All six selected public UI workflows passed: library tabs and retained drafts;
+  opening an editable originating chat; reference filtering and inline-output
+  sharing; readable Search messages and artifact previews; exact older-message
+  opening; and an actual glyph jump inside tall text with the draft and Latest
+  behavior preserved.
+
+Logs, result bundles, immutable source exports and review receipts are retained
+locally under `.artifacts/hot-import/`; they are not part of the source release.
+Historical Hot results remain separate from these Botto checks. Complete library
+recipes remain draft. Fresh live-host cache interoperability, durable Files-provider
+readback, signed physical-device delivery, minimum iOS 18, wide iPad and VoiceOver
+acceptance were not exercised in this import.

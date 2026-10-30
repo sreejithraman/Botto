@@ -27,6 +27,7 @@ creation and Back; complete recipe execution remains draft. See the
 | `start` | [Welcome, demo, and destination review](features/start.md) | `start.first-run`, `start.demo`, `start.setup`, `start.address`, `start.qr`, `start.external` |
 | `auth` | [Sign in and recover a connection](features/auth.md) | `auth.password`, `auth.browser`, `auth.access`, `auth.interruption`, `auth.recovery` |
 | `inbox` | [Find bots and track attention](features/inbox.md) | `inbox.find`, `inbox.activity`, `inbox.pins`, `inbox.navigation` |
+| `library` | [Browse artifacts and search chats](features/library.md) | `library.navigation`, `library.outputs`, `library.search`, `library.captures` |
 | `chats` | [Choose independent chats with a bot](features/chats.md) | `chats.choose`, `chats.isolation`, `chats.recovery` |
 | `chat` | [Converse, keep drafts, and read history](features/chat.md) | `chat.send`, `chat.drafts`, `chat.history`, `chat.reading-position` |
 | `requests` | [Answer requests and stop work](features/requests.md) | `requests.approval`, `requests.question`, `requests.recovery`, `requests.stop` |

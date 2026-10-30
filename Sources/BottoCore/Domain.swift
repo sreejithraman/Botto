@@ -236,6 +236,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead
+    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
@@ -252,6 +253,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult
     func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws
     func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult
+    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact
 }
 
 public extension BotService {
@@ -260,6 +262,14 @@ public extension BotService {
     func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult { throw PushError.unsupported }
     func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws { throw PushError.unsupported }
     func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult { throw PushError.unsupported }
+    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
+        throw HermesServiceError.rejected(-32601)
+    }
+
+    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
+        throw HermesServiceError.rejected(-32601)
+    }
+
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
         .init(preview: nil, isComplete: false)
     }

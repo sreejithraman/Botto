@@ -96,6 +96,27 @@ import BottoCore
             sealed: try #require(box.combined).base64EncodedString())
     }
 
+    @Test func notificationTapReconnectsWithoutLosingItsDestinationToChatRestoration() async throws {
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        defer { LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration))
+        await store.open(try #require(store.bots.first))
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep my current draft", owner: original.owner)
+        service.onEvent?(.disconnected("Temporary outage"))
+        let target = service.summaries[1].identity
+        let before = store.notificationNavigationRevision
+
+        await store.openPushNotification(try notification(target, pairing: #require(vault.saved.pairings.first)))
+
+        #expect(store.isConnected)
+        #expect(store.chats.selection(profile: service.profile)?.identity?.root == target.root)
+        #expect(store.notificationNavigationRevision != before)
+        #expect(store.chats.persisted().record(original.owner.chat)?.draft.text == "Keep my current draft")
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
+    }
+
     @Test func coldStartTapReconnectsAndOpensTheVerifiedChatWithoutSending() async throws {
         let (store, service, connection, vault) = try fixture()
         defer { if let id = connection.saved?.id { LocalHistory.remove(for: id) } }

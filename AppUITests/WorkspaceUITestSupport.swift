@@ -72,6 +72,15 @@ import Vision
             return
         }
         let predicate = NSPredicate(format: "identifier == %@ OR label == %@", "header.closeButton", "Close")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                sheet.buttons.matching(predicate).allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }.count == 1
+            }
+        }, object: nil)
+        guard XCTWaiter.wait(for: [ready], timeout: timeout) == .completed else {
+            XCTFail("The native Share sheet must have one usable Close control.", file: file, line: line)
+            return
+        }
         let buttons = sheet.buttons.matching(predicate).allElementsBoundByIndex.filter { $0.isEnabled && $0.isHittable }
         guard buttons.count == 1, let close = buttons.first else {
             XCTFail("The native Share sheet must have one usable Close control.", file: file, line: line)

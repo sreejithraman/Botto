@@ -3,6 +3,35 @@ import Foundation
 import Observation
 import BottoCore
 
+@MainActor protocol ArtifactReadingSession: AnyObject {
+    var file: ArtifactPreviewFile? { get }
+    var errorMessage: String? { get }
+    var isCurrent: Bool { get }
+    var isLoading: Bool { get }
+    var title: String { get }
+    var previewBlock: ReplyContent.Block? { get }
+    var output: ArtifactOutput? { get }
+    var exportError: String? { get }
+    var exportErrorID: UUID? { get }
+    var isPresentingOutput: Bool { get }
+    func reload()
+    func beginOutput(_ kind: ArtifactOutput.Kind)
+    func endOutput(id: UUID, error: Error?)
+    func clearExportError(id: UUID?)
+}
+
+struct ArtifactOutput: Identifiable {
+    enum Kind { case share, save }
+    let id = UUID()
+    let kind: Kind
+    let file: ArtifactPreviewFile
+}
+
+extension ArtifactReadingSession {
+    var previewBlock: ReplyContent.Block? { nil }
+    func endOutput(id: UUID) { endOutput(id: id, error: nil) }
+}
+
 /// A reader retains this object for as long as it needs the local file. Dropping
 /// preview state cannot remove a file still held by Quick Look or Share.
 final class ArtifactPreviewFile: Identifiable, Sendable {
@@ -62,8 +91,10 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var downloadTask: Task<DownloadedArtifact, Error>?
 
-    func load(download: @escaping @MainActor () async throws -> DownloadedArtifact) async {
+    func load(preservingFile: Bool = false, download: @escaping @MainActor () async throws -> DownloadedArtifact) async {
+        let previous = preservingFile ? file : nil
         cancel()
+        file = previous
         let owner = generation
         isLoading = true
         let task = Task { try await download() }

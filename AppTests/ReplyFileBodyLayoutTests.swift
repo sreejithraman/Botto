@@ -18,14 +18,27 @@ import BottoCore
 
         let gate = WorkspaceGate(); fixture.service.downloadGate = gate
         fixture.service.downloadData = Data("<!doctype html><html><body><p>Short replacement.</p></body></html>".utf8)
-        fixture.state.settled = true
-        try await wait("replacement download is held") { fixture.service.downloads == 2 }
+        let message = try #require(fixture.store.conversation(for: fixture.service.profile.text)?.messages.first)
+        let reference = try #require(ReplyContent(message: message).blocks.first { $0.filePreview != nil }?.filePreview)
+        let destination = try #require(fixture.store.artifactDestination(for: reference.attachment,
+            botID: fixture.service.profile.text, producingMessage: message))
+        let reload = Task {
+            defer { fixture.store.finishArtifact(destination) }
+            return try await fixture.store.downloadArtifact(destination, force: true)
+        }
+        defer { gate.release(); reload.cancel() }
+        try await wait("explicit host reload is held") { fixture.service.downloads == 2 }
         #expect(fixture.webViews.isEmpty)
         #expect(abs(fixture.state.size.height - initial) < 2)
         gate.release()
+        let refreshed = try await reload.value
+        #expect(refreshed.data == fixture.service.downloadData)
+        fixture.service.downloadGate = nil
+        fixture.state.settled = true
         try await wait("shorter resolved HTML takes natural height") {
             fixture.webViews.count == 1 && fixture.state.size.height > 70 && fixture.state.size.height < initial - 150
         }
+        #expect(fixture.service.downloads == 2, "The resumed inline preview must use the explicitly refreshed capture")
         let smaller = fixture.state.size.height
         fixture.state.settled = false
         try await wait("replacement document is withdrawn") { fixture.webViews.isEmpty }

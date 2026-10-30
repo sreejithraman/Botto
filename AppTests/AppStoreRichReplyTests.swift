@@ -4,6 +4,8 @@ import BottoCore
 #if os(iOS)
 import SwiftUI
 import UIKit
+import WebKit
+import Vision
 #endif
 #if RICH_CONTENT_STANDALONE
 @testable import RichContentHarness
@@ -14,7 +16,7 @@ import UIKit
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
     #if os(iOS)
     @Test(arguments: ["working", "canonical"])
-    func mountedFilePreviewReloadsWhenRevocationAndRestorationArriveBeforeViewUpdate(event: String) async throws {
+    func mountedFilePreviewReauthorizationUsesCapturedBytesWithoutRevivingOldGrant(event: String) async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file='report.html'}"
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mounted-preview.invalid")!)
@@ -22,28 +24,40 @@ import UIKit
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         #expect(await store.connect(configuration)); await store.open(service.bot)
         let context = store.richReplyContext(for: service.bot.id, messageID: "m0")
+        let block = try #require(ReplyContent(message: service.chat.messages[0]).blocks.first)
+        let first = try await context.loadFile(block)
+        first.finishInstallation()
+        let originalFile = first.resolved
         let view = ScrollView {
             AssistantReplyBody(message: service.chat.messages[0], isStreaming: false)
                 .environment(\.richReplyContext, context)
+                .environment(\.scenePhase, .active)
         }
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-        window.rootViewController = UIHostingController(rootView: view)
-        window.makeKeyAndVisible()
-        defer { window.isHidden = true; window.rootViewController = nil }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while service.downloads.count < 1, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(service.downloads.count == 1)
-        // Let the successful bytes publish, then coalesce both canonical events.
-        try await Task.sleep(for: .milliseconds(50))
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let host = UIHostingController(rootView: view), window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
+        let mounted = try await MountedReplyFileDocument.waitForText("Native file preview", in: host.view)
+        #expect(service.downloads.count == 1)
+        // Coalesce both publications without giving SwiftUI an intermediate body.
         let original = service.chat.messages[0].text
         if event == "working" { service.chat.isWorking = true }
         else { service.chat.messages[0].text = "Replaced" }
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
         service.chat.isWorking = false; service.chat.messages[0].text = original
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
-        deadline = ContinuousClock.now + .seconds(5)
-        while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(service.downloads.count == 2, "A revoked document must receive a fresh authorized load")
+        #expect(!originalFile.context.permits(originalFile.block), "Restoring source must not revive the original file grant")
+        let recovered = try await MountedReplyFileDocument.waitForText("Native file preview", in: host.view, excluding: mounted)
+        #expect(recovered !== mounted && mounted.superview == nil,
+                "The mounted preview must replace its revoked document, not just reauthorize a direct loader")
+        let replacement = try await context.loadFile(block)
+        defer { replacement.finishInstallation() }
+        #expect(replacement.resolved.context.permits(replacement.resolved.block))
+        #expect(replacement.resolved.block.source == originalFile.block.source)
+        #expect(service.downloads.count == 1, "Fresh authority can install the same captured bytes without another host fetch")
     }
     #endif
     @Test func previewDirectiveLoadsThroughItsOwningChatAndBindsDownloadedHTML() async throws {
@@ -184,7 +198,7 @@ import UIKit
     }
 
     @Test(arguments: ["unchanged", "revoked", "message"])
-    func filePreviewReloadRetainsOnlyTheSameAuthorizedSuccess(event: String) async throws {
+    func filePreviewReloadReusesCapturesOnlyForTheSameOccurrence(event: String) async throws {
         let service = RichReplyTestService()
         let directive = "::preview{file='report.html'}"
         service.chat.messages[0].text = directive
@@ -211,18 +225,25 @@ import UIKit
         let reloadContext = event == "message"
             ? store.richReplyContext(for: service.bot.id, messageID: "m1") : context
         #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        let gate = RichReplyFileGate()
-        service.downloadGate = gate
         service.downloadError = HermesServiceError.disconnected
-        let reload = Task { await model.load(block, context: reloadContext) }
-        await gate.entered()
-        #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        gate.release()
-        await reload.value
-        #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        if event == "unchanged" {
-            #expect(model.resolved?.context.requestIdentity == original.context.requestIdentity,
-                    "A failed background reload keeps the existing authorized document")
+        if event == "message" {
+            let gate = RichReplyFileGate()
+            service.downloadGate = gate
+            let reload = Task { await model.load(block, context: reloadContext) }
+            defer { gate.release(); reload.cancel() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            try #require(service.downloads.count == 2, "A different occurrence must request its own capture")
+            #expect(model.resolved(for: block, context: reloadContext) == nil)
+            gate.release(); await reload.value
+            #expect(model.resolved(for: block, context: reloadContext) == nil)
+        } else {
+            await model.load(block, context: reloadContext)
+            let captured = try #require(model.resolved(for: block, context: reloadContext))
+            #expect(captured.block.source == original.block.source)
+            #expect(captured.context.permits(captured.block))
+            #expect(service.downloads.count == 1)
+            if event == "revoked" { #expect(!original.context.permits(original.block)) }
         }
         model.cancel()
         #expect(model.resolved == nil)
@@ -390,3 +411,63 @@ import UIKit
     func entered() async { while continuation == nil { await Task.yield() } }
     func release() { continuation?.resume(); continuation = nil }
 }
+
+#if os(iOS)
+/// Observes the document actually mounted by the native preview, independently
+/// of the direct-loader grants and the service's captured-byte count.
+@MainActor enum MountedReplyFileDocument {
+    static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil) async throws -> WKWebView {
+        let deadline = ContinuousClock.now + .seconds(10)
+        var observed: (words: String?, image: UIImage?)?
+        while ContinuousClock.now < deadline {
+            for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
+                observed = await renderedText(in: web)
+                if let words = observed?.words, words.localizedStandardContains(expected) { return web }
+            }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        let diagnostic = FileManager.default.temporaryDirectory.appendingPathComponent("botto-mounted-\(UUID().uuidString).png")
+        if let image = observed?.image?.pngData() { try? image.write(to: diagnostic) }
+        print("BOTTO_MOUNTED_DOCUMENT stage=\(previous == nil ? "initial" : "replacement") views=\(webViews(in: root).count) root=\(root.bounds) words=\(observed?.words ?? "<none>") image=\(diagnostic.path)")
+        Issue.record("The actual mounted document did not render: \(expected)")
+        throw DocumentFailure.notRendered
+    }
+
+    private static func webViews(in view: UIView) -> [WKWebView] {
+        (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
+    }
+
+    private static func renderedText(in web: WKWebView) async -> (words: String?, image: UIImage?) {
+        let image: UIImage? = await withCheckedContinuation { continuation in
+            let pending = PendingSnapshot(continuation)
+            let timeout = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                pending.finish(nil)
+            }
+            web.takeSnapshot(with: nil) { image, _ in
+                timeout.cancel(); pending.finish(image)
+            }
+        }
+        guard let pixels = image?.cgImage else { return (nil, image) }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        do {
+            try VNImageRequestHandler(cgImage: pixels).perform([request])
+            let words = request.results?.compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return (words, image)
+        } catch { return (nil, image) }
+    }
+
+    private enum DocumentFailure: Error { case notRendered }
+    private final class PendingSnapshot {
+        private var continuation: CheckedContinuation<UIImage?, Never>?
+        init(_ continuation: CheckedContinuation<UIImage?, Never>) { self.continuation = continuation }
+        func finish(_ image: UIImage?) {
+            continuation?.resume(returning: image); continuation = nil
+        }
+    }
+}
+#endif

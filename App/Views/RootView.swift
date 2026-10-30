@@ -39,10 +39,10 @@ struct RootView: View {
             if store.configuration == nil {
                 OnboardingView(store: store)
             } else {
-                AdaptiveWorkspace(store: store, presentation: presentation,
-                                  rootCovered: sheet != nil || store.showsConnection,
-                                  onSettings: { presentSheet(.settings) },
-                                  onNewBot: { presentSheet(.newBot) })
+                WorkspaceTabs(store: store, presentation: presentation,
+                              rootCovered: sheet != nil || store.showsConnection,
+                              onSettings: { presentSheet(.settings) },
+                              onNewBot: { presentSheet(.newBot) })
             }
         }
         .tint(BottoTheme.action)

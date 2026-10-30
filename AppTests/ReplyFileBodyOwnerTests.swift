@@ -49,14 +49,27 @@ import BottoCore
 
         let downloadGate = WorkspaceGate(); service.downloadGate = downloadGate
         service.downloadData = Data("<!doctype html><html><body><p>Short replacement.</p></body></html>".utf8)
-        state.settled = true
-        try await wait("new authority's replacement download is held") { service.downloads == 2 }
+        let current = try #require(store.conversation(for: service.profile.text)?.messages.first { $0.id == state.message.id })
+        let reference = try #require(ReplyContent(message: current).blocks.first { $0.filePreview != nil }?.filePreview)
+        let destination = try #require(store.artifactDestination(for: reference.attachment,
+            botID: service.profile.text, producingMessage: current))
+        let reload = Task {
+            defer { store.finishArtifact(destination) }
+            return try await store.downloadArtifact(destination, force: true)
+        }
+        defer { downloadGate.release(); reload.cancel() }
+        try await wait("new authority's explicit host reload is held") { service.downloads == 2 }
         #expect(fixture.webViews.isEmpty)
         #expect(abs(state.size.height - initialHeight) < 2)
         downloadGate.release()
+        let refreshed = try await reload.value
+        #expect(refreshed.data == service.downloadData)
+        service.downloadGate = nil
+        state.settled = true
         try await wait("short resolved body takes natural height") {
             fixture.webViews.count == 1 && state.size.height > 70 && state.size.height < initialHeight - 150
         }
+        #expect(service.downloads == 2, "A new layout writer must not trigger another fetch of the refreshed capture")
         let shorterHeight = state.size.height
         state.settled = false
         try await wait("new pending state keeps the smaller measurement") {

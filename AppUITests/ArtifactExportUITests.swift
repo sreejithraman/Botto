@@ -122,6 +122,14 @@ final class ArtifactExportUITests: XCTestCase {
     }
 
     @MainActor func testSaveToFilesAndReopenSavedOriginal() throws {
+        try saveToFilesAndReopenSavedOriginal(fromLibrary: false)
+    }
+
+    @MainActor func testLibrarySaveToFilesAndReopenSavedOriginal() throws {
+        try saveToFilesAndReopenSavedOriginal(fromLibrary: true)
+    }
+
+    @MainActor private func saveToFilesAndReopenSavedOriginal(fromLibrary: Bool) throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("The durable export fixture writes only to an owned CI simulator.")
         #else
@@ -137,7 +145,7 @@ final class ArtifactExportUITests: XCTestCase {
         identity.lifetime = .keepAlways
         add(identity)
 
-        let app = openArtifact("notes.txt")
+        let app = fromLibrary ? openLibraryReference("notes.txt") : openArtifact("notes.txt")
         tapOutput("artifact-save", label: "Save to Files", in: app)
         let picker = readyFilesPicker(in: app, captureName: "Files picker before unique filename", requiresFilename: true)
         let filenameField = app.textFields["DOCPicker.filenameTextField"]
@@ -163,13 +171,33 @@ final class ArtifactExportUITests: XCTestCase {
         assertOutputActions(in: app)
 
         app.buttons["artifact-done"].tap()
-        let closed = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch.waitForExistence(timeout: 5)
+        let destination = fromLibrary ? "artifact-library" : "chat-transcript"
+        let closed = app.descendants(matching: .any).matching(identifier: destination).firstMatch.waitForExistence(timeout: 5)
         capture("Closed preview after Files Save", app: app)
         XCTAssertTrue(closed)
         app.terminate()
         reopenSavedOriginalInFiles(stem: stem)
         // Retain this run's file for independent byte readback.
         #endif
+    }
+
+    @MainActor private func openLibraryReference(_ filename: String) -> XCUIApplication {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--reduce-motion"]
+        app.launch()
+        XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Artifacts"].tap()
+        let list = app.scrollViews["artifact-library"]
+        XCTAssertTrue(list.waitForExistence(timeout: 10))
+        app.buttons["library-filters"].tap()
+        outputAction("Include references", label: "Include references", in: app).tap()
+        let reference = app.buttons["library-artifact-\(filename)"]
+        for _ in 0..<5 where !reference.isHittable { list.swipeUp() }
+        XCTAssertTrue(reference.isHittable)
+        reference.tap()
+        assertOutputActions(in: app)
+        return app
     }
 
     @MainActor private func filesPicker(in app: XCUIApplication) -> XCUIElement {

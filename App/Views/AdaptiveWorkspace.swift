@@ -141,8 +141,8 @@ private struct WorkspaceShell: View {
         NavigationSplitView(columnVisibility: visibility, preferredCompactColumn: compactColumn) {
             InboxView(store: store, onSettings: onSettings, onNewBot: onNewBot,
                 onOpened: { editing.cancel(); presentation.didChooseConversation() },
-                isExposed: presentation.isBrowsingBots || selected == nil ||
-                    (!observedLayout.compact && nativeVisibility != .detailOnly && !showsFile))
+                isExposed: !rootCovered && (presentation.isBrowsingBots || selected == nil ||
+                    (!observedLayout.compact && nativeVisibility != .detailOnly && !showsFile)))
                 .navigationSplitViewColumnWidth(min: 310, ideal: 350, max: 420)
                 .bottoNavigationChrome()
                 .toolbar(removing: showsBrowseBots ? .sidebarToggle : nil)
@@ -227,8 +227,7 @@ private struct WorkspaceShell: View {
             editing.cancel()
             chatCovered = false
             nativeCompactColumn = store.selectedBot == nil ? .sidebar : .detail
-            if store.selectedBotID != nil { presentation.didChooseConversation() }
-            else { presentation.reconcile(store: store) }
+            presentation.selectedBotChanged(store: store)
         }
     }
 

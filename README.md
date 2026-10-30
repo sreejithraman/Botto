@@ -18,6 +18,11 @@ Chat with your bots, follow their work, and answer requests from your phone.
 Keep separate chats and drafts, attach photos and files, and preview what your
 bots create. Your Hermes host runs the work. Botto connects directly to it.
 
+Use **Bots** to chat, **Artifacts** to browse delivered work, and the separate
+**Search** tab to find bots, chats, messages, and files. Artifacts keeps the
+originating bot and chat attached to each result, with native preview, Save,
+and Share. Include references to also see inputs and other linked files.
+
 Optional [encrypted push notifications](docs/push-notifications.md) are
 experimental. They require an unreleased Hermes observer patch, a configured
 relay, and Apple provisioning. Signed physical-device delivery remains unverified.

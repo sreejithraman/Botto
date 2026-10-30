@@ -69,6 +69,12 @@ nonisolated struct TranscriptScrollPolicy {
         hasNewMessages = false
     }
 
+    mutating func requestHistoricalPosition() {
+        isUserScrolling = false
+        followsLatest = false
+        hasNewMessages = true
+    }
+
     /// Native delegates call this only for reader interaction, including its
     /// final position. Programmatic fitting never supplies reader intent.
     mutating func readerChanged(isUserScrolling: Bool, isNearBottom: Bool) {

@@ -108,7 +108,7 @@ import BottoCore
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await wait("initial unique message owns an actual document") { !webViews(host.view).isEmpty }
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view)
         let originalDownloads = service.downloads
         let incoming = [first,
             ChatMessage(id: "duplicate", role: .user, text: "Second duplicate remains literal and visible"),
@@ -148,7 +148,10 @@ import BottoCore
         try await wait("restored current native snapshot") { collectionController(host)?.collection.numberOfItems(inSection: 0) == 4 }
         let controller = try #require(collectionController(host))
         controller.collection.scrollToItem(at: IndexPath(item: 0, section: 0), at: .top, animated: false)
-        try await wait("unique current context can render its document again") { service.downloads > originalDownloads && !webViews(host.view).isEmpty }
+        let restoredDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view,
+            excluding: originalDocument)
+        #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
+        #expect(service.downloads == originalDownloads, "A fresh unique renderer may reuse the original captured bytes")
         // Keep duplicate prompts as distinct rows, without response controls.
         let request = PendingRequest(id: "duplicate-request", kind: .approval, title: "Conflicting request", choices: [.init(id: "once", label: "Allow once")])
         service.snapshots[session.root]?.pendingRequests = [request, request]
@@ -184,7 +187,7 @@ import BottoCore
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await wait("unique file is really mounted") { !webViews(host.view).isEmpty }
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view)
         let controller = try #require(collectionController(host)), downloads = service.downloads
         let heldCandidate = controller.collection.visibleCells.compactMap { ($0 as? NativeTranscriptCell)?.exposure }.first
         let held = try #require(heldCandidate)
@@ -208,7 +211,10 @@ import BottoCore
         #expect(!held.canPresent && service.downloads == downloads)
         service.snapshots[session.root]?.messages = [file]
         service.onEvent?(.conversation(try service.publication(session)))
-        try await wait("restored unique file receives fresh authority") { !webViews(host.view).isEmpty && service.downloads > downloads }
+        let restoredDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
+            excluding: originalDocument)
+        #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
+        #expect(service.downloads == downloads)
         #expect(!held.canPresent)
     }
     @Test(arguments: ["hiddenDuplicate", "differentContent", "auxiliary"])
