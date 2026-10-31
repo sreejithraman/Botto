@@ -6,6 +6,53 @@ import BottoCore
 
 @MainActor struct AppStoreAvatarTests {
     @Test(arguments: [false, true])
+    func foregroundRecoveryStaysNeutralUntilTheConnectionResult(fails: Bool) async throws {
+        let connection = ConnectionConfiguration(serverURL: URL(string: "https://foreground-avatar.example")!)
+        defer { LocalHistory.remove(for: connection.id) }
+        let bot = BotProfile(id: "milo", name: "Milo")
+        let service = StoreTestService()
+        service.profiles = [bot]
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: connection).persistence)
+        await store.start()
+        await store.testEdit("Keep my draft", for: bot.id)
+
+        for _ in 0..<3 {
+            let retiredCallback = try #require(service.onEvent)
+            await store.setActive(false)
+            retiredCallback(.disconnected("Retired socket"))
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect(store.avatarPresentation(for: bot, scope: scope).activity == .idle)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == nil)
+            }
+            #expect(!store.isConnected)
+            #expect(store.draft(for: bot.id) == "Keep my draft")
+
+            let barrier = StoreTestBarrier()
+            service.connectBarrier = barrier
+            service.connectError = fails ? HermesServiceError.disconnected : nil
+            let foreground = Task { await store.setActive(true) }
+            await barrier.waitUntilEntered()
+            let attempts = service.connectCount
+            await store.setActive(true)
+            #expect(service.connectCount == attempts)
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect(store.avatarPresentation(for: bot, scope: scope).activity == .idle)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == nil)
+            }
+            #expect(!store.isConnected)
+            barrier.release()
+            await foreground.value
+            service.connectBarrier = nil
+            #expect(store.isConnected == !fails)
+            #expect(store.draft(for: bot.id) == "Keep my draft")
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect((store.avatarPresentation(for: bot, scope: scope).activity == .offline) == fails)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == (fails ? "Offline" : nil))
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
     func savedSetupDoesNotShowOfflineBeforeTheStartupConnectionResult(fails: Bool) async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://startup-avatar.example")!)
         defer { LocalHistory.remove(for: connection.id) }

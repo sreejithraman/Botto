@@ -26,7 +26,7 @@ import BottoCore
         #expect(result?.id == (retirement == "current" ? bot.id : nil))
         #expect(service.createCount == 1)
         #expect(store.selectedBotID == nil)
-        if retirement == "background" { #expect(store.link == .offline) }
+        if retirement == "background" { #expect(store.link == .connecting) }
         if retirement == "workspace" { #expect(store.configuration?.id == replacement.id) }
     }
 
@@ -726,7 +726,7 @@ import BottoCore
         updated.nativeCredential = .init(refreshToken: "late-rotated-test-token", provider: "basic")
         lateEvent?(.configuration(updated))
         #expect(storage.saved?.nativeCredential?.refreshToken == "late-rotated-test-token")
-        #expect(store.link == .offline)
+        #expect(store.link == .connecting)
         LocalHistory.remove(for: old.id)
     }
 

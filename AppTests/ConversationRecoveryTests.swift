@@ -100,7 +100,7 @@ import BottoCore
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.uploads.isEmpty)
         store.showsConnection = false
         if retirement == .background {
-            #expect(store.link == .offline)
+            #expect(store.link == .connecting)
             #expect(await store.connect(configuration))
         } else if retirement == .recovery {
             callback(.conversation(try service.publication(identity)))

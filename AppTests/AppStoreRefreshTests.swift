@@ -154,7 +154,7 @@ import BottoCore
         try expectProjectionParity(store)
 
         await store.setActive(false)
-        #expect(store.link == .offline)
+        #expect(store.link == .connecting)
         #expect(store.bots.map(\.id) == ["milo", "other"])
         #expect(store.bots.allSatisfy { $0.status == .idle })
         #expect(store.needsYou.isEmpty)
@@ -413,8 +413,8 @@ import BottoCore
         try await eventually { inbox.finished && creation.finished && pending.finished }
         #expect(await creation.value() == nil)
         #expect(!store.isRefreshing)
-        #expect(store.link == (background ? .offline : .unconfigured))
-        await store.refresh() // An offline caller must also finish without a read.
+        #expect(store.link == (background ? .connecting : .unconfigured))
+        await store.refresh() // A disconnected caller must also finish without a read.
         #expect(service.readCount == 2)
         oldRead.release()
         try await eventually { service.finishedReads == 2 }
