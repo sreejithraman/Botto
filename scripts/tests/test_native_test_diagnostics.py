@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -115,13 +116,65 @@ class MonitorTests(unittest.TestCase):
                 subject, container, path, marker = self.fixture()
                 def capture(*args, **kwargs):
                     path.write_text(json.dumps(dict(marker, phase="finished")))
-                    if fails: raise subprocess.TimeoutExpired(args[0], 15)
+                    if fails: raise subprocess.TimeoutExpired(args[0], 15, output=b"capture started", stderr=b"symbolication pending")
                     return subprocess.CompletedProcess([], 0, "", "")
                 with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", side_effect=capture):
                     subject.poll(now=104)
                 record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
-                if fails: self.assertIn("error", record)
-                else: self.assertTrue(record["testFinishedDuringSample"])
+                if fails:
+                    self.assertIn("error", record)
+                    self.assertEqual(record["stdout"], "capture started")
+                    self.assertEqual(record["stderr"], "symbolication pending")
+                self.assertTrue(record["testFinishedDuringSample"])
+                subject.close()
+                summary = json.loads((subject.output_dir / "collector-summary.json").read_text())
+                self.assertEqual(summary["observed"]["fixture"]["phase"], "finished")
+
+    def test_process_lookup_timeout_gets_one_validated_retry(self):
+        for recovers in (False, True):
+            with self.subTest(recovers=recovers):
+                subject, _, _, _ = self.fixture()
+                timeout = subprocess.TimeoutExpired(["/bin/ps"], 2)
+                lookups = [timeout, f"10 {APP}\n" if recovers else timeout]
+                with patch.object(monitor.subprocess, "check_output", side_effect=lookups) as ps, patch.object(monitor.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as sample:
+                    for instant in (104, 107, 110):
+                        subject.poll(now=instant)
+                self.assertEqual(ps.call_count, 2)
+                self.assertEqual(sample.call_count, int(recovers))
+
+    def test_close_finishes_inflight_sample_before_publishing_summary(self):
+        subject, _, path, marker = self.fixture(timestamp=0)
+        entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+        def capture(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test did not release sample")
+            path.write_text(json.dumps(dict(marker, phase="finished")))
+            return subprocess.CompletedProcess([], 0, "", "")
+        real_join = subject.thread.join
+        def join(timeout=None):
+            # Simulate an exhausted timed join without a twenty-second test delay.
+            real_join(timeout=0.02 if timeout is not None else None)
+        def close():
+            subject.close()
+            closed.set()
+        with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", side_effect=capture), patch.object(subject.thread, "join", side_effect=join):
+            subject.thread.start()
+            self.assertTrue(entered.wait(2))
+            closer = threading.Thread(target=close)
+            closer.start()
+            try:
+                self.assertFalse(closed.wait(0.1), "close returned while the sample still owned unwritten evidence")
+            finally:
+                release.set()
+                closer.join(2)
+        self.assertFalse(closer.is_alive())
+        self.assertTrue(closed.is_set())
+        summary = json.loads((subject.output_dir / "collector-summary.json").read_text())
+        self.assertTrue(summary["workerStopped"])
+        self.assertEqual(summary["observed"]["fixture"]["phase"], "finished")
+        record = json.loads(next(p for p in subject.output_dir.glob("*.json") if p.name != "collector-summary.json").read_text())
+        self.assertTrue(record["testFinishedDuringSample"])
 
     def test_uninstalled_app_is_normal_before_native_launch(self):
         subject, container, _, _ = self.fixture()

@@ -226,7 +226,20 @@ final class RichContentRenderer: NSObject {
                 if (self.state == .loading && now > self.deadline) ||
                     (self.state == .ready && now > self.lastHeartbeat + .seconds(3)) ||
                     self.snapshotDeadline.map({ now > $0 }) == true {
+                    #if DEBUG
+                    let diagnostic = (timestamp: Date.now.timeIntervalSince1970, pid: ProcessInfo.processInfo.processIdentifier,
+                        blockOffset: self.input?.block.offset, state: self.state, awaitingHostCommit: self.awaitingHostCommit,
+                        heartbeatAge: self.lastHeartbeat.duration(to: now),
+                        deadlineOverrun: self.deadline.duration(to: now), html: self.input?.diagramWidth == nil)
+                    #endif
                     self.fail("Preview stopped responding. Source is still available.")
+                    #if DEBUG
+                    print("[DEBUG-canvas-budget]", "timestamp=\(diagnostic.timestamp)", "pid=\(diagnostic.pid)",
+                          "blockOffset=\(String(describing: diagnostic.blockOffset))", "state=\(diagnostic.state)",
+                          "awaitingHostCommit=\(diagnostic.awaitingHostCommit)",
+                          "heartbeatAge=\(diagnostic.heartbeatAge)",
+                          "deadlineOverrun=\(diagnostic.deadlineOverrun)", "html=\(diagnostic.html)")
+                    #endif
                     return
                 }
             }

@@ -38,9 +38,10 @@ class Monitor:
         self.data_root = Path.home() / "Library/Developer/CoreSimulator/Devices" / device / "data/Containers/Data/Application"
         self.captured = set()
         self.rejected = set()
+        self.probe_timeouts = set()
         self.observed = {}
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.watch, daemon=True)
+        self.thread = threading.Thread(target=self.watch)
 
     def watch(self):
         try:
@@ -107,15 +108,33 @@ class Monitor:
                 return
             self.captured.add(method)
             record["pid"] = pid
-            result = subprocess.run(
-                ["/usr/bin/sample", str(pid), "1", "-file", str(self.output_dir / (stem + ".sample.txt"))],
-                capture_output=True, text=True, timeout=15,
-            )
-            record.update(returncode=result.returncode, stderr=result.stderr,
-                          testFinishedDuringSample=self.marker(path, method) != marker)
+            try:
+                result = subprocess.run(
+                    ["/usr/bin/sample", str(pid), "1", "-file", str(self.output_dir / (stem + ".sample.txt"))],
+                    capture_output=True, text=True, timeout=15,
+                )
+                record.update(returncode=result.returncode, stderr=result.stderr)
+            finally:
+                latest = self.marker(path, method)
+                record["testFinishedDuringSample"] = (latest is not None
+                    and latest["runID"] == marker["runID"] and latest["phase"] == "finished")
+                if latest is not None:
+                    self.observed[latest["runID"]] = latest
         except Exception as error:
-            self.rejected.add((method, marker["runID"]))
+            invocation = (method, marker["runID"])
+            if (isinstance(error, subprocess.TimeoutExpired) and method not in self.captured
+                    and invocation not in self.probe_timeouts):
+                self.probe_timeouts.add(invocation)
+            else:
+                self.rejected.add(invocation)
             record["error"] = str(error)
+            if isinstance(error, subprocess.TimeoutExpired):
+                for stream in ("stdout", "stderr"):
+                    output = getattr(error, stream)
+                    if output is not None:
+                        if isinstance(output, bytes):
+                            output = output.decode("utf-8", errors="replace")
+                        record[stream] = output[-4096:]
         record["finishedAt"] = datetime.now(timezone.utc).isoformat()
         self.save(stem + ".json", record)
 
@@ -128,7 +147,7 @@ class Monitor:
     def close(self):
         self.stopped.set()
         if self.thread.ident is not None:
-            self.thread.join(timeout=20)
+            self.thread.join()
         self.save("collector-summary.json", {"device": self.device, "observed": self.observed,
                   "sampledMethods": sorted(self.captured), "workerStopped": not self.thread.is_alive()})
 
