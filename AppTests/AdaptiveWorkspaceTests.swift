@@ -32,6 +32,29 @@ import BottoCore
         try #require(editor.becomeFirstResponder())
         editor.selectedRange = NSRange(location: 4, length: 5)
         let selectedRange = editor.selectedRange
+        @MainActor final class FocusProbe { var events: [String] = [] }
+        let focusProbe = FocusProbe()
+        @MainActor func recordFocus(_ reason: String) {
+            guard focusProbe.events.count < 8 else { return }
+            let state = """
+            \(reason)
+            keyWindow=\(window.isKeyWindow) editorAttached=\(editor.window === window)
+            editable=\(editor.isEditable) firstResponder=\(editor.isFirstResponder)
+            selection=\(editor.selectedRange) expectedSelection=\(selectedRange)
+            scene=\(window.windowScene?.activationState.rawValue ?? -1) app=\(UIApplication.shared.applicationState.rawValue)
+            split=\(split.displayMode.rawValue) collapsed=\(split.isCollapsed) transition=\(split.transitionCoordinator != nil)
+            currentOwner=\(store.chats.screen(profile: service.base.profile)?.owner == owner) revision=\(presentation.revision)
+            """
+            focusProbe.events.append(state + "\n" + Thread.callStackSymbols.prefix(40).joined(separator: "\n"))
+        }
+        let endedEditing = NotificationCenter.default.addObserver(forName: UITextView.textDidEndEditingNotification,
+            object: editor, queue: .main) { _ in MainActor.assumeIsolated { recordFocus("editor-ended") } }
+        let resignedKey = NotificationCenter.default.addObserver(forName: UIWindow.didResignKeyNotification,
+            object: window, queue: .main) { _ in MainActor.assumeIsolated { recordFocus("window-resigned-key") } }
+        defer {
+            NotificationCenter.default.removeObserver(endedEditing)
+            NotificationCenter.default.removeObserver(resignedKey)
+        }
         let opened = try #require(service.base.completedOpens.last)
         for index in 0..<4 {
             var chat = try #require(store.conversation(for: service.profile.id))
@@ -57,6 +80,10 @@ import BottoCore
             shellAccessibilityLabels(in: root.view).contains { $0.contains("Profile for Renamed e\u{301} bot") }
         }
         #expect(splitControllers(in: root).first === split && shellTranscripts(in: root).first === transcript)
+        if !editor.isFirstResponder || editor.selectedRange != selectedRange {
+            recordFocus("final-focus-state")
+            Attachment.record(focusProbe.events.joined(separator: "\n\n"), named: "native-editor-focus-loss.txt")
+        }
         #expect(editor.isFirstResponder && editor.selectedRange == selectedRange)
         #expect(store.bot(withID: service.profile.id)?.appearance == service.profile.appearance)
         presentation.browseBots(); window.layoutIfNeeded()

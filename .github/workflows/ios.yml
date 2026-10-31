@@ -31,13 +31,16 @@ jobs:
           swift --version
           python3 --version
       - name: Core, tooling, and native tests
+        id: checks
         run: ./scripts/check-ci.sh
       - name: Save native test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ios-test-results-${{ github.run_attempt }}
-          path: .artifacts/CIResults-*.xcresult
+          path: |
+            .artifacts/CIResults-*.xcresult
+            ${{ steps.checks.outputs.native_result_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
