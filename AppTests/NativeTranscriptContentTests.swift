@@ -114,7 +114,8 @@ import BottoCore
     private func requirePaintedFile(_ block: Int, host: UIViewController, window: UIWindow) async throws {
         let display = NativeContentDisplayFrames()
         defer { display.stop() }
-        let deadline = ContinuousClock.now + .seconds(10)
+        // Allow the renderer's fifteen-second cold startup and five-second document budget.
+        let deadline = ContinuousClock.now + .seconds(21)
         var painted = false
         while ContinuousClock.now < deadline {
             guard let controller = collectionController(host),
