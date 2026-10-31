@@ -1,4 +1,8 @@
 name: Botto
+configs:
+  Debug: debug
+  Internal: release
+  Release: release
 options:
   bundleIdPrefix: com.sree
   deploymentTarget:
@@ -25,6 +29,10 @@ settings:
     Debug:
       BOTTO_APNS_ENVIRONMENT: development
       BOTTO_PUSH_ENVIRONMENT: sandbox
+    Internal:
+      BOTTO_APNS_ENVIRONMENT: production
+      BOTTO_PUSH_ENVIRONMENT: production
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) BOTTO_INTERNAL_TOOLS"
     Release:
       BOTTO_APNS_ENVIRONMENT: production
       BOTTO_PUSH_ENVIRONMENT: production
@@ -98,13 +106,17 @@ targets:
     sources:
       - path: AppUITests
       - path: App/Pairing/HermesSetupPrompt.swift
+    info:
+      path: AppUITests/Info.plist
+      properties:
+        BottoBuildConfiguration: "$(CONFIGURATION)"
     dependencies:
       - target: Botto
       - package: BottoCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).uitests"
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
 schemes:
   Botto:
     build:
@@ -115,3 +127,21 @@ schemes:
     test:
       targets: [BottoTests, BottoUITests]
       gatherCoverageData: true
+  Botto Internal:
+    build:
+      targets:
+        Botto: all
+        BottoUITests: [test]
+    run:
+      config: Internal
+    test:
+      config: Internal
+      targets:
+        - name: BottoUITests
+          selectedTests: [DeveloperToolsUITests]
+    profile:
+      config: Internal
+    analyze:
+      config: Internal
+    archive:
+      config: Internal

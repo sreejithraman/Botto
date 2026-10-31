@@ -80,7 +80,11 @@ struct WorkDetailsDocument {
         if case .details = current.content { host.sheetPresentationController?.detents = [.medium(), .large()] }
         current.report(current.id, true)
         guard session?.id == current.id, current.isCurrent else { close(current.id); return }
-        owner.present(host, animated: true)
+        owner.present(host, animated: true) { [weak self, weak host] in
+            guard let self, self.session?.id == current.id, current.isCurrent,
+                  current.environment.scenePhase == .active, host?.viewIfLoaded?.window != nil else { return }
+            BottoHaptics.shared.play(.surface)
+        }
     }
     func reconcile(environment: NativeTranscriptContext) {
         guard let session else { return }

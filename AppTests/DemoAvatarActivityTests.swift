@@ -42,9 +42,11 @@ import BottoCore
         XCTAssertEqual(publications.last?.snapshot.isWorking, false)
         XCTAssertNil(publications.last?.activity?.phase)
         XCTAssertTrue(publications.allSatisfy { $0.activity?.reaction == nil })
+        XCTAssertEqual(publications.last?.activity?.signal?.kind, .stopped)
         let afterStop = try await service.openChat(.stored(created.summary.identity))
         XCTAssertNil(afterStop.activity?.reaction)
         XCTAssertNil(afterStop.activity?.phase)
+        XCTAssertNil(afterStop.activity?.signal)
     }
 
     func testPerformanceReplyPublishesRealTextBeforeReplyingAndKeepsPhaseClockStable() async throws {
@@ -68,6 +70,8 @@ import BottoCore
         XCTAssertEqual(placeholder.activity?.phase, .working)
         let chunks = publications.filter { $0.activity?.phase == .replying }
         XCTAssertEqual(chunks.count, 20)
+        XCTAssertTrue(chunks.allSatisfy { $0.activity?.signal?.kind == .replyText })
+        XCTAssertEqual(Set(chunks.compactMap { $0.activity?.signal?.id }).count, 20)
         let first = try XCTUnwrap(chunks.first?.activity)
         XCTAssertEqual(chunks.first?.snapshot.messages.last?.text, "Word 0. ")
         XCTAssertEqual(first.workStartedAt, placeholder.activity?.workStartedAt)

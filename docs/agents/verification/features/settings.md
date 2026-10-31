@@ -5,12 +5,15 @@
 Inspect connection status, choose appearance, read bundled attribution/licenses,
 and deliberately remove local setup. Recover saved-storage failures without
 overwriting existing data. Sub-features: appearance, About, licenses, local
-forget/cancel, unavailable Keychain, and scoped cache cleanup.
+forget/cancel, unavailable Keychain, scoped cache cleanup, and internal developer tools.
 
 ## How to get to it
 
 - `settings.e.inbox`: inbox top-leading Botto mark labeled **Settings**.
 - `settings.e.appearance`: Settings → **Appearance** → System / Light / Dark.
+- `settings.e.developer`: Debug/Internal Settings → **Developer menu** →
+  **Avatar playground** or **Haptics playground**. From welcome, first choose
+  **Explore the demo**. Public Release builds exclude this entry.
 - Notification setup, preferences, and device removal use the separate
   [notifications recipe](notifications.md).
 - `settings.e.about`: Settings → **Open-source licenses** → **Pele · MIT and
@@ -40,6 +43,30 @@ Workflow `settings.appearance`:
    readable/reachable. VoiceOver must expose current selected value and Done
    in useful order. Proof: independent preference/current system read and actual
    focus/spoken record. Reset only this run's changed system settings.
+
+Workflow `settings.developer`:
+
+1. `.a1` Build Debug and Internal separately using
+   [developer tools](../../../developer-tools.md). Start normally, choose the
+   public demo entry if needed, open Settings, then open and close each
+   playground. Expect both destinations and return to the same developer menu.
+   Run `DeveloperToolsUITests/testDeveloperToolsMatchBuildConfiguration`
+   in each configuration on Simulator. Its launch hook selects volatile
+   connection storage before any saved setup loads, then requires the public
+   demo entry. Physical builds skip this automated check before app launch.
+   Proof: configuration, visible controls and native
+   navigation assertions. Neither a Debug launch shortcut nor an unsigned
+   Simulator install proves an installed TestFlight build.
+2. `.a2` Build public Release and open Settings. Expect normal Touch/About
+   controls and no developer entry. Run
+   `DeveloperToolsUITests/testDeveloperToolsMatchBuildConfiguration`.
+   Inspect compilation conditions and confirm the playground types are excluded.
+   Proof: configuration, native assertions and built artifact.
+3. `.a3` Verify the internal publisher archives Internal and exports Internal
+   Only, install that exact new TestFlight build on an owned iPhone, then repeat
+   both menu paths. Confirm app/build identity and separate public Release
+   selection. Proof: export settings, Apple build record and phone navigation.
+   Draft until this signed distribution sequence is run.
 
 Workflow `settings.about`:
 

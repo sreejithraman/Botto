@@ -35,7 +35,8 @@ creation and Back; complete recipe execution remains draft. See the
 | `uploads` | [Attach files and photos](features/uploads.md) | `uploads.file`, `uploads.photo`, `uploads.budget`, `uploads.retirement` |
 | `rich` | [Read interactive replies and diagrams](features/rich.md) | `rich.read`, `rich.source-expand`, `rich.zoom`, `rich.boundaries`, `rich.scroll-lifetime`, `rich.cache` |
 | `artifacts` | [Preview, save, and share original files](features/artifacts.md) | `artifacts.preview`, `artifacts.save`, `artifacts.share`, `artifacts.recovery`, `artifacts.retirement` |
-| `settings` | [Settings and local data lifecycle](features/settings.md) | `settings.appearance`, `settings.about`, `settings.forget`, `settings.storage-recovery` |
+| `settings` | [Settings and local data lifecycle](features/settings.md) | `settings.appearance`, `settings.developer`, `settings.about`, `settings.forget`, `settings.storage-recovery` |
+| `haptics` | [Choose haptics and feel chat feedback](features/haptics.md) | `haptics.preferences`, `haptics.chat`, `haptics.sheets`, `haptics.playground` |
 | `notifications` | [Encrypted push notifications](features/notifications.md) | `notifications.setup`, `notifications.delivery`, `notifications.previews`, `notifications.routing`, `notifications.visibility`, `notifications.removal`, `notifications.recovery` |
 
 IDs are stable coverage keys, independent of filenames. Entry IDs start with

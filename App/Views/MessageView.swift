@@ -174,6 +174,7 @@ struct WorkDetailsRow: View {
                 close: closeStandalone)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+                .hapticSheet(enabled: standalone?.id == session.id && session.admitsRead() && scenePhase == .active)
         }
         .onChange(of: displayRevision) { _, _ in closeStandalone() }
         .onChange(of: isCurrent()) { _, current in if !current { closeStandalone() } }
@@ -272,6 +273,7 @@ struct RawMessagePayload: View {
             Button {
                 guard isCurrent() else { return }
                 UIPasteboard.general.string = text; copied = true
+                BottoHaptics.shared.play(.accepted)
             } label: {
                 Label(copied ? "Copied" : "Copy original", systemImage: "doc.on.doc")
                     .accessibilityIdentifier(copyIdentifier)

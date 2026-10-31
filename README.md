@@ -43,6 +43,10 @@ previews and supported formats. Demo content stays in a separate sample workspac
 The Xcode project is checked in. You only need XcodeGen when changing
 [project.yml](project.yml).
 
+Debug and Internal builds include **Settings → Developer menu** with avatar and
+haptics playgrounds. Use the **Botto Internal** scheme for internal TestFlight;
+public Release builds exclude these tools. See [developer tools](docs/developer-tools.md).
+
 ```sh
 ./scripts/check-core.sh
 ```

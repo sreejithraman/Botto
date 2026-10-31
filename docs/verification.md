@@ -78,3 +78,53 @@ See [Contributing](../CONTRIBUTING.md) for repeatable checks, the
 [verification map](agents/verification/index.md) for workflow assertions, and the
 [release checklist](releasing.md) for source publication requirements. A recipe
 records required coverage; it is not a passing result by itself.
+
+## Haptics on 31 October 2026
+
+The haptics change was checked with Xcode 27.1 on an iPhone Simulator running
+iOS 27.1. Twenty Swift Testing tests and two demo XCTest cases passed. They
+cover preferences, output selection, streaming throttling, receipt ownership,
+hidden results, direct event delivery, and actual SwiftUI sheet presentation
+across redraw and reopening. Core service cases additionally exercise Stop
+before and after acknowledgment, restored running work, refresh, replay, and
+foreign execution rejection. These checks verify requested feedback, not touch.
+
+The broader native run reported 16 issues across 573 Swift Testing cases.
+The PDF sizing assertion and hosted request-row readiness failure also reproduce
+on unchanged base `7e22ce109fea7b5eafa9a4f36780d364818403dc` on this target.
+Other WebKit rendering/time-out failures from that run remain unattributed;
+the complete native suite is not a passing result for this change.
+
+The Debug haptics playground and its sample sheet were opened on an iPhone SE
+Simulator running iOS 26.5. Off visibly disables the streaming switch. Physical
+iPhone strength, rhythm, timing, and custom-engine interruption/reset behavior
+remain untested. The [haptics recipe](agents/verification/features/haptics.md)
+remains draft.
+
+## Internal developer tools on 31 October 2026
+
+The final Internal UI case passed on an iPhone SE Simulator running iOS 26.5.
+It entered through Explore the demo and Settings, opened both playgrounds,
+returned the embedded avatar demo to its gallery, closed both tools, and checked
+the main app's Demo exit after a fresh isolated launch. Debug and Release channel
+UI checks passed before the preview repairs. Fresh final Debug attempts stopped
+before testing when Xcode lost concrete Simulator destinations; the final Release
+runtime check was blocked by the same discovery limit. The complete final UI
+matrix is not a passing result.
+
+Current Debug, Internal and Release app/test builds passed with Xcode 27.1.
+An unsigned Internal iPhone SDK build also passed. Compiled symbols contain the
+menu and both playground types in Debug/Internal and omit them in Release.
+All three built test bundles contain their expected configuration metadata.
+The isolated-test argument is present in Simulator binaries and absent from the
+physical Internal binary. These checks prove compilation boundaries, not a
+signed installation.
+
+An earlier Debug run passed 35 Swift tests across AppStoreTests and
+WorkspaceLaunchTests, including isolated storage and ordinary-launch contrasts.
+Forty-one Python tooling tests passed. The preview's storage-error display was
+reviewed and compiled; no actual storage-unavailable fault was forced. Signed
+TestFlight installation and physical haptic feel remain untested. Integration
+and a new Internal TestFlight build are necessary for installed testers to get
+the menu; see [developer tools](developer-tools.md). The broader native-suite
+limits recorded above still apply.

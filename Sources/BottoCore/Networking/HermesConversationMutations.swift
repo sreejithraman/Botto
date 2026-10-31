@@ -231,10 +231,22 @@ extension HermesBotService {
         try claimOperation(operationID)
         let socket = try requireSelected(conversation), owner = selectionGeneration, connectionOwner = connectionGeneration
         let params = try dialect.control(conversation, generation: context.state.generation)
+        var acknowledged = false
+        defer {
+            if !acknowledged, pendingStopObservation?.operation == operationID { pendingStopObservation = nil }
+        }
         let reply: HermesJSON
         do {
             reply = try await socket.call("session.interrupt", params, mutation: true,
-                validate: { try self.validate(access) })
+                validate: {
+                    try self.validate(access)
+                    guard let current = self.state, current.conversation.isWorking else { return }
+                    self.pendingStopObservation = HermesStopObservation(operation: operationID,
+                        connection: connectionOwner, selection: owner, identity: context.identity,
+                        runtime: current.conversation.id, epoch: current.epoch,
+                        profileIdentity: current.profileIdentity, generation: current.generation,
+                        admission: current.activeAdmission, sequenceBeforeDispatch: current.conversation.lastSequence)
+                })
         } catch {
             if (error as? HermesServiceError) == .staleGeneration, owner == selectionGeneration,
                connectionOwner == connectionGeneration { scheduleRefresh() }
@@ -245,6 +257,7 @@ extension HermesBotService {
                   reply["ref"]["profile_id"].text.map({ exact($0, context.state.profileIdentity) }) != false,
                   reply["execution_generation"].integer != nil else { throw HermesServiceError.uncertain }
         } else if !["interrupted", "not_interrupted"].contains(reply["status"].text ?? "") { throw HermesServiceError.uncertain }
+        acknowledged = true
         if isSelected(context) { scheduleRefresh() }
         return receipt(operationID, context: context)
     }

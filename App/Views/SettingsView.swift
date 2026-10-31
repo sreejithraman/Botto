@@ -4,8 +4,10 @@ import BottoCore
 struct SettingsView: View {
     @Bindable var store: AppStore
     var onConnection: () -> Void
+    var onLeaveDemo: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @AppStorage("botto.appearance") private var appearance = "system"
+    @Bindable private var haptics = BottoHaptics.shared
     @State private var confirmsForget = false
     @State private var showsLicenses = false
     @State private var isForgetting = false
@@ -42,6 +44,21 @@ struct SettingsView: View {
                         Text("Dark").tag("dark")
                     }
                 }
+                Section {
+                    Picker("Haptics", selection: $haptics.mode) {
+                        ForEach(HapticMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.haptics")
+                    Toggle("Pulse while streaming", isOn: $haptics.streamingEnabled)
+                        .disabled(haptics.mode == .off)
+                        .accessibilityIdentifier("settings.streamingHaptics")
+                } header: {
+                    Text("Touch")
+                } footer: {
+                    Text("Subtle keeps feedback quiet. Playful adds a gentle knock and small celebrations. Streaming pulses are optional.")
+                }
                 if !store.isDemo {
                     Section {
                         NavigationLink {
@@ -53,7 +70,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.notifications")
                     }
                 }
-                #if DEBUG
+                #if DEBUG || BOTTO_INTERNAL_TOOLS
                 Section("Developer") {
                     NavigationLink {
                         DeveloperMenuView()
@@ -98,16 +115,21 @@ struct SettingsView: View {
                 Section {
                     if store.isDemo {
                         Button("Leave demo") {
-                            store.leaveDemo()
-                            if let configuration = store.configuration { Task { await store.connect(configuration) } }
                             dismiss()
+                            if let onLeaveDemo { onLeaveDemo() }
+                            else {
+                                store.leaveDemo()
+                                if let configuration = store.configuration { Task { await store.connect(configuration) } }
+                            }
                         }
                     } else {
                         Button("Forget this connection", role: .destructive) { confirmsForget = true }
                             .disabled(isForgetting)
                     }
                 } footer: {
-                    Text(store.isDemo ? "Return to your own Hermes connection." : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
+                    Text(store.isDemo
+                         ? (onLeaveDemo == nil ? "Return to your own Hermes connection." : "Return to the playground.")
+                         : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {

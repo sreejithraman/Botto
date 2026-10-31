@@ -15,6 +15,7 @@ struct HermesConversationState {
     var root: String
     var epoch: String
     var generation: Int?
+    var activeAdmission: String?
     var subscription: String?
     var profileIdentity: String?
     var routes: [String: HermesRequestRoute] = [:]
@@ -170,6 +171,7 @@ struct HermesConversationState {
         if let value = event["execution_generation"].integer { generation = value }
         switch event["type"].text {
         case "message.start":
+            activeAdmission = event["admission_id"].nonempty
             let displayKind = payload["display_kind"].text
             startingSubmission = nil
             if authority {
@@ -289,9 +291,10 @@ struct HermesConversationState {
         }
     }
 
-    mutating func serverRequest(_ frame: HermesJSON) {
+    mutating func serverRequest(_ frame: HermesJSON, live: Bool = false) {
         guard let id = frame["id"].nonempty, let method = frame["method"].nonempty,
               exact(frame["params"]["session_id"].text, conversation.id) else { return }
+        let previous = conversation.pendingRequests
         let params = frame["params"]
         switch method {
         case "approval": addPrompt(params, authority: false, envelopeID: id)
@@ -317,6 +320,11 @@ struct HermesConversationState {
             unsupported(id: id, title: "Request needs Hermes Desktop", detail: "This bot is waiting for a request that Botto cannot answer.")
         }
         serverRequestIDs.insert(id)
+        if live, conversation.pendingRequests.contains(where: { request in
+            request.kind != .unsupported && !previous.contains { $0.hasSameWireRevision(as: request) }
+        }) {
+            motion.signal = .init(kind: .request)
+        }
     }
 
     mutating func addPrompt(_ payload: HermesJSON, authority: Bool, envelopeID: String? = nil) {
@@ -371,6 +379,10 @@ struct HermesConversationState {
         conversation.messages.removeAll { $0.id.hasPrefix("queue:") }
         for id in Array(routes.keys) where id.hasPrefix("unknown:") { removeRequest(id) }
         let rows = pending.list ?? []
+        let active = rows.filter {
+            $0["status"].text == "started" && $0["steering"].flag != true && $0["execution_generation"].integer == generation
+        }
+        activeAdmission = active.count == 1 ? active.first?["admission_id"].nonempty : nil
         if let starting = startingSubmission, let first = rows.first {
             let isHead = exact(first["input_id"].text, starting.id)
                 || starting.admission.map { exact(first["admission_id"].text, $0) } == true

@@ -285,6 +285,7 @@ struct ChatView: View {
         importPresentationRevision = UUID()
         overviewCovered = true
         showsOverview = true
+        BottoHaptics.shared.play(.surface)
     }
 
     private func closeOverview() {
@@ -412,6 +413,7 @@ struct ChatView: View {
             }
         }
         .tint(BottoTheme.action)
+        .hapticSheet()
     }
 
     private func modalReporter() -> @MainActor (UUID, Bool) -> Void {
@@ -466,6 +468,7 @@ struct ChatView: View {
                if card.id == screen.selectedChatID { closeOverview(); return }
                guard let intent = workspace.captureSelection(card.id, owner: owner) else { return }
                overviewSelectionID = card.id
+               BottoHaptics.shared.play(.selection)
                Task {
                    await workspace.select(intent)
                    if self.screen?.selectedChatID != card.id, overviewSelectionID == card.id { overviewSelectionID = nil }

@@ -296,3 +296,167 @@ func conversationActivityUnprovenCompletionStaysQuiet(reason: String) async thro
     if host.authority { frame["params"]["admission_id"] = .string("live-admission") }
     return frame
 }
+
+@MainActor @Test(arguments: [false, true])
+func liveReplySignalsExcludeRepeatedFramesAndRestoredContent(authority: Bool) async throws {
+    let host = try HermesTestHost(authority: authority), service = host.service()
+    defer { service.disconnect() }
+    host.snapshot["running"] = .bool(false)
+    var values: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let value) = $0 { values.append(value) } }
+    _ = try await service.connect(configuration: host.configuration)
+    let opened = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+    #expect(opened.activity?.signal == nil)
+    host.sockets[0].push(liveActivityEvent(host, "message.start", seq: 1))
+    try await eventually { values.last?.snapshot.lastSequence == 1 }
+    let delta = liveActivityEvent(host, "message.delta", seq: 2, payload: ["text": .string("Hello")])
+    host.sockets[0].push(delta)
+    try await eventually { values.last?.snapshot.lastSequence == 2 }
+    let signal = try #require(values.last?.activity?.signal)
+    #expect(signal.kind == .replyText)
+    host.sockets[0].push(delta)
+    host.sockets[0].push(liveActivityEvent(host, "message.delta", seq: 3, payload: ["text": .string("")]))
+    try await eventually { values.last?.snapshot.lastSequence == 3 }
+    #expect(values.compactMap { $0.activity?.signal }.filter { $0.id == signal.id }.count == 1)
+    #expect(values.last?.activity?.signal == nil)
+}
+
+@MainActor @Test(arguments: [false, true], ["interrupted", "cancelled", "complete", "error"])
+func liveStoppedSignalRequiresAnExplicitStoppedOutcome(authority: Bool, status: String) async throws {
+    let host = try HermesTestHost(authority: authority), service = host.service()
+    defer { service.disconnect() }
+    host.snapshot["running"] = .bool(false)
+    var values: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let value) = $0 { values.append(value) } }
+    _ = try await service.connect(configuration: host.configuration)
+    _ = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+    host.sockets[0].push(liveActivityEvent(host, "message.start", seq: 1))
+    try await eventually { values.last?.snapshot.lastSequence == 1 }
+    host.sockets[0].push(liveActivityEvent(host, "message.complete", seq: 2, payload: ["status": .string(status)]))
+    try await eventually { values.contains { $0.snapshot.lastSequence == 2 } }
+    let stops = values.compactMap { $0.activity?.signal }.filter { $0.kind == .stopped }
+    #expect(stops.count == (["interrupted", "cancelled"].contains(status) ? 1 : 0))
+}
+
+@MainActor @Test
+func liveSidecarQuestionsSignalOnceWhileSnapshotQuestionsStayQuiet() async throws {
+    let host = try HermesTestHost(authority: false), service = host.service()
+    defer { service.disconnect() }
+    let request: HermesJSON = .object([
+        "id": .string("question"), "method": .string("clarify"),
+        "params": .object(["session_id": .string(host.runtime), "question": .string("Which option?")])
+    ])
+    host.snapshot["open_requests"] = .array([request])
+    var values: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let value) = $0 { values.append(value) } }
+    _ = try await service.connect(configuration: host.configuration)
+    let opened = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+    #expect(opened.activity?.signal == nil)
+    var fresh = request
+    fresh["id"] = .string("fresh-question")
+    host.sockets[0].push(fresh)
+    try await eventually { values.last?.snapshot.pendingRequests.contains { $0.id == "fresh-question" } == true }
+    #expect(values.last?.activity?.signal?.kind == .request)
+    let count = values.count
+    host.sockets[0].push(fresh)
+    try await eventually { values.count > count }
+    #expect(values.compactMap { $0.activity?.signal }.filter { $0.kind == .request }.count == 1)
+    #expect(values.last?.activity?.signal == nil)
+}
+
+@MainActor @Test(arguments: [false, true], [(false, false), (false, true), (true, false), (true, true)])
+func deliberateStopObservesItsTerminalAcrossRefresh(authority: Bool, scenario: (Bool, Bool)) async throws {
+    let (restored, terminalFirst) = scenario
+    let host = try HermesTestHost(authority: authority), service = host.service()
+    defer { service.disconnect() }
+    host.snapshot["running"] = .bool(restored)
+    if authority, restored {
+        host.snapshot["pending"] = .array([.object([
+            "admission_id": .string("stop-turn"), "status": .string("started"),
+            "execution_generation": .number(7), "steering": .bool(false)
+        ])])
+    }
+    var values: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let value) = $0 { values.append(value) } }
+    _ = try await service.connect(configuration: host.configuration)
+    _ = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+    if !restored {
+        var start = host.event("message.start", seq: 1)
+        start["params"]["admission_id"] = .string("stop-turn")
+        host.sockets[0].push(start)
+        try await eventually { values.last?.snapshot.lastSequence == 1 }
+    }
+    let access = try #require(values.last?.access)
+    var interrupt: HermesJSON?
+    host.methodOverride = { frame, socket in
+        if frame["method"].text == "session.interrupt" { interrupt = frame; return nil }
+        return host.defaultReply(frame, socket: socket)
+    }
+    let operation = UUID()
+    let stopping = Task { try await service.stop(access: access, operationID: operation) }
+    try await eventually { interrupt != nil }
+    let call = try #require(interrupt)
+    let sequence = restored ? 1 : 2
+    var terminal = host.event("message.complete", seq: sequence, payload: ["status": .string("interrupted")])
+    terminal["params"]["admission_id"] = .string("stop-turn")
+    func pushTerminal() {
+        host.snapshot["running"] = .bool(false)
+        host.snapshot["pending"] = .array([])
+        host.snapshot["last_sequence"] = .number(Double(sequence))
+        host.replay["latest_seq"] = .number(Double(sequence))
+        host.sockets[0].push(terminal)
+    }
+    if terminalFirst { pushTerminal(); try await eventually { values.last?.snapshot.lastSequence == sequence } }
+    let reply = try #require(host.defaultReply(call, socket: host.sockets[0]))
+    host.sockets[0].push(.object(["jsonrpc": .string("2.0"), "id": call["id"], "result": reply]))
+    #expect(try await stopping.value.operationID == operation)
+    if !terminalFirst { pushTerminal() }
+    try await eventually { values.contains { $0.activity?.signal?.id == operation } }
+    #expect(values.compactMap { $0.activity?.signal }.filter { $0.id == operation }.map(\.kind) == [.stopped])
+}
+
+@MainActor @Test(arguments: ["replay", "generation", "admission", "runtime", "profile", "epoch", "queued", "new-turn"])
+func stoppedFeedbackCannotBorrowReplayOrAnotherExecution(_ reason: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    host.snapshot["running"] = .bool(true)
+    host.snapshot["pending"] = .array([.object([
+        "admission_id": .string("stop-turn"), "status": .string("started"),
+        "execution_generation": .number(7), "steering": .bool(false)
+    ])])
+    var values: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let value) = $0 { values.append(value) } }
+    _ = try await service.connect(configuration: host.configuration)
+    let opened = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+    let operation = UUID()
+    _ = try await service.stop(access: opened.access, operationID: operation)
+    let sequence = reason == "new-turn" ? 2 : 1
+    var frame = host.event("message.complete", seq: sequence, payload: ["status": .string("interrupted")])
+    frame["params"]["admission_id"] = .string("stop-turn")
+    switch reason {
+    case "generation": frame["params"]["execution_generation"] = .number(8)
+    case "admission": frame["params"]["admission_id"] = .string("another-turn")
+    case "runtime": frame["params"]["session_id"] = .string("another-runtime")
+    case "profile": frame["params"]["profile_id"] = .string("another-profile")
+    case "epoch": frame["params"]["replay_epoch"] = .string("another-epoch")
+    case "queued":
+        frame["params"]["execution_generation"] = .null
+        frame["params"]["payload"] = .object(["status": .string("complete"), "outcome": .string("cancelled")])
+    case "new-turn":
+        var start = host.event("message.start", seq: 1)
+        start["params"]["execution_generation"] = .number(8)
+        start["params"]["admission_id"] = .string("another-turn")
+        host.sockets[0].push(start)
+        host.snapshot["execution_generation"] = .number(8)
+    default: break
+    }
+    host.snapshot["running"] = .bool(false)
+    host.snapshot["pending"] = .array([])
+    host.snapshot["last_sequence"] = .number(Double(sequence))
+    host.replay["latest_seq"] = .number(Double(sequence))
+    if reason == "replay" { host.replay["events"] = .array([frame["params"]]) }
+    else { host.sockets[0].push(frame) }
+    try await eventually { values.last?.snapshot.lastSequence == sequence }
+    #expect(values.compactMap { $0.activity?.signal }.allSatisfy { $0.id != operation })
+    #expect(host.sockets[0].sent.filter { $0["method"].text == "session.interrupt" }.count == 1)
+}
