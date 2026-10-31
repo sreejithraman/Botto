@@ -300,6 +300,7 @@
 		7C791E208EABB6AF87F092FA /* BotProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotProfileView.swift; sourceTree = "<group>"; };
 		7CBCCDAC6B8672D772678DD1 /* NativeTranscriptLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptLifecycleTests.swift; sourceTree = "<group>"; };
 		7DA26201A101B7E2F44CA8B1 /* RichChatUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichChatUITests.swift; sourceTree = "<group>"; };
+		7DF3CCCFBA483591FE51CAC1 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		7E8B3B25FDDCCD83C19F7DE6 /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		81D068F0478BDA2193E5A1A3 /* ChatPickerPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPickerPresentationTests.swift; sourceTree = "<group>"; };
 		8204DE5634E908EC80D93BCE /* RichContentRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichContentRendererTests.swift; sourceTree = "<group>"; };
@@ -377,7 +378,6 @@
 		F430481366DB71FC769A028B /* PushCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushCoordinator.swift; sourceTree = "<group>"; };
 		FC8CA27183C70D86BCAAC059 /* WorkspacePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePresentationTests.swift; sourceTree = "<group>"; };
 		FC90E313F108A66FCEA3D13A /* ConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationUITests.swift; sourceTree = "<group>"; };
-		FD97ADBA45AD8504F6C28E66 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		FEFABEE5C22629545789FB5A /* ChatPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPickerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -695,7 +695,7 @@
 		C81927C287378F51779036E1 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				FD97ADBA45AD8504F6C28E66 /* BottoCore */,
+				7DF3CCCFBA483591FE51CAC1 /* BottoCore */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -1132,6 +1132,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1237,6 +1238,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1260,6 +1262,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1281,6 +1284,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";

@@ -34,7 +34,9 @@ The source includes Push Notifications entitlements even when notifications
 are unused. A profile without that capability cannot sign the stock device
 build. The repository contains no reusable signing identity or provisioning
 profile. Distribution requires your own signing and App Store Connect access;
-this source snapshot is not a published TestFlight build.
+follow [internal TestFlight delivery](testflight.md) for the protected GitHub
+publishing path. Contributor builds and checks do not require those release
+credentials.
 
 When changing `project.yml`, use
 [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46.0 and regenerate:
