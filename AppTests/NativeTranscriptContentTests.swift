@@ -8,8 +8,6 @@ import BottoCore
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptContentTests {
     @Test func actualCanvasGenerationAndSendKeepEveryHostedRowInsideItsNativeAllocation() async throws {
-        let diagnostic = NativeTestDiagnostics(method: #function)
-        defer { diagnostic.finish() }
         let service = DemoBotService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-canvas.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))

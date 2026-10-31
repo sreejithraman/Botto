@@ -37,17 +37,7 @@ jobs:
           vm_stat
       - name: Core, tooling, and native tests
         id: checks
-        run: |
-          device_id=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          print(next(device["udid"] for devices in json.load(sys.stdin)["devices"].values()
-                     for device in devices if device.get("isAvailable") and "iPhone" in device["name"]))
-          ')
-          diagnostics=$(mktemp -d "$RUNNER_TEMP/botto-native-diagnostics.XXXXXX")
-          echo "BOTTO_NATIVE_DIAGNOSTICS=$diagnostics" >> "$GITHUB_ENV"
-          BOTTO_TEST_DESTINATION="platform=iOS Simulator,id=$device_id" \
-            python3 scripts/native-test-diagnostics.py --device "$device_id" \
-              --output-dir "$diagnostics" -- ./scripts/check-ci.sh
+        run: ./scripts/check-ci.sh
       - name: Runner resources after checks
         if: always()
         continue-on-error: true
@@ -62,7 +52,6 @@ jobs:
           path: |
             .artifacts/CIResults-*.xcresult
             ${{ steps.checks.outputs.native_result_fallback }}
-            ${{ env.BOTTO_NATIVE_DIAGNOSTICS }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

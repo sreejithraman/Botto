@@ -519,8 +519,6 @@ import BottoCore
     }
 
     @Test func revisionCacheRemovalAndImageFailuresStayLocal() async throws {
-        let diagnostic = NativeTestDiagnostics(method: #function)
-        defer { diagnostic.finish() }
         let service = AvatarService(); service.holdImages = false
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
@@ -563,8 +561,6 @@ import BottoCore
 
     @Test(arguments: ["image/png", "image/jpeg", "image/webp"])
     func hermesPetAndImageAssetsKeepAspectAndTransparency(mime: String) async throws {
-        let diagnostic = NativeTestDiagnostics(method: #function, argument: mime)
-        defer { diagnostic.finish() }
         let pet = mime != "image/jpeg"
         let size = pet ? CGSize(width: 96, height: 104) : CGSize(width: 256, height: 256)
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = !pet
