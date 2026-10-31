@@ -533,7 +533,6 @@ import BottoCore
             revision=\(String(describing: bot?.lookRevision))
             failImages=\(service.failImages)
             pending=\(service.pending.count)
-            lastReturnedAsset=\(service.lastAssetSnapshot)
             """
         }
         #expect(await store.connect(connection))
@@ -794,7 +793,6 @@ import BottoCore
     var heldIDs = Set<String>()
     var imageColor = UIColor.red
     var suppliedAsset: BotAvatarAsset?
-    private(set) var lastAssetSnapshot = "none"
     var imageSize = 300
     var reads = 0
     var readsByID: [String: Int] = [:]
@@ -819,21 +817,15 @@ import BottoCore
         return result
     }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
-        let startedAt = ContinuousClock.now
         reads += 1; readsByID[bot.id, default: 0] += 1
         let size = imageSize, color = imageColor
         if holdImages || heldIDs.contains(bot.id) { await withCheckedContinuation { pending.append($0) } }
         if failImages { throw HermesServiceError.rejected(-32601) }
-        let asset: BotAvatarAsset
-        if let suppliedAsset { asset = suppliedAsset }
-        else {
-            let format = UIGraphicsImageRendererFormat(); format.scale = 1
-            let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
-            let image = renderer.image { context in color.setFill(); context.fill(CGRect(x: 0, y: 0, width: size, height: size)) }
-            asset = BotAvatarAsset(data: image.pngData()!, mimeType: "image/png")
-        }
-        lastAssetSnapshot = "returnedAt=\(Date.now.timeIntervalSince1970) preparation=\(startedAt.duration(to: .now)) mime=\(asset.mimeType) bytes=\(asset.data.count) base64=\(asset.data.base64EncodedString())"
-        return asset
+        if let suppliedAsset { return suppliedAsset }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
+        let image = renderer.image { context in color.setFill(); context.fill(CGRect(x: 0, y: 0, width: size, height: size)) }
+        return BotAvatarAsset(data: image.pngData()!, mimeType: "image/png")
     }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         let index = profiles.firstIndex { $0.id.utf8.elementsEqual(bot.id.utf8) }!

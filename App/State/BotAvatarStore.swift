@@ -97,22 +97,14 @@ import BottoCore
                 let decoded: Decoded?
                 do {
                     let asset = try await service.avatarAsset(for: bot)
-                    Self.trace("asset-returned", attempt: attempt)
-                    guard !Task.isCancelled else { Self.trace("read-cancelled", attempt: attempt); return }
+                    guard !Task.isCancelled else { return }
                     let photo = bot.appearance?.imageKind == "photo"
-                    Self.trace("decode-enqueued", attempt: attempt)
-                    decoded = await Task.detached(priority: .utility) {
-                        Self.trace("decode-started", attempt: attempt)
-                        let result = asset.flatMap { Self.decode($0, photo: photo, attempt: attempt) }
-                        Self.trace("decode-finished", attempt: attempt)
-                        return result
-                    }.value
-                    Self.trace("decode-awaited", attempt: attempt)
+                    decoded = await Task.detached(priority: .utility) { asset.flatMap { Self.decode($0, photo: photo) } }.value
                 } catch {
                     // Optional/unsupported image RPCs never affect the connection or roster.
                     decoded = nil
                 }
-                guard !Task.isCancelled else { Self.trace("publication-cancelled", attempt: attempt); return }
+                guard !Task.isCancelled else { return }
                 self?.complete(id, attempt: attempt, owner: owner, key: key, image: decoded?.image)
             }
         }
@@ -120,10 +112,7 @@ import BottoCore
     }
 
     private func complete(_ id: String, attempt: UUID, owner: UUID, key: Key, image: UIImage?) {
-        guard generation == owner, flights[id]?.id == attempt, wanted[id].map(Key.init) == key else {
-            Self.trace("publication-rejected", attempt: attempt); return
-        }
-        Self.trace("publication-accepted", attempt: attempt)
+        guard generation == owner, flights[id]?.id == attempt, wanted[id].map(Key.init) == key else { return }
         entries[id] = Entry(key: key, checkedAt: now(), image: image)
         flights.removeValue(forKey: id)
         if revalidateAfterFlight.remove(id) != nil { queued.append(id) }
@@ -135,37 +124,21 @@ import BottoCore
         var image: UIImage? { if case .image(let image) = self { image } else { nil } }
     }
 
-    private nonisolated static func decode(_ asset: BotAvatarAsset, photo: Bool, attempt: UUID) -> Decoded? {
-        guard asset.data.count <= 2_000_000 else { return nil }
-        trace("source-started", attempt: attempt)
-        guard let source = CGImageSourceCreateWithData(asset.data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+    private nonisolated static func decode(_ asset: BotAvatarAsset, photo: Bool) -> Decoded? {
+        guard asset.data.count <= 2_000_000,
+              let source = CGImageSourceCreateWithData(asset.data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let type = CGImageSourceGetType(source) as String?,
               let expected = ["image/png": UTType.png.identifier, "image/jpeg": UTType.jpeg.identifier,
-                              "image/webp": UTType.webP.identifier][asset.mimeType], type == expected else { return nil }
-        trace("source-created", attempt: attempt)
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                              "image/webp": UTType.webP.identifier][asset.mimeType], type == expected,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0,
               width <= 32_768, height <= 32_768, Int64(width) * Int64(height) <= 100_000_000 else { return nil }
-        trace("properties-read", attempt: attempt)
         if !photo, type == UTType.png.identifier, width == 160, height == 160 { return .faceCopy }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 192,
             kCGImageSourceShouldCacheImmediately: true]
-        trace("thumbnail-started", attempt: attempt)
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        trace("thumbnail-created", attempt: attempt)
-        let result = Decoded.image(UIImage(cgImage: image))
-        trace("image-created", attempt: attempt)
-        return result
-    }
-
-    private nonisolated static func trace(_ stage: String, attempt: UUID) {
-        #if DEBUG
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil else { return }
-        NSLog("[BottoAvatarDecode] attempt=%@ stage=%@ priority=%u cancelled=%d main=%d",
-              attempt.uuidString, stage, Task.currentPriority.rawValue,
-              Task.isCancelled ? 1 : 0, Thread.isMainThread ? 1 : 0)
-        #endif
+        return .image(UIImage(cgImage: image))
     }
 }
