@@ -174,6 +174,17 @@ class TestFlightPolicyTests(unittest.TestCase):
     def test_automatic_delivery_stays_off_until_enabled(self):
         self.assertFalse(self.run_policy(automatic="false")["publish"])
 
+    def test_notes_baseline_is_exposed_after_manual_queueing(self):
+        self.delivered_sha = self.sha
+        (self.repo / "App/Botto.swift").write_text("App after delivered beta\n")
+        self.sha = self.commit("App change")
+        automatic = self.run_policy(after_queue=True)
+        manual = self.run_policy(event_name="workflow_dispatch", after_queue=True)
+        self.assertTrue(automatic["publish"])
+        self.assertTrue(manual["publish"])
+        self.assertEqual(automatic["notes_base_sha"], self.delivered_sha)
+        self.assertEqual(manual["notes_base_sha"], self.delivered_sha)
+
     def test_untrusted_and_failed_events_cannot_publish(self):
         for field, value in (
             ("conclusion", "failure"),

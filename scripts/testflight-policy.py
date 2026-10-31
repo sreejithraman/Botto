@@ -213,7 +213,9 @@ def select(after_queue=False):
                 "publish": False,
                 "reason": "Main needs a successful iOS push check for this exact revision.",
             }
-    elif not (after_queue and int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")) > 1):
+    retrying = after_queue and int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")) > 1
+    baseline = None
+    if not retrying and (kind != "workflow_dispatch" or after_queue):
         try:
             baseline = last_delivered_sha()
         except (
@@ -228,6 +230,7 @@ def select(after_queue=False):
                 file=sys.stderr,
             )
             baseline = None
+    if kind != "workflow_dispatch" and not retrying:
         if baseline:
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", baseline, sha],
@@ -264,6 +267,7 @@ def select(after_queue=False):
         "publish": True,
         "source_sha": sha,
         "build_number": number + 1000,
+        "notes_base_sha": baseline or "",
         "reason": "The current main revision passed its iOS checks.",
     }
 
@@ -277,7 +281,7 @@ def main():
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a") as file:
             file.write(f"publish={str(result['publish']).lower()}\n")
-            for name in ("source_sha", "build_number"):
+            for name in ("source_sha", "build_number", "notes_base_sha"):
                 if name in result:
                     file.write(f"{name}={result[name]}\n")
 

@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 
 class ReleaseError(Exception):
@@ -29,6 +30,101 @@ BUNDLES = {
     "Botto": "com.sree.botto",
     "BottoNotifications": "com.sree.botto.notifications",
 }
+
+
+def notes_prefix(source, version, number):
+    return f"Botto {version} ({number})\nSource: {source}\n\n"
+
+
+def apple_note_text(text):
+    # Match asc 5.16.0 internal/cli/shared/test_notes.go's Apple character limits.
+    refused = (
+        (0x20D0, 0x20FF), (0x2400, 0x245F), (0x2500, 0x259F),
+        (0x2600, 0x27EF), (0x2800, 0x28FF), (0x2980, 0x2BFF),
+        (0xE000, 0xF8FF), (0xFE00, 0xFE0F), (0xFFFD, 0xFFFD),
+        (0x10000, 0x10FFFF),
+    )
+    generic_marks = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0xFE20, 0xFE2F))
+    return " ".join("".join(
+        char for char in unicodedata.normalize("NFC", text)
+        if char != "<"
+        and not any(low <= ord(char) <= high for low, high in refused)
+        and not (
+            unicodedata.category(char) == "Mn"
+            and any(low <= ord(char) <= high for low, high in generic_marks)
+        )
+    ).split())
+
+
+def what_to_test(source, version, number, baseline, env):
+    if baseline:
+        if not re.fullmatch(r"[0-9a-f]{40}", baseline):
+            raise ReleaseError("release-note baseline must be a full commit SHA")
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", baseline, source],
+            cwd=ROOT, env=env, capture_output=True,
+        )
+        if ancestor.returncode:
+            baseline = None
+    revision = f"{baseline}..{source}" if baseline else source
+    commits = command(
+        "git", "rev-list", "--first-parent", "--reverse", "--max-count=200", revision, env=env
+    ).decode().splitlines()
+    entries = []
+    for sha in commits:
+        paths = command(
+            "git", "diff-tree", "--root", "--diff-merges=first-parent", "--no-commit-id",
+            "--name-only", "--no-renames", "-z", "-r", sha, env=env,
+        ).decode().split("\0")
+        app_paths = [
+            path for path in paths
+            if path.startswith(("App/", "Sources/")) and Path(path).name != "AGENTS.md"
+        ]
+        if not app_paths:
+            continue
+        subject, trailers = command(
+            "git", "show", "-s",
+            "--format=%s%x00%(trailers:key=Release-Note,valueonly,unfold=true)", sha, env=env,
+        ).decode().split("\0", 1)
+        authored = [line.strip() for line in trailers.splitlines() if line.strip()]
+        if len(authored) > 1:
+            raise ReleaseError(f"commit {sha} has more than one Release-Note trailer")
+        if authored:
+            if authored[0].casefold() == "none":
+                continue
+            note = authored[0]
+        else:
+            if all(path == "App/Resources/Info.plist" for path in app_paths):
+                continue
+            if re.match(
+                r"(?:build|chore|ci|docs|refactor|style|test)(?:\([^)]*\))?!?:|Revert\b|"
+                r"Merge (?:pull request #\d+\b|(?:remote-tracking )?branch\b)|"
+                r"(?:Bump|Set|Update) (?:the )?(?:(?:marketing|release) )?version(?: to)? v?\d+\.\d+\.\d+\b|"
+                r"(?:Set|Bump|Update|Prepare|Publish) Botto \d+\.\d+\.\d+\b",
+                subject, re.IGNORECASE,
+            ):
+                continue
+            note = re.sub(r"\s*\(#\d+\)\s*$", "", subject)
+        note = apple_note_text(note)
+        if note:
+            if note in entries:
+                entries.remove(note)
+            entries.append(note)
+    prefix = notes_prefix(source, version, number)
+    link = (
+        f"https://github.com/sreejithraman/Botto/compare/{baseline}...{source}"
+        if baseline else f"https://github.com/sreejithraman/Botto/commits/{source}"
+    )
+    footer = f"\n\nChanges: {link}"
+    lines = []
+    for entry in reversed(entries):
+        line = f"- {entry}"
+        if len((prefix + "\n".join([*lines, line]) + footer).encode()) > 3500:
+            continue
+        lines.append(line)
+    if not lines:
+        lines = ["- Internal build and delivery updates."]
+    return prefix + "\n".join(reversed(lines)) + footer
 
 
 def command(*args, env=None):
@@ -201,7 +297,7 @@ def exact_build(app, version, number, env):
     return build
 
 
-def internal_group(app, group, env):
+def internal_group(app, group, env, *, manual_only=False):
     groups = asc("testflight", "groups", "list", "--app", app, "--paginate", env=env)[
         "data"
     ]
@@ -210,6 +306,15 @@ def internal_group(app, group, env):
         for item in groups
     ):
         raise ReleaseError("configured group must belong to this app and be internal")
+    if manual_only and any(
+        item["attributes"].get("isInternalGroup") is not False
+        and item["attributes"].get("hasAccessToAllBuilds") is not False
+        for item in groups
+    ):
+        raise ReleaseError(
+            "disable automatic distribution for every internal group before a fresh upload; "
+            "manual-only access could not be confirmed"
+        )
 
 
 def verify_bundles(app, version, number, team, profiles, fingerprint, certificates, env):
@@ -475,12 +580,28 @@ def package(temp, output, version, number, team, env):
                 )
 
 
-def publish(args, temp, env):
-    app, team, group = (
-        required("BOTTO_APP_ID"),
-        required("BOTTO_TEAM_ID"),
-        required("BOTTO_INTERNAL_GROUP_ID"),
-    )
+def existing_notes(build_id, source, version, number, env):
+    localizations = asc(
+        "builds", "test-notes", "list", "--build-id", build_id,
+        "--locale", "en-US", "--paginate", env=env,
+    )["data"]
+    if not localizations:
+        return None
+    prefix = notes_prefix(source, version, number)
+    notes = localizations[0]["attributes"].get("whatsNew")
+    if (
+        len(localizations) != 1
+        or not isinstance(notes, str)
+        or not notes.startswith(prefix)
+        or not notes[len(prefix):].strip()
+    ):
+        raise ReleaseError(
+            "existing What to Test notes belong to another source, are ambiguous or empty; review this build manually"
+        )
+    return notes
+
+
+def project_version(env):
     versions = [
         asc(
             "xcode",
@@ -500,7 +621,50 @@ def publish(args, temp, env):
     ]
     if versions[0] != versions[1]:
         raise ReleaseError("app and extension marketing versions differ")
-    version = versions[0]
+    return versions[0]
+
+
+def prepare_notes(args, env):
+    version = project_version(env)
+    notes = what_to_test(args.source_sha, version, args.build_number, args.notes_base_sha, env)
+    record = {
+        "sourceSHA": args.source_sha, "runID": required("GITHUB_RUN_ID"),
+        "version": version, "buildNumber": args.build_number,
+        "notesBaseSHA": args.notes_base_sha or None, "whatToTest": notes,
+    }
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    private_file(args.output_dir / "prepared-notes.json", (json.dumps(record, indent=2) + "\n").encode())
+
+
+def prepared_notes(output, source, version, number):
+    path = output / "prepared-notes.json"
+    if not path.exists():
+        raise ReleaseError(
+            "original prepared notes are unavailable; restore this run's testflight-notes artifact "
+            "or review the uploaded build and restore its source-bound notes manually"
+        )
+    record = json.loads(path.read_text())
+    expected = {"sourceSHA": source, "version": version, "buildNumber": number, "runID": required("GITHUB_RUN_ID")}
+    prefix = notes_prefix(source, version, number)
+    notes = record.get("whatToTest")
+    if (
+        any(record.get(key) != value for key, value in expected.items())
+        or "notesBaseSHA" not in record
+        or (record["notesBaseSHA"] is not None and not re.fullmatch(r"[0-9a-f]{40}", str(record["notesBaseSHA"])))
+        or not isinstance(notes, str) or not notes.startswith(prefix)
+        or not notes[len(prefix):].strip() or len(notes.encode()) > 3500
+    ):
+        raise ReleaseError("prepared notes do not match this source, run, version and build; restore the original artifact")
+    return notes
+
+
+def publish(args, temp, env):
+    app, team, group = (
+        required("BOTTO_APP_ID"),
+        required("BOTTO_TEAM_ID"),
+        required("BOTTO_INTERNAL_GROUP_ID"),
+    )
+    version = project_version(env)
     internal_group(app, group, env)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -517,6 +681,7 @@ def publish(args, temp, env):
             raise ReleaseError("existing receipt belongs to another release")
         receipt.update(previous)
     build = exact_build(app, version, args.build_number, env)
+    selected_notes = None
     if not build:
         uploads = asc(
             "builds",
@@ -562,9 +727,11 @@ def publish(args, temp, env):
                     "reserved build number is superseded and no committed upload was found; "
                     "start a new workflow run with a higher build number"
                 )
+            selected_notes = prepared_notes(output, args.source_sha, version, args.build_number)
             ipa = package(temp, output, version, args.build_number, team, env)
             receipt["ipaSHA256"] = hashlib.sha256(ipa.read_bytes()).hexdigest()
             receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
+            internal_group(app, group, env, manual_only=True)
             asc("builds", "upload", "--app", app, "--ipa", str(ipa), env=env)
     if not build or build["attributes"].get("processingState") != "VALID":
         asc(
@@ -594,35 +761,35 @@ def publish(args, temp, env):
         raise ReleaseError(
             "build export compliance is unknown; set ITSAppUsesNonExemptEncryption=false and start a new workflow run"
         )
-    notes = "Please test sidekick conversations, notifications, and sign-in. Report anything unexpected."
-    localizations = asc(
-        "builds",
-        "test-notes",
-        "list",
-        "--build-id",
-        build_id,
-        "--locale",
-        "en-US",
-        "--paginate",
-        env=env,
-    )["data"]
-    if not localizations:
-        asc(
-            "builds",
-            "test-notes",
-            "create",
-            "--build-id",
-            build_id,
-            "--locale",
-            "en-US",
-            "--whats-new",
-            notes,
-            env=env,
+    notes = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+    if notes is None:
+        notes = selected_notes if selected_notes is not None else prepared_notes(
+            output, args.source_sha, version, args.build_number
         )
-    elif localizations[0]["attributes"].get("whatsNew") != notes:
-        raise ReleaseError(
-            "existing What to Test notes differ; review this build manually"
-        )
+        body = {"data": {
+            "type": "betaBuildLocalizations",
+            "attributes": {"locale": "en-US", "whatsNew": notes},
+            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+        }}
+        request = private_file(temp / "notes-request.json", json.dumps(body).encode())
+        try:
+            # The high-level asc test-notes create command is an upsert.
+            asc("api", "POST", "/v1/betaBuildLocalizations", "--body-file", str(request), "--confirm", env=env)
+        except ReleaseError:
+            try:
+                recovered = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+            except ReleaseError:
+                if FAILURE_PATH is not None:
+                    FAILURE_PATH.unlink(missing_ok=True)
+                raise
+            if recovered is None:
+                raise
+            notes = recovered
+            if FAILURE_PATH is not None:
+                FAILURE_PATH.unlink(missing_ok=True)
+        else:
+            if existing_notes(build_id, args.source_sha, version, args.build_number, env) != notes:
+                raise ReleaseError("What to Test notes were not confirmed; rerun to reconcile")
     internal_group(app, group, env)
     membership = asc("builds", "groups", "list", "--build-id", build_id, env=env)
     if not any(
@@ -662,6 +829,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-number", required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--notes-base-sha")
+    parser.add_argument("--prepare-notes", action="store_true", help="prepare the immutable notes artifact before upload")
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -673,6 +842,8 @@ def main():
         raise ReleaseError("CI build number must be an integer of at least 1001")
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
         raise ReleaseError("source SHA must be a full lowercase commit SHA")
+    if args.notes_base_sha and not re.fullmatch(r"[0-9a-f]{40}", args.notes_base_sha):
+        raise ReleaseError("release-note baseline must be a full commit SHA")
     FAILURE_PATH = args.output_dir.resolve() / "failure.json"
     FAILURE_PATH.unlink(missing_ok=True)
     required("GITHUB_RUN_ID")
@@ -694,6 +865,9 @@ def main():
                 "ASC_CONFIG_PATH",
             }:
                 env.pop(name)
+        if args.prepare_notes:
+            prepare_notes(args, env)
+            return
         env.update(
             ASC_KEY_ID=required("ASC_KEY_ID"),
             ASC_ISSUER_ID=required("ASC_ISSUER_ID"),

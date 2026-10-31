@@ -105,6 +105,17 @@ The script stores temporary signing inputs with restricted permissions, uses a
 dedicated keychain, and removes only resources it created. Do not upload those
 inputs, the keychain, or unredacted command logs as workflow artifacts.
 
+## Internal group access
+
+Keep automatic distribution disabled for every internal TestFlight group.
+[Apple can give these groups access to uploaded builds automatically](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/),
+which would bypass the publisher's notes-readback and explicit group assignment.
+Immediately before a fresh upload, the publisher requires each internal group
+returned by Apple to report `hasAccessToAllBuilds=false`. Missing or enabled
+access stops the upload with configuration advice. Already committed builds
+can still reconcile their notes and group assignment. This read does not lock
+Apple settings; leave the setting unchanged during a delivery.
+
 ## First hosted delivery
 
 The publisher reads versions from configuration `Internal` for both targets
@@ -130,6 +141,54 @@ The existing manual beta does not establish that this GitHub delivery path
 has passed. Record hosted evidence separately. Production push delivery also
 needs its [host, plugin, relay, and device checks](push-notifications.md).
 
+## What to Test notes
+
+Each build receives notes from app and core changes after the last confirmed
+delivered source. The generator reads the tested commit, not a moving `main`.
+It uses first-parent commit titles, removes PR-number suffixes, and skips
+docs, tests, guidance files, version bumps, default merge subjects and internal conventional commits.
+It considers at most the latest 200 first-parent commits in that range. If
+delivery history is unknown, the range is the available history at that source.
+Notes include the version, build, source SHA
+and a link to the corresponding GitHub history; text stays within 3,500 UTF-8
+bytes. When space is limited, recent entries take priority; an oversized entry
+does not hide later eligible changes. Duplicate wording keeps its latest
+position. A build without eligible entries gets a short build-update note.
+Before signing or uploading a fresh build, the generator NFC-normalizes text
+and removes characters rejected by the
+[pinned CLI's Apple character rules](https://github.com/rorkai/App-Store-Connect-CLI/blob/5.16.0/internal/cli/shared/test_notes.go):
+`<`, leftover generic combining marks, emoji, pictographic symbols, variation
+selectors, private-use characters and all supplementary-plane characters.
+Supported Unicode and script-specific marks remain. Empty entries are omitted.
+
+Use one commit trailer for tester-facing wording:
+
+```text
+Release-Note: Feel new chat haptics and explore the internal developer menu.
+```
+
+Changes limited to `App/Resources/Info.plist` require an explicit trailer to
+appear in notes, so delivery metadata does not become tester instructions.
+Use a trailer to describe user-visible metadata changes such as URL handling.
+`Release-Note: none` omits an app change. A trailer can describe a user-visible
+revert or override an internal commit title. Include it in the final first-parent
+merge or squash commit message; a trailer on a feature-branch commit does not
+survive every merge method. Published notes stay unchanged on retries;
+the publisher checks their version/build/source header before reusing them.
+It uses a create-only localization API request because the CLI's high-level
+`test-notes create` command can update existing text. If another client creates
+notes concurrently, it reuses matching source-bound notes or stops for manual
+review, without overwriting them.
+Before signing, the workflow saves the exact prepared text and its source,
+run, version, build and selected baseline in `prepared-notes.json`. A separate
+immutable `testflight-notes-<build>` artifact must upload successfully before
+signing or binary upload starts. A failed-job rerun restores that artifact from
+the same workflow run. An explicitly unknown baseline stays unknown; retries
+never regenerate notes from a different history range. The artifact lasts 14
+days. If it is missing or expired, existing matching Apple notes can still be
+reused; creating missing notes or a new upload stops with recovery guidance.
+The final text is retained in `what-to-test.txt` and read back from Apple.
+
 ## Build numbers and retries
 
 The marketing version remains in `project.yml`. The long-lived delivery
@@ -145,7 +204,9 @@ reconciles without another upload.
 
 Use **Re-run failed jobs** when Apple has committed the upload and it is
 processing or complete. The publisher looks up the exact version and build,
-then reconciles that upload rather than repeating it. A retry on current main
+then reconciles that upload rather than repeating it. The original prepared
+notes artifact preserves the selected change range even if processing timed
+out before Apple received any notes. A retry on current main
 can restore the receipt even if distribution succeeded before artifact saving
 failed. Existing internal-group membership does not need another mutation.
 

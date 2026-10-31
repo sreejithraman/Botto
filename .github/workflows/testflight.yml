@@ -96,6 +96,36 @@ jobs:
             echo "A newer main revision superseded this candidate."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Restore original prepared notes on retry
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ needs.candidate.outputs.build_number }}
+        run: |
+          if ! gh run download "$GITHUB_RUN_ID" --name "testflight-notes-$BUILD_NUMBER" --dir ".artifacts/testflight/$BUILD_NUMBER"; then
+            echo "Original prepared notes could not be restored. The publisher can reuse existing matching Apple notes, but will stop before creating missing notes or uploading."
+          fi
+      - name: Prepare source-bound notes before upload
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt == '1'
+        env:
+          BUILD_NUMBER: ${{ needs.candidate.outputs.build_number }}
+          SOURCE_SHA: ${{ needs.candidate.outputs.source_sha }}
+          NOTES_BASE_SHA: ${{ steps.current.outputs.notes_base_sha }}
+        run: >-
+          python3 scripts/testflight.py --prepare-notes
+          --build-number "$BUILD_NUMBER"
+          --source-sha "$SOURCE_SHA"
+          --notes-base-sha "$NOTES_BASE_SHA"
+          --output-dir ".artifacts/testflight/$BUILD_NUMBER"
+      - name: Save immutable prepared notes before upload
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt == '1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: testflight-notes-${{ needs.candidate.outputs.build_number }}
+          path: .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/prepared-notes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
       - name: Sign, upload, and distribute internally
         if: steps.ready.outputs.publish == 'true'
         env:
