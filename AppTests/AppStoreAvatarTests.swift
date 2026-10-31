@@ -523,8 +523,21 @@ import BottoCore
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        func diagnostics() -> String {
+            let bot = store.bots.first
+            return """
+            capturedAt=\(Date.now.timeIntervalSince1970)
+            reads=\(service.reads)
+            loading=\(bot.map { store.isLoadingAvatar(for: $0) } ?? false)
+            image=\(bot.flatMap { store.avatar(for: $0) } != nil)
+            revision=\(String(describing: bot?.lookRevision))
+            failImages=\(service.failImages)
+            pending=\(service.pending.count)
+            lastReturnedAsset=\(service.lastAssetSnapshot)
+            """
+        }
         #expect(await store.connect(connection))
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Initial avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         #expect(service.reads == 1)
         #expect(store.avatar(for: store.bots[0])?.size == CGSize(width: 192, height: 192))
         await store.refresh()
@@ -533,15 +546,15 @@ import BottoCore
         service.profiles[0].lookRevision = 2
         service.failImages = true
         await store.refresh()
-        try await avatarEventually { service.reads == 2 }
+        try await avatarEventually("Changed revision requested", diagnostics: diagnostics) { service.reads == 2 }
         #expect(store.avatar(for: store.bots[0]) == nil)
         #expect(store.notice == nil && store.isConnected)
         service.failImages = false; service.profiles[0].lookRevision = nil
         await store.refresh()
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Unknown revision avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         let reads = service.reads
         await store.refresh()
-        try await avatarEventually { service.reads > reads }
+        try await avatarEventually("Unknown revision requested again", diagnostics: diagnostics) { service.reads > reads }
         service.profiles[0].hasAvatar = false
         await store.refresh()
         #expect(store.avatar(for: store.bots[0]) == nil)
@@ -738,10 +751,17 @@ import BottoCore
     }
 }
 
-@MainActor private func avatarEventually(_ condition: () -> Bool) async throws {
+@MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
+                                        diagnostics: () -> String = { "" },
+                                        sourceLocation: SourceLocation = #_sourceLocation,
+                                        _ condition: () -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
     while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-    try #require(condition())
+    let passed = condition()
+    if !passed {
+        Attachment.record("\(message)\n\(diagnostics())", named: "avatar-readiness-failure.txt")
+    }
+    try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }
 
 @MainActor private final class AvatarStorage {
@@ -774,6 +794,7 @@ import BottoCore
     var heldIDs = Set<String>()
     var imageColor = UIColor.red
     var suppliedAsset: BotAvatarAsset?
+    private(set) var lastAssetSnapshot = "none"
     var imageSize = 300
     var reads = 0
     var readsByID: [String: Int] = [:]
@@ -798,15 +819,21 @@ import BottoCore
         return result
     }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
+        let startedAt = ContinuousClock.now
         reads += 1; readsByID[bot.id, default: 0] += 1
         let size = imageSize, color = imageColor
         if holdImages || heldIDs.contains(bot.id) { await withCheckedContinuation { pending.append($0) } }
         if failImages { throw HermesServiceError.rejected(-32601) }
-        if let suppliedAsset { return suppliedAsset }
-        let format = UIGraphicsImageRendererFormat(); format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
-        let image = renderer.image { context in color.setFill(); context.fill(CGRect(x: 0, y: 0, width: size, height: size)) }
-        return BotAvatarAsset(data: image.pngData()!, mimeType: "image/png")
+        let asset: BotAvatarAsset
+        if let suppliedAsset { asset = suppliedAsset }
+        else {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
+            let image = renderer.image { context in color.setFill(); context.fill(CGRect(x: 0, y: 0, width: size, height: size)) }
+            asset = BotAvatarAsset(data: image.pngData()!, mimeType: "image/png")
+        }
+        lastAssetSnapshot = "returnedAt=\(Date.now.timeIntervalSince1970) preparation=\(startedAt.duration(to: .now)) mime=\(asset.mimeType) bytes=\(asset.data.count) base64=\(asset.data.base64EncodedString())"
+        return asset
     }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         let index = profiles.firstIndex { $0.id.utf8.elementsEqual(bot.id.utf8) }!
