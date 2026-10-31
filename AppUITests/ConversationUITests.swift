@@ -4,6 +4,50 @@ import UniformTypeIdentifiers
 import Vision
 
 final class ConversationUITests: XCTestCase {
+    @MainActor func testForegroundReturnKeepsCachedAvatarsNeutralWhileReconnecting() throws {
+        continueAfterFailure = false
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
+        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
+        app.launch()
+        let milo = app.buttons["pinned-bot-milo"]
+        XCTAssertTrue(milo.waitForExistence(timeout: 5))
+        milo.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 5))
+        app.buttons["Back"].tap()
+
+        for cycle in 1...3 {
+            try Data().write(to: directory.appendingPathComponent("connect.hold"))
+            let started = directory.appendingPathComponent("connect.started")
+            try? FileManager.default.removeItem(at: started)
+            XCUIDevice.shared.press(.home)
+            XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+            app.activate()
+            let reconnecting = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                FileManager.default.fileExists(atPath: started.path)
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [reconnecting], timeout: 5), .completed)
+            XCTAssertTrue(milo.exists)
+            XCTAssertEqual(milo.value as? String, "")
+            XCTAssertFalse(app.staticTexts["You’re offline"].exists)
+            let capture = XCTAttachment(screenshot: app.screenshot())
+            capture.name = "Foreground cycle \(cycle), cached avatars while reconnecting"
+            capture.lifetime = .keepAlways
+            add(capture)
+            milo.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 5))
+            let profile = app.buttons["bot-profile-button"]
+            XCTAssertTrue(profile.exists)
+            XCTAssertEqual(profile.value as? String, "")
+            try FileManager.default.removeItem(at: directory.appendingPathComponent("connect.hold"))
+            app.buttons["Back"].tap()
+            XCTAssertTrue(milo.waitForExistence(timeout: 5))
+        }
+    }
+
     @MainActor func testGlassComposerOverlaysTranscriptAndKeepsLatestRequestAboveMultilineInput() {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -256,7 +300,7 @@ final class ConversationUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue(composer.isEnabled)
-        XCTAssertTrue((app.buttons["chat-picker-button"].value as? String)?.contains("Offline") == true)
+        XCTAssertEqual(app.buttons["bot-profile-button"].value as? String, "Offline")
         XCTAssertFalse(app.staticTexts["You’re offline"].exists)
         composer.tap()
         composer.typeText("Keep this thought while offline")
@@ -280,7 +324,7 @@ final class ConversationUITests: XCTestCase {
                        "Keep this thought while offline")
         try FileManager.default.removeItem(at: directory.appendingPathComponent("connect.hold"))
         XCTAssertTrue(app.staticTexts["Connecting to your Hermes…"].waitForNonExistence(timeout: 5))
-        XCTAssertFalse((app.buttons["chat-picker-button"].value as? String)?.contains("Offline") == true)
+        XCTAssertEqual(app.buttons["bot-profile-button"].value as? String, "")
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("send.started").path))
         XCTAssertEqual(composer.value as? String, connectingDraft)
         app.buttons["Send message"].tap()

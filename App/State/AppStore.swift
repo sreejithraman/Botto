@@ -908,12 +908,12 @@ import BottoCore
             flush()
             service.disconnect()
             chats.retireConnection()
-            generation = UUID(); retireRefresh(); link = configuration == nil ? .unconfigured : .offline
+            generation = UUID(); retireRefresh(); link = configuration == nil ? .unconfigured : .connecting
             connectingConfiguration = nil
         } else {
             // Local persistence can recover after unlocking even if the network cannot.
             flush()
-            if started, link == .offline, let configuration { await connect(configuration) }
+            if started, !isConnected, connectingConfiguration == nil, let configuration { await connect(configuration) }
         }
     }
 

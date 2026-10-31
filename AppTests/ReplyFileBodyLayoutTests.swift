@@ -65,7 +65,8 @@ import BottoCore
     }
 
     private func wait(_ label: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(8)
+        // Allow the renderer's fifteen-second cold startup and five-second document budget.
+        let deadline = ContinuousClock.now + .seconds(21)
         while !condition(), ContinuousClock.now < deadline { await Task.yield() }
         try #require(condition(), "Timed out: \(label)")
     }
