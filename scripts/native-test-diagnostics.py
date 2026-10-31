@@ -109,9 +109,10 @@ class Monitor:
             self.captured.add(method)
             record["pid"] = pid
             try:
+                # Leave time for symbol processing after the one-second collection.
                 result = subprocess.run(
                     ["/usr/bin/sample", str(pid), "1", "-file", str(self.output_dir / (stem + ".sample.txt"))],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True, text=True, timeout=60,
                 )
                 record.update(returncode=result.returncode, stderr=result.stderr)
             finally:

@@ -39,7 +39,7 @@ class MonitorTests(unittest.TestCase):
             subject.poll(now=105)
         sample.assert_called_once()
         self.assertEqual(sample.call_args.args[0][:4], ["/usr/bin/sample", "10", "1", "-file"])
-        self.assertEqual(sample.call_args.kwargs["timeout"], 15)
+        self.assertEqual(sample.call_args.kwargs["timeout"], 60)
         record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
         self.assertEqual(record["nativeStart"], marker)
         self.assertFalse(record["testFinishedDuringSample"])
@@ -116,7 +116,7 @@ class MonitorTests(unittest.TestCase):
                 subject, container, path, marker = self.fixture()
                 def capture(*args, **kwargs):
                     path.write_text(json.dumps(dict(marker, phase="finished")))
-                    if fails: raise subprocess.TimeoutExpired(args[0], 15, output=b"capture started", stderr=b"symbolication pending")
+                    if fails: raise subprocess.TimeoutExpired(args[0], kwargs["timeout"], output=b"capture started", stderr=b"symbolication pending")
                     return subprocess.CompletedProcess([], 0, "", "")
                 with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", side_effect=capture):
                     subject.poll(now=104)
