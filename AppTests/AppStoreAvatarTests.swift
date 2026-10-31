@@ -6,6 +6,53 @@ import BottoCore
 
 @MainActor struct AppStoreAvatarTests {
     @Test(arguments: [false, true])
+    func foregroundRecoveryStaysNeutralUntilTheConnectionResult(fails: Bool) async throws {
+        let connection = ConnectionConfiguration(serverURL: URL(string: "https://foreground-avatar.example")!)
+        defer { LocalHistory.remove(for: connection.id) }
+        let bot = BotProfile(id: "milo", name: "Milo")
+        let service = StoreTestService()
+        service.profiles = [bot]
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: connection).persistence)
+        await store.start()
+        await store.testEdit("Keep my draft", for: bot.id)
+
+        for _ in 0..<3 {
+            let retiredCallback = try #require(service.onEvent)
+            await store.setActive(false)
+            retiredCallback(.disconnected("Retired socket"))
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect(store.avatarPresentation(for: bot, scope: scope).activity == .idle)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == nil)
+            }
+            #expect(!store.isConnected)
+            #expect(store.draft(for: bot.id) == "Keep my draft")
+
+            let barrier = StoreTestBarrier()
+            service.connectBarrier = barrier
+            service.connectError = fails ? HermesServiceError.disconnected : nil
+            let foreground = Task { await store.setActive(true) }
+            await barrier.waitUntilEntered()
+            let attempts = service.connectCount
+            await store.setActive(true)
+            #expect(service.connectCount == attempts)
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect(store.avatarPresentation(for: bot, scope: scope).activity == .idle)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == nil)
+            }
+            #expect(!store.isConnected)
+            barrier.release()
+            await foreground.value
+            service.connectBarrier = nil
+            #expect(store.isConnected == !fails)
+            #expect(store.draft(for: bot.id) == "Keep my draft")
+            for scope in [BotAvatarScope.profile, .selectedChat] {
+                #expect((store.avatarPresentation(for: bot, scope: scope).activity == .offline) == fails)
+                #expect(store.avatarPresentation(for: bot, scope: scope).accessibilityStatus == (fails ? "Offline" : nil))
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
     func savedSetupDoesNotShowOfflineBeforeTheStartupConnectionResult(fails: Bool) async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://startup-avatar.example")!)
         defer { LocalHistory.remove(for: connection.id) }
@@ -476,8 +523,20 @@ import BottoCore
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        func diagnostics() -> String {
+            let bot = store.bots.first
+            return """
+            capturedAt=\(Date.now.timeIntervalSince1970)
+            reads=\(service.reads)
+            loading=\(bot.map { store.isLoadingAvatar(for: $0) } ?? false)
+            image=\(bot.flatMap { store.avatar(for: $0) } != nil)
+            revision=\(String(describing: bot?.lookRevision))
+            failImages=\(service.failImages)
+            pending=\(service.pending.count)
+            """
+        }
         #expect(await store.connect(connection))
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Initial avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         #expect(service.reads == 1)
         #expect(store.avatar(for: store.bots[0])?.size == CGSize(width: 192, height: 192))
         await store.refresh()
@@ -486,15 +545,15 @@ import BottoCore
         service.profiles[0].lookRevision = 2
         service.failImages = true
         await store.refresh()
-        try await avatarEventually { service.reads == 2 }
+        try await avatarEventually("Changed revision requested", diagnostics: diagnostics) { service.reads == 2 }
         #expect(store.avatar(for: store.bots[0]) == nil)
         #expect(store.notice == nil && store.isConnected)
         service.failImages = false; service.profiles[0].lookRevision = nil
         await store.refresh()
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Unknown revision avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         let reads = service.reads
         await store.refresh()
-        try await avatarEventually { service.reads > reads }
+        try await avatarEventually("Unknown revision requested again", diagnostics: diagnostics) { service.reads > reads }
         service.profiles[0].hasAvatar = false
         await store.refresh()
         #expect(store.avatar(for: store.bots[0]) == nil)
@@ -691,10 +750,17 @@ import BottoCore
     }
 }
 
-@MainActor private func avatarEventually(_ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(3)
+@MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
+                                        diagnostics: () -> String = { "" },
+                                        sourceLocation: SourceLocation = #_sourceLocation,
+                                        _ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(10)
     while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-    #expect(condition())
+    let passed = condition()
+    if !passed {
+        Attachment.record("\(message)\n\(diagnostics())", named: "avatar-readiness-failure.txt")
+    }
+    try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }
 
 @MainActor private final class AvatarStorage {

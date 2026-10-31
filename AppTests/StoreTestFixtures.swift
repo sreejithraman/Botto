@@ -30,6 +30,7 @@ import BottoCore
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: (any Error)?
     var duringConnect: ((ConnectionConfiguration) -> Void)?
+    var connectBarrier: StoreTestBarrier?
     var connectCount = 0
     var connectedConfigurations: [ConnectionConfiguration] = []
     var profiles: [BotProfile] = []
@@ -66,6 +67,7 @@ import BottoCore
         connectCount += 1
         connectedConfigurations.append(configuration)
         duringConnect?(configuration)
+        await connectBarrier?.wait()
         if let connectError { throw connectError }
         return info
     }

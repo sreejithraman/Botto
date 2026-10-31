@@ -313,13 +313,25 @@ import BottoCore
             service.onEvent?(.conversation(.init(identity: session, snapshot: snapshot, access: access)))
         }
         try publish(fresh)
+        try await revisionWait("scheduled row mounted before suspension") {
+            revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view) != nil &&
+                (controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure?.canPresent == true
+        }
+        let rowScope = try #require((controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure)
+        rowScope.setActive(false)
+        try await revisionWait("scheduled Details button disabled while its row is suspended") {
+            revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view)?.accessibilityTraits.contains(.notEnabled) == true
+        }
+        rowScope.setActive(true)
         try await revisionWait("metadata-only update reaches compact scheduled branch in same controller") {
-            revisionController(fixture.host) === controller && revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view) != nil &&
+            guard let details = revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view),
+                  !details.accessibilityTraits.contains(.notEnabled) else { return false }
+            return revisionController(fixture.host) === controller &&
                 revisionElement(payload, in: fixture.host.view) == nil && !controller.collection.hasUncommittedUpdates &&
                 (controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure?.canPresent == true
         }
         let details = try #require(revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view))
-        #expect(details.accessibilityActivate())
+        try #require(details.accessibilityActivate())
         try await revisionWait("fresh metadata opens the details sheet") {
             controller.presentedViewController.map { revisionElement("RAW-SCHEDULED-BODY", in: $0.view) != nil } == true
         }

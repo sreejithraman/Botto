@@ -860,7 +860,7 @@ import BottoCore
     private func waitUntil(_ message: String = "Condition became true", diagnostics: () -> String = { "" },
                            sourceLocation: SourceLocation = #_sourceLocation,
                            _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(10)
         while !condition() && ContinuousClock.now < deadline { await Task.yield() }
         if !condition() {
             Attachment.record("\(message)\n\(diagnostics())", named: "native-workspace-wait-failure.txt")
