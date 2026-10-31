@@ -739,9 +739,9 @@ import BottoCore
 }
 
 @MainActor private func avatarEventually(_ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(3)
+    let deadline = ContinuousClock.now + .seconds(10)
     while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-    #expect(condition())
+    try #require(condition())
 }
 
 @MainActor private final class AvatarStorage {

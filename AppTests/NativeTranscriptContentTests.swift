@@ -26,13 +26,8 @@ import BottoCore
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let richMessage = try #require(initial.snapshot?.messages.last)
         let fileBlock = try #require(ReplyContent(message: richMessage).blocks.first { $0.filePreview?.isHTML == true })
-        let fallback = CGFloat(fileBlock.filePreview?.initialHeight ?? 120)
         do {
-            try await wait("actual initial native Canvas document measured beyond fallback") {
-                !webViews(host.view).isEmpty && markers(host.view).contains {
-                    $0.block == fileBlock.id && $0.role == .document && $0.bounds.height > 100 && abs($0.bounds.height - fallback) > 1
-                }
-            }
+            try await requirePaintedFile(fileBlock.id, host: host, window: window)
         } catch {
             if let controller = collectionController(host) {
                 let rows: [[String: Any]] = controller.collection.visibleCells.map { cell in
@@ -79,26 +74,7 @@ import BottoCore
                 $0.scope === cell.exposure && $0.bounds.height > 300 } &&
                 !webViews(cell).isEmpty && abs(rect.minY) < 1 && abs(rect.height - cell.contentView.bounds.height) < 1
         }
-        let display = NativeContentDisplayFrames()
-        defer { display.stop() }
-        let deadline = ContinuousClock.now + .seconds(10)
-        var painted = false
-        while ContinuousClock.now < deadline {
-            guard let controller = collectionController(host),
-                  let cell = controller.collection.cellForItem(at: IndexPath(item: 2, section: 0)) as? NativeTranscriptCell,
-                  let document = markers(cell).first(where: { $0.block == fileBlock.id && $0.role == .document && $0.scope === cell.exposure }) else {
-                await display.nextFrame(); continue
-            }
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-            }
-            let visible = document.convert(document.bounds, to: window)
-                .intersection(controller.collection.convert(controller.collection.bounds, to: window)).intersection(window.bounds)
-            painted = try RenderedTranscriptFile.observe(image, in: visible).isComplete
-            if painted { break }
-            await display.nextFrame()
-        }
-        try #require(painted, "actual visible file body must paint its known bars; WK presence and measured height alone do not pass")
+        try await requirePaintedFile(fileBlock.id, host: host, window: window)
         let screen = try #require(store.chats.screen(profile: profile))
         store.chats.displayed(screen.owner)
         store.chats.editDraft("Canvas tail after rich preview\n  keep this source draft  ", owner: screen.owner)
@@ -134,6 +110,28 @@ import BottoCore
                     .environment(\.scenePhase, .active)
             }
         }
+    }
+    private func requirePaintedFile(_ block: Int, host: UIViewController, window: UIWindow) async throws {
+        let display = NativeContentDisplayFrames()
+        defer { display.stop() }
+        let deadline = ContinuousClock.now + .seconds(10)
+        var painted = false
+        while ContinuousClock.now < deadline {
+            guard let controller = collectionController(host),
+                  let cell = controller.collection.cellForItem(at: IndexPath(item: 2, section: 0)) as? NativeTranscriptCell,
+                  let document = markers(cell).first(where: { $0.block == block && $0.role == .document && $0.scope === cell.exposure }) else {
+                await display.nextFrame(); continue
+            }
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let visible = document.convert(document.bounds, to: window)
+                .intersection(controller.collection.convert(controller.collection.bounds, to: window)).intersection(window.bounds)
+            painted = try RenderedTranscriptFile.observe(image, in: visible).isComplete
+            if painted { break }
+            await display.nextFrame()
+        }
+        try #require(painted, "actual visible file body must paint its known bars; WK presence and measured height alone do not pass")
     }
     private func collectionController(_ parent: UIViewController) -> NativeTranscriptController? {
         if let controller = parent as? NativeTranscriptController, controller.isViewLoaded, controller.view.window != nil { return controller }
