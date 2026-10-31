@@ -31,15 +31,22 @@ print(parent)
 PYTHON
 )
 native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
-result_name="CIResults-$(uuidgen).xcresult"
+result_id=$(uuidgen)
+result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
-xcodebuild test -project Botto.xcodeproj -scheme Botto -configuration Debug \
-  -only-testing:BottoTests \
-  -destination "$destination" \
-  -parallel-testing-enabled NO \
-  -derivedDataPath "$native_directory/DerivedData" \
-  -resultBundlePath "$native_directory/$result_name" \
-  CODE_SIGNING_ALLOWED=NO || native_status=$?
+native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
+  -only-testing:BottoTests
+  -destination "$destination"
+  -parallel-testing-enabled NO
+  -derivedDataPath "$native_directory/DerivedData"
+  CODE_SIGNING_ALLOWED=NO)
+xcodebuild build-for-testing "${native_arguments[@]}" \
+  -resultBundlePath "$native_directory/$result_name" || native_status=$?
+if [ "$native_status" -eq 0 ]; then
+  result_name="CIResults-$result_id.xcresult"
+  xcodebuild test-without-building "${native_arguments[@]}" \
+    -resultBundlePath "$native_directory/$result_name" || native_status=$?
+fi
 
 finalize_native() {
   mkdir -p .artifacts || return

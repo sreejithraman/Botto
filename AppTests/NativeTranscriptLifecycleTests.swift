@@ -148,13 +148,18 @@ import BottoCore
     }
 
     private func childReport(_ web: WKWebView) async throws -> [String: String] {
-        let readyDeadline = ContinuousClock.now + .seconds(10)
+        weak var renderer = web.navigationDelegate as? RichContentRenderer
+        let readyDeadline = ContinuousClock.now + .seconds(21)
         var committed = false
         while ContinuousClock.now < readyDeadline {
             if !web.isLoading, (try? await web.evaluateJavaScript("document.querySelector('iframe') !== null")) as? Bool == true {
                 committed = true; break
             }
             await Task.yield()
+        }
+        if !committed {
+            Attachment.record("loading=\(web.isLoading) attached=\(web.window != nil) bounds=\(web.bounds) renderer=\(String(describing: renderer?.state))",
+                              named: "Expanded preview host readiness")
         }
         try #require(committed, "actual renderer host document must commit before installing its report listener")
         _ = try await web.evaluateJavaScript("""
