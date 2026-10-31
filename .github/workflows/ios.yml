@@ -30,6 +30,11 @@ jobs:
           xcodebuild -version
           swift --version
           python3 --version
+      - name: Runner resources before checks
+        continue-on-error: true
+        run: |
+          sysctl hw.ncpu hw.memsize vm.swapusage
+          vm_stat
       - name: Core, tooling, and native tests
         id: checks
         run: |
@@ -43,6 +48,12 @@ jobs:
           BOTTO_TEST_DESTINATION="platform=iOS Simulator,id=$device_id" \
             python3 scripts/native-test-diagnostics.py --device "$device_id" \
               --output-dir "$diagnostics" -- ./scripts/check-ci.sh
+      - name: Runner resources after checks
+        if: always()
+        continue-on-error: true
+        run: |
+          sysctl hw.ncpu hw.memsize vm.swapusage
+          vm_stat
       - name: Save native test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
