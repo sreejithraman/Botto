@@ -74,7 +74,9 @@ if Path(sys.argv[0]).name == "codesign":
  if "--extract-certificates" in args: sys.exit(1)
  extract=next((a.split("=",1)[1] for a in args if a.startswith("--extract-certificates=")),None)
  if extract:
-  Path(extract+"0").write_bytes(b"wrong" if s.get("bad_export_certificate") else b"fixture-certificate"); done({})
+  bundle="com.sree.botto.notifications" if args[-1].endswith(".appex") else "com.sree.botto"
+  wrong=(s.get("bad_export_certificate") and "exported" in args[-1]) or (".xcarchive/" in args[-1] and s.get("archive_certificate_target") == bundle)
+  Path(extract+"0").write_bytes(b"wrong" if wrong else b"fixture-certificate"); done({})
  import plistlib
  bundle="com.sree.botto.notifications" if args[-1].endswith(".appex") else "com.sree.botto"
  ent={"application-identifier":"team."+bundle,"com.apple.developer.team-identifier":"team","get-task-allow":False,
@@ -97,12 +99,18 @@ if args[:3] == ["signing","keychain","install"]:
 if args[:3] == ["signing","keychain","delete"]:
  Path(flag("--keychain")).unlink(); done({})
 if args[:2] == ["xcode","archive"]:
+ assert flag("--scheme") == "Botto Internal"
+ assert flag("--configuration") == "Internal"
  import plistlib
  archive=Path(flag("--archive-path"))
  for path,bundle in [(archive/"Products/Applications/Botto.app","com.sree.botto"),
                      (archive/"Products/Applications/Botto.app/PlugIns/BottoNotifications.appex","com.sree.botto.notifications")]:
   path.mkdir(parents=True,exist_ok=True)
   (path/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":bundle,"CFBundleShortVersionString":"0.1.0","CFBundleVersion":"1001"}))
+  uuid="app-uuid" if bundle == "com.sree.botto" else "extension-uuid"
+  profile=plistlib.loads((Path.home()/"Library/Developer/Xcode/UserData/Provisioning Profiles"/(uuid+".mobileprovision")).read_bytes())
+  if s.get("archive_profile_target") == bundle: profile["UUID"]="wrong-uuid"
+  (path/"embedded.mobileprovision").write_bytes(plistlib.dumps(profile))
  done({})
 if args[:2] == ["xcode","export"]:
  import plistlib
@@ -127,7 +135,9 @@ if args[:2] == ["builds","upload"]:
  if s.pop("interrupt_upload",False):
   p.write_text(json.dumps(s)); sys.exit(1)
  done({})
-if args[:3] == ["xcode", "version", "view"]: done({"version":"0.1.0"})
+if args[:3] == ["xcode", "version", "view"]:
+ assert flag("--configuration") == "Internal"
+ done({"version":"0.1.0"})
 if args[:3] == ["testflight", "groups", "list"]:
  done({"data":[{"id":"group", "attributes":{"isInternalGroup":not s.get("external",False)}}]})
 if args[:2] == ["builds", "next-build-number"]: done({"nextBuildNumber":str(s.get("next_number",1001))})
@@ -443,6 +453,23 @@ class PackagingTests(ReconciliationTests):
                 self.assertEqual(report["category"], category)
                 self.assertNotIn("PRIVATE-MATERIAL", result.stderr + json.dumps(report))
                 self.assertNotIn("rerun this workflow", report["recovery"])
+
+    def test_archived_profiles_and_certificates_are_verified_before_export(self):
+        for problem in ("archive_profile_target", "archive_certificate_target"):
+            for bundle in ("com.sree.botto", "com.sree.botto.notifications"):
+                with self.subTest(problem=problem, bundle=bundle):
+                    self.state(**{problem: bundle})
+                    result = self.run_release()
+                    self.assertNotEqual(result.returncode, 0)
+                    calls = json.loads(self.fixture.read_text())["calls"]
+                    self.assertFalse(
+                        any(c[1:3] in (["xcode", "export"], ["builds", "upload"]) for c in calls)
+                    )
+                    self.assertFalse(list((self.root / "home").rglob("*.mobileprovision")))
+                    self.assertEqual(
+                        json.loads(self.fixture.read_text())["search"],
+                        ["login.keychain-db", "custom.keychain-db"],
+                    )
 
     def test_exported_targets_are_verified_before_upload(self):
         for problem in [

@@ -212,13 +212,12 @@ def internal_group(app, group, env):
         raise ReleaseError("configured group must belong to this app and be internal")
 
 
-def verify_bundles(app, version, number, team, env):
+def verify_bundles(app, version, number, team, profiles, fingerprint, certificates, env):
     extension = app / "PlugIns/BottoNotifications.appex"
     signed = []
-    for path, bundle in [
-        (app, BUNDLES["Botto"]),
-        (extension, BUNDLES["BottoNotifications"]),
-    ]:
+    certificates.mkdir(mode=0o700)
+    for target, path in [("Botto", app), ("BottoNotifications", extension)]:
+        bundle = BUNDLES[target]
         command(
             "codesign",
             "--verify",
@@ -242,6 +241,30 @@ def verify_bundles(app, version, number, team, env):
             raise ReleaseError(
                 f"signed target identity or version mismatch for {bundle}"
             )
+        profile = decode_profile(
+            path / "embedded.mobileprovision", BUNDLES[target], team, env
+        )
+        if profile["UUID"] != profiles[target]["UUID"]:
+            raise ReleaseError(
+                f"signed profile UUID mismatch for {BUNDLES[target]}; fix signing configuration"
+            )
+        certificate_prefix = certificates / target
+        command(
+            "codesign",
+            "--display",
+            f"--extract-certificates={certificate_prefix}",
+            str(path),
+            env=env,
+        )
+        certificate = Path(str(certificate_prefix) + "0").read_bytes()
+        if (
+            hashlib.sha256(certificate).hexdigest() != fingerprint
+            or certificate not in profile["DeveloperCertificates"]
+        ):
+            raise ReleaseError(
+                f"signing certificate mismatch for {BUNDLES[target]}; fix signing configuration"
+            )
+
         signed.append(entitlements)
     shared = f"{team}.com.sree.botto.push"
     if (
@@ -260,34 +283,9 @@ def verify_export(ipa, temp, version, number, team, profiles, fingerprint, env):
     exported.mkdir()
     command("ditto", "-x", "-k", str(ipa), str(exported), env=env)
     app = exported / "Payload/Botto.app"
-    verify_bundles(app, version, number, team, env)
-    for target, path in [
-        ("Botto", app),
-        ("BottoNotifications", app / "PlugIns/BottoNotifications.appex"),
-    ]:
-        profile = decode_profile(
-            path / "embedded.mobileprovision", BUNDLES[target], team, env
-        )
-        if profile["UUID"] != profiles[target]["UUID"]:
-            raise ReleaseError(
-                f"exported profile UUID mismatch for {BUNDLES[target]}; fix signing configuration"
-            )
-        certificate_prefix = temp / f"{target}-exported-cert"
-        command(
-            "codesign",
-            "--display",
-            f"--extract-certificates={certificate_prefix}",
-            str(path),
-            env=env,
-        )
-        certificate = Path(str(certificate_prefix) + "0").read_bytes()
-        if (
-            hashlib.sha256(certificate).hexdigest() != fingerprint
-            or certificate not in profile["DeveloperCertificates"]
-        ):
-            raise ReleaseError(
-                f"exported signing certificate mismatch for {BUNDLES[target]}; fix signing configuration"
-            )
+    verify_bundles(
+        app, version, number, team, profiles, fingerprint, temp / "exported-certificates", env
+    )
 
 
 def package(temp, output, version, number, team, env):
@@ -380,16 +378,23 @@ def package(temp, output, version, number, team, env):
             "--project",
             "Botto.xcodeproj",
             "--scheme",
-            "Botto",
+            "Botto Internal",
             "--configuration",
-            "Release",
+            "Internal",
             "--archive-path",
             str(archive),
             *[f"--xcodebuild-flag={flag}" for flag in flags],
             env=env,
         )
         verify_bundles(
-            archive / "Products/Applications/Botto.app", version, number, team, env
+            archive / "Products/Applications/Botto.app",
+            version,
+            number,
+            team,
+            profiles,
+            fingerprint,
+            temp / "archive-certificates",
+            env,
         )
         options = temp / "ExportOptions.plist"
         private_file(
@@ -486,7 +491,7 @@ def publish(args, temp, env):
             "--target",
             target,
             "--configuration",
-            "Release",
+            "Internal",
             "--xcodebuild-settings-lookup",
             "never",
             env=env,

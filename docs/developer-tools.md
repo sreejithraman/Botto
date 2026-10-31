@@ -31,17 +31,17 @@ Internal builds use the normal Settings entry.
 
 ## Internal TestFlight delivery
 
-The internal publisher must archive with **configuration Internal**, rather than
-Release. It can keep the existing Botto scheme or select Botto Internal:
+The integrated publisher archives scheme **Botto Internal** with
+**configuration Internal**:
 
 ```sh
 asc xcode archive --project Botto.xcodeproj --scheme 'Botto Internal' \
   --configuration Internal --archive-path /path/to/Botto.xcarchive
 ```
 
-Preserve the publisher's signing, version, destination and profile arguments.
-Its version lookup must use the same configuration as the archive. Export with
-`testFlightInternalTestingOnly = true` in ExportOptions.plist, then distribute
+The publisher preserves its signing, version, destination and profile arguments.
+Both target version lookups select Internal. It exports with
+`testFlightInternalTestingOnly = true` in ExportOptions.plist and distributes
 only to the internal group. Apple's
 [Internal Only distribution](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases)
 prevents that build from being submitted to the App Store. A public candidate
@@ -49,8 +49,8 @@ needs a separate Release archive without the internal-tools flag.
 
 Changing tester groups does not change a compiled app. An already-installed
 TestFlight build gains the menu only after a new Internal build is uploaded
-and installed. The publisher is maintained separately from this feature branch;
-verify its configuration and export policy when integrating the branches.
+and installed. Source integration is complete. Hosted signed delivery, Apple
+readback and signed-device installation still need verification.
 
 ## Checks
 

@@ -107,11 +107,10 @@ inputs, the keychain, or unredacted command logs as workflow artifacts.
 
 ## First hosted delivery
 
-Before the first hosted delivery, integrate the developer-tools configuration
-and switch the publisher's version lookup and archive to configuration
-`Internal` and scheme `Botto Internal`. Internal builds include the developer
-tools; public App Store candidates use a separate `Release` archive without
-them. The publisher exports with `testFlightInternalTestingOnly = true`, so
+The publisher reads versions from configuration `Internal` for both targets
+and archives scheme `Botto Internal` with that configuration. Internal builds
+include the [developer menu and playgrounds](developer-tools.md); public App
+Store candidates use a separate `Release` archive without them. The publisher exports with `testFlightInternalTestingOnly = true`, so
 its builds cannot be promoted to the public App Store.
 
 1. Leave the repository variable `BOTTO_TESTFLIGHT_AUTOMATIC` set to `false`.
