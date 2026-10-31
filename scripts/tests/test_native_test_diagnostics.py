@@ -1,6 +1,6 @@
 import importlib.util
-import io
 import json
+import plistlib
 from pathlib import Path
 import subprocess
 import sys
@@ -16,109 +16,141 @@ METHOD = "revisionCacheRemovalAndImageFailuresStayLocal"
 APP = f"/Users/test/Library/Developer/CoreSimulator/Devices/{DEVICE}/data/Containers/Bundle/Application/ABC/Botto.app/Botto"
 
 
-class Timer:
-    def __init__(self, interval, callback):
-        self.interval, self.callback = interval, callback
-        self.started = self.cancelled = self.joined = False
-        self.daemon = False
-
-    def start(self): self.started = True
-    def cancel(self): self.cancelled = True
-    def join(self, timeout): self.joined = True
-
-
 class MonitorTests(unittest.TestCase):
-    def test_process_scope_requires_actual_executable_and_exact_device(self):
-        other = APP.replace(DEVICE, "OTHER-DEVICE")
-        listing = f"10 {APP}\n11 {other}\n12 /usr/bin/python3 -c '{APP}'\n16 /usr/bin/echo {APP}\n13 {APP}-helper\n14 {APP} --fixture\n"
-        self.assertEqual(monitor.matching_pids(listing, DEVICE), [10, 14])
-        self.assertEqual(monitor.matching_pids("15 /Other/Botto.app/Botto", DEVICE), [])
+    def fixture(self, *, phase="started", timestamp=100):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        container = base / "containers" / "fixture"
+        (container / "tmp").mkdir(parents=True)
+        marker = {"method": METHOD, "pid": 10, "runID": "fixture", "phase": phase, "timestamp": timestamp}
+        path = container / "tmp" / f"botto-native-{METHOD}-fixture.json"
+        path.write_text(json.dumps(marker))
+        subject = monitor.Monitor(DEVICE, base / "samples")
+        subject.data_root = base / "containers"
+        (container / ".com.apple.mobile_container_manager.metadata.plist").write_bytes(plistlib.dumps({"MCMMetadataIdentifier": "com.sree.botto"}))
+        return subject, container, path, marker
 
-    def test_parameterized_start_finish_and_issue_lines(self):
-        name = "hermesPetAndImageAssetsKeepAspectAndTransparency"
-        self.assertEqual(monitor.test_event(f"◇ Test {name}(mime:) started."), (name, "start"))
-        self.assertIsNone(monitor.test_event(f'◇ Test case passing 1 argument mime → "image/png" to {name}(mime:) started.'))
-        self.assertIsNone(monitor.test_event(f"✘ Test {name}(mime:) recorded an issue at file:5"))
-        self.assertEqual(monitor.test_event(f"✔ Test {name}(mime:) with 3 test cases passed after 1.0 seconds."), (name, "finish"))
-        self.assertEqual(monitor.test_event(f"✘ Test {name}(mime:) failed after 10 seconds."), (name, "finish"))
-        self.assertIsNone(monitor.test_event("◇ Test unrelated() started."))
+    def test_native_marker_triggers_sample_without_console_events(self):
+        subject, container, _, marker = self.fixture()
+        with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as sample:
+            subject.poll(now=104)
+            subject.poll(now=105)
+        sample.assert_called_once()
+        self.assertEqual(sample.call_args.args[0][:4], ["/usr/bin/sample", "10", "1", "-file"])
+        self.assertEqual(sample.call_args.kwargs["timeout"], 15)
+        record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
+        self.assertEqual(record["nativeStart"], marker)
+        self.assertFalse(record["testFinishedDuringSample"])
 
-    def test_finish_cancels_timer_and_repeat_cannot_resample(self):
-        with tempfile.TemporaryDirectory() as directory:
-            subject = monitor.Monitor(DEVICE, directory, Timer)
-            subject.observe(f"◇ Test {METHOD}() started.")
-            timer = subject.timers[METHOD]
-            self.assertEqual(timer.interval, 3)
-            self.assertTrue(timer.started and timer.daemon)
-            subject.observe(f"✔ Test {METHOD}() passed after 0.1 seconds.")
-            self.assertTrue(timer.cancelled)
-            with patch.object(monitor.subprocess, "check_output") as ps:
-                timer.callback()
-                ps.assert_not_called()
-            subject.observe(f"◇ Test {METHOD}() started.")
-            self.assertIs(subject.timers[METHOD], timer)
-            subject.close()
-            self.assertTrue(timer.joined)
-
-    def test_custom_watch_list_replaces_defaults_and_validates_stems(self):
-        custom = "repeatedInitialAvatarReads"
-        with tempfile.TemporaryDirectory() as directory:
-            subject = monitor.Monitor(DEVICE, directory, Timer, watch_tests=[custom])
-            subject.observe(f"◇ Test {METHOD}() started.")
-            self.assertEqual(subject.timers, {})
-            subject.observe(f"◇ Test {custom}() started.")
-            self.assertIn(custom, subject.timers)
-            subject.close()
-        self.assertEqual(monitor.method_stem(custom), custom)
-        with self.assertRaises(Exception):
-            monitor.method_stem("../sample")
-
-    def test_ambiguous_process_records_error_without_sampling(self):
-        with tempfile.TemporaryDirectory() as directory:
-            subject = monitor.Monitor(DEVICE, directory, Timer)
-            subject.observe(f"◇ Test {METHOD}() started.")
-            with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n11 {APP}\n"), patch.object(monitor.subprocess, "run") as sample:
-                subject.timers[METHOD].callback()
+    def test_fast_or_finished_test_does_not_sample(self):
+        for phase, now in (("started", 102), ("finished", 104)):
+            with self.subTest(phase=phase):
+                subject, container, _, _ = self.fixture(phase=phase)
+                with patch.object(monitor.subprocess, "check_output", return_value=str(container)), patch.object(monitor.subprocess, "run") as sample:
+                    subject.poll(now=now)
                 sample.assert_not_called()
-            record = json.loads(next(Path(directory).glob("*.json")).read_text())
-            self.assertIn("found 2", record["error"])
-            subject.close()
+                subject.close()
+                summary = json.loads((subject.output_dir / "collector-summary.json").read_text())
+                self.assertEqual(summary["observed"]["fixture"]["phase"], phase)
+                self.assertTrue(summary["workerStopped"])
 
-    def test_sampling_revalidates_pid_and_uses_bounded_command(self):
-        with tempfile.TemporaryDirectory() as directory:
-            subject = monitor.Monitor(DEVICE, directory, Timer)
-            subject.observe(f"◇ Test {METHOD}() started.")
-            result = subprocess.CompletedProcess([], 1, "", "Process exited")
-            with patch.object(monitor.subprocess, "check_output", side_effect=[f"10 {APP}\n", f"10 {APP}\n"]), patch.object(monitor.subprocess, "run", return_value=result) as sample:
-                subject.timers[METHOD].callback()
-            args = sample.call_args
-            self.assertEqual(args.args[0][:4], ["/usr/bin/sample", "10", "1", "-file"])
-            self.assertEqual(args.kwargs["timeout"], 15)
-            record = json.loads(next(Path(directory).glob("*.json")).read_text())
-            self.assertEqual(record["returncode"], 1)
-            self.assertEqual(record["pid"], 10)
-            subject.close()
+    def test_finished_argument_does_not_hide_another_arguments_stall(self):
+        subject, _, path, marker = self.fixture()
+        sibling = path.with_name(f"botto-native-{METHOD}-fast.json")
+        sibling.write_text(json.dumps(dict(marker, runID="fast", phase="finished", timestamp=102)))
+        with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as sample:
+            subject.poll(now=104)
+        sample.assert_called_once()
+        record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
+        self.assertEqual(record["nativeStart"]["runID"], "fixture")
+        self.assertEqual(set(subject.observed), {"fixture", "fast"})
 
-    def test_wrapper_error_reaps_its_running_child(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def test_finished_or_replaced_marker_before_sampling_cancels_capture(self):
+        subject, container, path, marker = self.fixture()
+        def output(args, **kwargs):
+            path.write_text(json.dumps(dict(marker, phase="finished")))
+            return f"10 {APP}\n"
+        with patch.object(monitor.subprocess, "check_output", side_effect=output), patch.object(monitor.subprocess, "run") as sample:
+            subject.poll(now=104)
+        sample.assert_not_called()
+
+    def test_wrong_process_is_never_sampled(self):
+        subject, container, _, _ = self.fixture()
+        wrong = APP.replace(DEVICE, "OTHER-DEVICE")
+        with patch.object(monitor.subprocess, "check_output", return_value=f"10 {wrong}\n"), patch.object(monitor.subprocess, "run") as sample:
+            subject.poll(now=104)
+        sample.assert_not_called()
+        record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
+        self.assertIn("does not match", record["error"])
+
+    def test_stale_marker_does_not_consume_later_tests_capture(self):
+        subject, _, path, marker = self.fixture()
+        with patch.object(monitor.subprocess, "check_output", return_value="10 /usr/bin/other\n"):
+            subject.poll(now=104)
+        path.write_text(json.dumps(dict(marker, runID="next-test", timestamp=105)))
+        with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as sample:
+            subject.poll(now=109)
+        sample.assert_called_once()
+
+    def test_process_scope_requires_executable_and_exact_device(self):
+        listing = f"10 {APP}\n11 /usr/bin/python3 -c '{APP}'\n12 {APP}-helper\n13 {APP} --fixture\n"
+        self.assertEqual(monitor.matching_pids(listing, DEVICE), [10, 13])
+
+    def test_invalid_or_missing_markers_are_ignored(self):
+        subject, container, path, _ = self.fixture()
+        for content in ("{", '[]', '{"method": "other"}', '{"method": "' + METHOD + '","pid":10,"runID":"x","phase":"started","timestamp":NaN}'):
+            path.write_text(content)
+            with patch.object(monitor.subprocess, "check_output", return_value=str(container)), patch.object(monitor.subprocess, "run") as sample:
+                subject.poll(now=104)
+            sample.assert_not_called()
+        path.unlink()
+        with patch.object(monitor.subprocess, "run") as sample:
+            subject.poll(now=104)
+        sample.assert_not_called()
+
+    def test_sample_failure_and_completion_during_capture_are_recorded(self):
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                subject, container, path, marker = self.fixture()
+                def capture(*args, **kwargs):
+                    path.write_text(json.dumps(dict(marker, phase="finished")))
+                    if fails: raise subprocess.TimeoutExpired(args[0], 15)
+                    return subprocess.CompletedProcess([], 0, "", "")
+                with patch.object(monitor.subprocess, "check_output", return_value=f"10 {APP}\n"), patch.object(monitor.subprocess, "run", side_effect=capture):
+                    subject.poll(now=104)
+                record = json.loads(next(subject.output_dir.glob("*.json")).read_text())
+                if fails: self.assertIn("error", record)
+                else: self.assertTrue(record["testFinishedDuringSample"])
+
+    def test_uninstalled_app_is_normal_before_native_launch(self):
+        subject, container, _, _ = self.fixture()
+        (container / ".com.apple.mobile_container_manager.metadata.plist").write_bytes(plistlib.dumps({"MCMMetadataIdentifier": "com.other.app"}))
+        with patch.object(monitor.subprocess, "check_output") as ps, patch.object(monitor.subprocess, "run") as sample:
+            subject.poll(now=104)
+        ps.assert_not_called()
+        sample.assert_not_called()
+        self.assertIsNone(subject.container)
+
+    def test_child_bytes_and_failure_exit_are_preserved(self):
         subject = Mock()
-        subject.observe.side_effect = RuntimeError("diagnostic reader failed")
-        with patch.object(monitor.subprocess, "Popen", return_value=child):
-            with self.assertRaisesRegex(RuntimeError, "diagnostic reader failed"):
-                monitor.run(["unused"], subject, io.BytesIO(), io.BytesIO())
-        self.assertIsNotNone(child.poll())
-        self.assertTrue(child.stdout.closed and child.stderr.closed)
-        subject.close.assert_called_once()
-
-    def test_child_output_bytes_and_failure_exit_are_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            subject = monitor.Monitor(DEVICE, directory, Timer)
-            out, err = io.BytesIO(), io.BytesIO()
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             code = "import os;os.write(1,b'hello\\xff\\n');os.write(2,b'error\\x00');raise SystemExit(65)"
             self.assertEqual(monitor.run([sys.executable, "-c", code], subject, out, err), 65)
-            self.assertEqual(out.getvalue(), b"hello\xff\n")
-            self.assertEqual(err.getvalue(), b"error\x00")
+            out.seek(0); err.seek(0)
+            self.assertEqual(out.read(), b"hello\xff\n")
+            self.assertEqual(err.read(), b"error\x00")
+        subject.close.assert_called_once()
+
+    def test_monitor_start_failure_reaps_running_child(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"])
+        subject = Mock()
+        subject.thread.start.side_effect = RuntimeError("monitor failed")
+        with patch.object(monitor.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(RuntimeError, "monitor failed"):
+                monitor.run(["unused"], subject)
+        self.assertIsNotNone(child.poll())
+        subject.close.assert_called_once()
 
 
 if __name__ == "__main__":

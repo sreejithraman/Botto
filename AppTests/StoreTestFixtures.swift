@@ -1,6 +1,56 @@
 import Foundation
+import Testing
 import BottoCore
 @testable import Botto
+
+// The host sampler reads these markers independently of XCTest's buffered output.
+struct NativeTestDiagnostics {
+    private let method: String
+    private let runID = UUID().uuidString
+    private let argument: String?
+    private let file: URL
+
+    init(method: String, argument: String? = nil) {
+        self.method = String(method.prefix { $0 != "(" })
+        self.argument = argument
+        file = FileManager.default.temporaryDirectory.appendingPathComponent("botto-native-\(self.method)-\(runID).json")
+        record("started")
+    }
+
+    func finish() { record("finished") }
+
+    private func record(_ phase: String) {
+        var marker: [String: Any] = ["method": method, "runID": runID,
+            "pid": ProcessInfo.processInfo.processIdentifier, "phase": phase,
+            "timestamp": Date.now.timeIntervalSince1970]
+        if let argument { marker["argument"] = argument }
+        do {
+            try JSONSerialization.data(withJSONObject: marker).write(to: file, options: .atomic)
+        } catch {
+            print("Native diagnostic marker could not be saved: \(error)")
+        }
+    }
+}
+
+struct NativeTestDiagnosticsTests {
+    @Test func overlappingInvocationsRetainIndependentMarkers() throws {
+        let method = "markerProbe-\(UUID().uuidString)"
+        let first = NativeTestDiagnostics(method: method)
+        let second = NativeTestDiagnostics(method: method)
+        let files = try FileManager.default.contentsOfDirectory(at: FileManager.default.temporaryDirectory,
+            includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("botto-native-\(method)") }
+        defer {
+            first.finish(); second.finish()
+            for file in files { try? FileManager.default.removeItem(at: file) }
+        }
+        try #require(files.count == 2)
+        first.finish()
+        let markers = try files.map { try JSONSerialization.jsonObject(with: Data(contentsOf: $0)) as? [String: Any] }
+        #expect(markers.filter { $0?["phase"] as? String == "started" }.count == 1)
+        #expect(markers.filter { $0?["phase"] as? String == "finished" }.count == 1)
+        #expect(Set(markers.compactMap { $0?["runID"] as? String }).count == 2)
+    }
+}
 
 @MainActor final class MemoryConnectionStorage {
     var saved: ConnectionConfiguration?

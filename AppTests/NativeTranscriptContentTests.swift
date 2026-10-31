@@ -8,6 +8,8 @@ import BottoCore
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptContentTests {
     @Test func actualCanvasGenerationAndSendKeepEveryHostedRowInsideItsNativeAllocation() async throws {
+        let diagnostic = NativeTestDiagnostics(method: #function)
+        defer { diagnostic.finish() }
         let service = DemoBotService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-canvas.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
@@ -50,12 +52,19 @@ import BottoCore
                             "root_same_window": root?.window === cell.window,
                             "blocks": blockGeometry]
                 }
-                let geometry: [String: Any] = ["viewport": NSCoder.string(for: controller.collection.bounds),
+                let geometry: [String: Any] = ["target_block": fileBlock.id,
+                    "application_state": UIApplication.shared.applicationState.rawValue,
+                    "scene_state": scene.activationState.rawValue,
+                    "viewport": NSCoder.string(for: controller.collection.bounds),
                     "web_views": webViews(host.view).count, "rows": rows]
                 if let data = try? JSONSerialization.data(withJSONObject: geometry, options: [.sortedKeys]),
                    let text = String(data: data, encoding: .utf8) {
                     Attachment.record(text, named: "Canvas initial file failure geometry.json")
                 }
+                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+                }
+                Attachment.record(image, named: "Canvas initial file failure.png", as: .png)
             }
             throw error
         }
