@@ -17,6 +17,13 @@ class NativeArtifactTests(unittest.TestCase):
         base = Path(temporary.name).resolve()
         repo = base / "repo"
         (repo / "scripts/tests").mkdir(parents=True)
+        # Empty discovery exits with status 5 on newer Python versions.
+        (repo / "scripts/tests/test_prerequisite.py").write_text(
+            "import unittest\n\n"
+            "class PrerequisiteTests(unittest.TestCase):\n"
+            "    def test_tooling_prerequisite(self):\n"
+            "        pass\n"
+        )
         shutil.copy2(SCRIPT, repo / "scripts/check-ci.sh")
         core = repo / "scripts/check-core.sh"
         core.write_text("#!/bin/bash\nexit 0\n")
