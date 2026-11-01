@@ -95,6 +95,7 @@ jobs:
           path: |
             .artifacts/CIResults-*.xcresult
             .artifacts/CISelectedTests-*.txt
+            .artifacts/CIExport-*.json
             ${{ steps.checks.outputs.native_result_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
