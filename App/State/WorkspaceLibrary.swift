@@ -539,7 +539,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let names = Dictionary(bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } }, uniquingKeysWith: { first, _ in first })
         if evidence == .observed {
             let previous = rosterReadFloors
-            if Set(previous?.keys.map { $0 } ?? Array(botNames.keys)) != Set(names.keys) { rosterRevision = UUID() }
+            if previous == nil || Set(previous?.keys.map { $0 } ?? []) != Set(names.keys) {
+                rosterRevision = UUID()
+                invalidateRevalidation()
+            }
             rosterBots = bots
             rosterReadFloors = names.mapValues { _ in mountedAt }
             for profile in names.keys {
@@ -801,6 +804,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     func refreshIfNeeded(evidence: RosterEvidence, bots: [BotProfile]) async {
         observeBots(bots, evidence: evidence)
         await restore()
+        guard rosterReadFloors != nil else { return }
         while !isRetired, online, !Task.isCancelled {
             if scanTask == nil, let lastRevalidation,
                lastRevalidation.revision == revalidationRevision,
@@ -819,7 +823,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func refreshCurrentRoster(force: Bool) async {
         if seedTask != nil || restoreTask != nil { indexingMetrics.refreshesJoinedRestoration += 1 }
         await restore()
-        guard !isRetired, online, !Task.isCancelled else { return }
+        guard !isRetired, online, !Task.isCancelled, rosterReadFloors != nil else { return }
         if let scanTask {
             if force, !scanningForced {
                 requiresForcedPass = true

@@ -608,3 +608,37 @@ that build; only the final documentation notes were added. The integrated
 Files filesystem 17 and runner 7 Python tests pass. Prior native 135/136 and UI
 outcomes retain their source bindings. Root owns affected exact-pin execution,
 independent export, full-main checks, integration, merge and Apple delivery.
+
+## R18 native acceptance and first-roster repair — 1 November 2026
+
+Root run `41326432411` executed exact `c0fe84e` feature/test bytes with four
+disjoint main diagnostics files. Its actual xcresult matches all five selected
+method IDs and nine expanded cases: zero failures or skips. Offline tab entry
+passes missing, partial and unreadable history; malformed later-page capture
+passes both cases; working-roster withdrawal passes both cases; the roster-
+restore fixture passes. The original
+`aMountedLibraryRetriesStartupStorageAfterTheLockClears` now passes in
+2.2478459 seconds. Artifact `13091358442` has SHA-256
+`29c5baced2e04ae3d9a6d9a9f11a6740cf2c19bd5813905d4e546408bc75a2c5`.
+The source owner independently matched that ZIP hash and retained the root
+settlement, provenance, parsed result and audit script. These are five-method
+acceptance results at that pin, not whole-PR or full-main proof.
+
+R18's final four static reviews are archived. Primary, Ponytail and Thermo
+found no new material issue. Adversarial found a distinct first-roster race:
+online tab entry could scan an initial empty roster before the first service
+response, then treat that scan as fresh when equal cached labels arrived.
+The repair uses the existing unknown-roster state to block membership scans
+and freshness certification until a real observation, and invalidates the
+first observation even when labels match. A public AppStore regression holds
+the service roster across online tab refresh, retains gallery/Search/captured
+bytes and an independent cold read, and covers equal, empty and failed first
+responses plus genuine withdrawal and a surviving peer. It compiles but has
+not run locally. It does not replace or invalidate the nine prior passes.
+
+The unsigned generic arm64 Debug app and both test bundles compile in
+36.061 seconds, with all 77 before/after file hashes equal. Only the final
+documentation notes followed. Core/MainActor and Python tooling bytes are
+unchanged from the recorded 408-method and 223-test checks. Files-module bytes
+remain unchanged. Root owns the new exact-pin regression execution, pending
+UI/Files readback, full-main checks, merge and final TestFlight delivery.

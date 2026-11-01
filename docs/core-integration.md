@@ -405,6 +405,10 @@ guards while SQL readiness and retirement still gate cache reads and writes.
 Only an observed roster changes membership; cached bot names supply labels.
 Refresh callers must state which evidence they carry; offline tab entry never
 upgrades cached labels to observed membership.
+Before the first observed roster, reconnecting tab reads retain saved results
+without scanning membership or certifying freshness. The first observation
+invalidates revalidation even when its labels match the cached labels; an
+observed empty roster remains authoritative.
 Roster withdrawal includes working chats and invalidates their observations
 synchronously. Seed, restore and every scan await check the roster revision;
 a joined forced refresh uses the latest observed roster. Reentry needs fresh

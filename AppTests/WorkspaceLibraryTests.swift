@@ -223,6 +223,89 @@ import BottoCore
         cold.retire(); await coldCache.close()
     }
 
+    @Test(arguments: ["equal", "empty", "failed"])
+    func reconnectKeepsRestoredArtifactsUntilTheFirstRosterIsObserved(response: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://first-roster.example")!)
+        defer { try? FileManager.default.removeItem(at: root); LocalHistory.remove(for: configuration.id) }
+        let service = LibraryTestService(secondBot: true), gate = StoreTestBarrier()
+        defer { gate.release() }
+        service.messages[service.second] = [.init(id: "side-file", role: .assistant, text: "First roster needle\nMEDIA:/saved.txt")]
+        let book = savedBook(service), vault = MemoryConnectionStorage(saved: configuration)
+        let scope = ArtifactCacheScope(configurationID: configuration.id,
+            serverURL: Data(configuration.serverURL.absoluteString.utf8), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
+        for item in warm.artifacts { _ = try await warm.download(item) }
+        warm.retire(); await warmCache.close()
+        try LocalHistory(bots: service.profiles, book: book).save(for: configuration.id)
+        let cache = ArtifactCache(root: root), store = AppStore(service: service, persistence: vault.persistence, artifactCache: cache)
+        defer { store.library.retire() }
+        await store.refreshLibraryIfNeeded()
+        try #require(store.library.artifacts.contains { $0.chat.identity == service.second })
+        service.botsBarrier = gate
+        service.rosterProfiles = response == "empty" ? [] : service.profiles
+        service.botsError = response == "failed" ? HermesServiceError.disconnected : nil
+        let connecting = Task { await store.connect(configuration) }
+        defer { connecting.cancel() }
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(store.isConnected)
+        let beforeObservation = store.library.revalidationRevision
+        let directories = service.directoryCount, reads = service.historyOffsets.count, downloads = service.downloadCount
+        await store.refreshLibraryIfNeeded(); await store.refreshLibrary(force: true)
+        let pending = try #require(store.library.artifacts.first { $0.chat.identity == service.second })
+        #expect(!LibrarySearchResults(query: "First roster needle", bots: [], chats: store.library.chats, artifacts: []).messages.isEmpty)
+        #expect(try await store.library.download(pending).data == Data("side".utf8))
+        #expect(service.directoryCount == directories && service.historyOffsets.count == reads && service.downloadCount == downloads)
+        // Read through a second cache while the first network roster is still held.
+        let probeCache = ArtifactCache(root: root), probeSession = probeCache.session(scope: scope)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(try await probeSession.loadChats()).contains(where: { $0.identity == service.second }), ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        let probe = WorkspaceLibrary(service: service, cache: probeSession)
+        await probe.restore()
+        let independent = try #require(probe.artifacts.first { $0.chat.identity == service.second })
+        #expect(try await probe.download(independent).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        probe.retire(); await probeCache.close()
+        gate.release(); try #require(await connecting.value)
+        service.botsBarrier = nil
+        if response == "failed" {
+            await store.refreshLibraryIfNeeded()
+            #expect(store.library.revalidationRevision == beforeObservation)
+            #expect(store.library.artifacts.contains { $0.chat.identity == service.second })
+            #expect(service.directoryCount == directories && service.historyOffsets.count == reads)
+            service.botsError = nil
+            await store.refresh()
+        }
+        #expect(store.library.revalidationRevision != beforeObservation,
+            "The first observed roster invalidates tab freshness even when cached labels are identical")
+        let observedDirectories = service.directoryCount
+        await store.refreshLibraryIfNeeded()
+        if response == "empty" {
+            #expect(store.library.chats.isEmpty)
+            #expect(service.directoryCount == observedDirectories)
+        } else {
+            #expect(service.directoryCount == observedDirectories + service.profiles.count)
+            #expect(store.library.artifacts.contains { $0.chat.identity == service.second })
+        }
+        // An observed absence remains authoritative after the initial read.
+        service.rosterProfiles = [service.profiles[0]]
+        await store.refresh(); await store.refreshLibrary(force: true)
+        #expect(!store.library.chats.contains { $0.identity == service.second })
+        #expect(try await cache.session(scope: scope).metadataRecovery().contains(service.second))
+        store.library.retire(); await cache.close()
+        let finalCache = ArtifactCache(root: root), final = WorkspaceLibrary(service: service, cache: finalCache.session(scope: scope))
+        final.seed(book: book, bots: service.profiles); await final.restore()
+        #expect(!final.chats.contains { $0.identity == service.second })
+        let peer = try #require(final.artifacts.first { $0.chat.identity == service.first })
+        let finalDownloads = service.downloadCount
+        #expect(try await final.download(peer).data == Data("main".utf8))
+        #expect(service.downloadCount == finalDownloads)
+        final.retire(); await finalCache.close()
+    }
+
     @Test(arguments: [false, true])
     func malformedHistoryFailureWithdrawsItsDisputedCaptureBeforeCommit(force: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -3231,6 +3314,8 @@ private actor NextLibraryProjectionPause {
     var pinOnConnect: String?
     var downloadCount = 0
     var botReadCount = 0
+    var botsBarrier: StoreTestBarrier?
+    var botsError: (any Error)?
     var lastOpened: SessionIdentity?
     private(set) var lastAccess: ConversationAccess?
     private var issuer = ConversationIssuer<SessionIdentity>()
@@ -3251,7 +3336,12 @@ private actor NextLibraryProjectionPause {
         return .init(version: "test", installID: pinOnConnect)
     }
     func disconnect() {}
-    func bots() async throws -> [BotProfile] { botReadCount += 1; return rosterProfiles ?? profiles }
+    func bots() async throws -> [BotProfile] {
+        botReadCount += 1
+        await botsBarrier?.wait()
+        if let botsError { throw botsError }
+        return rosterProfiles ?? profiles
+    }
     func createBot(_ draft: BotDraft) async throws -> BotProfile { throw HermesServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCount += 1
