@@ -642,3 +642,44 @@ documentation notes followed. Core/MainActor and Python tooling bytes are
 unchanged from the recorded 408-method and 223-test checks. Files-module bytes
 remain unchanged. Root owns the new exact-pin regression execution, pending
 UI/Files readback, full-main checks, merge and final TestFlight delivery.
+
+## Bounded final integration — 1 November 2026
+
+Root run `41329562960` passes the reconnect method's equal, empty and failed
+first-roster cases at product pin `72d6b36`, with the root Files test delta.
+Artifact `13093091015` has SHA-256
+`8dda676b3dd43da9ccb1a2e4aea43f92886eac1e7a8783719159f5523abbcad2`;
+the source owner independently matched the ZIP hash. This settles that method's
+three cases, not the later projection repair or the whole PR. Files reached
+the actual exporter but failed its readiness assertion before Save. The final
+root corrections remove redundant Actions roundtrips and point-in-time hit-test
+prechecks; actual taps, dismissal, Close, Files reopen and independent exact
+80-byte provider proof remain required. No Save pass or product/AX cause is claimed.
+
+The remaining projection repair lets passive discovery follow the current
+canonical row/version while the original read still fences completion metadata.
+A gated last-saved-row test covers a roster arriving during discovery, unchanged
+strong-summary reuse, Search/artifact visibility, captured-byte reuse and actual
+absence. Its two cases compile and remain unexecuted locally. The final unsigned
+generic arm64 Debug app and both test bundles compile in 7.557 seconds with all
+78 before/after hashes equal; the extra path is the ordinary contributor command
+correction. All 77 feature paths remain. Core/MainActor and Python tooling retain
+their unchanged 408-method and 223-test bindings.
+
+The user explicitly narrowed the remaining process for simple delivery: retain
+the R18 full 77-path assessments and mappings, then run one bounded independent
+Primary assessment of the final delta since `c0fe84e`, including the full changed
+production module and direct callers. This does not claim a fresh four-role
+whole-PR clean snapshot. Root retains merge judgment, essential native/UI/Files
+acceptance, unfiltered full-main checks and final Apple delivery.
+
+Known deferred limit: a genuine bot withdrawal received while the initial index
+is unreadable and local history supplies no saved chat IDs may be absent only in
+memory. An offline restart before a successful reconciliation can show stale
+metadata again. This is not fixed. The existing read-failure warning remains;
+reenter the library or refresh after storage becomes readable before closing.
+Root accepted this disposable-cache staleness deferral, conditional on the bounded
+review confirming no new network/mutation authority, original-byte loss or
+corruption, or account-scope escape. No profile-incarnation layer or broad
+quarantine was added. The exact follow-up is saved in Hot as
+`7F24A8D9-B726-406C-9099-E7770DA89C9C`.

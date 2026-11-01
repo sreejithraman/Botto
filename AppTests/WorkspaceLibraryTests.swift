@@ -307,6 +307,47 @@ import BottoCore
     }
 
     @Test(arguments: [false, true])
+    func firstRosterDuringTheLastSavedProjectionKeepsCurrentDerivedContent(removed: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(), gate = StoreTestBarrier(), pause = NextLibraryProjectionPause()
+        defer { gate.release() }
+        service.omitSecond = true; service.versionedSummaries = true
+        service.messages[service.first] = [.init(id: "main-file", role: .assistant, text: "Restored projection needle\nMEDIA:/saved.txt")]
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
+        _ = try await warm.download(try #require(warm.artifacts.first))
+        warm.retire(); await warmCache.close()
+        await pause.arm()
+        let cache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: cache.session(scope: scope),
+            projector: { messages, tail in
+                if await pause.take() { await gate.wait() }
+                return await WorkspaceLibrary.project(messages, streamingMessage: tail)
+            })
+        defer { cold.retire() }
+        let restoring = Task { await cold.restore() }
+        defer { restoring.cancel() }
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        cold.observeBots(removed ? [] : service.profiles, evidence: .observed)
+        gate.release(); await restoring.value
+        let histories = service.historyOffsets.count, downloads = service.downloadCount
+        cold.setOnline(true)
+        await cold.refreshIfNeeded(evidence: .cached, bots: service.profiles)
+        #expect(service.historyOffsets.count == histories, "Unchanged complete history needs no forced read to restore its projection")
+        let search = LibrarySearchResults(query: "Restored projection needle", bots: [], chats: cold.chats, artifacts: [])
+        if removed {
+            #expect(cold.artifacts.isEmpty && search.messages.isEmpty)
+        } else {
+            let saved = try #require(cold.artifacts.first)
+            #expect(!search.messages.isEmpty)
+            #expect(try await cold.download(saved).data == Data("main".utf8))
+            #expect(service.downloadCount == downloads)
+        }
+        cold.retire(); await cache.close()
+    }
+
+    @Test(arguments: [false, true])
     func malformedHistoryFailureWithdrawsItsDisputedCaptureBeforeCommit(force: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

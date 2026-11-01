@@ -1250,7 +1250,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let admitted = cachedChat(target)
         // Passive discovery follows the workspace after admission; completion
         // metadata still belongs to the original read and canonical rows.
-        _ = await enrichCurrent(target, while: { !self.isRetired && admittedBy() })
+        _ = await enrichCurrent(target, while: { !self.isRetired })
         guard admittedBy(), let admitted, let current = cachedChat(target), sameCachedChat(admitted, current) else { return false }
         let beforeCompletion = cachedChat(target), wasDirty = dirtyChats.contains(target)
         onCommit()

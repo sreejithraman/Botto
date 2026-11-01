@@ -123,6 +123,13 @@ selected-chat history or grant network access.
 Configuration quarantine lasts until that cache is discarded or pruned.
 Unknown recovery formats remain untouched and unavailable.
 
+Known cache limit: if the initial index is unreadable and local history supplies
+no chat IDs, an observed bot withdrawal cannot yet guard unknown saved rows.
+An offline restart before successful reconciliation can show stale metadata.
+The existing read-failure warning remains. Reenter the library or refresh after
+storage becomes readable to reconcile it. Original bytes remain retained; current
+service authority and account-scope checks still apply independently of metadata.
+
 Core marks local inflight, optimistic and streaming occurrences with
 `ChatMessage.transientID`. A current exact occurrence can use selected-chat file
 access, while library discovery, Search references and durable capture keys
