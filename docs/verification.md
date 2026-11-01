@@ -4,6 +4,36 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Credential and startup follow-up (1 November 2026)
+
+Source at `332c0a5` confirms that ordinary setup-test launches can load a saved
+connection and reconnect before welcome assertions. `SetupUITests` now selects
+the existing Simulator-only isolated store, keeps that selection at large text,
+and skips physical devices. All seven test bodies and their assertions remain
+unchanged. The suite typechecks for iOS and Simulator with warnings as errors;
+its UI workflows were not rerun. This is setup coverage, not signed Keychain
+coverage. The existing injected-storage launch tests remain in place.
+All 408 core tests and the MainActor compatibility build pass locally.
+
+An isolated compiler fixture using the current `BottoWorkspace` body reproduces
+the three Xcode 27.1 capture warnings. Explicit strong capture by the startup
+task removes them; the global push callbacks still capture the store weakly.
+A standalone fixture using the task body retains a substitute store through
+suspension and releases it after completion with callbacks still installed.
+These fixtures do not establish full-app deallocation or a memory-leak fix.
+The initial unsigned Release archive stopped because the disk was full. After
+space became available, the arm64 Release archive passed with no startup-capture
+warnings. Native execution remains unverified: T3 could not discover the fresh
+run-owned Simulator, even after its suggested refresh. No UI suite was started.
+
+`ConnectionVault` still omits an access-group filter. Apple documents that
+[search, update, and delete then cover every entitled group](https://developer.apple.com/documentation/security/ksecattraccessgroup).
+Current entitlements put the private group first, which scopes implicit new
+items but not those other operations. No collision or credential exposure was
+observed. Runtime scoping and any migration remain unresolved pending a signed,
+disposable same-service/account fixture in both private and shared groups;
+unsigned builds and injected storage cannot prove that behavior.
+
 ## Test audit (1 November 2026)
 
 The audit removed unsupported standalone macOS rich-content harness branches,
