@@ -567,3 +567,44 @@ the separate Files fixture repair, affected hosted execution, full-main
 acceptance, merge and final beta delivery. The prior ten passing UI workflows
 retain their original source binding; these results do not prove final release
 acceptance.
+
+## Integrated Files acceptance and R18 repairs — 1 November 2026
+
+The reviewed Files module `6ae7670` was cherry-picked as `e6ee422` after the
+R17 source freeze closed. All eight imported file hashes match the handoff.
+Its four initial required module reviews are archived; the root owner repaired
+bounded findings afterward. There is no independent post-fix module clean
+claim. The next full integrated PR review owns those final bytes. The helper
+now saves default `notes.txt` after explicit owned-device absence preflight,
+requires real preview close and independent Files reopen, and retains separate
+per-run absence/readback verdicts. Removing the duplicate completed-chat-Save
+wrapper leaves the library as the public successful-Save representative;
+chat cancellation, reopen, Share, retirement and shared output lifecycle tests
+remain. Actual native Save and fresh 80-byte provider readback remain pending.
+The shared verification setup recipe now describes that protocol.
+
+Three distinct R17 findings have repairs in the integrated candidate. Refresh
+and roster callers explicitly distinguish cached labels from observed membership;
+public AppStore fixtures preserve offline gallery, Search and captured originals
+with missing, unreadable or partial local history, then require real roster
+withdrawal and independent cold readback. Correctly associated rejected pages
+retain bounded stable raw IDs, so a malformed later page cannot hide an overlap
+with an earlier producer; oversized pages conservatively withhold that chat's
+retained references. Core's eight adapter/shape cases failed before repair and
+pass afterward. Native fixtures retain an in-flight capture, unaffected peer,
+old-original rollback and cold reopen. The roster-restore fixture now registers
+the waiting refresh before changing membership, retains its added-profile
+oracle, and expects the current two-profile scan's two directory reads. Local
+entry waits are bounded, and the forced-followup fixture removes its one-shot
+directory gate before the next pass. These native assertions are compiled,
+not executed locally; no assertion deadline or default demo timing changed.
+
+All original 70 paths remain. The integrated Files tooling and documentation
+bring the complete scope to 77 paths. Core passes 408 methods in ten suites in
+12.728 seconds; MainActor compatibility builds in 1.52 seconds. The unsigned
+generic arm64 Debug app and both test bundles compile in 35.958 seconds, with
+all 77 before/after file hashes equal. Product/test bytes remain unchanged after
+that build; only the final documentation notes were added. The integrated
+Files filesystem 17 and runner 7 Python tests pass. Prior native 135/136 and UI
+outcomes retain their source bindings. Root owns affected exact-pin execution,
+independent export, full-main checks, integration, merge and Apple delivery.

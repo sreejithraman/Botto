@@ -120,6 +120,12 @@ import BottoCore
         await withCheckedContinuation { entryWaiter = $0 }
     }
 
+    func waitUntilEntered(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !entered, !Task.isCancelled, ContinuousClock.now < deadline { await Task.yield() }
+        return entered
+    }
+
     func release() {
         completion?.resume()
         completion = nil

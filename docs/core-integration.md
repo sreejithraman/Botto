@@ -403,6 +403,8 @@ or mutation authority. Startup cleanup checkpoints preserve newer active-lease
 guards while SQL readiness and retirement still gate cache reads and writes.
 
 Only an observed roster changes membership; cached bot names supply labels.
+Refresh callers must state which evidence they carry; offline tab entry never
+upgrades cached labels to observed membership.
 Roster withdrawal includes working chats and invalidates their observations
 synchronously. Seed, restore and every scan await check the roster revision;
 a joined forced refresh uses the latest observed roster. Reentry needs fresh
@@ -412,3 +414,8 @@ stamps withhold changed or evicted rows when the same mount retries storage.
 Correctly associated history failures carry known duplicate IDs even when
 another row or pagination field is malformed. Head probes and full scans
 quarantine those IDs before further publication or suspension.
+Rejected pages also carry at most 100 raw stable IDs. Their overlap with retained
+rows is quarantined even if the conflicting occurrence was on an earlier page.
+An oversized page withholds all retained references in that chat because its
+complete overlap cannot be enumerated within that limit. No rejected content is
+admitted, and unrelated chats and captured original bytes remain available.

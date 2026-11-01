@@ -19,11 +19,18 @@ extension HermesBotService {
         guard exact(page["session_id"].text, identity.stored.text),
               exact(page["profile"].text, identity.profile.text),
               let rows = page["messages"].list else { throw HermesServiceError.wrongConversation }
-        let unavailable = HermesConversationState.unavailableMessageIDs(rows, stored: identity.stored.text)
+        let boundedRows = Array(rows.prefix(100))
+        let unavailable = HermesConversationState.unavailableMessageIDs(boundedRows, stored: identity.stored.text)
         let disputed = unavailable.filter { ChatMessage.isStableID($0, storedID: identity.stored.text) }
+        let rawIDs = Set(boundedRows.compactMap { row -> Data? in
+            guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer,
+                  id >= 0 else { return nil }
+            return Data((identity.stored.text + ":row:" + String(id)).utf8)
+        })
         func malformedPage() -> any Error {
-            if !disputed.isEmpty {
-                return ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: disputed)
+            if !rawIDs.isEmpty || rows.count > 100 {
+                return ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: disputed,
+                    sourceIDs: rawIDs, exceedsRowLimit: rows.count > 100)
             }
             return HermesServiceError.incompatible
         }

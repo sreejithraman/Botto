@@ -59,14 +59,14 @@ also reported separately from fix acceptance.
   See [setup](../../setup.md) for supported host and authentication paths.
 - Read [scripts/check.sh](../../../scripts/check.sh) before running it. From
   the checkout root, `swift test` checks BottoCore. `./scripts/check.sh` repeats
-  that and runs Xcode tests on the first available iPhone Simulator, serially,
-  with signing disabled and `.artifacts/DerivedData`. It does not select an
-  caller-owned target, prove signed Keychain login, or exercise iPad/VoiceOver.
-  It attempts a uniquely named Files save/reopen and independently verifies its
-  durable provider bytes; `.artifacts/artifact-export-receipt.json` records that
-  separate verdict even when UI testing fails. Choose and record the destination
-  explicitly when needed; the script's existence does not establish that the
-  complete current workflow passed.
+  that and runs Xcode tests serially on the explicit owned iPhone Simulator in
+  `BOTTO_TEST_DESTINATION`, with signing disabled and `.artifacts/DerivedData`.
+  It does not prove signed Keychain login or exercise iPad/VoiceOver. Each run
+  records the absence of the default `notes.txt` before Save, then attempts the
+  native Save and Files reopen. Independent provider readback checks fresh
+  output and exact bytes. The run's new export-evidence directory retains
+  separate absence/readback verdicts even if UI testing fails. The script's
+  existence does not establish that the complete current workflow passed.
 - [Contributor CI](../../../scripts/check-ci.sh) runs package, MainActor,
   tooling, and unsigned app/test builds on PRs. Main pushes also execute the
   full serial native suite before TestFlight. Its independent jobs

@@ -594,14 +594,14 @@ import BottoCore
         let library = library
         library.seed(book: chats.persisted(), bots: cachedBots)
         library.setOnline(isConnected)
-        await library.refreshIfNeeded(bots: cachedBots)
+        await library.refreshIfNeeded(evidence: .cached, bots: cachedBots)
     }
 
     func refreshLibrary(force: Bool = false) async {
         let library = library
         library.seed(book: chats.persisted(), bots: cachedBots)
         library.setOnline(isConnected)
-        await library.refresh(bots: cachedBots, force: force)
+        await library.refresh(evidence: .cached, bots: cachedBots, force: force)
     }
 
     @discardableResult func openLibraryChat(_ chat: LibraryChat,
@@ -686,7 +686,7 @@ import BottoCore
             do {
                 let profiles = try await service.bots()
                 guard generation == owner, botRefresh === refresh else { return }
-                library.observeBots(profiles)
+                library.observeBots(profiles, evidence: .observed)
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
                 bindPushNotifications()

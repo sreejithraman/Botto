@@ -129,6 +129,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var retainedAcceptanceFences = 0
         var pendingMetadataIdentities = 0
         var forcedRefreshesJoined = 0
+        var refreshesJoinedRestoration = 0
     }
     @ObservationIgnored private(set) var indexingMetrics = IndexingMetrics()
     struct Projection: Sendable {
@@ -534,7 +535,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         persistenceTask = task
     }
 
-    func observeBots(_ bots: [BotProfile], evidence: RosterEvidence = .observed) {
+    func observeBots(_ bots: [BotProfile], evidence: RosterEvidence) {
         let names = Dictionary(bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } }, uniquingKeysWith: { first, _ in first })
         if evidence == .observed {
             let previous = rosterReadFloors
@@ -797,8 +798,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         requiresForcedPass = false; scanningForced = false
         for flight in flights.values { flight.admission.revokeAll(); flight.task.cancel() }; flights = [:]
     }
-    func refreshIfNeeded(bots: [BotProfile]) async {
-        observeBots(bots)
+    func refreshIfNeeded(evidence: RosterEvidence, bots: [BotProfile]) async {
+        observeBots(bots, evidence: evidence)
         await restore()
         while !isRetired, online, !Task.isCancelled {
             if scanTask == nil, let lastRevalidation,
@@ -810,12 +811,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
     }
 
-    func refresh(bots: [BotProfile], force: Bool = false) async {
-        observeBots(bots)
+    func refresh(evidence: RosterEvidence, bots: [BotProfile], force: Bool = false) async {
+        observeBots(bots, evidence: evidence)
         await refreshCurrentRoster(force: force)
     }
 
     private func refreshCurrentRoster(force: Bool) async {
+        if seedTask != nil || restoreTask != nil { indexingMetrics.refreshesJoinedRestoration += 1 }
         await restore()
         guard !isRetired, online, !Task.isCancelled else { return }
         if let scanTask {
@@ -1203,7 +1205,12 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         guard let failure = error as? ConversationHistoryPage.Failure,
               failure.identity.profile == source.profile, failure.identity.root == source.root,
               failure.identity.stored == source.stored else { return }
-        quarantine(failure.unavailableMessageIDs, source: source)
+        let chat = records[key(for: source)]
+        let retained = Set(chat?.messages.map { Data($0.id.utf8) } ?? []).union(chat?.unavailableMessageIDs ?? [])
+        // Rejected content cannot resolve a repeated identity. Oversized pages
+        // cannot enumerate all overlap within the adapter's evidence budget.
+        let overlap = failure.exceedsRowLimit ? retained : failure.sourceIDs.intersection(retained)
+        quarantine(failure.unavailableMessageIDs.union(overlap), source: source)
     }
 
     private func pageAmbiguity(_ page: ConversationHistoryPage, source: SessionIdentity) -> Set<Data> {

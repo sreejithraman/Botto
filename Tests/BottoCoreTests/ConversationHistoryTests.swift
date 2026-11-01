@@ -106,6 +106,49 @@ func malformedHistoryStillReportsItsKnownDuplicateEvidence(shape: String) async 
     let failure = try #require(observed)
     #expect(failure.identity == identity)
     #expect(failure.unavailableMessageIDs == [Data((identity.stored.text + ":row:7").utf8)])
+    #expect(failure.sourceIDs.contains(Data((identity.stored.text + ":row:7").utf8)))
+    #expect(failure.sourceIDs.count <= 100 && failure.exceedsRowLimit == (shape == "oversized"))
+    #expect(failure.errorDescription == HermesServiceError.incompatible.errorDescription)
+}
+
+@MainActor @Test(arguments: [true, false], ["missing", "negative", "pagination", "oversized"])
+func malformedLaterHistoryRetainsCrossPageIdentityEvidence(authority: Bool, shape: String) async throws {
+    let host = try HermesTestHost(authority: authority), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            let offset = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "offset" }?.value
+            if offset == "0" {
+                return historyPage(identity: identity, offset: 0, rows: (1...100).map {
+                    historyRow($0, text: $0 == 7 ? "MEDIA:/disputed.txt" : "First page \($0)")
+                })
+            }
+            var rows = [historyRow(7, text: "Conflicting later producer")]
+            if shape == "oversized" { rows += (200..<300).map { historyRow($0, text: "Surplus") } }
+            else if shape == "missing" { rows.append(.object(["role": .string("assistant"), "content": .string("Missing identity")])) }
+            else if shape == "negative" { rows.append(historyRow(-1, text: "Invalid identity")) }
+            var page = historyPage(identity: identity, offset: 100, rows: rows)
+            if shape == "pagination" { page["pagination"]["limit"] = .number(99) }
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    let first = try await service.conversationHistory(identity, offset: 0)
+    #expect(first.nextOffset == 100)
+    #expect(first.messages.contains { $0.text == "MEDIA:/disputed.txt" })
+    var observed: ConversationHistoryPage.Failure?
+    do {
+        _ = try await service.conversationHistory(identity, offset: 100)
+        Issue.record("A malformed later page must not enter the admitted transcript")
+    } catch { observed = error as? ConversationHistoryPage.Failure }
+    let failure = try #require(observed)
+    #expect(failure.identity == identity)
+    #expect(failure.sourceIDs.contains(Data((identity.stored.text + ":row:7").utf8)))
+    #expect(failure.sourceIDs.count <= 100 && failure.exceedsRowLimit == (shape == "oversized"))
     #expect(failure.errorDescription == HermesServiceError.incompatible.errorDescription)
 }
 
@@ -290,7 +333,17 @@ func conversationHistoryRejectsMalformedOrForeignPages(condition: String) async 
         }
         return try original?(request) ?? .object([:])
     }
-    await #expect(throws: HermesServiceError.self) { try await service.conversationHistory(identity, offset: 0) }
+    do {
+        _ = try await service.conversationHistory(identity, offset: 0)
+        Issue.record("Malformed or foreign content must not enter the library")
+    } catch {
+        if ["profile", "session", "missing-id"].contains(condition) {
+            #expect(error is HermesServiceError)
+        } else {
+            let failure = try #require(error as? ConversationHistoryPage.Failure)
+            #expect(failure.identity == identity && failure.sourceIDs.contains(Data((identity.stored.text + ":row:1").utf8)))
+        }
+    }
 }
 
 @MainActor @Test(arguments: [-1, 1, 101, 100_100, Int.max])

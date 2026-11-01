@@ -21,14 +21,14 @@ import BottoCore
     @Test func initialLegacyPublicationDoesNotAuthorizeAWithdrawnRosterReentry() async throws {
         let service = LibraryTestService(), library = WorkspaceLibrary(service: service)
         defer { library.retire() }
-        await library.restore(); library.observeBots(service.profiles)
+        await library.restore(); library.observeBots(service.profiles, evidence: .observed)
         let snapshot = Conversation(id: "main", storedID: "main", profileID: "helper", messages: service.messages[service.first]!)
         library.accept(identity: service.first, snapshot: snapshot, title: "Legacy", evidence: .incremental(previous: nil))
         #expect(library.chats.first?.messages == snapshot.messages)
         let staleStart = ContinuousClock.now
-        library.setOnline(true); await library.refresh(bots: [])
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: [])
         #expect(library.chats.isEmpty)
-        library.observeBots(service.profiles)
+        library.observeBots(service.profiles, evidence: .observed)
         library.accept(identity: service.first, snapshot: snapshot, title: "Old event", evidence: .incremental(previous: snapshot))
         library.accept(identity: service.first, snapshot: snapshot, title: "Old read", evidence: .read(startedAt: staleStart, observedSource: service.first))
         #expect(library.chats.isEmpty)
@@ -48,7 +48,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let removed = try #require(library.artifacts.first { $0.chat.identity == service.second })
         _ = try await library.download(removed)
         _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.first }))
@@ -58,19 +58,22 @@ import BottoCore
             evidence: .read(startedAt: .now, observedSource: service.second))
         #expect(library.isCurrent(removed))
         service.directoryBarriers[service.first.profile] = gate
-        let reading = Task { await library.refresh(bots: service.profiles) }
-        await gate.waitUntilEntered()
-        library.observeBots([service.profiles[0]])
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
+        defer { reading.cancel() }
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        library.observeBots([service.profiles[0]], evidence: .observed)
         #expect(!library.isCurrent(removed))
         #expect(!library.chats.contains { $0.identity == service.second })
         #expect(LibrarySearchResults(query: "Withdrawn needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(try await session.metadataRecovery().contains(service.second))
         let reads = service.historyOffsets.count
         let joined = library.indexingMetrics.forcedRefreshesJoined
-        let forced = Task { await library.refresh(bots: [service.profiles[0]], force: true) }
+        let forced = Task { await library.refresh(evidence: .observed, bots: [service.profiles[0]], force: true) }
+        defer { forced.cancel() }
         let deadline = ContinuousClock.now + .seconds(5)
         while library.indexingMetrics.forcedRefreshesJoined == joined, ContinuousClock.now < deadline { await Task.yield() }
         try #require(library.indexingMetrics.forcedRefreshesJoined > joined)
+        service.directoryBarriers = [:]
         gate.release(); await reading.value; await forced.value
         #expect(service.historyOffsets.count > reads, "The joined forced refresh still checks the remaining profile")
         #expect(!library.chats.contains { $0.identity == service.second })
@@ -93,17 +96,131 @@ import BottoCore
     @Test func quickRosterReentryDoesNotReuseItsOldObservation() async throws {
         let service = LibraryTestService(), library = WorkspaceLibrary(service: service)
         defer { library.retire() }
-        await library.restore(); library.observeBots(service.profiles)
+        await library.restore(); library.observeBots(service.profiles, evidence: .observed)
         let snapshot = Conversation(id: "main", storedID: "main", profileID: "helper", messages: service.messages[service.first]!)
         library.accept(identity: service.first, snapshot: snapshot, title: "Current", evidence: .read(startedAt: .now, observedSource: service.first))
         let started = ContinuousClock.now
-        library.observeBots([]); library.observeBots(service.profiles)
+        library.observeBots([], evidence: .observed); library.observeBots(service.profiles, evidence: .observed)
         var late = snapshot; late.messages.append(.init(id: "late", role: .assistant, text: "MEDIA:/stale.txt"))
         library.accept(identity: service.first, snapshot: late, title: "Old event", evidence: .incremental(previous: snapshot))
         library.accept(identity: service.first, snapshot: late, title: "Old read", evidence: .read(startedAt: started, observedSource: service.first))
         #expect(library.chats.isEmpty)
         library.accept(identity: service.first, snapshot: snapshot, title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.first))
         #expect(library.chats.first?.messages == snapshot.messages)
+    }
+
+    @Test(arguments: ["missing", "unreadable", "partial"])
+    func offlineTabEntryDoesNotPromoteCachedLabelsToRosterEvidence(historyState: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://offline-library.example")!)
+        defer { try? FileManager.default.removeItem(at: root); LocalHistory.remove(for: configuration.id) }
+        let service = LibraryTestService(secondBot: true)
+        service.messages[service.second] = [.init(id: "side-file", role: .assistant, text: "Offline saved needle\nMEDIA:/saved.txt")]
+        let book = savedBook(service), vault = MemoryConnectionStorage(saved: configuration)
+        let scope = ArtifactCacheScope(configurationID: configuration.id,
+            serverURL: Data(configuration.serverURL.absoluteString.utf8), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
+        for item in warm.artifacts { _ = try await warm.download(item) }
+        warm.retire(); await warmCache.close()
+        let historyURL = try LocalHistory.file(for: configuration.id)
+        if historyState == "unreadable" { try Data("Unreadable saved history".utf8).write(to: historyURL) }
+        if historyState == "partial" {
+            var history = LocalHistory(); history.bots = [service.profiles[0]]
+            try history.save(for: configuration.id)
+        }
+        let reads = service.historyOffsets.count, directories = service.directoryCount
+        let downloads = service.downloadCount, rosters = service.botReadCount
+        let cache = ArtifactCache(root: root), store = AppStore(service: service, persistence: vault.persistence, artifactCache: cache)
+        #expect(!store.isConnected && store.cacheLoadFailed == (historyState == "unreadable"))
+        await store.refreshLibraryIfNeeded(); await store.refreshLibrary(force: true)
+        #expect(store.library.chats.contains { $0.identity == service.first })
+        let saved = try #require(store.library.artifacts.first { $0.chat.identity == service.second })
+        #expect(!LibrarySearchResults(query: "Offline saved needle", bots: [], chats: store.library.chats, artifacts: []).messages.isEmpty)
+        #expect(try await store.library.download(saved).data == Data("side".utf8))
+        #expect(service.historyOffsets.count == reads && service.directoryCount == directories
+            && service.downloadCount == downloads && service.botReadCount == rosters)
+        if historyState == "unreadable" { #expect(try Data(contentsOf: historyURL) == Data("Unreadable saved history".utf8)) }
+        store.library.retire(); await cache.close()
+
+        let coldCache = ArtifactCache(root: root), cold = AppStore(service: service, persistence: vault.persistence, artifactCache: coldCache)
+        await cold.refreshLibraryIfNeeded()
+        let retained = try #require(cold.library.artifacts.first { $0.chat.identity == service.second })
+        #expect(try await cold.library.download(retained).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads && service.botReadCount == rosters)
+        // Only an actual service roster response withdraws the saved bot.
+        service.rosterProfiles = [service.profiles[0]]
+        try #require(await cold.connect(configuration)); await cold.refreshLibrary(force: true)
+        #expect(service.botReadCount > rosters && !cold.library.chats.contains { $0.identity == service.second })
+        #expect(try await coldCache.session(scope: scope).metadataRecovery().contains(service.second))
+        cold.library.retire(); await coldCache.close()
+        let finalCache = ArtifactCache(root: root), final = WorkspaceLibrary(service: service, cache: finalCache.session(scope: scope))
+        final.seed(book: book, bots: service.profiles); await final.restore()
+        #expect(!final.chats.contains { $0.identity == service.second })
+        let peer = try #require(final.artifacts.first { $0.chat.identity == service.first })
+        let finalDownloads = service.downloadCount
+        #expect(try await final.download(peer).data == Data("main".utf8))
+        #expect(service.downloadCount == finalDownloads)
+        final.retire(); await finalCache.close()
+    }
+
+    @Test(arguments: [false, true])
+    func malformedLaterPageRevokesAnEarlierProducerAndItsPendingCapture(oversized: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(), gate = CaptureCommitGate()
+        defer { gate.release() }
+        let old = ChatMessage(id: "main:row:7", role: .assistant, text: "Conflicted page needle\nMEDIA:/disputed.txt")
+        service.messages[service.first] = [old]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let item = try #require(library.artifacts.first { $0.chat.identity == service.first })
+        _ = try await library.download(item)
+        _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.second }))
+        gate.arm(); service.fileBytes = Data("Uncommitted replacement".utf8)
+        let capturing = Task { try await library.download(item, force: true) }
+        defer { capturing.cancel() }
+        var deadline = ContinuousClock.now + .seconds(5)
+        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(gate.isEntered)
+        let first = (1...100).map { $0 == 7 ? old : ChatMessage(id: "main:row:\($0)", role: .assistant, text: "First page \($0)") }
+        service.historyPages[service.first] = [0: .init(messages: first, nextOffset: 100, isComplete: true,
+            sourceIDs: Set(first.map { Data($0.id.utf8) }))]
+        service.historyFailureOffsets[service.first] = 100
+        service.historyFailures[service.first] = ConversationHistoryPage.Failure(identity: service.first,
+            unavailableMessageIDs: [], sourceIDs: oversized ? [Data("main:row:200".utf8)] : [Data(old.id.utf8)],
+            exceedsRowLimit: oversized)
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
+        defer { reading.cancel() }
+        deadline = .now + .seconds(5)
+        while library.isCurrent(item), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!library.isCurrent(item))
+        #expect(service.historyOffsets.contains(100))
+        #expect(LibrarySearchResults(query: "Conflicted page needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        gate.release()
+        await #expect(throws: (any Error).self) { _ = try await capturing.value }
+        await reading.value
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        let cold = WorkspaceLibrary(service: service, cache: coldSession)
+        cold.seed(book: book, bots: service.profiles); await cold.restore()
+        #expect(!cold.artifacts.contains { $0.artifact.messageID == old.id })
+        #expect(LibrarySearchResults(query: "Conflicted page needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
+        let attachment = try #require(item.artifact.attachment)
+        let key = try #require(await WorkspaceLibrary.originalKey(identity: service.first,
+            attachment: attachment, messages: [old]))
+        #expect(try await coldSession.original(for: key)?.artifact.data == Data("main".utf8))
+        let peer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
+        let downloads = service.downloadCount
+        #expect(try await cold.download(peer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        service.historyFailures = [:]; service.historyPages = [:]; service.historyFailureOffsets = [:]
+        cold.setOnline(true); await cold.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(cold.artifacts.contains { $0.artifact.messageID == old.id })
+        cold.retire(); await coldCache.close()
     }
 
     @Test(arguments: [false, true])
@@ -118,7 +235,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let item = try #require(library.artifacts.first { $0.chat.identity == service.first })
         _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.second }))
         gate.arm()
@@ -129,7 +246,7 @@ import BottoCore
         try #require(gate.isEntered)
         service.historyFailures[service.first] = ConversationHistoryPage.Failure(identity: service.first,
             unavailableMessageIDs: [Data(old.id.utf8)])
-        let reading = Task { await library.refresh(bots: service.profiles, force: force) }
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: force) }
         defer { reading.cancel() }
         deadline = .now + .seconds(5)
         while library.isCurrent(item), ContinuousClock.now < deadline { await Task.yield() }
@@ -152,7 +269,7 @@ import BottoCore
         #expect(try await cold.download(peer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
         service.historyFailures = [:]
-        cold.setOnline(true); await cold.refresh(bots: service.profiles, force: true)
+        cold.setOnline(true); await cold.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(cold.artifacts.contains { $0.artifact.messageID == old.id })
         cold.retire(); await coldCache.close()
     }
@@ -167,7 +284,7 @@ import BottoCore
         let book = savedBook(service)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second }))
         warm.retire(); await warmCache.close()
         var handle: OpaquePointer?
@@ -216,7 +333,7 @@ import BottoCore
         let book = savedBook(service)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.first }))
         warm.retire(); await warmCache.close()
         var handle: OpaquePointer?
@@ -227,13 +344,13 @@ import BottoCore
         let library = WorkspaceLibrary(service: service, cache: session)
         if seedOldBook { library.seed(book: book, bots: service.profiles) }
         await library.restore()
-        library.observeBots([service.profiles[0]])
+        library.observeBots([service.profiles[0]], evidence: .observed)
         try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
         service.directoryBarriers[service.first.profile] = gate
         library.setOnline(true)
-        let refreshing = Task { await library.refresh(bots: [service.profiles[0]], force: true) }
+        let refreshing = Task { await library.refresh(evidence: .observed, bots: [service.profiles[0]], force: true) }
         defer { refreshing.cancel() }
-        await gate.waitUntilEntered()
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
         #expect(!library.chats.contains { $0.identity == service.second })
         #expect(LibrarySearchResults(query: "Removed recovery needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(try await session.metadataRecovery().contains(service.second))
@@ -246,7 +363,7 @@ import BottoCore
         let downloads = service.downloadCount
         #expect(try await cold.download(peer).data == Data("main".utf8))
         #expect(service.downloadCount == downloads)
-        cold.setOnline(true); await cold.refresh(bots: service.profiles, force: true)
+        cold.setOnline(true); await cold.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(cold.artifacts.contains { $0.chat.identity == service.second })
         cold.retire(); await coldCache.close()
     }
@@ -301,7 +418,7 @@ import BottoCore
         let service = LibraryTestService(), book = savedBook(service)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second }))
         warm.retire(); await warmCache.close()
         var handle: OpaquePointer?
@@ -350,7 +467,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 2), cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let ledger = root.appendingPathComponent("metadata-recovery.plist"), unknown = Data("future recovery bytes".utf8)
         try unknown.write(to: ledger)
         for index in 0..<64 {
@@ -421,10 +538,10 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.first }))
         service.historyBarrier = history
-        let refreshing = Task { await library.refresh(bots: [service.profiles[0]], force: true) }
+        let refreshing = Task { await library.refresh(evidence: .observed, bots: [service.profiles[0]], force: true) }
         defer { refreshing.cancel() }
         await history.waitUntilEntered()
         #expect(!library.chats.contains { $0.identity == service.second })
@@ -452,7 +569,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second }))
         warm.retire(); await warmCache.close()
         var handle: OpaquePointer?
@@ -502,7 +619,7 @@ import BottoCore
             reading = Task { await library.restore() }
         } else {
             service.historyBarrier = gate; library.setOnline(true)
-            reading = Task { await library.refresh(bots: service.profiles, force: true) }
+            reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         }
         defer { reading.cancel() }
         await gate.waitUntilEntered()
@@ -533,7 +650,7 @@ import BottoCore
         let library = WorkspaceLibrary(service: service, limits: limits)
         defer { library.retire() }
         library.setOnline(true)
-        let reading = Task { await library.refresh(bots: service.profiles, force: true) }
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         defer { reading.cancel() }
         await gate.waitUntilEntered()
         for index in 0..<40 {
@@ -557,7 +674,7 @@ import BottoCore
         let book = savedBook(service)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.first }))
         warm.retire(); await warmCache.close()
         var limits = ArtifactCache.Limits(); limits.chatCount = 1
@@ -595,7 +712,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root, beforeMetadataWrite: { gate.pause() }), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let item = try #require(library.artifacts.first { $0.chat.identity == service.second })
         _ = try await library.download(item)
         let key = ArtifactOriginalKey(identity: service.second, messageID: Data(item.artifact.messageID.utf8),
@@ -645,7 +762,7 @@ import BottoCore
         let service = LibraryTestService(), book = savedBook(service)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         warm.retire(); await warmCache.close()
         var handle: OpaquePointer?
         #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
@@ -679,10 +796,10 @@ import BottoCore
         let laterMessage = try #require(service.messages[later]?.first?.id)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         let old = try #require(warm.artifacts.first { $0.chat.identity == first })
         _ = try await warm.download(old)
-        service.messages[first] = []; await warm.refresh(bots: service.profiles, force: true)
+        service.messages[first] = []; await warm.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(!warm.artifacts.contains { $0.chat.identity == first })
         warm.retire(); await warmCache.close()
         let firstProjection = StoreTestBarrier(), projection = StoreTestBarrier(), pause = NextLibraryProjectionPause()
@@ -715,13 +832,13 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root, limits: limits), session = cache.session(scope: scope)
         let warm = WorkspaceLibrary(service: service, cache: session)
-        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         let old = try #require(warm.artifacts.first { $0.chat.identity == service.first })
         _ = try await warm.download(old)
         let key = ArtifactOriginalKey(identity: service.first, messageID: Data(old.artifact.messageID.utf8),
             path: Data(try #require(old.artifact.attachment).path.utf8),
             sourceRevision: try #require(old.chat.sourceRevisions[Data(old.artifact.messageID.utf8)]))
-        service.messages[service.first] = []; await warm.refresh(bots: service.profiles, force: true)
+        service.messages[service.first] = []; await warm.refresh(evidence: .observed, bots: service.profiles, force: true)
         try await session.upsert(.init(identity: service.second, botName: "Helper", title: "Side", messages: service.messages[service.second] ?? [],
             updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
         #expect(try await session.loadChats().map(\.identity) == [service.second])
@@ -754,7 +871,7 @@ import BottoCore
             return await WorkspaceLibrary.project(messages, streamingMessage: tail)
         })
         defer { library.retire() }
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let opened = try await service.openChat(.stored(service.first))
         let item = try #require(library.artifacts.first { $0.chat.identity == service.first })
         let attachment = try #require(item.artifact.attachment)
@@ -809,7 +926,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let old = try #require(library.artifacts.first { $0.chat.identity == service.first })
         let unaffected = try #require(library.artifacts.first { $0.chat.identity == service.second })
         _ = try await library.download(old); _ = try await library.download(unaffected)
@@ -831,7 +948,7 @@ import BottoCore
         #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
         defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
         #expect(sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
-        await library.refresh(bots: service.profiles, force: true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(library.statusAction == .retry)
         let recovery = try await session.metadataRecovery()
         #expect(recovery.contains(service.first) && !recovery.contains(service.second))
@@ -850,7 +967,7 @@ import BottoCore
         #expect(reopened.statusAction == .retry)
         service.failingHistorySource = nil
         let reads = service.historyOffsets.count
-        await reopened.refreshIfNeeded(bots: service.profiles)
+        await reopened.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > reads)
         #expect(try await !reopenedSession.metadataRecovery().contains(service.first))
         if change == "removal" { #expect(!reopened.artifacts.contains { $0.chat.identity == service.first }) }
@@ -899,7 +1016,7 @@ import BottoCore
         #expect(!reopened.chats.contains { $0.identity.root == service.second.root })
         #expect(!reopened.artifacts.contains { $0.artifact.title == "ghost.txt" })
         service.omitSecond = false; reopened.setOnline(true)
-        await reopened.refresh(bots: service.profiles)
+        await reopened.refresh(evidence: .observed, bots: service.profiles)
         #expect(reopened.artifacts.contains { $0.artifact.title == "ghost.txt" })
         reopened.retire(); await reopenedCache.close()
     }
@@ -911,12 +1028,12 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         service.failHistory = true
-        await library.refresh(bots: service.profiles, force: true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(library.statusAction == .retry)
         let reads = service.historyOffsets.count
-        library.invalidateRevalidation(); await library.refreshIfNeeded(bots: service.profiles)
+        library.invalidateRevalidation(); await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > reads && library.statusAction == .retry)
         let saved = try await session.loadChats()
         #expect(!saved.isEmpty && saved.allSatisfy { $0.coverage == .partial && $0.summary == nil && $0.headFingerprint == nil })
@@ -925,11 +1042,11 @@ import BottoCore
         let reopened = WorkspaceLibrary(service: service, cache: reopenedCache.session(scope: scope))
         await reopened.restore(); reopened.setOnline(true)
         let coldReads = service.historyOffsets.count
-        await reopened.refresh(bots: service.profiles)
+        await reopened.refresh(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > coldReads && reopened.statusAction == .retry)
         service.failHistory = false
         let retryReads = service.historyOffsets.count
-        await reopened.refresh(bots: service.profiles)
+        await reopened.refresh(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > retryReads && reopened.warning == nil)
         reopened.retire(); await reopenedCache.close()
     }
@@ -995,7 +1112,7 @@ import BottoCore
         let cache = ArtifactCache(root: root, beforeCaptureCommit: { capture.pause() })
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let original = try #require(library.artifacts.first { $0.chat.identity == service.first })
         let key = ArtifactOriginalKey(identity: service.first, messageID: Data(old.id.utf8), path: Data("/old.txt".utf8),
             sourceRevision: try #require(original.chat.sourceRevisions[Data(old.id.utf8)]))
@@ -1015,7 +1132,7 @@ import BottoCore
         service.messages[successor] = [.init(id: "new-file", role: .assistant, text: "MEDIA:/new.txt")]
         service.historyBarrier = history
         let reads = service.historyOffsets.count
-        let refresh = Task { await library.refresh(bots: service.profiles, force: true) }
+        let refresh = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         defer { refresh.cancel() }
         deadline = .now + .seconds(5)
         while service.historyOffsets.count == reads, ContinuousClock.now < deadline { await Task.yield() }
@@ -1236,7 +1353,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let item = try #require(library.artifacts.first { $0.artifact.messageID == old.id })
         let unaffected = try #require(library.artifacts.first { $0.artifact.messageID == kept.id })
         let key = ArtifactOriginalKey(identity: service.first, messageID: Data(old.id.utf8), path: Data("/report.html".utf8),
@@ -1449,7 +1566,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let original = WorkspaceLibrary(service: service, cache: session)
-        original.setOnline(true); await original.refresh(bots: service.profiles)
+        original.setOnline(true); await original.refresh(evidence: .observed, bots: service.profiles)
         let deleted = try #require(original.artifacts.first { $0.artifact.title == "deleted.txt" })
         let kept = try #require(original.artifacts.first { $0.artifact.title == "retained.txt" })
         let oldKey = ArtifactOriginalKey(identity: service.first, messageID: Data(old.id.utf8), path: Data("/deleted.txt".utf8),
@@ -1490,11 +1607,11 @@ import BottoCore
         #expect(LibrarySearchResults(query: "deleted appendix", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty)
         #expect(service.historyOffsets.count == reads && service.downloadCount == downloads)
         service.failHistory = true
-        reopened.setOnline(true); await reopened.refresh(bots: service.profiles)
+        reopened.setOnline(true); await reopened.refresh(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > reads, "The current directory cannot resolve a disputed message")
         reopened.setOnline(false)
         reopened.seed(book: book, bots: service.profiles)
-        await reopened.refresh(bots: service.profiles)
+        await reopened.refresh(evidence: .observed, bots: service.profiles)
         #expect(reopened.chats.first { $0.identity == service.first }?.messages.allSatisfy { $0.id != old.id } == true)
         #expect(!reopened.artifacts.contains { $0.artifact.title == "deleted.txt" })
         #expect(LibrarySearchResults(query: "deleted appendix", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty)
@@ -1511,7 +1628,7 @@ import BottoCore
         service.failHistory = false
         service.messages[service.first] = [edited, retained]
         let readsBeforeRecovery = service.historyOffsets.count
-        recovered.setOnline(true); await recovered.refresh(bots: service.profiles)
+        recovered.setOnline(true); await recovered.refresh(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count > readsBeforeRecovery, "Conflicting local copies cannot certify a complete current index")
         #expect(recovered.chats.first { $0.identity == service.first }?.messages.first?.text == "Report ready")
         #expect(!recovered.artifacts.contains { $0.artifact.title == "deleted.txt" })
@@ -1908,30 +2025,37 @@ import BottoCore
 
     @Test func aRosterChangeDuringLocalRestoreCannotCertifyAnOlderRoster() async throws {
         let service = LibraryTestService(secondBot: true), seedGate = StoreTestBarrier(), historyGate = StoreTestBarrier()
+        defer { seedGate.release(); historyGate.release() }
         let originalRoster = [service.profiles[0]]
         let library = WorkspaceLibrary(service: service, projector: { messages, tail in
             if messages.contains(where: { $0.id == "seed" }) { await seedGate.wait() }
             return await WorkspaceLibrary.project(messages, streamingMessage: tail)
         })
         defer { library.retire() }
-        library.setOnline(true); library.observeBots(originalRoster)
+        library.setOnline(true); library.observeBots(originalRoster, evidence: .observed)
         var book = ConversationBook()
         let id = book.merge(.init(identity: service.first, title: "Main", isCanonical: true, persistence: .durable))
         book.cache(.init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: "seed", role: .assistant, text: "MEDIA:/saved.txt")]), for: id)
         library.seed(book: book, bots: originalRoster)
-        await seedGate.waitUntilEntered()
-        let old = Task { await library.refresh(bots: originalRoster) }
-        for _ in 0..<20 { await Task.yield() }
-        library.observeBots(service.profiles)
+        try #require(await seedGate.waitUntilEntered(timeout: .seconds(5)))
+        let joined = library.indexingMetrics.refreshesJoinedRestoration
+        let old = Task { await library.refresh(evidence: .observed, bots: originalRoster) }
+        defer { old.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while library.indexingMetrics.refreshesJoinedRestoration == joined, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(library.indexingMetrics.refreshesJoinedRestoration > joined,
+            "The old refresh must join the held restoration before the roster changes")
+        library.observeBots(service.profiles, evidence: .observed)
         service.historyBarrier = historyGate
-        seedGate.release(); await historyGate.waitUntilEntered()
-        let current = Task { await library.refreshIfNeeded(bots: service.profiles) }
+        seedGate.release(); try #require(await historyGate.waitUntilEntered(timeout: .seconds(5)))
+        let current = Task { await library.refreshIfNeeded(evidence: .observed, bots: service.profiles) }
+        defer { current.cancel() }
         service.historyBarrier = nil; historyGate.release()
         await old.value; await current.value
         #expect(library.chats.contains { $0.identity.profile == service.second.profile },
                 "An old roster waiting on local restoration must not certify the new roster's revision.")
-        #expect(service.directoryCount == 3, "The current two-profile roster needs its own follow-up pass.")
+        #expect(service.directoryCount == 2, "The first scan after restoration uses the current two-profile roster.")
     }
 
     @Test func cachedHistoryStatusKeepsItsHeightDuringSeedingAndRevalidation() async throws {
@@ -1975,25 +2099,25 @@ import BottoCore
         var now = ContinuousClock.now
         let library = WorkspaceLibrary(service: service, now: { now })
         defer { library.retire() }
-        library.setOnline(true); await library.refreshIfNeeded(bots: service.profiles)
+        library.setOnline(true); await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         let directories = service.directoryCount
         service.summaryTitle = "Changed remotely"
         now = now.advanced(by: .seconds(59))
-        await library.refreshIfNeeded(bots: service.profiles)
+        await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == directories)
         #expect(library.chats.contains { $0.title == "Research notes" })
         now = now.advanced(by: .seconds(1))
-        await library.refreshIfNeeded(bots: service.profiles)
+        await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == directories + 1)
         #expect(library.chats.contains { $0.title == "Changed remotely" })
         library.invalidateRevalidation()
-        await library.refreshIfNeeded(bots: service.profiles)
+        await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == directories + 2)
-        library.setOnline(false); await library.refreshIfNeeded(bots: service.profiles)
+        library.setOnline(false); await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == directories + 2)
-        library.setOnline(true); await library.refreshIfNeeded(bots: service.profiles)
+        library.setOnline(true); await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == directories + 3)
-        await library.refresh(bots: service.profiles, force: true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(service.directoryCount == directories + 4, "An explicit refresh bypasses the freshness window.")
     }
 
@@ -2002,14 +2126,14 @@ import BottoCore
         let library = WorkspaceLibrary(service: service)
         defer { library.retire() }
         library.setOnline(true); service.historyBarrier = gate
-        let browsing = Task { await library.refreshIfNeeded(bots: service.profiles) }
+        let browsing = Task { await library.refreshIfNeeded(evidence: .observed, bots: service.profiles) }
         await gate.waitUntilEntered()
         browsing.cancel(); service.historyBarrier = nil; gate.release()
         await browsing.value
         #expect(library.artifacts.count == 2)
         #expect(library.warning == nil)
         let reads = service.historyOffsets.count, directories = service.directoryCount
-        await library.refreshIfNeeded(bots: service.profiles)
+        await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count == reads && service.directoryCount == directories)
     }
 
@@ -2019,20 +2143,20 @@ import BottoCore
         let library = WorkspaceLibrary(service: service)
         defer { library.retire() }
         library.setOnline(true); service.historyBarrier = gate
-        let browsing = Task { await library.refreshIfNeeded(bots: service.profiles) }
+        let browsing = Task { await library.refreshIfNeeded(evidence: .observed, bots: service.profiles) }
         await gate.waitUntilEntered()
         library.invalidateRevalidation()
         var replacement: Task<Void, Never>?
         if replacingCaller {
             browsing.cancel()
-            replacement = Task { await library.refreshIfNeeded(bots: service.profiles) }
+            replacement = Task { await library.refreshIfNeeded(evidence: .observed, bots: service.profiles) }
             for _ in 0..<20 { await Task.yield() }
         }
         service.historyBarrier = nil; gate.release(); await browsing.value
         await replacement?.value
         #expect(service.directoryCount == 2)
         let reads = service.historyOffsets.count
-        await library.refreshIfNeeded(bots: service.profiles)
+        await library.refreshIfNeeded(evidence: .observed, bots: service.profiles)
         #expect(service.directoryCount == 2 && service.historyOffsets.count == reads)
     }
 
@@ -2054,7 +2178,7 @@ import BottoCore
         let cached = library.artifacts.map(\.id)
         #expect(library.artifacts.first?.chat.identity == service.second)
         let gate = StoreTestBarrier(); service.historyBarrier = gate
-        let refresh = Task { await library.refresh(bots: service.profiles) }
+        let refresh = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         await gate.waitUntilEntered()
         #expect(library.artifacts.map(\.id) == cached, "Missing directory dates must not erase known dates and reshuffle cards.")
         service.historyBarrier = nil; gate.release(); await refresh.value
@@ -2302,8 +2426,8 @@ import BottoCore
         let library = WorkspaceLibrary(service: service)
         defer { library.retire() }
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         #expect(library.warning == nil)
     }
 
@@ -2312,15 +2436,15 @@ import BottoCore
         service.hiddenFirstPage = true
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let initial = service.historyOffsets.count
         service.messages[service.first] = [ChatMessage(id: "main-file", role: .assistant, text: "MEDIA:/changed.txt")]
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         #expect(service.historyOffsets.count - initial == 2)
         #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.title == "report.txt" })
         #expect(library.warning?.contains("haven’t been checked") == true)
         #expect(library.statusAction == .checkOlderHistory)
-        await library.refresh(bots: service.profiles, force: true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.title == "changed.txt" })
         #expect(library.warning == nil)
         #expect(library.statusAction == nil)
@@ -2331,10 +2455,10 @@ import BottoCore
         service.versionedSummaries = true
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let initial = service.historyOffsets.count
         service.summaryTitle = "Renamed notes"
-        await library.refresh(bots: [BotProfile(id: "helper", name: "Renamed Helper")])
+        await library.refresh(evidence: .observed, bots: [BotProfile(id: "helper", name: "Renamed Helper")])
         #expect(service.historyOffsets.count == initial)
         #expect(library.chats.first { $0.identity == service.second }?.title == "Renamed notes")
         #expect(library.chats.allSatisfy { $0.botName == "Renamed Helper" })
@@ -2347,9 +2471,9 @@ import BottoCore
         library.setOnline(true)
         let barrier = StoreTestBarrier()
         service.historyBarrier = barrier
-        let ordinary = Task { await library.refresh(bots: service.profiles) }
+        let ordinary = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         await barrier.waitUntilEntered()
-        let forced = Task { await library.refresh(bots: service.profiles, force: true) }
+        let forced = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         for _ in 0..<20 { await Task.yield() }
         service.historyBarrier = nil
         barrier.release()
@@ -2751,7 +2875,7 @@ import BottoCore
         let service = LibraryTestService()
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let item = try #require(library.artifacts.first { $0.chat.identity == service.first })
         let session = LibraryArtifactPreviewSession(item: item, library: library)
         defer { session.finish() }
@@ -2817,7 +2941,7 @@ import BottoCore
                 ChatMessage(id: "visible-\($0)", role: .assistant, text: "Needle result \($0)")
             }
         let library = WorkspaceLibrary(service: service)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let results = LibrarySearchResults(query: "needle", bots: service.profiles,
             chats: library.chats, artifacts: library.artifacts)
         #expect(results.messages.count == 50)
@@ -2830,7 +2954,7 @@ import BottoCore
         service.messages[service.first] = [ChatMessage(id: "readable", role: .assistant,
             text: "A **Café** update with [notes](https://example.test/hidden-token).")]
         let library = WorkspaceLibrary(service: service)
-        library.setOnline(true); await library.refresh(bots: service.profiles)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let visible = LibrarySearchResults(query: "cafe", bots: service.profiles,
             chats: library.chats, artifacts: library.artifacts)
         #expect(visible.messages.first?.snippet == "A Café update with notes.")
@@ -2849,7 +2973,7 @@ import BottoCore
         ]
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let result = LibrarySearchResults(query: "needle", bots: service.profiles,
             chats: library.chats, artifacts: library.artifacts)
         #expect(result.messages.count == 1)
@@ -2890,11 +3014,11 @@ import BottoCore
         let service = LibraryTestService()
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let loaded = library.artifacts.map(\.id)
         service.failHistory = true
 
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
 
         #expect(library.artifacts.map(\.id) == loaded)
         #expect(library.warning != nil)
@@ -2910,7 +3034,7 @@ import BottoCore
         ]
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         var cached = ConversationBook()
         let id = cached.merge(.init(identity: service.first, title: "Main", isCanonical: true, persistence: .durable))
         cached.cache(.init(id: "main", storedID: "main", profileID: "helper",
@@ -2929,7 +3053,7 @@ import BottoCore
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
 
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
 
         #expect(library.artifacts.count == 2)
         #expect(service.historyOffsets.contains(100))
@@ -2942,7 +3066,7 @@ import BottoCore
         service.historyBarrier = gate
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        let reading = Task { await library.refresh(bots: service.profiles) }
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         await gate.waitUntilEntered()
         reading.cancel()
         gate.release()
@@ -2955,13 +3079,13 @@ import BottoCore
         let service = LibraryTestService()
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let original = try #require(library.artifacts.first { $0.chat.identity == service.first })
         service.replacementFirst = SessionIdentity(profile: service.first.profile, root: service.first.root,
             stored: try ExactID("new-tip"), aliases: [service.first.stored])
         let gate = StoreTestBarrier()
         service.historyBarrier = gate
-        let refreshing = Task { await library.refresh(bots: service.profiles) }
+        let refreshing = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         await gate.waitUntilEntered()
 
         #expect(!library.isCurrent(original))
@@ -2977,7 +3101,7 @@ import BottoCore
         library.setOnline(true)
         let history = StoreTestBarrier()
         service.historyBarrier = history
-        let reading = Task { await library.refresh(bots: service.profiles) }
+        let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         await history.waitUntilEntered()
         library.retire()
         history.release()
@@ -2988,7 +3112,7 @@ import BottoCore
         service.historyBarrier = nil
         let current = WorkspaceLibrary(service: service)
         current.setOnline(true)
-        await current.refresh(bots: service.profiles)
+        await current.refresh(evidence: .observed, bots: service.profiles)
         let artifact = try #require(current.artifacts.first)
         let download = StoreTestBarrier()
         service.downloadBarrier = download
@@ -3007,7 +3131,7 @@ import BottoCore
         ]
         let library = WorkspaceLibrary(service: service)
         library.setOnline(true)
-        await library.refresh(bots: service.profiles)
+        await library.refresh(evidence: .observed, bots: service.profiles)
         let file = try #require(library.artifacts.first { $0.artifact.attachment != nil })
         let inline = try #require(library.artifacts.first { $0.artifact.block != nil })
         library.setOnline(false)
@@ -3098,12 +3222,15 @@ private actor NextLibraryProjectionPause {
     var historyBarrier: StoreTestBarrier?
     var historyBarriers: [SessionIdentity: StoreTestBarrier] = [:]
     var historyFailures: [SessionIdentity: any Error] = [:]
+    var historyFailureOffsets: [SessionIdentity: Int] = [:]
+    var historyPages: [SessionIdentity: [Int: ConversationHistoryPage]] = [:]
     var downloadBarrier: StoreTestBarrier?
     var openCount = 0
     var summaryTitle = "Research notes"
     var fileBytes: Data?
     var pinOnConnect: String?
     var downloadCount = 0
+    var botReadCount = 0
     var lastOpened: SessionIdentity?
     private(set) var lastAccess: ConversationAccess?
     private var issuer = ConversationIssuer<SessionIdentity>()
@@ -3124,7 +3251,7 @@ private actor NextLibraryProjectionPause {
         return .init(version: "test", installID: pinOnConnect)
     }
     func disconnect() {}
-    func bots() async throws -> [BotProfile] { rosterProfiles ?? profiles }
+    func bots() async throws -> [BotProfile] { botReadCount += 1; return rosterProfiles ?? profiles }
     func createBot(_ draft: BotDraft) async throws -> BotProfile { throw HermesServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCount += 1
@@ -3147,7 +3274,8 @@ private actor NextLibraryProjectionPause {
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
         historyOffsets.append(offset)
         await (historyBarriers[identity] ?? historyBarrier)?.wait()
-        if let failure = historyFailures[identity] { throw failure }
+        if let failure = historyFailures[identity], historyFailureOffsets[identity] == nil || historyFailureOffsets[identity] == offset { throw failure }
+        if let page = historyPages[identity]?[offset] { return page }
         if failHistory || identity == failingHistorySource { throw HermesServiceError.disconnected }
         if hiddenFirstPage, offset == 0 { return .init(messages: [], nextOffset: 100, isComplete: true, sourceIDs: [Data("hidden-head".utf8)]) }
         let rows = messages[identity] ?? []
