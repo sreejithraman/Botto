@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Observation
 import UIKit
 @preconcurrency import CoreHaptics
@@ -165,9 +166,7 @@ struct HapticOutput {
     private let soft = UIImpactFeedbackGenerator(style: .soft)
     private let medium = UIImpactFeedbackGenerator(style: .medium)
     private let notification = UINotificationFeedbackGenerator()
-    private var engine: CHHapticEngine?
-    private var engineID: UUID?
-    private var player: (any CHHapticPatternPlayer)?
+    private let patterns = HapticPatternOutput(makeEngine: HapticPatternEngine.coreHaptics)
     private let supportsPatterns = CHHapticEngine.capabilitiesForHardware().supportsHaptics
     private let logger = Logger(subsystem: "com.sree.botto", category: "Haptics")
 
@@ -191,58 +190,125 @@ struct HapticOutput {
         case .knock, .celebration:
             guard supportsPatterns else { fallback(for: playback); return }
             do {
-                let engine = try preparedEngine()
-                let accents: [(TimeInterval, Float)] = playback == .knock
-                    ? [(0, 0.32), (0.16, 0.32)]
-                    : [(0, 0.22), (0.065, 0.35), (0.15, 0.5)]
-                let events = accents.map { time, intensity in
-                    CHHapticEvent(eventType: .hapticTransient, parameters: [
-                        .init(parameterID: .hapticIntensity, value: intensity),
-                        .init(parameterID: .hapticSharpness, value: 0.3)
-                    ], relativeTime: time)
-                }
-                let pattern = try CHHapticPattern(events: events, parameters: [])
-                let player = try engine.makePlayer(with: pattern)
-                self.player = player
-                try player.start(atTime: CHHapticTimeImmediate)
+                try patterns.play(playback == .knock ? .knock : .celebration)
             } catch {
                 logger.error("Custom haptic playback failed: \(String(describing: error), privacy: .public)")
-                self.player = nil; self.engine = nil; engineID = nil
                 fallback(for: playback)
             }
         }
     }
 
-    func cancel() {
-        try? player?.stop(atTime: CHHapticTimeImmediate)
-        player = nil
-    }
-
-    private func preparedEngine() throws -> CHHapticEngine {
-        if let engine { try engine.start(); return engine }
-        let engine = try CHHapticEngine()
-        engine.playsHapticsOnly = true
-        engine.isAutoShutdownEnabled = true
-        let id = UUID()
-        engineID = id
-        engine.stoppedHandler = { [weak self] _ in
-            Task { @MainActor in self?.retireEngine(id) }
-        }
-        engine.resetHandler = { [weak self] in
-            Task { @MainActor in self?.retireEngine(id) }
-        }
-        self.engine = engine
-        try engine.start()
-        return engine
-    }
-
-    private func retireEngine(_ id: UUID) {
-        guard engineID == id else { return }
-        player = nil; engine = nil; engineID = nil
-    }
+    func cancel() { patterns.cancel() }
 
     private func fallback(for playback: HapticPlayback) {
         if playback == .celebration { notification.notificationOccurred(.success) }
         else { soft.impactOccurred(intensity: 0.5) }
+    }
+}
+
+enum HapticPattern: Sendable { case knock, celebration }
+
+typealias HapticRetirement = @MainActor @Sendable () -> Void
+typealias HapticLifecycleHandler = @Sendable () -> HapticRetirement
+
+@MainActor struct HapticPatternPlayer {
+    let start: @MainActor () throws -> Void
+    let stop: @MainActor () throws -> Void
+}
+
+@MainActor struct HapticPatternEngine {
+    let start: @MainActor () throws -> Void
+    let makePlayer: @MainActor (HapticPattern) throws -> HapticPatternPlayer
+    let setLifecycleHandlers: @MainActor (@escaping HapticLifecycleHandler,
+                                        @escaping HapticLifecycleHandler) -> Void
+
+    static func coreHaptics() throws -> Self {
+        let engine = try CHHapticEngine()
+        engine.playsHapticsOnly = true
+        engine.isAutoShutdownEnabled = true
+        return Self(start: { try engine.start() }, makePlayer: { pattern in
+            let accents: [(TimeInterval, Float)] = pattern == .knock
+                ? [(0, 0.32), (0.16, 0.32)]
+                : [(0, 0.22), (0.065, 0.35), (0.15, 0.5)]
+            let events = accents.map { time, intensity in
+                CHHapticEvent(eventType: .hapticTransient, parameters: [
+                    .init(parameterID: .hapticIntensity, value: intensity),
+                    .init(parameterID: .hapticSharpness, value: 0.3)
+                ], relativeTime: time)
+            }
+            let pattern = try CHHapticPattern(events: events, parameters: [])
+            let player = try engine.makePlayer(with: pattern)
+            return HapticPatternPlayer(start: { try player.start(atTime: CHHapticTimeImmediate) },
+                                       stop: { try player.stop(atTime: CHHapticTimeImmediate) })
+        }, setLifecycleHandlers: { stopped, reset in
+            // Mark interruptions on the SDK callback queue before deferring retirement.
+            engine.stoppedHandler = { _ in
+                let retire = stopped()
+                Task { @MainActor in retire() }
+            }
+            engine.resetHandler = {
+                let retire = reset()
+                Task { @MainActor in retire() }
+            }
+        })
+    }
+}
+
+@MainActor final class HapticPatternOutput {
+    private nonisolated final class PlaybackLifetime: Sendable {
+        private let interrupted = Mutex(false)
+
+        func interrupt() { interrupted.withLock { $0 = true } }
+
+        func checkForInterruption() throws {
+            if interrupted.withLock({ $0 }) { throw CancellationError() }
+        }
+    }
+
+    private let makeEngine: @MainActor () throws -> HapticPatternEngine
+    private var activePlayback: (lifetime: PlaybackLifetime, engine: HapticPatternEngine,
+                                 player: HapticPatternPlayer?)?
+
+    init(makeEngine: @escaping @MainActor () throws -> HapticPatternEngine) {
+        self.makeEngine = makeEngine
+    }
+
+    func play(_ pattern: HapticPattern) throws {
+        cancel()
+        do {
+            // Use a fresh engine so delayed notifications stay with their original playback.
+            let engine = try makeEngine()
+            let lifetime = PlaybackLifetime()
+            activePlayback = (lifetime, engine, nil)
+            let handler: HapticLifecycleHandler = { [weak self, lifetime] in
+                lifetime.interrupt()
+                return { @MainActor [weak self, lifetime] in self?.retire(lifetime) }
+            }
+            engine.setLifecycleHandlers(handler, handler)
+            try lifetime.checkForInterruption()
+            try engine.start()
+            try lifetime.checkForInterruption()
+            let player = try engine.makePlayer(pattern)
+            activePlayback?.player = player
+            try lifetime.checkForInterruption()
+            try player.start()
+        } catch {
+            cancel()
+            throw error
+        }
+    }
+
+    func cancel() {
+        guard let playback = activePlayback else { return }
+        activePlayback = nil
+        playback.lifetime.interrupt()
+        withExtendedLifetime(playback.engine) {
+            try? playback.player?.stop()
+        }
+    }
+
+    private func retire(_ lifetime: PlaybackLifetime) {
+        guard activePlayback?.lifetime === lifetime else { return }
+        cancel()
     }
 }

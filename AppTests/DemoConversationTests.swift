@@ -209,12 +209,21 @@ import BottoCore
         let hold = directory.appendingPathComponent("performance-stream.hold")
         try Data().write(to: hold)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let service = DemoBotService(gateDirectory: directory, performanceFixture: true)
+        let service = DemoBotService(gateDirectory: directory, performanceFixture: true, performanceChunkDelay: .zero)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         defer { service.disconnect() }
         let opened = try await service.openChat(.canonical(profile: ExactID("scout"), expectedRoot: nil))
         var latest = opened.snapshot
-        service.onEvent = { if case .conversation(let value) = $0 { latest = value.snapshot } }
+        var chunksByReply: [String: [String]] = [:]
+        service.onEvent = {
+            guard case .conversation(let value) = $0 else { return }
+            latest = value.snapshot
+            for reply in latest.messages where reply.id.hasPrefix("performance-reply-") {
+                guard !reply.text.isEmpty, !reply.text.contains("complete."),
+                      chunksByReply[reply.id]?.last != reply.text else { continue }
+                chunksByReply[reply.id, default: []].append(reply.text)
+            }
+        }
         _ = try await service.send(text: "Start", attachments: [], access: opened.access, operationID: UUID())
         let started = directory.appendingPathComponent("performance-stream.started")
         let startDeadline = ContinuousClock.now + .seconds(5)
@@ -244,6 +253,10 @@ import BottoCore
             let reply = try XCTUnwrap(latest.messages.first { $0.id == "performance-reply-\(number)" })
             XCTAssertTrue(reply.text.contains("Word 199."))
             XCTAssertTrue(reply.text.contains("Performance stream \(number) complete."))
+            let chunks = try XCTUnwrap(chunksByReply[reply.id])
+            XCTAssertEqual(chunks.count, 200)
+            XCTAssertEqual(chunks.first, "Word 0. ")
+            XCTAssertEqual(chunks.last, (0..<200).map { "Word \($0). " }.joined())
         }
         XCTAssertEqual(latest.messages.filter { $0.role == .user && $0.text == "Steer this reply" }.count, 1)
         XCTAssertEqual(latest.messages.filter { $0.role == .user && $0.text == "Keep both admissions" }.count, 1)

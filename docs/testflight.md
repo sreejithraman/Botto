@@ -187,12 +187,16 @@ Use a trailer to describe user-visible metadata changes such as URL handling.
 `Release-Note: none` omits an app change. A trailer can describe a user-visible
 revert or override an internal commit title. Include it in the final first-parent
 merge or squash commit message; a trailer on a feature-branch commit does not
-survive every merge method. Published notes stay unchanged on retries;
-the publisher checks their version/build/source header before reusing them.
-It uses a create-only localization API request because the CLI's high-level
-`test-notes create` command can update existing text. If another client creates
-notes concurrently, it reuses matching source-bound notes or stops for manual
-review, without overwriting them.
+survive every merge method.
+The publisher reuses nonempty notes after checking their version/build/source
+header. It creates a missing localization, or fills Apple's existing empty
+localization after verifying this run owns the uploaded build. It rereads the
+record before initialization and confirms the text before group assignment.
+A concurrent create reuses matching notes or stops for manual review.
+Keep this workflow as the only notes writer while it publishes a build:
+Apple's localization update has no documented conditional empty-only write.
+The CLI's high-level `test-notes create` command can overwrite existing text;
+the publisher uses explicit create or initial-fill API requests instead.
 Before signing, the workflow saves the exact prepared text and its source,
 run, version, build and requested baseline in `prepared-notes.json`.
 `notesBaseSHA` preserves the requested input; if it is unavailable or not an

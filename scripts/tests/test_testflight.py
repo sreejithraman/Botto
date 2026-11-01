@@ -7,6 +7,7 @@ import plistlib
 import subprocess
 import sys
 import shutil
+import signal
 import tempfile
 import unittest
 
@@ -165,7 +166,25 @@ if args[:2] == ["builds", "wait"]:
  s["build"]="VALID"; done({})
 if args[:2] == ["builds", "info"]: done({"data":{"attributes":{"usesNonExemptEncryption":s.get("encryption",False)}}})
 if args[:3] == ["builds", "test-notes", "list"]:
- done({"data": [] if not s.get("notes") else [{"attributes":{"whatsNew":s["notes"]}}]})
+ s["note_reads"]=s.get("note_reads",0)+1
+ if s["note_reads"] == 2 and s.get("notes_before_initialization"): s["notes"]=s["notes_before_initialization"]
+ resource={"type":"betaBuildLocalizations","id":"localization","attributes":{"locale":"en-US","whatsNew":s.get("notes")}}
+ if s.get("notes_missing_field") and s.get("notes") is None: resource["attributes"].pop("whatsNew")
+ done({"data":s.get("localization_records",[resource] if s.get("notes") or s.get("empty_localization") else [])})
+if args[:3] == ["api", "PATCH", "/v1/betaBuildLocalizations/localization"]:
+ body_file=Path(flag("--body-file")); assert body_file.stat().st_mode & 0o777 == 0o600
+ body=json.loads(body_file.read_text())["data"]
+ assert "--confirm" in args and body["type"] == "betaBuildLocalizations" and body["id"] == "localization"
+ assert set(body["attributes"]) == {"whatsNew"}
+ if not s.get("drop_notes_write"): s["notes"]=body["attributes"]["whatsNew"]
+ if s.get("notes_after_patch"): s["notes"]=s["notes_after_patch"]
+ patch_signal=s.pop("signal_note_patch",None)
+ if patch_signal:
+  p.write_text(json.dumps(s)); os.kill(os.getppid(),patch_signal)
+  sys.exit(0)
+ if s.pop("interrupt_note_patch",False):
+  p.write_text(json.dumps(s)); sys.exit(1)
+ done({"data":{"type":"betaBuildLocalizations","id":"localization"}})
 if args[:3] == ["api", "POST", "/v1/betaBuildLocalizations"]:
  body_file=Path(flag("--body-file"))
  assert body_file.stat().st_mode & 0o777 == 0o600
@@ -338,6 +357,104 @@ class ReconciliationTests(unittest.TestCase):
         calls = json.loads(self.fixture.read_text())["calls"]
         self.assertFalse(any(c[1:3] == ["builds", "add-groups"] for c in calls))
 
+    def test_owned_empty_apple_localization_is_initialized_without_upload(self):
+        for empty in (None, "", " \n", "missing"):
+            with self.subTest(empty=empty):
+                self.state(build="VALID", empty_localization=True,
+                           notes=None if empty == "missing" else empty, notes_missing_field=empty == "missing")
+                result = self.run_release()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                state = json.loads(self.fixture.read_text())
+                self.assertEqual(state["notes"], json.loads((self.output / "prepared-notes.json").read_text())["whatToTest"])
+                self.assertEqual(sum(c[1:3] == ["api", "PATCH"] for c in state["calls"]), 1)
+                self.assertFalse(any(c[1:3] in (["api", "POST"], ["builds", "upload"]) for c in state["calls"]))
+                self.assertTrue(state["assigned"])
+
+    def test_empty_localization_requires_checkpoint_and_upload_ownership(self):
+        for failure in ("checkpoint", "ownership", "first-attempt"):
+            with self.subTest(failure=failure):
+                self.checkpoint()
+                self.state(build="VALID", empty_localization=True,
+                           build_upload_id="another" if failure == "ownership" else "upload")
+                if failure == "checkpoint":
+                    (self.output / "prepared-notes.json").unlink()
+                if failure == "first-attempt":
+                    self.env["GITHUB_RUN_ATTEMPT"] = "1"
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                calls = json.loads(self.fixture.read_text())["calls"]
+                self.assertFalse(any(c[1:3] in (["api", "PATCH"], ["api", "POST"], ["builds", "add-groups"]) for c in calls))
+
+    def test_empty_localization_write_is_confirmed_and_recoverable(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                self.state(build="VALID", empty_localization=True,
+                           drop_notes_write=not interrupted, interrupt_note_patch=interrupted)
+                result = self.run_release()
+                self.assertEqual(result.returncode == 0, interrupted, result.stderr)
+                state = json.loads(self.fixture.read_text())
+                self.assertEqual(state.get("assigned", False), interrupted)
+                self.assertEqual(sum(c[1:3] == ["api", "PATCH"] for c in state["calls"]), 1)
+
+    def test_cancelled_localization_write_stops_distribution_and_can_be_reconciled(self):
+        for cancellation in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(cancellation=cancellation):
+                self.state(build="VALID", empty_localization=True, signal_note_patch=int(cancellation))
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("publication interrupted", result.stderr)
+                state = json.loads(self.fixture.read_text())
+                prepared = json.loads((self.output / "prepared-notes.json").read_text())["whatToTest"]
+                self.assertEqual(state["notes"], prepared)
+                self.assertFalse(state.get("assigned", False))
+                self.assertFalse(any(c[1:3] == ["builds", "add-groups"] for c in state["calls"]))
+                result = self.run_release()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                state = json.loads(self.fixture.read_text())
+                self.assertTrue(state["assigned"])
+                self.assertEqual(sum(c[1:3] == ["api", "PATCH"] for c in state["calls"]), 1)
+
+    def test_uncertain_localization_patch_requires_exact_attempted_text(self):
+        prefix = f"Botto 0.1.0 (1001)\nSource: {'a' * 40}\n\n"
+        for observed in (prefix + "- Altered instructions.", prefix + "- Prepared"):
+            with self.subTest(observed=observed):
+                self.state(build="VALID", empty_localization=True,
+                           notes_after_patch=observed, interrupt_note_patch=True)
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("review this build manually", result.stderr)
+                self.assertFalse((self.output / "failure.json").exists())
+                state = json.loads(self.fixture.read_text())
+                self.assertEqual(state["notes"], observed)
+                self.assertFalse(state.get("assigned", False))
+                self.assertFalse(any(c[1:3] == ["builds", "add-groups"] for c in state["calls"]))
+
+    def test_initialization_rechecks_and_preserves_concurrent_nonempty_notes(self):
+        for source in ("a", "b"):
+            with self.subTest(source=source):
+                notes = f"Botto 0.1.0 (1001)\nSource: {source * 40}\n\nMaintainer instructions"
+                self.state(build="VALID", empty_localization=True, notes_before_initialization=notes)
+                result = self.run_release()
+                self.assertEqual(result.returncode == 0, source == "a", result.stderr)
+                state = json.loads(self.fixture.read_text())
+                self.assertEqual(state.get("notes"), notes)
+                self.assertFalse(any(c[1:3] in (["api", "PATCH"], ["api", "POST"]) for c in state["calls"]))
+
+    def test_invalid_localization_metadata_is_not_initialized(self):
+        valid = {"id": "localization", "type": "betaBuildLocalizations",
+                 "attributes": {"locale": "en-US", "whatsNew": None}}
+        records = [[{**valid, "id": ""}], [{**valid, "type": "other"}],
+                   [{**valid, "attributes": {"locale": "fr", "whatsNew": None}}],
+                   [{**valid, "attributes": {"locale": "en-US", "whatsNew": False}}],
+                   [valid, valid], [None], [{**valid, "attributes": None}], None]
+        for resources in records:
+            with self.subTest(resources=resources):
+                self.state(build="VALID", localization_records=resources)
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                calls = json.loads(self.fixture.read_text())["calls"]
+                self.assertFalse(any(c[1:3] in (["api", "PATCH"], ["api", "POST"], ["builds", "add-groups"]) for c in calls))
+
     def test_existing_source_bound_notes_are_reused_without_regeneration(self):
         notes = f"Botto 0.1.0 (1001)\nSource: {'a' * 40}\n\n- Original tester instructions."
         self.state(build="VALID", notes=notes)
@@ -346,7 +463,7 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.output / "what-to-test.txt").read_text(), notes + "\n")
         calls = json.loads(self.fixture.read_text())["calls"]
-        self.assertFalse(any(c[1:3] == ["api", "POST"] for c in calls))
+        self.assertFalse(any(c[1:3] in (["api", "POST"], ["api", "PATCH"]) for c in calls))
         self.assertFalse(any(c[0:2] == ["git", "rev-list"] for c in calls))
 
     def test_existing_notes_for_another_source_are_not_overwritten(self):

@@ -446,3 +446,29 @@ quarantine. Added revoked/pending, prior/newer guard, quota rejection, and
 independent offline gallery/Search/capture-reuse assertions. These native
 assertions remain unexecuted locally; final compiler and fresh review receipts
 bind the next packet. Root retains hosted native/public UI/export acceptance.
+
+## Haptic engine callback ownership follow-up
+
+The post-merge follow-up gives each custom Knock/Ta-da its own engine lifetime.
+Late SDK callbacks stay with that playback. A monotonic interruption flag
+covers startup and player creation. Current retirement requests cancellation
+before releasing resources, including when the player rejects stop after reset.
+Preference storage, semantic selection and reader gates remain unchanged.
+
+The original queued stop/reset cancellation cases failed before the fix. The
+portable harness reproduced the broader ownership and startup failures with
+22 failed assertions on the prior implementation. All 20 lifecycle cases pass
+on the final production and test excerpts in a macOS harness using
+MainActor-default compiler flags. This checks the SDK-boundary ownership logic;
+it does not run the iOS app or actual Core Haptics playback.
+
+The final 28 selected native test definitions compile. Local execution remains
+blocked because Xcode lost the owned iOS 27.1 Simulator destination; T3 device
+support also failed. The Simulator test build and unsigned Release iPhone SDK build pass. The 376
+core tests and MainActor compatibility build pass; package checks exclude
+native playback.
+Local final native execution remains unverified.
+
+The broader native-suite limits above still apply. Physical haptic feel,
+interruption/reset behavior and the startup cost of fresh engines remain
+unmeasured.
