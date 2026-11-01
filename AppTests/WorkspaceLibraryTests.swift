@@ -1640,12 +1640,15 @@ import BottoCore
         var deadline = ContinuousClock.now + .seconds(5)
         while reader.file == nil, ContinuousClock.now < deadline { await Task.yield() }
         try #require(reader.file != nil)
-        let parsed = library.indexingMetrics.parsedMessages
         library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: message.id, role: .assistant, text: "Report ready", timestamp: timestampChanges ? nil : message.timestamp)]), title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
+        func revisedMessageIsSearchable() -> Bool {
+            LibrarySearchResults(query: "Report ready", bots: [], chats: library.chats, artifacts: library.artifacts)
+                .messages.contains { $0.chat.identity == service.first && $0.message.id == message.id && $0.message.text == "Report ready" }
+        }
         deadline = ContinuousClock.now + .seconds(5)
-        while library.indexingMetrics.parsedMessages == parsed, ContinuousClock.now < deadline { await Task.yield() }
-        try #require(library.indexingMetrics.parsedMessages > parsed)
+        while !revisedMessageIsSearchable(), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(revisedMessageIsSearchable())
         let current = try #require(library.chats.first { $0.identity == service.first })
         #expect(current.messages.first?.text == "Report ready")
         #expect(library.artifacts.allSatisfy { $0.chat.identity != service.first })
