@@ -13,6 +13,11 @@ if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
 fi
+library_ui=false
+if [ "$selector" = LibraryUIFailures ]; then
+  library_ui=true
+  selector=
+fi
 selection=BottoTests
 if [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
@@ -53,8 +58,14 @@ native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
 result_id=$(uuidgen)
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
+selection_arguments=("-only-testing:$selection")
+if [ "$library_ui" = true ]; then
+  selection_arguments=(
+    -only-testing:BottoUITests/InboxRetentionUITests/testRevealedInboxShowsReplyAndReopeningKeepsDraft
+    -only-testing:BottoUITests/ArtifactExportUITests/testLibrarySaveToFilesAndReopenSavedOriginal)
+fi
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
-  "-only-testing:$selection"
+  "${selection_arguments[@]}"
   -destination "$destination"
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
@@ -78,10 +89,50 @@ print("Xcode discovered %d matching test identifiers." % len(matches))
 PYTHON
   fi
 fi
+export_directory=
+export_started=
+if [ "$native_status" -eq 0 ] && [ "$library_ui" = true ]; then
+  diagnostic_device=$(python3 - "$destination" <<'PYTHON'
+import sys
+import uuid
+fields = dict(part.split("=", 1) for part in sys.argv[1].split(","))
+if fields.get("platform") != "iOS Simulator":
+    sys.exit("Diagnostic requires an exact iOS Simulator destination.")
+print(uuid.UUID(fields["id"]))
+PYTHON
+  ) || native_status=$?
+  if [ "$native_status" -eq 0 ]; then
+    printf 'Waiting for hosted Simulator boot and data migration: %s\n' "$diagnostic_device"
+    xcrun simctl bootstatus "$diagnostic_device" -b || native_status=$?
+  fi
+  if [ "$native_status" -eq 0 ]; then
+    export_directory="$repo_root/.artifacts/CIExport-$result_id"
+    mkdir -p .artifacts
+    mkdir "$export_directory" || native_status=$?
+  fi
+  if [ "$native_status" -eq 0 ]; then
+    export_started=$(date +%s)
+    python3 scripts/verify-artifact-export.py --device "$diagnostic_device" \
+      --filename notes.txt --not-before "$export_started" --require-absent \
+      --receipt "$export_directory/absence.json" || native_status=$?
+  fi
+fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   result_name="CIResults-$result_id.xcresult"
-  xcodebuild test-without-building "${native_arguments[@]}" \
-    -resultBundlePath "$native_directory/$result_name" || native_status=$?
+  if [ "$library_ui" = true ]; then
+    TEST_RUNNER_BOTTO_ARTIFACT_EXPORT_ABSENCE="$(cat "$export_directory/absence.json")" \
+    xcodebuild test-without-building "${native_arguments[@]}" \
+      -resultBundlePath "$native_directory/$result_name" || native_status=$?
+    export_status=0
+    python3 scripts/verify-artifact-export.py --device "$diagnostic_device" \
+      --filename notes.txt --not-before "$export_started" \
+      --absence-receipt "$export_directory/absence.json" \
+      --receipt "$export_directory/result.json" || export_status=$?
+    if [ "$native_status" -eq 0 ]; then native_status=$export_status; fi
+  else
+    xcodebuild test-without-building "${native_arguments[@]}" \
+      -resultBundlePath "$native_directory/$result_name" || native_status=$?
+  fi
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   if ! xcrun xcresulttool get test-results summary --path "$native_directory/$result_name" | python3 -c '
