@@ -13,7 +13,15 @@ if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
 fi
+canvas_video=false
+if [ "$selector" = CanvasPaintVideo ]; then
+  canvas_video=true
+  selector=
+fi
 selection=BottoTests
+if [ "$canvas_video" = true ]; then
+  selection=BottoTests/NativeTranscriptContentTests/actualCanvasGenerationAndSendKeepEveryHostedRowInsideItsNativeAllocation
+fi
 if [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
 import re
@@ -80,8 +88,22 @@ PYTHON
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   result_name="CIResults-$result_id.xcresult"
-  xcodebuild test-without-building "${native_arguments[@]}" \
-    -resultBundlePath "$native_directory/$result_name" || native_status=$?
+  test_command=(xcodebuild test-without-building "${native_arguments[@]}"
+    -resultBundlePath "$native_directory/$result_name")
+  if [ "$canvas_video" = true ]; then
+    video_device_id=$(python3 - "$destination" <<'PYTHON'
+import sys
+import uuid
+parts = dict(part.split("=", 1) for part in sys.argv[1].split(","))
+uuid.UUID(parts["id"])
+print(parts["id"])
+PYTHON
+)
+    python3 scripts/canvas-compositor.py --device "$video_device_id" \
+      --output ".artifacts/CICompositor-$result_id" -- "${test_command[@]}" || native_status=$?
+  else
+    "${test_command[@]}" || native_status=$?
+  fi
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   if ! xcrun xcresulttool get test-results summary --path "$native_directory/$result_name" | python3 -c '
