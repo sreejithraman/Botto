@@ -767,6 +767,13 @@ import BottoCore
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #if DEBUG
+        defer {
+            if let journal = BotAvatarDecodeObservation.processSnapshot() {
+                Attachment.record(journal, named: "avatar-priority-process-journal.txt")
+            }
+        }
+        #endif
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         if acknowledged {
@@ -819,7 +826,8 @@ nonisolated private final class AvatarDecodeObservationTrace: @unchecked Sendabl
             }
             return "elapsed=\(origin.duration(to: instant)) queued=\(queued.count) running=\(running.count) outstanding=\(queued.count + running.count) \(event)"
         }
-        return (["decoderEvents=\(captured.count)"] + lines).joined(separator: "\n")
+        let journal = BotAvatarDecodeObservation.processSnapshot(excluding: Set(captured.map { $0.1.request.id }))
+        return (["decoderEvents=\(captured.count)"] + lines + (journal.map { [$0] } ?? [])).joined(separator: "\n")
     }
 }
 #endif

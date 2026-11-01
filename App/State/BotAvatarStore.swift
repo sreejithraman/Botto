@@ -38,7 +38,7 @@ import BottoCore
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let now: () -> Date
     #if DEBUG
-    @ObservationIgnored private let decodeObservation = BotAvatarDecodeObservation.current
+    @ObservationIgnored private let decodeObservation = BotAvatarDecodeObservation.capture()
     #endif
 
     init(now: @escaping () -> Date = Date.init) { self.now = now }
@@ -110,6 +110,7 @@ import BottoCore
             #if DEBUG
             let observation = decodeObservation
             let request = BotAvatarDecodeObservation.Request(id: attempt, generation: owner, profileID: id, revision: bot.lookRevision)
+            observation?.record(.admitted(request))
             flights[id]?.recordCancellation = { observation?.record(.cancelRequested(request)) }
             let recordPublication: @MainActor @Sendable () -> Void = { [weak self] in
                 observation?.record(.publicationChecked(request, .init(taskCancelled: Task.isCancelled,
@@ -133,12 +134,14 @@ import BottoCore
                     let photo = bot.appearance?.imageKind == "photo"
                     #if DEBUG
                     observation?.record(.requested(request))
-                    decoded = await Task.detached(priority: .utility) {
+                    let worker = Task.detached(priority: BotAvatarDecodeObservation.workerPriority) {
                         observation?.record(.started(request))
                         let result = asset.flatMap { Self.decode($0, photo: photo) }
                         observation?.record(.finished(request, producedImage: result?.image != nil))
                         return result
-                    }.value
+                    }
+                    observation?.record(.awaiting(request))
+                    decoded = await worker.value
                     #else
                     decoded = await Task.detached(priority: .utility) { asset.flatMap { Self.decode($0, photo: photo) } }.value
                     #endif
@@ -199,6 +202,29 @@ import BottoCore
 /// Read-only, scoped to test store construction, and absent from Release builds.
 nonisolated struct BotAvatarDecodeObservation: Sendable {
     @TaskLocal static var current: Self?
+    private static let variant = environment("BOTTO_AVATAR_DECODE_PRIORITY").flatMap(Variant.init(rawValue:))
+    private static let journal = variant.map { variant in
+        let arm = environment("BOTTO_AVATAR_PRIORITY_ARM") ?? "unlabelled"
+        return Journal(variant: variant, arm: ["A1", "B1", "B2", "A2"].contains(arm) ? arm : "unlabelled")
+    }
+    static var workerPriority: TaskPriority { variant == .userInitiated ? .userInitiated : .utility }
+
+    private enum Variant: String, Sendable { case utility, userInitiated }
+
+    private static func environment(_ name: String) -> String? {
+        let values = ProcessInfo.processInfo.environment
+        return values[name] ?? values["TEST_RUNNER_" + name]
+    }
+
+    static func capture() -> Self? {
+        let scoped = current
+        guard let journal else { return scoped }
+        return .init(record: { event in scoped?.record(event); journal.record(event) })
+    }
+
+    static func processSnapshot(excluding local: Set<UUID> = []) -> String? {
+        journal?.snapshot(excluding: local)
+    }
 
     struct Request: Sendable {
         let id: UUID
@@ -216,10 +242,12 @@ nonisolated struct BotAvatarDecodeObservation: Sendable {
     }
 
     enum Event: Sendable {
+        case admitted(Request)
         case serviceStarted(Request)
         case assetReturned(Request, present: Bool)
         case serviceFailed(Request)
         case requested(Request)
+        case awaiting(Request)
         case started(Request)
         case finished(Request, producedImage: Bool)
         case cancelRequested(Request)
@@ -228,13 +256,71 @@ nonisolated struct BotAvatarDecodeObservation: Sendable {
 
         var request: Request {
             switch self {
-            case .serviceStarted(let request), .assetReturned(let request, _), .serviceFailed(let request),
-                 .requested(let request), .started(let request), .finished(let request, _),
+            case .admitted(let request), .serviceStarted(let request), .assetReturned(let request, _), .serviceFailed(let request),
+                 .requested(let request), .awaiting(let request), .started(let request), .finished(let request, _),
                  .cancelRequested(let request), .publicationChecked(let request, _), .published(let request, _): request
             }
         }
     }
 
     let record: @Sendable (Event) -> Void
+
+    private final class Journal: @unchecked Sendable {
+        private struct Entry {
+            let elapsed: Duration
+            let event: Event
+            var base: UInt8?
+            var effective: UInt8?
+            let mainThread: Bool
+        }
+
+        private let lock = NSLock()
+        private let origin = ContinuousClock.now
+        private let variant: Variant
+        private let arm: String
+        private var entries: [Entry] = []
+        private var tracked = Set<UUID>()
+        private var queued = Set<UUID>(), running = Set<UUID>(), retired = Set<UUID>()
+        private var dropped = 0
+
+        init(variant: Variant, arm: String) { self.variant = variant; self.arm = arm }
+
+        func record(_ event: Event) {
+            let entry = Entry(elapsed: origin.duration(to: .now), event: event,
+                base: nil, effective: nil, mainThread: Thread.isMainThread)
+            let index: Int? = lock.withLock {
+                let id = event.request.id
+                if !tracked.contains(id) {
+                    guard tracked.count < 10_000 else { dropped += 1; return nil }
+                    tracked.insert(id)
+                }
+                switch event {
+                case .requested: queued.insert(id)
+                case .started: queued.remove(id); running.insert(id)
+                case .finished: running.remove(id)
+                case .cancelRequested: retired.insert(id)
+                default: break
+                }
+                guard entries.count < 10_000 else { dropped += 1; return nil }
+                entries.append(entry)
+                return entries.count - 1
+            }
+            // Entry/phase accounting precedes priority queries so a pending
+            // query cannot look like a worker that never entered its body.
+            if let index {
+                let base = Task.basePriority?.rawValue, effective = Task.currentPriority.rawValue
+                lock.withLock { entries[index].base = base; entries[index].effective = effective }
+            }
+        }
+
+        func snapshot(excluding local: Set<UUID>) -> String {
+            let (captured, queued, running, retired, dropped) = lock.withLock { (entries, self.queued, self.running, self.retired, self.dropped) }
+            let header = "priorityArm=\(arm) variant=\(variant.rawValue) pid=\(ProcessInfo.processInfo.processIdentifier) events=\(captured.count) dropped=\(dropped) allQueued=\(queued.count) allRunning=\(running.count) priorQueued=\(queued.subtracting(local).count) priorRunning=\(running.subtracting(local).count) retiredQueued=\(queued.intersection(retired).count) retiredRunning=\(running.intersection(retired).count)"
+            let lines = captured.map { entry in
+                "processElapsed=\(entry.elapsed) basePriority=\(entry.base.map(String.init) ?? "none") effectivePriority=\(entry.effective.map(String.init) ?? "pending") mainThread=\(entry.mainThread) \(entry.event)"
+            }
+            return ([header] + lines).joined(separator: "\n")
+        }
+    }
 }
 #endif

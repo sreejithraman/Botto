@@ -9,6 +9,11 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 build_only=false
+priority_ab=false
+if [ "$selector" = AvatarPriorityABBA ]; then
+  priority_ab=true
+  selector=
+fi
 if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
@@ -41,6 +46,10 @@ if not iphones:
 print(iphones[0]["udid"])
 ')
   destination="platform=iOS Simulator,id=$device_id"
+fi
+
+if [ "$priority_ab" = true ]; then
+  exec python3 "$repo_root/scripts/avatar-priority-ab.py" "$destination"
 fi
 
 # Xcode watches this local Swift package; native output writes must not trigger rescans.
