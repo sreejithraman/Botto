@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "dev-host"))
+from process_groups import child_exited, stop_group
 
 
 # Method counts from the executed 3867874 baseline, not the discovery catalogue.
@@ -29,23 +31,20 @@ def bounded(command, seconds, *, environment=None):
     if seconds <= 0:
         return 124
     process = subprocess.Popen(command, env=environment, start_new_session=True)
+    deadline = time.monotonic() + seconds
+    timed_out = False
     try:
-        return process.wait(timeout=seconds)
-    except subprocess.TimeoutExpired:
+        while not child_exited(process):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            time.sleep(min(.1, remaining))
+    finally:
+        # Retain the unreaped leader through group retirement, even after normal exit.
         # Only this invocation's process group; never a Simulator service.
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-        return 124
+        stop_group(process, grace=5 if timed_out else 0)
+    return 124 if timed_out else process.returncode
 
 
 def read_result(verb, result):
@@ -91,7 +90,7 @@ def main():
         "kind": "diagnostic-priority-abba",
         "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "destination": sys.argv[1], "cohort": COHORT, "enumeration": False,
-        "totalBudgetSeconds": 1500, "buildLimitSeconds": 360, "armLimitSeconds": 360,
+        "executionBudgetSeconds": 1500, "buildLimitSeconds": 360, "armLimitSeconds": 360,
         "arms": [],
         "causalVerdict": "Undetermined. Both A/B passing or fast A2 is inconclusive; inspect all stage journals and prior work.",
     }
@@ -144,7 +143,7 @@ def main():
                     counts = {suite: sum(m["nodeIdentifier"].split("/")[0] == suite for m in methods) for suite in COHORT}
                     record.update(summary=summary, executedCounts=counts)
                     if counts != COHORT or len(methods) != sum(COHORT.values()):
-                        raise ValueError("Actual xcresult methods do not match the pinned five-suite cohort")
+                        raise ValueError("Actual xcresult method counts do not match the pinned five-suite cohort")
                     if summary.get("passedTests", 0) < 1 or summary.get("failedTests", 0) or summary.get("skippedTests", 0):
                         arm_status = arm_status or 1
                     traces = results / f"{arm}-traces"
