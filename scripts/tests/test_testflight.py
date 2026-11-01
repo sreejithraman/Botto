@@ -181,6 +181,7 @@ if args[:3] == ["api", "PATCH", "/v1/betaBuildLocalizations/localization"]:
  patch_signal=s.pop("signal_note_patch",None)
  if patch_signal:
   p.write_text(json.dumps(s)); os.kill(os.getppid(),patch_signal)
+  sys.exit(0)
  if s.pop("interrupt_note_patch",False):
   p.write_text(json.dumps(s)); sys.exit(1)
  done({"data":{"type":"betaBuildLocalizations","id":"localization"}})
