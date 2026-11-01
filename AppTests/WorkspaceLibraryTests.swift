@@ -800,6 +800,10 @@ import BottoCore
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
         warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.first }))
+        // The later capture must evict the unrelated first chat, regardless of writer order.
+        let warmSession = warmCache.session(scope: scope)
+        let peer = try #require(try await warmSession.loadChats().first { $0.identity == service.second })
+        try await warmSession.upsert(peer)
         warm.retire(); await warmCache.close()
         var limits = ArtifactCache.Limits(); limits.chatCount = 1
         let gate = CaptureCommitGate(); defer { gate.release() }
@@ -1636,12 +1640,15 @@ import BottoCore
         var deadline = ContinuousClock.now + .seconds(5)
         while reader.file == nil, ContinuousClock.now < deadline { await Task.yield() }
         try #require(reader.file != nil)
-        let parsed = library.indexingMetrics.parsedMessages
         library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: message.id, role: .assistant, text: "Report ready", timestamp: timestampChanges ? nil : message.timestamp)]), title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
+        func revisedMessageIsSearchable() -> Bool {
+            LibrarySearchResults(query: "Report ready", bots: [], chats: library.chats, artifacts: library.artifacts)
+                .messages.contains { $0.chat.identity == service.first && $0.message.id == message.id && $0.message.text == "Report ready" }
+        }
         deadline = ContinuousClock.now + .seconds(5)
-        while library.indexingMetrics.parsedMessages == parsed, ContinuousClock.now < deadline { await Task.yield() }
-        try #require(library.indexingMetrics.parsedMessages > parsed)
+        while !revisedMessageIsSearchable(), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(revisedMessageIsSearchable())
         let current = try #require(library.chats.first { $0.identity == service.first })
         #expect(current.messages.first?.text == "Report ready")
         #expect(library.artifacts.allSatisfy { $0.chat.identity != service.first })
@@ -2370,14 +2377,36 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: attachment, botID: service.first.profile.text))
         defer { store.finishArtifact(destination) }
         let barrier = StoreTestBarrier()
+        defer { barrier.release() }
         service.downloadBarrier = barrier
-        let first = Task { try await store.library.download(item) }
-        await barrier.waitUntilEntered()
-        let second = Task { try await store.downloadArtifact(destination) }
-        let thumbnail = Task { await store.library.thumbnail(for: item) { _ in Data("thumbnail".utf8) } }
-        for _ in 0..<20 { await Task.yield() }
+        var firstFinished = false, secondFinished = false, thumbnailFinished = false
+        let first = Task {
+            defer { firstFinished = true }
+            return try await store.library.download(item)
+        }
+        defer { first.cancel() }
+        try #require(await barrier.waitUntilEntered(timeout: .seconds(10)))
+        let registrations = store.library.indexingMetrics.galleryConsumersRegistered
+        let second = Task {
+            defer { secondFinished = true }
+            return try await store.downloadArtifact(destination)
+        }
+        let thumbnail = Task {
+            defer { thumbnailFinished = true }
+            return await store.library.thumbnail(for: item) { _ in Data("thumbnail".utf8) }
+        }
+        defer { second.cancel(); thumbnail.cancel() }
+        var deadline = ContinuousClock.now + .seconds(10)
+        while store.library.indexingMetrics.galleryConsumersRegistered == registrations,
+              ContinuousClock.now < deadline { await Task.yield() }
+        try #require(store.library.indexingMetrics.galleryConsumersRegistered > registrations)
         first.cancel()
         barrier.release()
+        deadline = .now + .seconds(10)
+        while !(firstFinished && secondFinished && thumbnailFinished),
+              ContinuousClock.now < deadline { await Task.yield() }
+        try #require(firstFinished && secondFinished && thumbnailFinished,
+            "Shared readers must finish after release; downloads=\(service.downloadCount)")
         _ = try? await first.value
         #expect(try await second.value.data == Data("main".utf8))
         #expect(await thumbnail.value == Data("thumbnail".utf8))
