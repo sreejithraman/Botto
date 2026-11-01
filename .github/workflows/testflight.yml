@@ -105,6 +105,14 @@ jobs:
           if ! gh run download "$GITHUB_RUN_ID" --name "testflight-notes-$BUILD_NUMBER" --dir ".artifacts/testflight/$BUILD_NUMBER"; then
             echo "Original prepared notes could not be restored. The publisher can reuse existing matching Apple notes, but will stop before creating missing notes or uploading."
           fi
+          mkdir -p ".artifacts/testflight/$BUILD_NUMBER"
+          for ((prior=GITHUB_RUN_ATTEMPT-1; prior>=1 && prior>=GITHUB_RUN_ATTEMPT-20; prior--)); do
+            restore_dir="$RUNNER_TEMP/botto-release-recovery/$prior"
+            if gh run download "$GITHUB_RUN_ID" --name "testflight-$BUILD_NUMBER-$prior" --dir "$restore_dir" && [[ -f "$restore_dir/receipt.json" ]]; then
+              cp "$restore_dir/receipt.json" ".artifacts/testflight/$BUILD_NUMBER/receipt.json"
+              break
+            fi
+          done
       - name: Prepare source-bound notes before upload
         if: steps.ready.outputs.publish == 'true' && github.run_attempt == '1'
         env:

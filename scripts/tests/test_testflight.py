@@ -136,10 +136,14 @@ if args[:2] == ["xcode","export"]:
 if args[:1] == ["ipa-info"]:
  done({"signatureVerification":"valid","bundleId":"com.sree.botto","version":"0.1.0","buildNumber":"1001","teamId":"team"})
 if args[:2] == ["builds","upload"]:
- s["uploads"]=[{"attributes":{"state":{"state":"PROCESSING"}}}]
+ s["uploads"]=[{"id":"upload","attributes":{"state":{"state":"PROCESSING"}}}]
  if s.pop("interrupt_upload",False):
   p.write_text(json.dumps(s)); sys.exit(1)
- done({})
+ done({"uploadId":"upload"})
+if args[:3] == ["api", "GET", "/v1/builds/build"]:
+ data={"id":"build"}
+ if "include=buildUpload" in args: data["relationships"]={"buildUpload":{"data":{"type":"buildUploads","id":s.get("build_upload_id","upload")}}}
+ done({"data":data})
 if args[:3] == ["xcode", "version", "view"]:
  assert flag("--configuration") == "Internal"
  done({"version":"0.1.0"})
@@ -219,6 +223,7 @@ class ReconciliationTests(unittest.TestCase):
             PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
         )
         self.checkpoint()
+        self.state(build="VALID")
 
     def checkpoint(self, notes=None, baseline=None):
         self.output.mkdir(exist_ok=True)
@@ -248,6 +253,16 @@ class ReconciliationTests(unittest.TestCase):
         )
 
     def state(self, **values):
+        # Existing remote state models a retry with its restored upload receipt.
+        remote = bool(values.get("build") or values.get("uploads"))
+        self.env["GITHUB_RUN_ATTEMPT"] = "2" if remote else "1"
+        for upload in values.get("uploads", []):
+            upload.setdefault("id", "upload")
+        path = self.output / "receipt.json"
+        if remote:
+            path.write_text(json.dumps({"sourceSHA": "a" * 40, "runID": "123", "version": "0.1.0", "buildNumber": "1001", "uploadID": "upload"}))
+        else:
+            path.unlink(missing_ok=True)
         self.fixture.write_text(json.dumps(values))
 
     def test_existing_valid_build_finishes_without_signing_secrets_or_upload(self):
@@ -265,6 +280,18 @@ class ReconciliationTests(unittest.TestCase):
             ["bin", "fixture.json", "output"],
         )
 
+    def test_first_attempt_refuses_a_build_number_occupied_by_another_upload(self):
+        for remote in ({"build": "VALID"}, {"uploads": [{"id": "foreign", "attributes": {"state": {"state": "PROCESSING"}}}]}):
+            with self.subTest(remote=remote):
+                self.state(**remote)
+                self.env["GITHUB_RUN_ATTEMPT"] = "1"
+                (self.output / "receipt.json").unlink(missing_ok=True)
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("already occupied", result.stderr)
+                calls = json.loads(self.fixture.read_text())["calls"]
+                self.assertFalse(any(c[1:3] in (["api", "POST"], ["builds", "add-groups"], ["builds", "upload"], ["xcode", "archive"]) for c in calls))
+
     def test_interrupted_group_assignment_is_reconciled_without_duplicate_notes(self):
         self.state(build="VALID", interrupt_assignment=True)
         self.assertNotEqual(self.run_release().returncode, 0)
@@ -275,6 +302,37 @@ class ReconciliationTests(unittest.TestCase):
             sum(c[1:4] == ["api", "POST", "/v1/betaBuildLocalizations"] for c in calls), 1
         )
         self.assertFalse(any(c[1:3] == ["builds", "upload"] for c in calls))
+
+    def test_retry_refuses_another_upload_even_with_matching_source_notes(self):
+        for remote in ({"build": "VALID", "build_upload_id": "foreign"}, {"uploads": [{"id": "foreign", "attributes": {"state": {"state": "PROCESSING"}}}]}):
+            with self.subTest(remote=remote):
+                self.state(**remote, notes=f"Botto 0.1.0 (1001)\nSource: {'a' * 40}\n\nMatching notes")
+                result = self.run_release()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("does not belong", result.stderr)
+                calls = json.loads(self.fixture.read_text())["calls"]
+                self.assertFalse(any(c[1:3] in (["api", "POST"], ["builds", "add-groups"], ["builds", "upload"]) for c in calls))
+
+    def test_retry_requires_a_saved_upload_identity_before_claiming_a_build(self):
+        self.state(build="VALID")
+        (self.output / "receipt.json").unlink()
+        result = self.run_release()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("saved upload identity", result.stderr)
+        calls = json.loads(self.fixture.read_text())["calls"]
+        self.assertFalse(any(c[1:3] in (["api", "POST"], ["builds", "add-groups"], ["builds", "upload"]) for c in calls))
+
+    def test_receipt_from_another_run_cannot_claim_a_matching_build(self):
+        self.state(build="VALID")
+        path = self.output / "receipt.json"
+        record = json.loads(path.read_text())
+        record["runID"] = "another-run"
+        path.write_text(json.dumps(record))
+        result = self.run_release()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("receipt belongs to another release", result.stderr)
+        calls = json.loads(self.fixture.read_text())["calls"]
+        self.assertFalse(any(c[1:3] in (["api", "POST"], ["builds", "add-groups"], ["builds", "upload"]) for c in calls))
 
     def test_notes_are_read_back_before_group_distribution(self):
         self.state(build="VALID", drop_notes_write=True)
@@ -378,7 +436,7 @@ class ReconciliationTests(unittest.TestCase):
                 self.env["GITHUB_RUN_ATTEMPT"] = attempt
                 result = self.run_release()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("superseded", result.stderr)
+                self.assertIn("superseded" if attempt == "1" else "saved upload identity", result.stderr)
                 self.assertIn("new workflow run", result.stderr)
                 calls = json.loads(self.fixture.read_text())["calls"]
                 self.assertFalse(
@@ -433,17 +491,19 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_external_group_rejected_before_upload(self):
         self.state(build="VALID", external=True)
+        before = {p.name: p.read_bytes() for p in self.output.iterdir()}
         result = self.run_release()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("internal", result.stderr)
-        self.assertEqual(sorted(p.name for p in self.output.iterdir()), ["prepared-notes.json"])
+        self.assertEqual({p.name: p.read_bytes() for p in self.output.iterdir()}, before)
 
     def test_dirty_source_rejected_before_credentials(self):
         self.state(dirty=" M project.yml")
+        before = {p.name: p.read_bytes() for p in self.output.iterdir()}
         result = self.run_release()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("clean", result.stderr)
-        self.assertEqual(sorted(p.name for p in self.output.iterdir()), ["prepared-notes.json"])
+        self.assertEqual({p.name: p.read_bytes() for p in self.output.iterdir()}, before)
 
     def test_uncommitted_reservation_requires_new_run_without_wait_or_upload(self):
         self.state(uploads=[{"attributes": {"state": {"state": "AWAITING_UPLOAD"}}}])
@@ -481,10 +541,11 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_source_sha_must_match_checkout(self):
         self.state(sha="b" * 40)
+        before = {p.name: p.read_bytes() for p in self.output.iterdir()}
         result = self.run_release()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("git HEAD", result.stderr)
-        self.assertEqual(sorted(p.name for p in self.output.iterdir()), ["prepared-notes.json"])
+        self.assertEqual({p.name: p.read_bytes() for p in self.output.iterdir()}, before)
 
     def test_unknown_encryption_is_actionable_and_does_not_patch(self):
         self.state(build="VALID", encryption=None)
@@ -520,10 +581,13 @@ class PackagingTests(ReconciliationTests):
         state.pop("fail_operation")
         state["build"] = "VALID"
         self.fixture.write_text(json.dumps(state))
-        # A new runner restores only the run's immutable notes artifact.
+        original_upload_receipt = (self.output / "receipt.json").read_bytes()
+        self.assertEqual(json.loads(original_upload_receipt)["uploadID"], "upload")
+        # A new runner restores the notes checkpoint and its own upload receipt.
         shutil.rmtree(self.output)
         self.output.mkdir()
         (self.output / "prepared-notes.json").write_bytes(original)
+        (self.output / "receipt.json").write_bytes(original_upload_receipt)
         self.env["GITHUB_RUN_ATTEMPT"] = "2"
         result = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -612,11 +676,13 @@ class PackagingTests(ReconciliationTests):
         receipt = json.loads((self.output / "receipt.json").read_text())
         self.assertEqual(len(receipt["ipaSHA256"]), 64)
 
-    def test_upload_commit_followed_by_failure_does_not_upload_on_retry(self):
+    def test_unknown_upload_outcome_requires_manual_ownership_reconciliation(self):
         self.state(interrupt_upload=True)
         self.assertNotEqual(self.run_release().returncode, 0)
+        self.env["GITHUB_RUN_ATTEMPT"] = "2"
         result = self.run_release()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("saved upload identity", result.stderr)
         calls = json.loads(self.fixture.read_text())["calls"]
         self.assertEqual(sum(c[1:3] == ["builds", "upload"] for c in calls), 1)
         self.assertEqual(

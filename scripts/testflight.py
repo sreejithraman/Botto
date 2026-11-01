@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from urllib.parse import quote
 
 
 class ReleaseError(Exception):
@@ -188,7 +189,8 @@ def command(*args, env=None):
         elif args[:3] == ("asc", "builds", "upload"):
             category = "upload-commit-unknown"
             recovery = (
-                "rerun this workflow to reconcile; never upload this number manually"
+                "inspect the Apple upload before starting a new workflow run; "
+                "an unknown outcome without a saved upload ID cannot be reconciled automatically"
             )
         elif args[:2] == ("asc", "xcode"):
             category = "build-configuration"
@@ -658,6 +660,18 @@ def prepared_notes(output, source, version, number):
     return notes
 
 
+def verify_build_upload(build_id, upload_id, env):
+    resource = asc(
+        "api", "GET", f"/v1/builds/{quote(build_id, safe='')}",
+        "--query", "fields[builds]=buildUpload", "--query", "include=buildUpload",
+        "--query", "fields[buildUploads]=cfBundleVersion,cfBundleShortVersionString,state", env=env,
+    )["data"]
+    if resource.get("relationships", {}).get("buildUpload", {}).get("data") != {
+        "type": "buildUploads", "id": upload_id,
+    }:
+        raise ReleaseError("Apple build does not belong to this run's saved upload; inspect the original upload manually")
+
+
 def publish(args, temp, env):
     app, team, group = (
         required("BOTTO_APP_ID"),
@@ -681,6 +695,19 @@ def publish(args, temp, env):
             raise ReleaseError("existing receipt belongs to another release")
         receipt.update(previous)
     build = exact_build(app, version, args.build_number, env)
+    first_attempt = int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")) == 1
+    upload_id = receipt.get("uploadID")
+    if build and first_attempt:
+        raise ReleaseError("reserved build number is already occupied; start a new workflow run with a higher number")
+    if not first_attempt and (not isinstance(upload_id, str) or not upload_id):
+        raise ReleaseError(
+            "saved upload identity is unavailable; inspect the original Apple upload before starting a new workflow run; "
+            "this run cannot verify ownership or repeat the upload"
+        )
+    verified_build_id = None
+    if build:
+        verify_build_upload(build["id"], upload_id, env)
+        verified_build_id = build["id"]
     selected_notes = None
     if not build:
         uploads = asc(
@@ -698,6 +725,10 @@ def publish(args, temp, env):
             "--paginate",
             env=env,
         )["data"]
+        if uploads and first_attempt:
+            raise ReleaseError("reserved build number is already occupied; start a new workflow run with a higher number")
+        if uploads and not any(item.get("id") == upload_id for item in uploads):
+            raise ReleaseError("reserved upload does not belong to this run's saved upload; inspect it manually")
         states = {item["attributes"].get("state", {}).get("state") for item in uploads}
         if states - {"PROCESSING", "COMPLETE"}:
             raise ReleaseError(
@@ -705,6 +736,8 @@ def publish(args, temp, env):
                 "start a new workflow run with a new build number; do not upload this number again"
             )
         if not uploads:
+            if not first_attempt:
+                raise ReleaseError("saved upload is not visible at Apple; inspect it manually before starting a new workflow run")
             next_number = asc(
                 "builds",
                 "next-build-number",
@@ -732,7 +765,12 @@ def publish(args, temp, env):
             receipt["ipaSHA256"] = hashlib.sha256(ipa.read_bytes()).hexdigest()
             receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
             internal_group(app, group, env, manual_only=True)
-            asc("builds", "upload", "--app", app, "--ipa", str(ipa), env=env)
+            uploaded = asc("builds", "upload", "--app", app, "--ipa", str(ipa), env=env)
+            upload_id = uploaded.get("uploadId")
+            if not isinstance(upload_id, str) or not upload_id:
+                raise ReleaseError("upload returned no identity; inspect the Apple upload manually before starting a new workflow run")
+            receipt["uploadID"] = upload_id
+            receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
     if not build or build["attributes"].get("processingState") != "VALID":
         asc(
             "builds",
@@ -756,6 +794,8 @@ def publish(args, temp, env):
     if not build or build["attributes"].get("processingState") != "VALID":
         raise ReleaseError("build is not valid yet; rerun this workflow to reconcile")
     build_id = build["id"]
+    if build_id != verified_build_id:
+        verify_build_upload(build_id, upload_id, env)
     info = asc("builds", "info", "--build-id", build_id, env=env)
     if info["data"]["attributes"].get("usesNonExemptEncryption") is not False:
         raise ReleaseError(

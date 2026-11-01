@@ -186,7 +186,8 @@ signing or binary upload starts. A failed-job rerun restores that artifact from
 the same workflow run. An explicitly unknown baseline stays unknown; retries
 never regenerate notes from a different history range. The artifact lasts 14
 days. If it is missing or expired, existing matching Apple notes can still be
-reused; creating missing notes or a new upload stops with recovery guidance.
+reused when the saved upload receipt proves ownership; creating missing notes
+or a new upload stops with recovery guidance.
 The final text is retained in `what-to-test.txt` and read back from Apple.
 
 ## Build numbers and retries
@@ -199,16 +200,27 @@ use `github.run_attempt` or merge counter-only changes.
 Queue entry order can differ from run-number order. Before signing a number
 that has no Apple build or committed upload, the publisher checks the next
 safe number across processed builds and uploads. A superseded number stops
-with new-run instructions. An already committed lower-numbered build still
-reconciles without another upload.
+with new-run instructions. A first attempt refuses an occupied number, even
+if it contains matching notes.
+A lower-numbered build can reconcile on a retry only when the saved upload
+identity proves it belongs to that run.
 
 Use **Re-run failed jobs** when Apple has committed the upload and it is
 processing or complete. The publisher looks up the exact version and build,
-then reconciles that upload rather than repeating it. The original prepared
+then compares Apple's `buildUpload` relationship with the upload ID saved in
+this run's release receipt. It restores that receipt from the most recent
+available earlier attempt artifact, looking back at most 20 attempts. Only
+that owned upload can reconcile without another upload. The original prepared
 notes artifact preserves the selected change range even if processing timed
-out before Apple received any notes. A retry on current main
-can restore the receipt even if distribution succeeded before artifact saving
-failed. Existing internal-group membership does not need another mutation.
+out before Apple received any notes. With the saved upload identity retained,
+a retry on current main can restore a delivery receipt without another group
+mutation. If the artifact containing that identity was lost or failed to save,
+manual reconciliation is required even when distribution already finished.
+Both the notes checkpoint and the upload receipt artifacts last 14 days.
+Missing ownership evidence stops reconciliation even when matching notes exist.
+If an upload returns an error after Apple may have accepted it, no returned ID
+is available to prove ownership. Inspect that upload manually before starting a
+new run; the publisher will not claim it or upload the same number again.
 
 If main has advanced, the old rerun fails with recovery instructions; it does
 not claim to have reconciled the earlier upload. Inspect the original build's
