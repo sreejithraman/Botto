@@ -33,3 +33,11 @@ Speculative eviction rejects guard overflow before quarantining unrelated data.
 Cold book seeds stay hidden until saved index reconciliation completes. Overflow
 quarantines the configuration until its cache is discarded. Unreadable recovery
 state fails closed, with a visible save or recovery warning.
+
+Active leases can record withdrawals while startup SQL maintenance is pending or
+failed. Cleanup captures bounded guard/token state when queued and removes only
+unchanged prior guards; a new active lease's guards survive that cleanup. SQL
+reads and writes still wait for maintenance, and retired leases cannot journal.
+First in-flight metadata writers participate in withdrawal, including canonical
+roster pruning. Bounded runtime acceptance fencing uses operation stamps and a
+discard watermark so forgetting an ID cannot make a stale read look unchanged.

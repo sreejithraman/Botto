@@ -382,3 +382,12 @@ only that token. Deletion and quota eviction retain bounded scoped guards. Cold
 book seeds remain unavailable to Search, gallery and capture admission until the
 saved index has reconciled their removal, ambiguity and retired-tip evidence.
 A failed initial SQLite open can still record guards in the writable ledger.
+
+The library versions canonical roster withdrawals before another history await
+and includes its first in-flight metadata writer in durable invalidation. Its
+acceptance fence retains at most twice the injected chat budget (minimum two
+entries); seed/scan operations hold a small stamp. An evicted version leaves a
+watermark that rejects uncertain stale results. Repeated updates to a retained
+ID do not invalidate an unrelated read. This is runtime state, not host revision
+or mutation authority. Startup cleanup checkpoints preserve newer active-lease
+guards while SQL readiness and retirement still gate cache reads and writes.

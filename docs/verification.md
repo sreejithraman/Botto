@@ -472,3 +472,23 @@ Local final native execution remains unverified.
 The broader native-suite limits above still apply. Physical haptic feel,
 interruption/reset behavior and the startup cost of fresh engines remain
 unmeasured.
+
+## Draft feature integration and R15 source repairs — 1 November 2026
+
+Draft PR 9 first published the exact R14 bytes at `c4cb956`. The merge at
+`f806a5e` integrates main `ae72bef`: all 68 feature paths remain, 66 R14 path
+hashes are unchanged, the demo timing auto-merge is retained, and both complete
+verification records above are preserved. Hosted run `41306636184` passed its
+required checks on that exact integration. Its native job built the app and
+tests but did not execute tests, so it does not settle the six R14 blockers.
+
+R15 repairs startup-maintenance guard admission, first in-flight writer
+withdrawal, canonical roster removal and bounded acceptance fencing. The
+two-chat fixture now performs same-ID producer edits, and the reader fixture
+uses actual preview close/cancellation with a real registered gallery peer.
+New gated tests cover pending/failed production startup prune, new lease versus
+queued cleanup, first-write eviction/retirement, roster withdrawal before another
+history response, bounded stale scan/seed rejection and unrelated read progress.
+These assertions remain unexecuted locally. The final compiler/review packet
+will bind the repaired source; root owns hosted native, public UI, export,
+full-main and final TestFlight acceptance.

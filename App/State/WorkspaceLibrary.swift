@@ -126,6 +126,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var parsedMessages = 0
         var processingDuration: Duration = .zero
         var galleryConsumersRegistered = 0
+        var retainedAcceptanceFences = 0
     }
     @ObservationIgnored private(set) var indexingMetrics = IndexingMetrics()
     struct Projection: Sendable {
@@ -148,7 +149,38 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let continuation: CheckedContinuation<Void, any Error>
     }
     @ObservationIgnored private var projectionWaiters: [UUID: ProjectionWaiter] = [:]
-    private var acceptedVersions: [LibraryChat.ID: UUID] = [:]
+    private struct AcceptanceFence {
+        struct Stamp: Equatable {
+            let generation: UUID
+            let sequence: UInt64
+        }
+        private var generation = UUID()
+        private var sequence: UInt64 = 0
+        private var discardedThrough: UInt64 = 0
+        private var versions: [LibraryChat.ID: UInt64] = [:]
+        let capacity: Int
+        init(capacity: Int) { self.capacity = capacity }
+        var stamp: Stamp { Stamp(generation: generation, sequence: sequence) }
+        var count: Int { versions.count }
+        func contains(_ id: LibraryChat.ID) -> Bool { versions[id] != nil }
+        mutating func record(_ id: LibraryChat.ID) {
+            if sequence == .max {
+                generation = UUID(); sequence = 0; discardedThrough = 0; versions = [:]
+            }
+            sequence += 1; versions[id] = sequence
+            while versions.count > capacity, let oldest = versions.min(by: { $0.value < $1.value }) {
+                versions[oldest.key] = nil; discardedThrough = max(discardedThrough, oldest.value)
+            }
+        }
+        func permits(_ id: LibraryChat.ID, since stamp: Stamp) -> Bool {
+            guard stamp.generation == generation else { return false }
+            if let version = versions[id] { return version <= stamp.sequence }
+            // A discarded change cannot become indistinguishable from an ID
+            // that never changed. Only unknown IDs need this overflow fence.
+            return discardedThrough <= stamp.sequence
+        }
+    }
+    private var acceptanceFence: AcceptanceFence
     private var captureRevisions: [Data: UUID] = [:]
     private(set) var thumbnailAvailabilityRevision = UUID()
     private(set) var revalidationRevision = UUID()
@@ -168,9 +200,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var initialSourceProofs: [LibraryChat.ID: ExactID] = [:]
     @ObservationIgnored private let cache: ArtifactCacheSession?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    private var inFlightUpsert: LibraryChat.ID?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var seedTask: Task<Void, Never>?
-    private var pendingSeed: (book: ConversationBook, bots: [BotProfile], accepted: [LibraryChat.ID: UUID], request: UUID)?
+    private var pendingSeed: (book: ConversationBook, bots: [BotProfile], accepted: AcceptanceFence.Stamp, request: UUID)?
     private var seedVersion = UUID()
     private var localWorkCount = 0
     private var restored = false
@@ -244,6 +277,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
          now: @escaping () -> ContinuousClock.Instant = { .now },
          projector: @escaping ProjectionWorker = { messages, tail in await WorkspaceLibrary.project(messages, streamingMessage: tail) }) {
         self.service = service; self.limits = limits; self.projector = projector
+        let (fenceCapacity, overflow) = max(1, limits.chatCount).multipliedReportingOverflow(by: 2)
+        acceptanceFence = AcceptanceFence(capacity: overflow ? Int.max : fenceCapacity)
         self.now = now
         self.cache = cache ?? ArtifactCache(root: nil).session(scope: .init(configurationID: UUID(),
             serverURL: Data(), installationID: nil, username: Data(), provider: nil))
@@ -267,8 +302,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 withdrawUntrustedRestoration()
                 if metadataRecovery.all || !metadataRecovery.invalidated.isEmpty {
                     for hint in try await cache.metadataRecoveryHints() {
-                        let id = key(for: hint.identity), version = acceptedVersions[id]
-                        await installRestorationHint(hint, admittedBy: { !self.isRetired && self.acceptedVersions[id] == version })
+                        let id = key(for: hint.identity), stamp = acceptanceFence.stamp
+                        await installRestorationHint(hint, admittedBy: { !self.isRetired && self.acceptanceFence.permits(id, since: stamp) })
                     }
                 }
                 let loaded = try await cache.loadChats()
@@ -401,19 +436,26 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         await persistenceTask?.value
     }
 
+    private func recordAcceptance(_ id: LibraryChat.ID) {
+        acceptanceFence.record(id)
+        indexingMetrics.retainedAcceptanceFences = acceptanceFence.count
+    }
+
     private func markDirty(_ id: LibraryChat.ID) {
         dirtyChats.insert(id); dirtyVersions[id] = UUID()
     }
 
     private func pendingMetadata() -> Set<LibraryChat.ID> {
-        persistedIDs.filter { records[$0] == nil }.union(dirtyChats.filter {
+        var savedOrWriting = persistedIDs
+        if let inFlightUpsert { savedOrWriting.insert(inFlightUpsert) }
+        return savedOrWriting.filter { records[$0] == nil }.union(dirtyChats.filter {
             records[$0] != nil && !restorationHints.contains($0) && !unreconciledSeedIDs.contains($0)
         })
     }
 
     private func schedulePersistence() {
         guard let cache, !isRetired else { return }
-        let pending = pendingMetadata().filter { restored || acceptedVersions[$0] != nil }
+        let pending = pendingMetadata().filter { restored || acceptanceFence.contains($0) }
         for id in pending where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
         // This bounded atomic ledger write is independent of SQL and precedes
         // the existing writer guard, including changes arriving while SQL waits.
@@ -438,6 +480,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     }
                     dirtyChats = dirtyChats.filter { records[$0] != nil && !restorationHints.contains($0) && !unreconciledSeedIDs.contains($0) }
                     guard let id = dirtyChats.first, let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
+                    inFlightUpsert = id
+                    defer { inFlightUpsert = nil }
                     try await cache.upsert(row, revision: revision)
                     persistedIDs.insert(id)
                     if dirtyVersions[id] == revision, let current = cachedChat(id), sameCachedChat(current, row) {
@@ -483,8 +527,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         restorationHints.remove(id); unreconciledSeedIDs.remove(id)
         indexingMetrics.acceptedSnapshots += 1
-        let version = UUID()
-        acceptedVersions[id] = version
+        recordAcceptance(id)
         let previous = records[id]?.identity.stored == source.stored ? records[id] : nil
         let known = Dictionary((previous?.messages ?? []).map { (Data($0.id.utf8), $0) }, uniquingKeysWith: { first, _ in first })
         let knownUnavailable = (snapshot.unavailableMessageIDs ?? []).union(duplicateMessageIDs(snapshot.messages))
@@ -620,7 +663,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     func seed(book: ConversationBook, bots: [BotProfile]) {
         guard !isRetired else { return }
         seedVersion = UUID()
-        pendingSeed = (book, bots, acceptedVersions, seedVersion)
+        pendingSeed = (book, bots, acceptanceFence.stamp, seedVersion)
         guard seedTask == nil else { return }
         localWorkCount += 1
         seedTask = Task { [weak self] in
@@ -638,7 +681,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                           Data(transcript.profileID.utf8) == source.profile.bytes,
                           Data(transcript.storedID.utf8) == source.stored.bytes else { continue }
                     let id = key(for: source)
-                    guard acceptedVersions[id] == seed.accepted[id], records[id]?.directoryAbsent != true,
+                    guard acceptanceFence.permits(id, since: seed.accepted), records[id]?.directoryAbsent != true,
                           records[id] == nil || records[id]?.identity.stored == source.stored else { continue }
                     if metadataRecovery.contains(source) {
                         if !restored, records[id] == nil {
@@ -646,7 +689,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                                 unavailableMessageIDs: (transcript.unavailableMessageIDs ?? []).union(transcript.messages.map { Data($0.id.utf8) }),
                                 removedMessageIDs: [], retiredStoredIDs: [])
                             await installRestorationHint(hint, admittedBy: { !self.isRetired && !Task.isCancelled && self.seedVersion == seed.request
-                                && self.acceptedVersions[id] == seed.accepted[id] })
+                                && self.acceptanceFence.permits(id, since: seed.accepted) })
                         }
                         continue
                     }
@@ -662,7 +705,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         retiredStoredIDs: [],
                         admittedBy: { !self.isRetired && !Task.isCancelled && self.seedVersion == seed.request
                             && self.records[id]?.directoryAbsent != true
-                            && self.acceptedVersions[id] == seed.accepted[id]
+                            && self.acceptanceFence.permits(id, since: seed.accepted)
                             && (self.records[id] == nil || self.records[id]?.identity.stored == source.stored) })
                 }
                 await restoreSavedIndex()
@@ -683,6 +726,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         cache?.retire(); restoreTask?.cancel(); seedTask?.cancel(); pendingSeed = nil
         persistenceTask?.cancel(); transcriptTask?.cancel(); pendingTranscripts = [:]; originals = [:]
         cancelOperations()
+        acceptanceFence = AcceptanceFence(capacity: acceptanceFence.capacity); indexingMetrics.retainedAcceptanceFences = 0
         records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledSeedIDs = []; dirtyVersions = [:]
         reconcileProjectionWaiters()
     }
@@ -949,7 +993,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 return state.published == state.version
             })
         }
-        for id in records.keys where next[id] == nil { markDirty(id) }
+        for id in records.keys where next[id] == nil { markDirty(id); recordAcceptance(id) }
         records = next; coverage = nextCoverage; projectionStates = nextStates
         unreconciledSeedIDs.formIntersection(next.keys)
         restorationHints.formIntersection(next.keys)
@@ -962,6 +1006,17 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         initialSourceProofs = initialSourceProofs.filter { next[$0.key]?.identity.stored == $0.value }
         reconcileOriginalConsumers()
         summaries = summaries.filter { next[$0.key] != nil }; heads = heads.filter { next[$0.key] != nil }
+    }
+
+    private func withdraw(_ ids: Set<LibraryChat.ID>) {
+        guard let target = ids.first else { return }
+        let remaining = records.values.filter { !ids.contains($0.id) }.map {
+            Candidate(id: $0.id, source: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
+                messages: $0.messages, coverage: coverage[$0.id] ?? .partial,
+                unavailableMessageIDs: $0.unavailableMessageIDs, removedMessageIDs: $0.removedMessageIDs,
+                retiredStoredIDs: $0.retiredStoredIDs, directoryAbsent: $0.directoryAbsent)
+        }
+        commitCanonical(Admission(candidates: remaining, limited: false), target: target)
     }
 
     private func commitCanonical(_ admission: Admission, target: LibraryChat.ID,
@@ -1109,9 +1164,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             schedulePersistence()
             if accepts(owner) { thumbnailAvailabilityRevision = UUID() }
         }
-        let acceptedAtStart = acceptedVersions
+        let acceptedAtStart = acceptanceFence.stamp
         func canScan(_ id: LibraryChat.ID) -> Bool {
-            acceptedVersions[id] == acceptedAtStart[id]
+            acceptanceFence.permits(id, since: acceptedAtStart)
         }
         var failures = 0, incomplete = false, readMessages = 0, readBytes = 0
         let maximumReadMessages = 25_000, maximumReadBytes = 32 * 1024 * 1024
@@ -1191,10 +1246,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         guard accepts(owner) else { return }
         let profiles = Set(bots.compactMap { try? ExactID($0.id) })
-        records = records.filter { profiles.contains($0.key.profile) || !canScan($0.key) || unsettledTail[$0.key] != nil }
-        coverage = coverage.filter { records[$0.key] != nil }
-        projectionStates = projectionStates.filter { records[$0.key] != nil }
-        reconcileOriginalConsumers()
+        let removed = Set(records.keys.filter { !profiles.contains($0.profile) && canScan($0) && unsettledTail[$0] == nil })
+        withdraw(removed)
         if summaries.count > limits.chatCount { incomplete = true }
         summaries = Array(newestSummaries(summaries).prefix(limits.chatCount))
         chatScan: for (bot, summary) in summaries {

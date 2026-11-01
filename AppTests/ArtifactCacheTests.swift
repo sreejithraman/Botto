@@ -5,6 +5,32 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct ArtifactCacheTests {
+    @Test(arguments: ["discard", "prune"], [false, true])
+    func queuedCleanupPreservesNewLeaseGuardsAndRetiresOldWriters(cleanup: String, existingGuard: Bool) async throws {
+        try await withCacheRoot { root, own in
+            let (cache, scope, key) = try fixture(root: root); _ = own(cache)
+            let old = cache.session(scope: scope)
+            try await old.upsert(.init(identity: key.identity, botName: "Bot", title: "Main", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            try await old.retainOriginal(bytes, for: key)
+            if existingGuard { try old.invalidateMetadata([(key.identity.profile, key.identity.root)]) }
+            if cleanup == "discard" { cache.discard(configurationID: scope.configurationID) }
+            else { cache.prune(reachableConfigurationIDs: []) }
+            #expect(throws: (any Error).self) { try old.invalidateMetadata([(key.identity.profile, key.identity.root)]) }
+            let current = cache.session(scope: scope)
+            try current.invalidateMetadata([(key.identity.profile, key.identity.root)])
+            #expect(try await current.metadataRecovery().contains(key.identity))
+            try await cache.drainMaintenance()
+            #expect(try await current.metadataRecovery().contains(key.identity))
+            #expect(try await current.loadChats().isEmpty)
+            #expect(try await current.original(for: key) == nil)
+            await cache.close()
+            let cold = own(ArtifactCache(root: root)).session(scope: scope)
+            #expect(try await cold.metadataRecovery().contains(key.identity))
+            #expect(try await cold.original(for: key) == nil)
+        }
+    }
+
     @Test(arguments: ["none", "existing", "newer"], [false, true])
     func captureRollbackPreservesOnlyPreviouslyRequiredMetadataGuards(guardKind: String, pending: Bool) async throws {
         try await withCacheRoot { root, own in
