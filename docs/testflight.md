@@ -147,8 +147,10 @@ Each build receives notes from app and core changes after the last confirmed
 delivered source. The generator reads the tested commit, not a moving `main`.
 It uses first-parent commit titles, removes PR-number suffixes, and skips
 docs, tests, guidance files, version bumps, default merge subjects and internal conventional commits.
-It considers at most the latest 200 first-parent commits in that range. If
-delivery history is unknown, the range is the available history at that source.
+It considers at most the latest 200 first-parent commits in that range,
+counting all commits before filtering. Older app changes may appear only in
+the linked history. If delivery history is unknown, the range is the available
+history at that source.
 Notes include the version, build, source SHA
 and a link to the corresponding GitHub history; text stays within 3,500 UTF-8
 bytes. When space is limited, recent entries take priority; an oversized entry
@@ -180,7 +182,10 @@ It uses a create-only localization API request because the CLI's high-level
 notes concurrently, it reuses matching source-bound notes or stops for manual
 review, without overwriting them.
 Before signing, the workflow saves the exact prepared text and its source,
-run, version, build and selected baseline in `prepared-notes.json`. A separate
+run, version, build and requested baseline in `prepared-notes.json`.
+`notesBaseSHA` preserves the requested input; if it is unavailable or not an
+ancestor, the saved text and GitHub link show the full-history fallback used.
+A separate
 immutable `testflight-notes-<build>` artifact must upload successfully before
 signing or binary upload starts. A failed-job rerun restores that artifact from
 the same workflow run. An explicitly unknown baseline stays unknown; retries
