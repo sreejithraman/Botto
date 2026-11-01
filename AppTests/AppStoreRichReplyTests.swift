@@ -8,6 +8,45 @@ import Vision
 @testable import Botto
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
+    @Test func transientAttachmentsReadCurrentBytesAndOnlyIdentifiedRowsRetainCaptures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RichReplyTestService(), cache = ArtifactCache(root: root)
+        let attachment = ChatAttachment(name: "report.html", path: "/report.html", mimeType: "text/html")
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://transient-files.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}), artifactCache: cache)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        service.chat.messages = [.init(id: "inflight-user", role: .user, text: "@file:/report.html", attachments: [attachment], transientID: UUID())]
+        try #require(await store.connect(configuration)); await store.open(service.bot)
+        let source = try service.authority.identity(service.chat)
+        let first = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        let firstBytes = try await store.downloadArtifact(first)
+        store.finishArtifact(first)
+        #expect(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: service.chat.messages) == nil)
+        service.chat.messages[0].transientID = UUID()
+        service.downloadData = Data("<p>Later turn at the same path</p>".utf8)
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        #expect(!store.isAuthorizedArtifactPresentation(first))
+        let second = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        #expect(try await store.downloadArtifact(second).data != firstBytes.data)
+        store.finishArtifact(second)
+        #expect(service.downloads.count == 2)
+        service.chat.messages[0].id = service.chat.storedID + ":row:7"
+        service.chat.messages[0].transientID = nil
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        let durable = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        let captured = try await store.downloadArtifact(durable)
+        store.finishArtifact(durable)
+        let key = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: service.chat.messages))
+        #expect(service.downloads.count == 3)
+        store.library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root)
+        let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
+            installationID: nil, username: Data(), provider: nil)
+        #expect(try await coldCache.session(scope: scope).original(for: key)?.artifact.data == captured.data)
+        #expect(service.downloads.count == 3)
+        await coldCache.close()
+    }
     @Test func previewScopeCreatedDuringWorkRefreshesThePreviousCaptureWhenWorkSettles() async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file='report.html'}"
@@ -460,7 +499,8 @@ import Vision
 /// of the direct-loader grants and the service's captured-byte count.
 @MainActor enum MountedReplyFileDocument {
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil) async throws -> WKWebView {
-        let deadline = ContinuousClock.now + .seconds(10)
+        // Match the renderer's fifteen-second cold startup plus document budget.
+        let deadline = ContinuousClock.now + .seconds(21)
         var observed: (words: String?, image: UIImage?)?
         while ContinuousClock.now < deadline {
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {

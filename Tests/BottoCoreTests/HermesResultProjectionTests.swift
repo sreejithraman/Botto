@@ -78,6 +78,26 @@ struct HermesResultProjectionTests {
         }
         #expect(state.conversation.messages.last?.text == "Still checking")
     }
+    @Test func repeatedUnidentifiedInflightTurnsHaveCurrentButNotDurableIdentity() throws {
+        let snapshot: HermesJSON = .object(["session_id": .string("runtime"), "session_key": .string("stored"),
+            "running": .bool(true), "inflight": .object(["user": .string("@file:/report.txt")])])
+        var state = HermesConversationState(profile: "bot", root: "stored", stored: "stored", runtime: "runtime", epoch: "epoch")
+        try state.restore(snapshot, history: [], authority: false)
+        let first = try #require(state.conversation.messages.first)
+        try state.restore(snapshot, history: [], authority: false)
+        let second = try #require(state.conversation.messages.first)
+        #expect(first.id == second.id && first.timestamp == nil && second.timestamp == nil)
+        #expect(first.transientID != nil && second.transientID != first.transientID)
+        #expect(!first.hasStableIdentity(storedID: "stored") && !second.hasStableIdentity(storedID: "stored"))
+        let restored = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(second))
+        #expect(restored.transientID == second.transientID && !restored.hasStableIdentity(storedID: "stored"))
+        let legacy = ChatMessage(id: "inflight-user", role: .user, text: first.text)
+        #expect(!legacy.hasStableIdentity(storedID: "stored"))
+        try state.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored"), "running": .bool(false)]),
+            history: [.object(["row_id": .number(7), "role": .string("user"), "text": .string(first.text)])], authority: false)
+        let durable = try #require(state.conversation.messages.first)
+        #expect(durable.id == "stored:row:7" && durable.transientID == nil && durable.hasStableIdentity(storedID: "stored"))
+    }
     @Test(arguments: [nil, "async_delegation_complete", "hidden"] as [String?])
     func inflightMetadataOverridesOnlyItsIdentifiedHistoryRow(_ override: String?) throws {
         let history: [HermesJSON] = [.object([

@@ -41,3 +41,14 @@ reads and writes still wait for maintenance, and retired leases cannot journal.
 First in-flight metadata writers participate in withdrawal, including canonical
 roster pruning. Bounded runtime acceptance fencing uses operation stamps and a
 discard watermark so forgetting an ID cannot make a stale read look unchanged.
+
+Transient transcript occurrences carry a local token. Current service authority
+can read their attachments, but those tokens never identify saved captures or
+Search references. An identified durable row replaces that provenance. Legacy
+messages remain decodable; the reused `inflight-user` placeholder cannot certify
+a durable occurrence.
+
+A deliberate library entry or refresh retries failed startup storage and saved
+index reconciliation within the same mount. Retries serialize; they preserve
+withdrawal guards, fresh read evidence and retired-lease fences. Failed recovery
+admission retains bookkeeping only for current, persisted or in-flight owners.

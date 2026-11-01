@@ -520,11 +520,14 @@ import BottoCore
             #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
             defer { sqlite3_close(handle) }
             #expect(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+            let retrying = own(ArtifactCache(root: root)).session(scope: scope)
             do {
-                _ = try await own(ArtifactCache(root: root)).session(scope: scope).original(for: key)
+                _ = try await retrying.original(for: key)
                 Issue.record("An exclusively locked store should report unavailable")
             } catch {}
             #expect(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+            try await retrying.retryStorage()
+            #expect(try await retrying.original(for: key)?.artifact.data == Data("report".utf8))
             #expect(try await own(ArtifactCache(root: root)).session(scope: scope).original(for: key)?.artifact.data == Data("report".utf8))
         }
     }

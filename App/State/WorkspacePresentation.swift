@@ -13,13 +13,13 @@ struct SearchMessageTarget {
 
     @MainActor func resolve(identity: SessionIdentity, snapshot: Conversation?) -> ChatMessage? {
         guard Self.sameSource(identity, chat.identity), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              ChatMessage.isStableID(Data(message.id.utf8), storedID: identity.stored.text),
+              message.hasStableIdentity(storedID: identity.stored.text),
               let snapshot, Data(snapshot.profileID.utf8) == identity.profile.bytes,
               Data(snapshot.storedID.utf8) == identity.stored.bytes,
               snapshot.unavailableMessageIDs?.contains(Data(message.id.utf8)) != true else { return nil }
         let matches = snapshot.messages.filter { Data($0.id.utf8) == Data(message.id.utf8) }
         guard matches.count == 1, let current = matches.first,
-              current.isVisible, NativeSearchMatch.contains(query: query, in: current),
+              current.isVisible, current.hasStableIdentity(storedID: identity.stored.text), NativeSearchMatch.contains(query: query, in: current),
               NativeTranscriptMessagePlan(snapshot.messages, queuedMessages: snapshot.queuedMessages).displayRows.contains(where: {
                   if case .message(let entry) = $0 { return !entry.isAmbiguous && Data(entry.message.id.utf8) == Data(message.id.utf8) }
                   return false

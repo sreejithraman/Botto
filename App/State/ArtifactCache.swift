@@ -379,6 +379,26 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
 
 }
 
+@MainActor fileprivate final class ArtifactCacheMaintenance {
+    private let operation: @MainActor () async throws -> Void
+    private var attempt = UUID()
+    private var task: Task<Void, Error>
+    init(operation: @escaping @MainActor () async throws -> Void) {
+        self.operation = operation
+        task = Task { try await operation() }
+    }
+    func wait() async throws { try await task.value }
+    func retry() async throws {
+        let previous = attempt
+        do { try await task.value; return } catch {}
+        if attempt == previous {
+            attempt = UUID()
+            task = Task { try await operation() }
+        }
+        try await task.value
+    }
+}
+
 @MainActor final class ArtifactCache {
     struct Limits: Sendable {
         var originalBytes = 256 * 1024 * 1024
@@ -392,7 +412,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     static let shared = ArtifactCache(root: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BottoArtifacts", isDirectory: true))
     private let backend: ArtifactCacheBackend
     private let journal: ArtifactMetadataJournal
-    private var maintenance: Task<Void, Error>?
+    private var maintenance: ArtifactCacheMaintenance?
     private struct WeakSession { weak var value: ArtifactCacheSession?; let configurationID: UUID }
     private var sessions: [WeakSession] = []
     init(root: URL?, limits: Limits = .init(), beforeCaptureCommit: (@Sendable () -> Void)? = nil,
@@ -411,23 +431,23 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     func discard(configurationID: UUID) {
         for item in sessions where item.configurationID == configurationID { item.value?.retire() }
         let previous = maintenance, backend = backend, checkpoint = journal.checkpoint()
-        maintenance = Task {
-            _ = try? await previous?.value
+        maintenance = ArtifactCacheMaintenance {
+            _ = try? await previous?.wait()
             try await backend.discard(configurationID, checkpoint: checkpoint)
         }
     }
     func prune(reachableConfigurationIDs: Set<UUID>) {
         for item in sessions where !reachableConfigurationIDs.contains(item.configurationID) { item.value?.retire() }
         let previous = maintenance, backend = backend, checkpoint = journal.checkpoint()
-        maintenance = Task {
-            _ = try? await previous?.value
+        maintenance = ArtifactCacheMaintenance {
+            _ = try? await previous?.wait()
             try await backend.prune(reachableConfigurationIDs, checkpoint: checkpoint)
         }
     }
-    func drainMaintenance() async throws { try await maintenance?.value }
+    func drainMaintenance() async throws { try await maintenance?.wait() }
     func close() async {
         for item in sessions { item.value?.retire() }
-        _ = try? await maintenance?.value
+        _ = try? await maintenance?.wait()
         await backend.close()
     }
 }
@@ -437,15 +457,16 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private let journal: ArtifactMetadataJournal
     private let lease = UUID()
     private let leaseState = ArtifactCacheLeaseState()
-    private let acquisition: Task<Void, Error>
+    private var acquisition: Task<Void, Error>
+    private var acquisitionAttempt = UUID()
     private let metadataScope: ArtifactCacheScope
-    private let maintenance: Task<Void, Error>?
-    fileprivate init(backend: ArtifactCacheBackend, journal: ArtifactMetadataJournal, scope: ArtifactCacheScope, barrier: Task<Void, Error>?) {
+    private let maintenance: ArtifactCacheMaintenance?
+    fileprivate init(backend: ArtifactCacheBackend, journal: ArtifactMetadataJournal, scope: ArtifactCacheScope, barrier: ArtifactCacheMaintenance?) {
         self.backend = backend; self.journal = journal
         metadataScope = scope; maintenance = barrier
         let lease = lease, state = leaseState
         acquisition = Task {
-            try await barrier?.value
+            try await barrier?.wait()
             try await backend.acquire(lease, scope: scope, state: state)
         }
     }
@@ -466,6 +487,23 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         try await acquisition.value
         try Task.checkCancellation()
         guard !isRetired else { throw ArtifactCacheError.retired }
+    }
+    func retryStorage() async throws {
+        try Task.checkCancellation()
+        guard !isRetired else { throw ArtifactCacheError.retired }
+        let previous = acquisitionAttempt
+        do { try await ready(); return } catch {}
+        try Task.checkCancellation()
+        guard !isRetired else { throw ArtifactCacheError.retired }
+        if acquisitionAttempt == previous {
+            acquisitionAttempt = UUID()
+            let maintenance = maintenance, backend = backend, lease = lease, scope = metadataScope, state = leaseState
+            acquisition = Task {
+                try await maintenance?.retry()
+                try await backend.acquire(lease, scope: scope, state: state)
+            }
+        }
+        try await ready()
     }
     private func accepted<T>(_ value: T) throws -> T {
         guard !isRetired else { throw ArtifactCacheError.retired }

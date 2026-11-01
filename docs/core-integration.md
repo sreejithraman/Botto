@@ -123,6 +123,13 @@ selected-chat history or grant network access.
 Configuration quarantine lasts until that cache is discarded or pruned.
 Unknown recovery formats remain untouched and unavailable.
 
+Core marks local inflight, optimistic and streaming occurrences with
+`ChatMessage.transientID`. A current exact occurrence can use selected-chat file
+access, while library discovery, Search references and durable capture keys
+require stable row identity. A later persisted-row receipt clears the transient
+token. Missing legacy metadata stays decodable; `inflight-user` without a token
+is not a stable or current occurrence.
+
 Transcript cards carry their exact producing message into capture lookup;
 whole-chat path deduplication is reserved for the gallery. Decoded covers use
 the same producer digest, and explicit reload invalidates cover requests.

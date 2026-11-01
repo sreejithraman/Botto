@@ -613,7 +613,8 @@ import BottoCore
         let opened = await workspace.openLibraryChat(intent, accepts: accepts) { [self] identity in
             guard !Task.isCancelled, workspace === chats, sourceLibrary === library, !sourceLibrary.isRetired,
                   selectedBotID.map({ Data($0.utf8) }) == originalBot,
-                  identity.profile == chat.identity.profile else { return false }
+                  identity.profile == chat.identity.profile,
+                  bot(withID: chat.botID) != nil, sourceLibrary.isCurrent(chat) else { return false }
             selectedBotID = chat.botID
             return true
         }

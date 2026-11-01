@@ -492,3 +492,33 @@ history response, bounded stale scan/seed rejection and unrelated read progress.
 These assertions remain unexecuted locally. The final compiler/review packet
 will bind the repaired source; root owns hosted native, public UI, export,
 full-main and final TestFlight acceptance.
+
+## R15 executed feedback and R16 repairs — 1 November 2026
+
+Exact R15 `74ebcfe` passed PR build checks (`41308723117`) but failed full
+native execution (`41308928053`): 789 definitions, 780 passed, seven failed,
+two skipped, with eight failed parameter executions. The retained result ZIP
+SHA-256 is `f72c07355fe86b408981107f4761fbe517a5ce29c7ce633a03c6a4800f04da3f`.
+Three identity cases expected a grant already denied by raw duplicate evidence;
+the fixtures now check that denial and retain independent native preflight,
+mounted-document withdrawal and unique-row recovery controls. The layout fixture
+now uses one actual capability for its work-state transition. Fresh successor
+projection and ordinary cold reuse await their actual projection or durable
+checkpoint. Interrupted-write assertions remain separate. One initial blank
+mounted document remains a rendering failure without a proved product cause;
+its OCR helper now allows the renderer's existing startup/document budget.
+
+The product-identical public UI run (`41309799161`) passed ten workflows,
+including PNG/HTML covers, cover reopen, Share, origin navigation, drafts and
+Search jumps. Save to Files never ran because Xcode timed out launching the app.
+The remaining inbox case reached only Word 48 of the 200-publication stream;
+its 30-second deadline and demo timing remain unchanged pending diagnosis.
+
+R16 adds source repairs and gated regressions for transient capture identity,
+late withdrawn-bot reads, same-mount storage retry and bounded failed-guard
+bookkeeping. All original 68 paths remain; the producer regression adds one Core
+test path. The unsigned generic arm64 Debug app and both test bundles compile
+in 33.022 seconds with all 69 source hashes unchanged during the build. The first
+attempt's nested test-macro compiler error is preserved and corrected. New native
+assertions remain unexecuted locally. Root owns focused next-pin native/UI,
+independent export readback, full-main acceptance, merge and final beta delivery.

@@ -127,6 +127,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var processingDuration: Duration = .zero
         var galleryConsumersRegistered = 0
         var retainedAcceptanceFences = 0
+        var pendingMetadataIdentities = 0
     }
     @ObservationIgnored private(set) var indexingMetrics = IndexingMetrics()
     struct Projection: Sendable {
@@ -207,6 +208,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var seedVersion = UUID()
     private var localWorkCount = 0
     private var restored = false
+    private var restorationFailed = false
     private var metadataRecovery = ArtifactMetadataRecovery()
     private var restorationHints = Set<LibraryChat.ID>()
     private var persistedIDs: Set<LibraryChat.ID> = []
@@ -227,6 +229,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         return tail.messageID
     }
     private var botNames: [ExactID: String] = [:]
+    private var rosterReadFloors: [ExactID: ContinuousClock.Instant]?
     private struct OriginalConsumer {
         let validate: @MainActor () throws -> Void
         let projection: LibraryChat.ID?
@@ -290,14 +293,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func restoreSavedIndex() async {
-        guard !isRetired, !restored else { return }
+        guard !isRetired, !restored || restorationFailed else { return }
         if let restoreTask { await restoreTask.value; return }
         localWorkCount += 1
         let task = Task { [weak self] in
             guard let self else { return }
-            defer { restored = true; initialReadRows = [:]; initialSourceProofs = [:]; localWorkCount -= 1; schedulePersistence() }
+            defer {
+                restored = true
+                if !restorationFailed { initialReadRows = [:]; initialSourceProofs = [:] }
+                localWorkCount -= 1; schedulePersistence()
+            }
             guard let cache else { return }
             do {
+                if restorationFailed { try await cache.retryStorage() }
                 try await readMetadataRecovery()
                 withdrawUntrustedRestoration()
                 if metadataRecovery.all || !metadataRecovery.invalidated.isEmpty {
@@ -348,8 +356,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         })
                 }
                 unreconciledSeedIDs = []
+                restorationFailed = false
             } catch {
                 if !isRetired {
+                    restorationFailed = true
                     // A failed index read cannot certify an inert book seed.
                     metadataRecovery.all = true
                     withdrawUntrustedRestoration()
@@ -399,8 +409,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             Candidate(id: $0.id, source: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
                 messages: unsafe.contains($0.id) ? [] : $0.messages,
                 coverage: unsafe.contains($0.id) ? .partial : coverage[$0.id] ?? .partial,
-                unavailableMessageIDs: unsafe.contains($0.id)
-                    ? $0.unavailableMessageIDs.union($0.messages.map { Data($0.id.utf8) }) : $0.unavailableMessageIDs,
+                unavailableMessageIDs: $0.unavailableMessageIDs,
                 removedMessageIDs: $0.removedMessageIDs,
                 retiredStoredIDs: $0.retiredStoredIDs, directoryAbsent: $0.directoryAbsent)
         }
@@ -455,8 +464,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func schedulePersistence() {
         guard let cache, !isRetired else { return }
+        // Never-saved evictions need no recovery guard. Keep saved and in-flight
+        // owners even when the journal is unavailable.
+        dirtyChats = dirtyChats.filter { records[$0] != nil }
         let pending = pendingMetadata().filter { restored || acceptanceFence.contains($0) }
+        dirtyVersions = dirtyVersions.filter { pending.contains($0.key) }
         for id in pending where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
+        indexingMetrics.pendingMetadataIdentities = dirtyVersions.count
         // This bounded atomic ledger write is independent of SQL and precedes
         // the existing writer guard, including changes arriving while SQL waits.
         do {
@@ -466,7 +480,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             return
         }
         guard restored, persistenceTask == nil else { return }
-        dirtyVersions = dirtyVersions.filter { pending.contains($0.key) }
         let task = Task { [weak self] in
             guard let self else { return }
             defer { persistenceTask = nil }
@@ -498,6 +511,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     func observeBots(_ bots: [BotProfile]) {
         let names = Dictionary(bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } }, uniquingKeysWith: { first, _ in first })
+        let previous = rosterReadFloors
+        if previous != nil || !names.isEmpty {
+            rosterReadFloors = names.mapValues { _ in mountedAt }
+            for profile in names.keys {
+                rosterReadFloors?[profile] = previous?[profile] ?? (previous == nil ? mountedAt : .now)
+            }
+        }
         if names != botNames { botNames = names; invalidateRevalidation() }
     }
 
@@ -508,6 +528,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     func accept(identity source: SessionIdentity, snapshot: Conversation, title: String, evidence: TranscriptEvidence) {
         guard !isRetired else { return }
+        if let rosterReadFloors {
+            guard let floor = rosterReadFloors[source.profile] else { return }
+            switch evidence {
+            case .read(let startedAt, _): guard startedAt >= floor else { return }
+            case .incremental: guard observations[key(for: source)] != nil else { return }
+            }
+        }
         let id = key(for: source), observation = observations[id]
         let expected = observation?.stored ?? records[id]?.identity.stored
         let provesSource: Bool
@@ -563,7 +590,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             messages: messages, updatedAt: newest(previous?.updatedAt, messages.last?.timestamp),
             reconciliation: .accepted, incomingCoverage: .partial, unavailableMessageIDs: unavailable, removedMessageIDs: [], retiredStoredIDs: [])
         commitCanonical(admission, target: id, projectionOwner: .caller)
-        if !restored, provesSource, records[id]?.identity.stored == source.stored { initialSourceProofs[id] = source.stored }
+        if (!restored || restorationFailed), provesSource, records[id]?.identity.stored == source.stored { initialSourceProofs[id] = source.stored }
         if records[id]?.identity.stored == source.stored {
             if case .read = evidence { observe(source, content: true) }
             else if !sameMessages(previous?.messages ?? [], records[id]?.messages ?? [])
@@ -571,7 +598,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 observe(source, content: true)
             }
         }
-        if !restored, protectsRestore, !messages.isEmpty {
+        if (!restored || restorationFailed), protectsRestore, !messages.isEmpty {
             initialReadRows[id] = (initialReadRows[id] ?? []).union(messages.map { Data($0.id.utf8) }).subtracting(unavailable)
                 .intersection(Set(records[id]?.messages.map { Data($0.id.utf8) } ?? []))
         }
@@ -885,7 +912,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let protected = reconciliation == .restore ? initialReadRows[key] ?? [] : []
         unavailable.formUnion(unavailableMessageIDs.subtracting(protected))
         unavailable.formUnion(duplicateMessageIDs(messages).subtracting(protected))
-        unavailable.formUnion(messages.lazy.filter { !Self.hasStableIdentity(Data($0.id.utf8), source: source) }.map { Data($0.id.utf8) })
+        unavailable.formUnion(messages.lazy.filter { !$0.hasStableIdentity(storedID: source.stored.text) }.map { Data($0.id.utf8) })
         removed.formUnion(removedMessageIDs.subtracting(protected))
         let absent = directoryAbsent || reconciliation == .absent
         let existing = sameTip && !absent ? previous?.messages ?? [] : []
@@ -1461,7 +1488,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
         }.value
         guard matches.count == 1, let message = matches.first else { return nil }
-        guard hasStableIdentity(Data(message.id.utf8), source: identity) else { return nil }
+        guard message.hasStableIdentity(storedID: identity.stored.text) else { return nil }
         return ArtifactOriginalKey(identity: identity, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
             sourceRevision: await fingerprint([message]))
     }

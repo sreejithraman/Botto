@@ -98,7 +98,7 @@ nonisolated struct TranscriptMessageIndex {
         var ambiguous = snapshot?.unavailableMessageIDs ?? []
         for message in snapshot?.messages ?? [] {
             let id = Data(message.id.utf8)
-            if !ChatMessage.isStableID(id, storedID: snapshot?.storedID ?? "") { ambiguous.insert(id) }
+            if message.transientID == nil && !ChatMessage.isStableID(id, storedID: snapshot?.storedID ?? "") { ambiguous.insert(id) }
             if messages.updateValue(message, forKey: id) != nil { ambiguous.insert(id) }
         }
         for id in ambiguous { messages[id] = nil }
@@ -118,7 +118,7 @@ nonisolated struct TranscriptMessageIndex {
 /// No content digest or second history is retained.
 nonisolated enum TranscriptContentRevision {
     static func sameMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
-        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent &&
+        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID &&
         exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) &&
         exact(a.displayKind, b.displayKind) && exact(a.displayText, b.displayText) && a.attachments.count == b.attachments.count &&
         zip(a.attachments, b.attachments).allSatisfy { first, second in

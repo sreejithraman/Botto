@@ -18,6 +18,127 @@ import BottoCore
         return book
     }
 
+    @Test func aLateRealOpeningCannotReintroduceAWithdrawnBot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true), cache = ArtifactCache(root: root), gate = StoreTestBarrier()
+        defer { gate.release() }
+        service.messages[service.second] = [.init(id: "withdrawn-file", role: .assistant, text: "Withdrawn bot needle\nMEDIA:/withdrawn.txt")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://late-roster-read.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence, artifactCache: cache)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration)); await store.open(service.profiles[0]); await store.refreshLibrary()
+        let target = try #require(store.library.chats.first { $0.identity == service.second })
+        let staleStart = ContinuousClock.now
+        service.gatedSource = service.second; service.openingBarrier = gate
+        let opening = Task { await store.openLibraryChat(target) }
+        await gate.waitUntilEntered()
+        service.rosterProfiles = [service.profiles[0]]
+        await store.refresh(); await store.refreshLibrary(force: true)
+        gate.release()
+        #expect(!(await opening.value))
+        #expect(store.selectedBotID == service.first.profile.text)
+        let stale = Conversation(id: service.second.root.text, storedID: service.second.stored.text,
+            profileID: service.second.profile.text, messages: service.messages[service.second]!)
+        store.library.accept(identity: service.second, snapshot: stale, title: "Removed", evidence: .read(startedAt: staleStart, observedSource: service.second))
+        #expect(!store.library.chats.contains { $0.identity == service.second })
+        #expect(!store.library.artifacts.contains { $0.chat.identity == service.second })
+        #expect(LibrarySearchResults(query: "Withdrawn bot needle", bots: [], chats: store.library.chats, artifacts: []).messages.isEmpty)
+        let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
+            installationID: nil, username: Data(), provider: nil)
+        #expect(try await cache.session(scope: scope).metadataRecovery().contains(service.second))
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        cold.seed(book: store.history.book, bots: service.profiles); await cold.restore()
+        #expect(!cold.chats.contains { $0.identity == service.second })
+        #expect(LibrarySearchResults(query: "Withdrawn bot needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
+        cold.retire(); await coldCache.close()
+        service.rosterProfiles = service.profiles; service.openingBarrier = nil
+        await store.refresh()
+        store.library.accept(identity: service.second, snapshot: stale, title: "Still stale", evidence: .read(startedAt: staleStart, observedSource: service.second))
+        #expect(!store.library.chats.contains { $0.identity == service.second })
+        await store.open(service.profiles[1]); await store.refreshLibrary(force: true)
+        #expect(store.selectedBotID == service.second.profile.text)
+        #expect(store.library.artifacts.contains { $0.chat.identity == service.second })
+        store.library.retire(); await cache.close()
+    }
+
+    @Test func aMountedLibraryRetriesStartupStorageAfterTheLockClears() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(), book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second }))
+        warm.retire(); await warmCache.close()
+        var handle: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+        try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let cache = ArtifactCache(root: root)
+        cache.prune(reachableConfigurationIDs: [scope.configurationID])
+        let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, cache: session)
+        library.seed(book: book, bots: service.profiles); await library.restore()
+        #expect(library.chats.isEmpty)
+        let current = ChatMessage(id: "main-file", role: .assistant, text: "Current safe needle")
+        library.accept(identity: service.first,
+            snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [current]),
+            title: "Current", evidence: .read(startedAt: .now, observedSource: service.first))
+        try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        // These deliberate entries retry the same mount and share reconciliation.
+        async let first: Void = library.restore()
+        async let second: Void = library.restore()
+        _ = await (first, second)
+        #expect(library.chats.first { $0.identity == service.first }?.messages == [current])
+        let retained = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        let downloads = service.downloadCount
+        #expect(try await library.download(retained).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        library.setOnline(true); service.fileBytes = Data("Explicit reload after recovery".utf8)
+        #expect(try await library.download(retained, force: true).data == service.fileBytes)
+        #expect(service.downloadCount == downloads + 1)
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        let attachment = try #require(retained.artifact.attachment)
+        let key = try #require(await WorkspaceLibrary.originalKey(identity: retained.chat.identity,
+            attachment: attachment, messages: retained.chat.messages))
+        #expect(try await coldSession.original(for: key)?.artifact.data == service.fileBytes)
+        await coldCache.close()
+    }
+
+    @Test func unavailableRecoveryStateKeepsDirtyBookkeepingBounded() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(), book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 2), cache: session)
+        library.setOnline(true); await library.refresh(bots: service.profiles)
+        let ledger = root.appendingPathComponent("metadata-recovery.plist"), unknown = Data("future recovery bytes".utf8)
+        try unknown.write(to: ledger)
+        for index in 0..<64 {
+            let source = SessionIdentity(profile: service.first.profile, root: try ExactID("new-\(index)"), stored: try ExactID("new-\(index)"), aliases: [])
+            library.accept(identity: source, snapshot: .init(id: source.root.text, storedID: source.stored.text,
+                profileID: source.profile.text, messages: [.init(id: "new", role: .assistant, text: "Current", timestamp: Date(timeIntervalSince1970: Double(index + 1)))]),
+                title: "New", evidence: .read(startedAt: .now, observedSource: source))
+            #expect(library.chats.count <= 2 && library.indexingMetrics.pendingMetadataIdentities <= 4)
+        }
+        #expect(try Data(contentsOf: ledger) == unknown)
+        // Restore a readable ledger, then require guards before any SQL writer.
+        try FileManager.default.removeItem(at: ledger)
+        let current = try #require(library.chats.first)
+        library.accept(identity: current.identity, snapshot: .init(id: current.identity.root.text,
+            storedID: current.identity.stored.text, profileID: current.identity.profile.text, messages: current.messages),
+            title: "Retry", evidence: .read(startedAt: .now, observedSource: current.identity))
+        #expect(try await session.metadataRecovery().contains(service.first))
+        #expect(try await session.metadataRecovery().contains(service.second))
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        cold.seed(book: book, bots: service.profiles); await cold.restore()
+        #expect(!cold.chats.contains { $0.identity == service.first || $0.identity == service.second })
+        cold.retire(); await coldCache.close()
+    }
+
     @Test(arguments: [false, true])
     func firstMetadataWriterCannotClearItsEvictionOnRetirement(seedOldBook: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -606,6 +727,11 @@ import BottoCore
         }
         await library.restore()
         let expected = proof == "retired" ? successor : service.first
+        if proof == "fresh" {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !library.artifacts.contains(where: { $0.artifact.title == "old.txt" }), ContinuousClock.now < deadline { await Task.yield() }
+            try #require(library.artifacts.contains { $0.artifact.title == "old.txt" })
+        }
         #expect(library.chats.first?.identity.stored == expected.stored)
         #expect(library.artifacts.map(\.artifact.title) == [proof == "retired" ? "new.txt" : "old.txt"])
         if proof == "retired" {
@@ -832,10 +958,20 @@ import BottoCore
         while store.library.indexingMetrics.parsedMessages <= parsed, ContinuousClock.now < deadline { await Task.yield() }
         #expect(!store.library.artifacts.contains { $0.artifact.messageID == old.id })
         let savedBook = store.history.book
-        store.library.retire(); await cache.close()
-        let reopenedCache = ArtifactCache(root: root)
         let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: nil, username: Data(), provider: nil)
+        let checkpoint = cache.session(scope: scope)
+        var durable = false
+        let saveDeadline = ContinuousClock.now + .seconds(5)
+        while !durable, ContinuousClock.now < saveDeadline {
+            let rows = try await checkpoint.loadChats()
+            durable = try await !checkpoint.metadataRecovery().contains(service.first)
+                && rows.contains { $0.identity == service.first && $0.messages.contains { $0.id == kept.id } }
+            if !durable { await Task.yield() }
+        }
+        try #require(durable, "The ordinary cold-reuse control needs a completed metadata checkpoint; interrupted writes are covered separately")
+        store.library.retire(); await cache.close()
+        let reopenedCache = ArtifactCache(root: root)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedCache.session(scope: scope))
         reopened.seed(book: savedBook, bots: service.profiles); await reopened.restore()
         #expect(!reopened.artifacts.contains { $0.artifact.messageID == old.id })
@@ -2699,6 +2835,7 @@ private actor NextLibraryProjectionPause {
 @MainActor private final class LibraryTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
     let profiles: [BotProfile]
+    var rosterProfiles: [BotProfile]?
     let first = SessionIdentity(profile: try! ExactID("helper"), root: try! ExactID("main"),
         stored: try! ExactID("main"), aliases: [try! ExactID("main")])
     let second: SessionIdentity
@@ -2749,7 +2886,7 @@ private actor NextLibraryProjectionPause {
         return .init(version: "test", installID: pinOnConnect)
     }
     func disconnect() {}
-    func bots() async throws -> [BotProfile] { profiles }
+    func bots() async throws -> [BotProfile] { rosterProfiles ?? profiles }
     func createBot(_ draft: BotDraft) async throws -> BotProfile { throw HermesServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCount += 1

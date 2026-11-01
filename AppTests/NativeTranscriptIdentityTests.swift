@@ -152,8 +152,8 @@ import BottoCore
         #expect(plan.entries[3].id == .message(Data("e\u{301}".utf8)))
         store.chats.displayed(screen.owner)
         let block = try #require(ReplyContent(message: first).blocks.first)
-        #expect(store.richReplyContext(for: service.profile.text, messageID: first.id).permits(block),
-            "the adapter must deny ambiguity even when the current core context can resolve the first match")
+        #expect(!store.richReplyContext(for: service.profile.text, messageID: first.id).permits(block),
+            "raw duplicate evidence also revokes the producing context")
         try await wait("native adapter shows every occurrence plus notice without old document") {
             collectionController(host)?.collection.numberOfItems(inSection: 0) == 6 && webViews(host.view).isEmpty
         }
@@ -218,7 +218,7 @@ import BottoCore
         hidden.isSilent = true
         service.snapshots[session.root]?.messages = [file, hidden]
         service.onEvent?(.conversation(try service.publication(session)))
-        #expect(store.richReplyContext(for: service.profile.text, messageID: file.id).permits(try #require(ReplyContent(message: file).blocks.first)))
+        #expect(!store.richReplyContext(for: service.profile.text, messageID: file.id).permits(try #require(ReplyContent(message: file).blocks.first)))
         try await wait("hidden duplicate removes document and contributes no display row") {
             controller.collection.numberOfItems(inSection: 0) == 3 && webViews(host.view).isEmpty && !held.isCurrent
         }
@@ -259,7 +259,7 @@ import BottoCore
         let screen = try #require(workspace.screen(profile: service.profile))
         let rich = store.richReplyContext(for: service.profile.text, messageID: message.id)
         let block = try #require(ReplyContent(message: message).blocks.first)
-        #expect(rich.permits(block), "native preflight remains necessary even when Core can resolve the first occurrence")
+        #expect(rich.permits(block) == (shape != "hiddenDuplicate"))
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         let previous = scene.windows.first { $0.isKeyWindow }, controller = NativeTranscriptController(), window = UIWindow(windowScene: scene)
         window.rootViewController = controller; window.makeKeyAndVisible()
@@ -284,7 +284,9 @@ import BottoCore
         let scope = try #require((controller.collection.cellForItem(at: IndexPath(item: 0, section: 0)) as? NativeTranscriptCell)?.exposure)
         #expect(!scope.canPresent && scope.isCurrent == (shape == "auxiliary"))
         var reports = 0
-        scope.present(block: block, context: rich, mode: .source) { _, _ in reports += 1 }
+        // An unrestricted standalone context cannot bypass native row authority.
+        #expect(RichReplyContext.isolated.permits(block))
+        scope.present(block: block, context: .isolated, mode: .source) { _, _ in reports += 1 }
         #expect(controller.presentedViewController == nil && reports == 0)
         #expect(service.downloads == 0 && webViews(controller.view).isEmpty)
     }
