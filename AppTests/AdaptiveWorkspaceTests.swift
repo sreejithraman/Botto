@@ -602,7 +602,9 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: .init(name: "report.pdf", path: "/report.pdf", mimeType: "application/pdf"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
-        try await waitUntil("One native reader loaded in the paired workspace") {
+        try await waitUntil("One native reader loaded in the paired workspace", diagnostics: {
+            "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads) readers=\(self.readers(in: window.rootViewController!).count)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }) {
             session.file != nil && self.readers(in: window.rootViewController!).count == 1
         }
         let original = try #require(readers(in: window.rootViewController!).first)
