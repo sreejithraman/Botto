@@ -13,6 +13,19 @@ _Avoid_: Conversation or session as interface labels
 A Hermes assistant shown in Botto, with its own identity, configuration, and chats.
 _Avoid_: Account, chat
 
+**Artifact**:
+A file or visual connected to a chat, with the bot and chat it came from.
+_Avoid_: Attachment as a name for the whole library
+
+**Output**:
+An artifact a bot explicitly delivered or a generation result identified as its work.
+An existing file can be delivered as an output.
+_Avoid_: Created file when authorship is unknown
+
+**Reference**:
+An artifact supplied to a chat or linked without an explicit delivery or generation signal.
+_Avoid_: Output when a file was only used or mentioned
+
 **Hermes profile**:
 The host-managed identity and configuration behind a bot.
 _Avoid_: Display name

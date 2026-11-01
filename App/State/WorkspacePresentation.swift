@@ -1,5 +1,54 @@
 import Foundation
 import Observation
+import BottoCore
+
+struct SearchMessageTarget {
+    let chat: LibraryChat
+    let message: ChatMessage
+    let query: String
+
+    static func sameSource(_ first: SessionIdentity, _ second: SessionIdentity) -> Bool {
+        first.profile == second.profile && first.root == second.root && first.stored == second.stored
+    }
+
+    @MainActor func resolve(identity: SessionIdentity, snapshot: Conversation?) -> ChatMessage? {
+        guard Self.sameSource(identity, chat.identity), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              message.hasStableIdentity(storedID: identity.stored.text),
+              let snapshot, Data(snapshot.profileID.utf8) == identity.profile.bytes,
+              Data(snapshot.storedID.utf8) == identity.stored.bytes,
+              snapshot.unavailableMessageIDs?.contains(Data(message.id.utf8)) != true else { return nil }
+        let matches = snapshot.messages.filter { Data($0.id.utf8) == Data(message.id.utf8) }
+        guard matches.count == 1, let current = matches.first,
+              current.isVisible, current.hasStableIdentity(storedID: identity.stored.text), NativeSearchMatch.contains(query: query, in: current),
+              NativeTranscriptMessagePlan(snapshot.messages, queuedMessages: snapshot.queuedMessages).displayRows.contains(where: {
+                  if case .message(let entry) = $0 { return !entry.isAmbiguous && Data(entry.message.id.utf8) == Data(message.id.utf8) }
+                  return false
+              }) else { return nil }
+        return current
+    }
+}
+
+struct SearchMessageFocus: Identifiable {
+    let id = UUID()
+    let workspace: ObjectIdentifier
+    let owner: PresentationOwner
+    let identity: SessionIdentity
+    let message: ChatMessage
+    let query: String
+    var needsReveal = true
+
+    @MainActor func matches(workspace: ConversationWorkspace) -> Bool {
+        guard ObjectIdentifier(workspace) == self.workspace, workspace.isCurrent(owner),
+              let selection = workspace.selection(profile: identity.profile), selection.owner == owner,
+              let selectedIdentity = selection.identity, SearchMessageTarget.sameSource(selectedIdentity, identity) else { return false }
+        return TranscriptMessageIndex(selection.snapshot).matches(message)
+    }
+}
+
+enum SearchMessageOpeningResult {
+    case opened(SearchMessageFocus), unavailable, couldNotOpen, superseded
+}
+enum SearchFocusResult { case revealed, unavailable, cancelled }
 
 /// Scene-owned task presentation. Native hosts project this state; they never
 /// create a second destination or own a download's lifetime.
@@ -14,6 +63,8 @@ import Observation
     }
     private var surface: Surface = .reading(.chat)
     private(set) var revision = UUID()
+    private(set) var searchFocus: SearchMessageFocus?
+    var searchError: String?
 
     private var target: Target {
         switch surface {
@@ -35,11 +86,12 @@ import Observation
 
     func openArtifact(_ destination: AppStore.ArtifactDestination, store: AppStore) {
         guard artifact?.id != destination.id else { return }
-        guard store.isCurrentArtifactDestination(destination), artifact?.isPresentingOutput != true else {
+        guard store.canStartArtifactRead(destination), artifact?.isPresentingOutput != true else {
             store.finishArtifact(destination)
             return
         }
         let previous = artifact
+        searchFocus = nil
         let session = ArtifactPreviewSession(destination: destination, store: store)
         surface = .reading(.artifact(session, expanded: false)); revision = UUID()
         // Retire UI/callback ownership before releasing its operation reservation.
@@ -49,6 +101,7 @@ import Observation
 
     func browseBots() {
         guard !isBrowsingBots, artifact?.isPresentingOutput != true else { return }
+        searchFocus = nil
         surface = .browsingBots(returnTo: target); revision = UUID()
     }
 
@@ -58,9 +111,35 @@ import Observation
     }
 
     func didChooseConversation() {
+        searchFocus = nil; searchError = nil
         let previous = artifact
         surface = .reading(.chat); revision = UUID()
         previous?.finish()
+    }
+
+    func didChooseConversation(focusing focus: SearchMessageFocus) {
+        didChooseConversation()
+        searchFocus = focus
+    }
+
+    func selectedBotChanged(store: AppStore) {
+        if let focus = searchFocus, focus.matches(workspace: store.chats),
+           store.selectedBotID.map({ Data($0.utf8) }) == focus.identity.profile.bytes { return }
+        if store.selectedBotID != nil { didChooseConversation() }
+        else { reconcile(store: store) }
+    }
+
+    func retireSearchFocus() { searchFocus = nil }
+
+    func reportSearchFocus(_ id: UUID, result: SearchFocusResult) {
+        guard searchFocus?.id == id else { return }
+        switch result {
+        case .revealed: searchFocus?.needsReveal = false
+        case .cancelled: searchFocus = nil
+        case .unavailable:
+            searchFocus = nil
+            searchError = "This message is no longer available here. Refresh Search and try again."
+        }
     }
 
     func closeArtifact(id: UUID) {
@@ -88,8 +167,16 @@ import Observation
     }
 
     func reconcile(store: AppStore) {
-        guard let artifact else { return }
-        if !artifact.isCurrent(in: store) { removeArtifact() }
+        if let focus = searchFocus {
+            let selectedProfile = store.selectedBotID.map { Data($0.utf8) } == focus.identity.profile.bytes
+            if !selectedProfile || !focus.matches(workspace: store.chats) {
+                if selectedProfile, focus.needsReveal, store.chats.isCurrent(focus.owner) {
+                    searchError = "This message is no longer available here. Refresh Search and try again."
+                }
+                searchFocus = nil
+            }
+        }
+        if let artifact, !artifact.isCurrent(in: store) { removeArtifact() }
     }
 
     private func removeArtifact() {
@@ -102,16 +189,11 @@ import Observation
 
 /// Owns one captured capability, load, and local file across all native hosts.
 /// Views may request outputs, but cannot load, cancel, or finish the model.
-@MainActor @Observable final class ArtifactPreviewSession: Identifiable {
-    struct Output: Identifiable {
-        enum Kind { case share, save }
-        let id = UUID()
-        let kind: Kind
-        let file: ArtifactPreviewFile
-    }
+@MainActor @Observable final class ArtifactPreviewSession: Identifiable, ArtifactReadingSession {
+    typealias Output = ArtifactOutput
 
     let id: UUID
-    private let destination: AppStore.ArtifactDestination
+    private var destination: AppStore.ArtifactDestination
     private let store: AppStore
     private let model = ArtifactPreviewModel()
     private var completedFile: ArtifactPreviewFile?
@@ -123,13 +205,11 @@ import Observation
     var file: ArtifactPreviewFile? { isCurrent ? completedFile : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
     var isLoading: Bool { isCurrent && model.isLoading }
-    // Completed bytes belong to the semantic task, independently of its socket.
-    // An unfinished reader still needs the original, strict read capability.
+    // Local captures follow semantic presentation; cache misses still require live access.
     var isCurrent: Bool {
         !finished && store.isAuthorizedArtifactPresentation(destination)
-            && (completedFile != nil || isReadEligible)
+            && (completedFile != nil || store.canStartArtifactRead(destination))
     }
-    private var isReadEligible: Bool { !finished && store.isCurrentArtifactDestination(destination) }
     var output: Output? { isCurrent ? pendingOutput : nil }
     var exportError: String? { isCurrent ? outputError?.message : nil }
     var exportErrorID: UUID? { isCurrent ? outputError?.id : nil }
@@ -142,21 +222,26 @@ import Observation
 
     fileprivate func isCurrent(in store: AppStore) -> Bool { self.store === store && isCurrent }
 
-    func retry() {
-        guard isCurrent, isReadEligible, loadTask == nil, completedFile == nil, !isPresentingOutput else { return }
+    func retry() { load(force: false) }
+
+    func reload() { load(force: true) }
+
+    private func load(force: Bool) {
+        guard isCurrent, loadTask == nil, (force || completedFile == nil), !isPresentingOutput else { return }
+        if let renewed = store.renewedArtifactDestination(destination) { destination = renewed }
         loadTask = Task { [weak self] in
             guard let self else { return }
             defer { loadTask = nil }
-            await model.load { [store, destination] in try await store.downloadArtifact(destination) }
-            // File writing also suspends. A late write must not turn a retired
-            // network read into an authorized completed reader.
-            guard isCurrent, isReadEligible else { model.cancel(); return }
-            completedFile = model.file
+            await model.load(preservingFile: force) { [store, destination] in
+                try await store.downloadArtifact(destination, force: force)
+            }
+            guard isCurrent else { model.cancel(); return }
+            if let file = model.file { completedFile = file }
         }
     }
 
     func beginOutput(_ kind: Output.Kind) {
-        guard isCurrent, !isPresentingOutput, let file else { return }
+        guard isCurrent, loadTask == nil, !isPresentingOutput, let file else { return }
         pendingOutput = Output(kind: kind, file: file)
     }
 

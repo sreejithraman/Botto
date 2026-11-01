@@ -164,6 +164,9 @@ extension EnvironmentValues {
     let id = UUID()
     private(set) var retired = false
     private(set) var fileRevision = 0
+    private var awaitingSettledWork = false
+    private var settledWorkRevision = 0
+    private var refreshedFiles = Set<FileKey>()
     @ObservationIgnored private weak var owner: AppStore?
     @ObservationIgnored private let destination: AppStore.RichReplyDestination?
     @ObservationIgnored private var entries: [Key: DiagramPresentation] = [:]
@@ -175,6 +178,10 @@ extension EnvironmentValues {
         let messageID: Data
         let block: ExactReplyBlock
         let layout: DiagramLayout
+    }
+    private struct FileKey: Hashable {
+        let messageID: Data
+        let block: ExactReplyBlock
     }
     private final class WeakPresentation {
         weak var value: DiagramPresentation?
@@ -191,6 +198,7 @@ extension EnvironmentValues {
     }
     init(owner: AppStore, destination: AppStore.RichReplyDestination) {
         self.owner = owner; self.destination = destination
+        awaitingSettledWork = owner.richReplyIsWorking(destination: destination) == true
         DiagramMemory.shared.register(self)
     }
     /// Each standalone renderer has a private scope. It cannot share by source.
@@ -234,7 +242,15 @@ extension EnvironmentValues {
         guard let destination, let owner, permits(ExactReplyBlock(block), messageID: messageID) else {
             throw HermesServiceError.staleConversation
         }
-        return try await owner.downloadReplyFile(block, messageID: messageID, destination: destination)
+        let key = FileKey(messageID: messageID, block: ExactReplyBlock(block))
+        let revision = settledWorkRevision
+        let refresh = revision > 0 && !refreshedFiles.contains(key)
+        let download = try await owner.downloadReplyFile(block, messageID: messageID, destination: destination, force: refresh)
+        if refresh, settledWorkRevision == revision {
+            refreshedFiles.insert(key)
+            if refreshedFiles.count > 256, let other = refreshedFiles.first(where: { $0 != key }) { refreshedFiles.remove(other) }
+        }
+        return download
     }
     func fileGrant(_ block: ReplyContent.Block, messageID: Data,
                    onRevoke: @escaping @MainActor () -> Void) -> ReplyFileGrant? {
@@ -252,6 +268,13 @@ extension EnvironmentValues {
         entries = entries.filter { $0.value !== presentation }
     }
     func reconcileCanonicalConversation() {
+        if let destination, let isWorking = owner?.richReplyIsWorking(destination: destination) {
+            if isWorking { awaitingSettledWork = true }
+            else if awaitingSettledWork {
+                awaitingSettledWork = false; settledWorkRevision += 1; refreshedFiles = []
+                fileRevision += 1
+            }
+        }
         held.removeAll { $0.value == nil }
         for item in held where !permits(item.key.block, messageID: item.key.messageID) {
             item.value?.revoke(); entries[item.key] = nil

@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import BottoCore
 @testable import Botto
 
@@ -79,10 +80,14 @@ import BottoCore
         return createdBot
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
+        let readStartedAt = ContinuousClock.now
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         var opened = chat
         opened.profileID = bot.id
-        return try authority.opened(opened)
+        let publication = try authority.opened(opened)
+        return OpenedConversation(identity: publication.identity, snapshot: publication.snapshot, access: publication.access,
+            readEvidence: publication.readEvidence, activity: publication.activity, historyReadStartedAt: readStartedAt,
+            observedSource: publication.identity)
     }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
@@ -115,8 +120,33 @@ import BottoCore
         await withCheckedContinuation { entryWaiter = $0 }
     }
 
+    func waitUntilEntered(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !entered, !Task.isCancelled, ContinuousClock.now < deadline { await Task.yield() }
+        return entered
+    }
+
     func release() {
         completion?.resume()
         completion = nil
     }
+}
+
+nonisolated final class CaptureCommitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var armed = false
+    private var entered = false
+    var isEntered: Bool { lock.withLock { entered } }
+    func arm() { lock.withLock { armed = true; entered = false } }
+    func pause() {
+        let shouldWait = lock.withLock {
+            guard armed else { return false }
+            armed = false
+            entered = true
+            return true
+        }
+        if shouldWait { semaphore.wait() }
+    }
+    func release() { semaphore.signal() }
 }

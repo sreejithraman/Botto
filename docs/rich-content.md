@@ -74,7 +74,7 @@ presentation. Scrolling through a long reply can recycle native rows without
 losing their matching images or measured height. New source, width, appearance,
 or motion settings require matching pixels; reopening a chat or changing its
 workspace starts a fresh presentation. Memory pressure and capacity eviction can
-also require rendering again. HTML documents are not cached or pre-rendered.
+also require rendering again. Live HTML chat documents are not cached or pre-rendered.
 
 The cache accounts for up to 16 MiB of decoded images and capture reservations,
 with at most 12 charged objects and two pending static renders. Each image is
@@ -103,8 +103,59 @@ custom icon provider loads; TeX labels remain source. See
 
 ## File previews
 
-Tap a file card in either a user message or a bot reply to download it from its
-originating Hermes conversation. Botto recognizes explicit Hermes `MEDIA:` and
+The **Artifacts** tab gathers delivered files, explicit terminal deliveries,
+structured generation results,
+and complete HTML, SVG, and Mermaid previews across chats. **Filter** limits the
+list by bot or file type. **Include references** also shows user-supplied files
+and local file links without an explicit delivery signal. Ordinary web links,
+generic tool logs, and code examples do not become outputs. An output can be an
+existing file the bot deliberately shared; the label does not prove authorship.
+
+Tap an artifact to preview, Save, or Share without switching the selected chat.
+The reader identifies its bot and chat; **Open chat** goes to that exact chat.
+Image and HTML output cards load covers without opening the reader. HTML covers
+use the same isolated renderer, freeze a small image, then stop the document.
+Only the image is cached; the cover keeps no running JavaScript. Cached covers
+remain available offline. Failed cover reads retry after reconnect, refresh, or
+a successful original-file read without clearing covers already on screen.
+The separate **Search** tab finds bots, chat titles, message text, and artifacts
+in available history. Search and library reads never mark a chat read. Partial
+or unavailable history has a visible warning; pull to refresh retries reads.
+Botto retains a bounded local index, inline source, downloaded originals, and
+thumbnails across launches. Accepted chat updates feed that index without a
+separate history scan. An offline relaunch shows retained content; it does not
+claim a complete host library. Live updates omit unsettled assistant tails
+from the disk index until completion. Device storage pressure can evict captures.
+
+Opening Artifacts or Search reuses the mounted list. Automatic directory checks
+share a 60-second freshness window; connection recovery, roster changes, and
+server directory notifications invalidate it. Leaving a tab keeps its background
+check alive while the saved connection remains mounted. Accepted chat updates
+continue to update the list directly. Unknown directory dates preserve known
+cached ordering dates. Explicit refresh bypasses the freshness window.
+Existing history notices stay in place during local indexing and background
+checks; their actions remain visible but disabled until the check finishes.
+
+A directory check reuses complete history when
+its tip, message count, timestamp, and exact preview are unchanged. Summaries
+missing that evidence require a newest-page check; reused older pages carry
+a freshness notice and **Check Older History** action. A complete single-page
+check needs no notice. Pull to refresh checks history again. Partial history
+remains partial and cannot certify an unchanged complete result.
+
+Previewing a captured file reuses its original bytes, including offline.
+**Reload from Bot** explicitly downloads the current host file; failure keeps
+the previous capture visible. Save and Share wait for Reload to finish, and an
+active export keeps its captured copy. A new producing message or source revision gets
+a separate capture. A host path alone does not identify immutable contents.
+The cache stays within its saved connection, installation, profile, and chat;
+confirmed Forget removes that connection's captures. Cached identity never
+grants network access. See [artifact capture scope](adr/0010-scoped-artifact-captures.md).
+
+Tap a file card in either a user message or a bot reply to preview its captured
+copy or download it from its originating Hermes conversation. Historical cards
+keep their own producing occurrence, even when a later reply reuses the path.
+Botto recognizes explicit Hermes `MEDIA:` and
 `@file:` references, local `file://` links, and Markdown links to explicit server
 paths. Ordinary web links and code examples remain text. Host paths identify
 files on Hermes; they never open as local iPhone paths.

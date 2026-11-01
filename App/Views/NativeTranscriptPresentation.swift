@@ -6,13 +6,15 @@ struct WorkDetailsDocument {
     let title: String
     let messages: [ChatMessage]
 
+    static func identity(of message: ChatMessage) -> Data { Data((message.workDetailsID ?? message.id).utf8) }
+
     static func continues(_ previous: [ChatMessage], with current: [ChatMessage]) -> Bool {
         !previous.isEmpty && current.count >= previous.count &&
-            zip(previous, current).allSatisfy { Data($0.id.utf8) == Data($1.id.utf8) }
+            zip(previous, current).allSatisfy { identity(of: $0) == identity(of: $1) }
     }
 
     func updated(in snapshot: Conversation?) -> Self? {
-        for row in NativeTranscriptMessagePlan(snapshot?.messages ?? []).displayRows {
+        for row in NativeTranscriptMessagePlan(snapshot?.messages ?? [], unavailableMessageIDs: snapshot?.unavailableMessageIDs ?? []).displayRows {
             guard case let .workDetails(current) = row,
                   Self.continues(messages, with: current) else { continue }
             return .init(title: title, messages: current)

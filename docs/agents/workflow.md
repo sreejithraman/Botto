@@ -11,9 +11,9 @@ project; [project.yml](../../project.yml) owns its generated settings.
   when a background job needs a recorded identity and safe teardown.
 - [scripts/check.sh](../../scripts/check.sh) owns the full local check sequence:
   core tests, a MainActor-default compatibility build, serial Xcode tests, and
-  independent artifact-export readback. It selects the first available iPhone
-  Simulator, disables signing, and writes to `.artifacts/`. On a shared machine, use an explicit owned
-  destination for native checks and provider readback.
+  independent artifact-export readback. Set `BOTTO_TEST_DESTINATION` to an
+  explicit owned, clean iPhone Simulator. It disables signing and writes each
+  run's export evidence to a new directory under `.artifacts/`.
 - [Contributor CI](../../scripts/check-ci.sh) covers package, MainActor,
   Python tooling, and unsigned app/test builds on PRs. Main pushes also run the
   full serial native suite before TestFlight. Independent workflow jobs feed

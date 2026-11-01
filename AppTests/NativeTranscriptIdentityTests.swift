@@ -6,6 +6,29 @@ import WebKit
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptIdentityTests {
+    @Test func rawAmbiguityRevokesActionsEvenWhenOnlyOneVisibleRowSurvivesProjection() async throws {
+        let service = try WorkspaceTestService(), source = service.summaries[0].identity
+        let message = ChatMessage(id: source.stored.text + ":row:7", role: .assistant, text: "::preview{file='report.html'}")
+        service.snapshots[source.root]?.messages = [message]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://raw-ambiguity.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let block = try #require(ReplyContent(message: message).blocks.first)
+        let context = store.richReplyContext(for: source.profile.text, messageID: message.id)
+        try #require(context.permits(block))
+        let attachment = try #require(block.filePreview?.attachment)
+        let destination = try #require(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message))
+        defer { store.finishArtifact(destination) }
+        service.snapshots[source.root]?.unavailableMessageIDs = [Data(message.id.utf8)]
+        service.onEvent?(.conversation(try service.publication(source)))
+        #expect(!context.permits(block))
+        #expect(!store.isAuthorizedArtifactPresentation(destination))
+        #expect(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message) == nil)
+        let snapshot = try #require(store.conversation(for: source.profile.text))
+        #expect(NativeTranscriptMessagePlan(snapshot.messages, unavailableMessageIDs: snapshot.unavailableMessageIDs ?? []).entries.first?.isAmbiguous == true)
+    }
+
     @Test func consecutiveToolResultsShareOneNativeRowWithoutChangingStoredHistory() async throws {
         let service = try WorkspaceTestService(), session = service.summaries[0].identity
         let messages: [ChatMessage] = [
@@ -128,6 +151,11 @@ import WebKit
             source.resumes >= 2 && controller.presentedViewController === reader &&
                 element("Collapse terminal", in: reader.view) != nil && element("Checked successfully", in: reader.view) != nil
         }
+        let profile = try ExactID("inbox-triage")
+        let savedTool = try #require(store.chats.screen(profile: profile)?.snapshot?.messages.first { $0.role == .tool })
+        #expect(savedTool.id == "stored-1:row:5" && savedTool.hasStableIdentity(storedID: "stored-1"))
+        #expect(savedTool.workDetailsID?.hasPrefix("tool:") == true)
+
     }
 
     @Test(arguments: ["empty-section", "leading-whitespace", "empty-error"])
@@ -177,6 +205,14 @@ import WebKit
                 element("1", in: sheet.view) != nil && element("2", in: sheet.view) != nil &&
                 element("Process payload", in: sheet.view) != nil && element("Agent payload", in: sheet.view) != nil
         }
+    }
+
+    @Test func duplicateDisclosureIdentityCannotManufactureAnActionRow() {
+        let first = ChatMessage(id: "stored:row:1", role: .tool, text: "One", workDetailsID: "shared")
+        let second = ChatMessage(id: "stored:row:2", role: .tool, text: "Two", workDetailsID: "shared")
+        let plan = NativeTranscriptMessagePlan([first, second])
+        #expect(plan.hasAmbiguity)
+        #expect(plan.displayRows.map(\.id) == [.ambiguousMessage(0), .ambiguousMessage(1)])
     }
 
     @Test func workIndicatorTracksWorkingToolsReplyingAndWaiting() async throws {
@@ -271,7 +307,7 @@ import WebKit
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await wait("initial unique message owns an actual document") { !webViews(host.view).isEmpty }
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view)
         let originalDownloads = service.downloads
         let incoming = [first,
             ChatMessage(id: "duplicate", role: .user, text: "Second duplicate remains literal and visible"),
@@ -292,8 +328,8 @@ import WebKit
         #expect(plan.entries[3].id == .message(Data("e\u{301}".utf8)))
         store.chats.displayed(screen.owner)
         let block = try #require(ReplyContent(message: first).blocks.first)
-        #expect(store.richReplyContext(for: service.profile.text, messageID: first.id).permits(block),
-            "the adapter must deny ambiguity even when the current core context can resolve the first match")
+        #expect(!store.richReplyContext(for: service.profile.text, messageID: first.id).permits(block),
+            "raw duplicate evidence also revokes the producing context")
         try await wait("native adapter shows every occurrence plus notice without old document") {
             collectionController(host)?.collection.numberOfItems(inSection: 0) == 6 && webViews(host.view).isEmpty
         }
@@ -311,7 +347,10 @@ import WebKit
         try await wait("restored current native snapshot") { collectionController(host)?.collection.numberOfItems(inSection: 0) == 4 }
         let controller = try #require(collectionController(host))
         controller.collection.scrollToItem(at: IndexPath(item: 0, section: 0), at: .top, animated: false)
-        try await wait("unique current context can render its document again") { service.downloads > originalDownloads && !webViews(host.view).isEmpty }
+        let restoredDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view,
+            excluding: originalDocument)
+        #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
+        #expect(service.downloads == originalDownloads, "A fresh unique renderer may reuse the original captured bytes")
         // Keep duplicate prompts as distinct rows, without response controls.
         let request = PendingRequest(id: "duplicate-request", kind: .approval, title: "Conflicting request", choices: [.init(id: "once", label: "Allow once")])
         service.snapshots[session.root]?.pendingRequests = [request, request]
@@ -347,7 +386,7 @@ import WebKit
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await wait("unique file is really mounted") { !webViews(host.view).isEmpty }
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view)
         let controller = try #require(collectionController(host)), downloads = service.downloads
         let heldCandidate = controller.collection.visibleCells.compactMap { ($0 as? NativeTranscriptCell)?.exposure }.first
         let held = try #require(heldCandidate)
@@ -355,7 +394,7 @@ import WebKit
         hidden.isSilent = true
         service.snapshots[session.root]?.messages = [file, hidden]
         service.onEvent?(.conversation(try service.publication(session)))
-        #expect(store.richReplyContext(for: service.profile.text, messageID: file.id).permits(try #require(ReplyContent(message: file).blocks.first)))
+        #expect(!store.richReplyContext(for: service.profile.text, messageID: file.id).permits(try #require(ReplyContent(message: file).blocks.first)))
         try await wait("hidden duplicate removes document and contributes no display row") {
             controller.collection.numberOfItems(inSection: 0) == 3 && webViews(host.view).isEmpty && !held.isCurrent
         }
@@ -371,7 +410,10 @@ import WebKit
         #expect(!held.canPresent && service.downloads == downloads)
         service.snapshots[session.root]?.messages = [file]
         service.onEvent?(.conversation(try service.publication(session)))
-        try await wait("restored unique file receives fresh authority") { !webViews(host.view).isEmpty && service.downloads > downloads }
+        let restoredDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
+            excluding: originalDocument)
+        #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
+        #expect(service.downloads == downloads)
         #expect(!held.canPresent)
     }
     @Test(arguments: ["hiddenDuplicate", "differentContent", "auxiliary"])
@@ -393,7 +435,7 @@ import WebKit
         let screen = try #require(workspace.screen(profile: service.profile))
         let rich = store.richReplyContext(for: service.profile.text, messageID: message.id)
         let block = try #require(ReplyContent(message: message).blocks.first)
-        #expect(rich.permits(block), "native preflight remains necessary even when Core can resolve the first occurrence")
+        #expect(rich.permits(block) == (shape != "hiddenDuplicate"))
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         let previous = scene.windows.first { $0.isKeyWindow }, controller = NativeTranscriptController(), window = UIWindow(windowScene: scene)
         window.rootViewController = controller; window.makeKeyAndVisible()
@@ -418,7 +460,9 @@ import WebKit
         let scope = try #require((controller.collection.cellForItem(at: IndexPath(item: 0, section: 0)) as? NativeTranscriptCell)?.exposure)
         #expect(!scope.canPresent && scope.isCurrent == (shape == "auxiliary"))
         var reports = 0
-        scope.present(block: block, context: rich, mode: .source) { _, _ in reports += 1 }
+        // An unrestricted standalone context cannot bypass native row authority.
+        #expect(RichReplyContext.isolated.permits(block))
+        scope.present(block: block, context: .isolated, mode: .source) { _, _ in reports += 1 }
         #expect(controller.presentedViewController == nil && reports == 0)
         #expect(service.downloads == 0 && webViews(controller.view).isEmpty)
     }

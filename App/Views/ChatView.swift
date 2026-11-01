@@ -89,12 +89,18 @@ struct ChatView: View {
         }
     }
 
+    private var messageDisplayRevision: [NativeTranscriptRowValue] {
+        (screen?.snapshot?.messages ?? []).map { .message($0, working: false) }
+    }
+
     private var presentationContent: some View {
         let screen = self.screen
         let toolbarRevision = presentation.revision
         let toolbarOwner = screen?.owner
         let editingRevision = presentation.revision
         return chatPane(screen, toolbarRevision: toolbarRevision, toolbarOwner: toolbarOwner, editingRevision: editingRevision)
+        .onChange(of: screen?.owner) { _, _ in presentation.reconcile(store: store) }
+        .onChange(of: messageDisplayRevision) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: colorScheme) { _, _ in if overviewCovered { overviewTransition.allowsAnimation = false } }
         .onChange(of: textSize) { _, _ in if overviewCovered { overviewTransition.allowsAnimation = false } }
         .onChange(of: store.isConnected) { _, _ in connectionRequested = false }
@@ -153,11 +159,15 @@ struct ChatView: View {
                           editingRevision: UUID) -> some View {
         ZStack(alignment: .bottom) {
             ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
-                           messageDisplayRevision: (screen?.snapshot?.messages ?? []).map { .message($0, working: false) }, isExposed: transcriptVisible,
+                           messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
                            onConnectionRequired: { connectionRequested = true },
                            preview: transcriptPreview, topContentInset: toolbarVisible ? headerOverlap : 0,
                            bottomContentInset: composerHeight,
+                           searchFocus: presentation.searchFocus.flatMap {
+                               $0.owner == screen?.owner && $0.matches(workspace: workspace) ? $0 : nil
+                           },
+                           reportSearchFocus: { presentation.reportSearchFocus($0, result: $1) },
                            actionRevision: toolbarRevision, admitsAction: {
                                presentation.revision == toolbarRevision && !presentation.isBrowsingBots && transcriptVisible && canPresentToolbar()
                            })
@@ -166,15 +176,23 @@ struct ChatView: View {
                 .ignoresSafeArea(.container, edges: .top)
                 .accessibilityHidden(overviewCovered)
             if toolbarVisible {
-                VStack(spacing: 0) {
-                    BottoTheme.paper.frame(height: headerOverlap)
-                    LinearGradient(colors: [BottoTheme.paper, BottoTheme.paper.opacity(0)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 24)
-                    Spacer(minLength: 0)
+                // iOS 26 needs a backing to obscure transcript text in the status area.
+                if #unavailable(iOS 27) {
+                    GeometryReader { geometry in
+                        Rectangle().fill(.regularMaterial)
+                            .frame(height: geometry.safeAreaInsets.top + headerOverlap + 24)
+                            .mask {
+                                VStack(spacing: 0) {
+                                    Color.black
+                                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                                        .frame(height: 24)
+                                }
+                            }
+                            .offset(y: -geometry.safeAreaInsets.top)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                 }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
             }
             overviewPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -189,6 +207,9 @@ struct ChatView: View {
                 }
                 if let error = screen?.error {
                     Text(error).font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 16)
+                }
+                if let error = presentation.searchError {
+                    InlineNotice(message: error) { presentation.searchError = nil }.padding(.horizontal, 16)
                 }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
@@ -207,6 +228,7 @@ struct ChatView: View {
                              }, editingHandle: editing, connectionRequested: $connectionRequested)
             }
             .padding(.top, 8)
+            .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
             .opacity(showsOverview ? 0 : 1)
             .animation(.easeOut(duration: reduceMotion ? 0.10 : 0.16), value: showsOverview)
             .allowsHitTesting(!overviewCovered)
@@ -214,6 +236,7 @@ struct ChatView: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: { composerHeight = $0 }
         }
         .background(BottoTheme.paper)
+        .toolbarColorScheme(colorScheme, for: .navigationBar)
         .overlay(alignment: .top) {
             if toolbarVisible {
                 NativeTranscriptHeader(preview: transcriptPreview, onActivate: screen == nil ? nil : {
@@ -526,6 +549,8 @@ private struct ChatTranscript: View {
     var preview: NativeTranscriptPreview? = nil
     var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
+    var searchFocus: SearchMessageFocus? = nil
+    var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
     var actionRevision: UUID? = nil
     var admitsAction: @MainActor () -> Bool = { true }
     @Environment(\.scenePhase) private var scenePhase
@@ -558,7 +583,8 @@ private struct ChatTranscript: View {
         #endif
     }
     private var messagePlan: NativeTranscriptMessagePlan {
-        NativeTranscriptMessagePlan(chat?.messages ?? [], queuedMessages: chat?.queuedMessages ?? [])
+        NativeTranscriptMessagePlan(chat?.messages ?? [], queuedMessages: chat?.queuedMessages ?? [],
+            unavailableMessageIDs: TranscriptMessageIndex(chat).unavailableIDs)
     }
     private var visibleMessages: [ChatMessage] { messagePlan.entries.map(\.message) }
     private var lastVisibleMessageID: String? { messagePlan.entries.last?.message.id }
@@ -573,7 +599,8 @@ private struct ChatTranscript: View {
             snapshot: chat, rows: nativeRows, active: isExposed, currentTaskSnapshot: taskSnapshot(),
             currentReaderSnapshot: readerSnapshot(),
             admitsAction: admitsAction, preview: preview, topContentInset: topContentInset,
-            bottomContentInset: bottomContentInset)
+            bottomContentInset: bottomContentInset,
+            searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
     }
 
     /// Read cached state only. Coverage by this transcript's own reader does not
@@ -728,7 +755,7 @@ private struct ChatTranscript: View {
                     filePreviewsAreSettled: !chat.isWorking,
                     actionOwner: screen?.owner, actionGeneration: store.artifactGeneration,
                     actionScope: actionScope, actionRevision: actionRevision,
-                    onOpenAttachment: artifactAction(isCurrent: isCurrent))
+                    onOpenAttachment: artifactAction(message: message, isCurrent: isCurrent))
             .id(RenderOwner(messageID: message.id, generation: store.artifactGeneration,
                             reviewingConnection: store.showsConnection))
             #if DEBUG
@@ -741,9 +768,9 @@ private struct ChatTranscript: View {
             #endif
     }
 
-    private func artifactAction(isCurrent: @escaping @MainActor () -> Bool = { true }) -> ((ChatAttachment) -> Void)? {
-        transcriptArtifactAction(store: store, workspace: workspace, botID: bot.id, owner: screen?.owner,
-                                 admittedBy: isCurrent, onConnectionRequired: onConnectionRequired, onOpen: onOpenArtifact)
+    private func artifactAction(message: ChatMessage, isCurrent: @escaping @MainActor () -> Bool = { true }) -> ((ChatAttachment) -> Void)? {
+        transcriptArtifactAction(store: store, workspace: workspace, botID: bot.id, owner: screen?.owner, producingMessage: message,
+                                 admittedBy: isCurrent, onOpen: onOpenArtifact)
     }
 
     private func layoutWriter(for message: ChatMessage) -> @MainActor @Sendable () -> Bool {
@@ -803,10 +830,11 @@ private struct ChatTranscript: View {
                         if reduceMotion { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) }
                         else { withAnimation(.easeOut(duration: 0.2)) { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) } }
                     } label: {
-                        Label("Latest messages", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 16).frame(minHeight: 44)
-                            .background(BottoTheme.action, in: Capsule()).foregroundStyle(BottoTheme.onAction)
+                        Image(systemName: "arrow.down").font(.subheadline.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(BottoTheme.action, in: Circle()).foregroundStyle(BottoTheme.onAction)
                     }
+                    .accessibilityLabel("Latest messages")
                     .buttonStyle(.plain).padding(.bottom, 8)
                 }
             }
@@ -893,14 +921,12 @@ private struct ChatTranscript: View {
 /// Captures file action admission separately from the semantic lifetime of an
 /// already-open reader. The native caller supplies its current display gate.
 @MainActor func transcriptArtifactAction(store: AppStore, workspace: ConversationWorkspace, botID: String,
-                                       owner: PresentationOwner?, admittedBy admission: @escaping @MainActor () -> Bool,
-                                       onConnectionRequired: @escaping () -> Void = {},
+                                       owner: PresentationOwner?, producingMessage: ChatMessage? = nil, admittedBy admission: @escaping @MainActor () -> Bool,
                                        onOpen: @escaping (AppStore.ArtifactDestination) -> Void) -> ((ChatAttachment) -> Void)? {
     let generation = store.artifactGeneration
     return { attachment in
         guard admission(), generation == store.artifactGeneration, let owner, workspace.isCurrent(owner) else { return }
-        guard store.isConnected else { onConnectionRequired(); return }
-        guard let destination = store.artifactDestination(for: attachment, botID: botID) else { return }
+        guard let destination = store.artifactDestination(for: attachment, botID: botID, producingMessage: producingMessage) else { return }
         onOpen(destination)
     }
 }
@@ -934,6 +960,7 @@ extension EnvironmentValues {
 /// Lazy row discovery must stay cheap. Resolving a rich-reply context validates
 /// canonical blocks, so defer that work until SwiftUI renders this message.
 private struct TranscriptMessage: View {
+    @Environment(\.nativeSearchMatch) private var searchMatch
     let store: AppStore
     let botID: String
     let message: ChatMessage
@@ -948,6 +975,7 @@ private struct TranscriptMessage: View {
     var body: some View {
         let senderProfile = message.botSender.flatMap { ChatSenderAvatar.profile(for: $0, among: store.bots) }
         let rendered = TranscriptMessageBody(message: message, isStreaming: isStreaming,
+                              searchMatch: searchMatch,
                               filePreviewsAreSettled: filePreviewsAreSettled,
                               actionOwner: actionOwner, actionGeneration: actionGeneration,
                               actionScope: actionScope, actionRevision: actionRevision,
@@ -969,6 +997,7 @@ private struct TranscriptMessage: View {
 private struct TranscriptMessageBody: View, Equatable {
     let message: ChatMessage
     let isStreaming: Bool
+    let searchMatch: NativeSearchMatch?
     let filePreviewsAreSettled: Bool
     let actionOwner: PresentationOwner?
     let actionGeneration: UUID
@@ -981,6 +1010,7 @@ private struct TranscriptMessageBody: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.isStreaming == rhs.isStreaming,
+              lhs.searchMatch == rhs.searchMatch,
               lhs.filePreviewsAreSettled == rhs.filePreviewsAreSettled,
               lhs.actionOwner == rhs.actionOwner, lhs.actionGeneration == rhs.actionGeneration,
               lhs.actionScope == rhs.actionScope, lhs.actionRevision == rhs.actionRevision,

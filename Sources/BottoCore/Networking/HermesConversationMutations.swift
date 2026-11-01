@@ -127,7 +127,8 @@ extension HermesBotService {
         }
         sending.insert(context.identity); defer { sending.remove(context.identity) }
         let optimisticID = "submission:" + submission
-        state?.conversation.messages.append(ChatMessage(id: optimisticID, role: .user, text: text, timestamp: Date(), attachments: attachments))
+        state?.conversation.messages.append(ChatMessage(id: optimisticID, role: .user, text: text, timestamp: Date(),
+            attachments: attachments, transientID: UUID()))
         state?.optimistic.append(optimisticID)
         emitConversation()
         do {
@@ -213,7 +214,8 @@ extension HermesBotService {
         if reply["status"].text == "rejected" { throw HermesServiceError.steeringUnavailable }
         guard reply["status"].text == "queued" else { throw HermesServiceError.uncertain }
         if isSelected(context) {
-            state?.conversation.messages.append(ChatMessage(id: "steer:" + operationID.uuidString, role: .user, text: text, timestamp: .now))
+            state?.conversation.messages.append(ChatMessage(id: "steer:" + operationID.uuidString, role: .user, text: text,
+                timestamp: .now, transientID: UUID()))
             emitConversation()
         }
         onEvent?(.botsChanged)

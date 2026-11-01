@@ -95,7 +95,7 @@ extension HermesBotService {
         aliases.formUnion([root, stored, try ExactID(id)])
         return SessionSummary(identity: SessionIdentity(profile: profile, root: root, stored: stored, aliases: aliases),
             title: canonical ? "Main" : (row["title"].nonempty ?? "New Chat"), isCanonical: canonical, persistence: .durable,
-            preview: row["preview"].text ?? "", updatedAt: row["last_active"].date ?? row["last_activity_at"].date,
+            preview: row["preview"].text, updatedAt: row["last_active"].date ?? row["last_activity_at"].date,
             messageCount: row["message_count"].integer)
     }
 
@@ -105,7 +105,8 @@ extension HermesBotService {
             let identity = SessionIdentity(profile: fresh.identity.profile, root: fresh.identity.root, stored: fresh.identity.stored,
                 aliases: fresh.identity.aliases.union(known.identity.aliases))
             let merged = SessionSummary(identity: identity, title: fresh.title, isCanonical: fresh.isCanonical,
-                persistence: fresh.persistence, preview: fresh.preview, updatedAt: fresh.updatedAt, messageCount: fresh.messageCount)
+                persistence: fresh.persistence, preview: fresh.hasPreview == true ? fresh.preview : nil,
+                updatedAt: fresh.updatedAt, messageCount: fresh.messageCount)
             rows.removeAll { $0.identity == fresh.identity }; merge(merged, into: &rows)
         } else { merge(known, into: &rows) }
     }
@@ -123,7 +124,8 @@ extension HermesBotService {
             merged = SessionSummary(identity: SessionIdentity(profile: incoming.identity.profile, root: root,
                 stored: preferred.identity.stored, aliases: old.identity.aliases.union(merged.identity.aliases)),
                 title: canonical ? "Main" : preferred.title, isCanonical: canonical, persistence: preferred.persistence,
-                preview: preferred.preview, updatedAt: preferred.updatedAt, messageCount: preferred.messageCount)
+                preview: preferred.hasPreview == true ? preferred.preview : nil,
+                updatedAt: preferred.updatedAt, messageCount: preferred.messageCount)
         }
         rows.removeAll { old in matches.contains { $0.identity == old.identity } }
         if merged.isCanonical { rows.insert(merged, at: 0) } else { rows.append(merged) }

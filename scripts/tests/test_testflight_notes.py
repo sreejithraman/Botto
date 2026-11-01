@@ -77,6 +77,27 @@ class TestFlightNotesTests(unittest.TestCase):
         self.assertEqual(self.notes(source, baseline), expected)
         self.assertNotIn("Not part of this build", expected)
 
+    def test_scan_limit_counts_unrelated_commits_before_filtering(self):
+        baseline = self.commit("App/Botto.swift", "Previous beta")
+        feature = self.commit("App/Botto.swift", "Keep drafts after reconnecting")
+        for index in range(199):
+            source = self.commit("README.md", f"Documentation update {index}")
+        self.assertIn("- Keep drafts after reconnecting", self.notes(source, baseline))
+
+        for index in (199, 200):
+            with self.subTest(unrelated_commits=index + 1):
+                source = self.commit("README.md", f"Documentation update {index}")
+                for notes_base in (baseline, None):
+                    with self.subTest(baseline=notes_base):
+                        notes = self.notes(source, notes_base)
+                        self.assertNotIn("Keep drafts after reconnecting", notes)
+                        self.assertNotIn("Documentation update", notes)
+                        self.assertIn("- Internal build and delivery updates.", notes)
+                        link = (f"compare/{baseline}...{source}" if notes_base
+                                else f"commits/{source}")
+                        self.assertIn(f"https://github.com/sreejithraman/Botto/{link}", notes)
+                self.assertIn(feature, self.git("rev-list", f"{baseline}..{source}").splitlines())
+
     def test_unknown_or_unrelated_baseline_uses_available_history(self):
         first = self.commit("App/Botto.swift", "First app")
         self.git("checkout", "-b", "other")

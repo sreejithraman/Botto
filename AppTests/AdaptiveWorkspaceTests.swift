@@ -29,6 +29,8 @@ import BottoCore
         let owner = try #require(store.chats.screen(profile: service.base.profile)?.owner)
         store.chats.editDraft("Keep focus and this draft", owner: owner)
         try await waitUntil { editor.text == "Keep focus and this draft" }
+        // Keep responder retention independent of the Simulator's remote keyboard service.
+        editor.inputView = UIView(frame: .zero)
         try #require(editor.becomeFirstResponder())
         editor.selectedRange = NSRange(location: 4, length: 5)
         let selectedRange = editor.selectedRange

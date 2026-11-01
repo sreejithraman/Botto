@@ -17,7 +17,7 @@ struct NativeTranscriptMessagePlan {
         var id: NativeTranscriptItemID {
             switch self {
             case .message(let entry): entry.id
-            case .workDetails(let messages): .workDetails(Data(messages[0].id.utf8))
+            case .workDetails(let messages): .workDetails(WorkDetailsDocument.identity(of: messages[0]))
             }
         }
     }
@@ -43,12 +43,13 @@ struct NativeTranscriptMessagePlan {
         flushTools()
         return rows
     }
-    init(_ messages: [ChatMessage], queuedMessages: [QueuedMessage] = []) {
+    init(_ messages: [ChatMessage], queuedMessages: [QueuedMessage] = [], unavailableMessageIDs: Set<Data> = []) {
         let pending = Set(queuedMessages.compactMap { $0.submissionID.map { Data(("submission:" + $0).utf8) } })
-        let repeated = repeatedIdentities(messages.map { Data($0.id.utf8) })
+        let repeated = repeatedIdentities(messages.map { Data($0.id.utf8) }).union(unavailableMessageIDs)
+        let repeatedWork = repeatedIdentities(messages.filter { $0.role == .tool }.map { WorkDetailsDocument.identity(of: $0) })
         entries = messages.enumerated().compactMap { index, message in
             guard message.isVisible, !pending.contains(Data(message.id.utf8)) else { return nil }
-            let exact = Data(message.id.utf8), ambiguous = repeated.contains(exact)
+            let exact = Data(message.id.utf8), ambiguous = repeated.contains(exact) || (message.role == .tool && repeatedWork.contains(WorkDetailsDocument.identity(of: message)))
             return Entry(id: ambiguous ? .ambiguousMessage(index) : .message(exact), message: message, isAmbiguous: ambiguous, sourceIndex: index)
         }
     }
@@ -61,7 +62,7 @@ struct WorkDetailsView: View {
     var body: some View {
         WorkDetailsRow(title: "Work details", systemImage: "wrench.and.screwdriver", count: messages.count,
             accessibilityLabel: "Work details, \(messages.count) \(messages.count == 1 ? "tool" : "tools")" + (isActive ? ", Working" : ""),
-            identifier: "work-details-" + (messages.first?.id ?? ""), messages: messages, isActive: isActive)
+            identifier: "work-details-" + (messages.first.map { $0.workDetailsID ?? $0.id } ?? ""), messages: messages, isActive: isActive)
     }
 }
 

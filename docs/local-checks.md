@@ -73,6 +73,7 @@ readback still runs after a failed test and cannot mask its exit status.
 To opt in to Xcode's verbose collection for a diagnostic run:
 
 ```sh
+BOTTO_TEST_DESTINATION='platform=iOS Simulator,id=YOUR_OWNED_UUID' \
 BOTTO_TEST_DIAGNOSTICS=on-failure ./scripts/check.sh
 ```
 

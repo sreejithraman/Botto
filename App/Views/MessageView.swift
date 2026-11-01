@@ -35,7 +35,7 @@ struct MessageView: View {
             incomingBotMessage(sender)
         } else if message.role == .system && isImportantSystemNote {
             Label {
-                Text(message.text).textSelection(.enabled)
+                SearchMatchText(message.text).textSelection(.enabled)
             } icon: {
                 Image(systemName: "exclamationmark.circle")
             }
@@ -51,7 +51,7 @@ struct MessageView: View {
                 if outgoing { Spacer(minLength: 35) }
                 VStack(alignment: .leading, spacing: 10) {
                     if !presentation.text.isEmpty {
-                        if outgoing { Text(presentation.text).textSelection(.enabled) }
+                        if outgoing { SearchMatchText(presentation.text).textSelection(.enabled) }
                         else if !rendersRichContent { MarkdownBody(text: presentation.text) }
                         else { AssistantReplyBody(message: message, isStreaming: isStreaming,
                                                   filePreviewsAreSettled: filePreviewsAreSettled,
@@ -88,7 +88,7 @@ struct MessageView: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     .accessibilityLabel(sender.label)
                     .accessibilityIdentifier("message-sender-" + message.id)
-                Text(message.attributedText).font(.body).lineSpacing(3).textSelection(.enabled)
+                SearchMatchText(message.attributedText).font(.body).lineSpacing(3).textSelection(.enabled)
                 ForEach(message.attachments) { attachment in
                     ArtifactCard(attachment: attachment, outgoing: false,
                         open: onOpenAttachment.map { action in { action(attachment) } })
@@ -206,7 +206,7 @@ struct WorkDetailsSheet: View {
     @State private var expanded: Set<Data> = []
 
     private var toolIDs: Set<Data> {
-        Set(document.messages.filter { $0.role == .tool }.map { Data($0.id.utf8) })
+        Set(document.messages.filter { $0.role == .tool }.map { WorkDetailsDocument.identity(of: $0) })
     }
 
     var body: some View {
@@ -215,7 +215,7 @@ struct WorkDetailsSheet: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(document.messages.enumerated()), id: \.offset) { index, message in
                         if message.role == .tool {
-                            let id = Data(message.id.utf8)
+                            let id = WorkDetailsDocument.identity(of: message)
                             WorkDetailsItem(message: message, number: index + 1,
                                 isExpanded: Binding(get: { expanded.contains(id) }, set: { value in
                                     if value { expanded.insert(id) } else { expanded.remove(id) }
@@ -407,36 +407,13 @@ struct RawMessagePayload: View {
 struct MarkdownBody: View {
     let text: String
     var isReply = false
-    private struct Block: Identifiable {
-        let id: Int
-        let text: String
-        let code: Bool
-    }
-    private var blocks: [Block] {
-        var result: [Block] = []
-        var lines: [String] = []
-        var inCode = false
-        func flush() {
-            if !lines.isEmpty {
-                let source = lines.joined(separator: "\n")
-                let content = inCode ? source : source.trimmingCharacters(in: .newlines)
-                if !content.isEmpty { result.append(Block(id: result.count, text: content, code: inCode)) }
-                lines = []
-            }
-        }
-        for line in text.components(separatedBy: "\n") {
-            if line.hasPrefix("```") { flush(); inCode.toggle() }
-            else { lines.append(line) }
-        }
-        flush()
-        return result
-    }
+    private var blocks: [NativeMessageText.MarkdownBlock] { NativeMessageText.markdownBlocks(in: text) }
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             ForEach(blocks) { block in
                 if block.code {
                     ScrollView(.horizontal) {
-                        Text(block.text)
+                        SearchMatchText(block.text)
                             .font(.system(.callout, design: .monospaced))
                             .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
                             .padding(12)
@@ -444,7 +421,7 @@ struct MarkdownBody: View {
                     .background(isReply ? BottoTheme.surface : BottoTheme.paper, in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Code: \(block.text)")
                 } else {
-                    Text(attributed(block.text))
+                    SearchMatchText(attributed(block.text))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -453,19 +430,6 @@ struct MarkdownBody: View {
         }
     }
     func attributed(_ text: String) -> AttributedString {
-        var result = AttributedString()
-        for (index, paragraph) in text.components(separatedBy: "\n\n").enumerated() {
-            if index > 0 { result.append(AttributedString("\n\n")) }
-            let leadingNewlines = paragraph.prefix(while: { $0 == "\n" })
-            result.append(AttributedString(String(leadingNewlines)))
-            let paragraph = String(paragraph.dropFirst(leadingNewlines.count))
-            let heading = paragraph.hasPrefix("#")
-            let content = heading ? String(paragraph.drop(while: { $0 == "#" || $0 == " " })) : paragraph
-            var attributed = (try? AttributedString(markdown: content,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(content)
-            if heading { attributed.font = isReply ? .title3.weight(.semibold) : .headline }
-            result.append(attributed)
-        }
-        return result
+        NativeMessageText.markdownAttributed(text, isReply: isReply)
     }
 }

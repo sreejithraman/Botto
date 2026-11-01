@@ -66,7 +66,10 @@ import Testing
     host.sockets[0].push(toolComplete); host.sockets[0].push(complete)
     try await eventually { publications.last?.access != live.access && publications.last?.snapshot.messages.count == 2 }
     let refreshed = try #require(publications.last?.snapshot.messages.first { $0.role == .tool })
-    #expect(refreshed.id == liveTool.id)
+    #expect(refreshed.id == "stored-1:row:5")
+    #expect(refreshed.workDetailsID == (liveTool.workDetailsID ?? liveTool.id))
+    #expect(refreshed.hasStableIdentity(storedID: "stored-1"))
+    #expect(refreshed.transientID == nil)
     #expect(refreshed.toolName == "terminal")
     #expect(refreshed.text == tool["content"].text)
 }
