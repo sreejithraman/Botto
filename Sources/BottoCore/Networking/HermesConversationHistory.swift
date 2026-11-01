@@ -19,12 +19,20 @@ extension HermesBotService {
         guard exact(page["session_id"].text, identity.stored.text),
               exact(page["profile"].text, identity.profile.text),
               let rows = page["messages"].list else { throw HermesServiceError.wrongConversation }
-        guard rows.count <= 100 else { throw HermesServiceError.incompatible }
+        let unavailable = HermesConversationState.unavailableMessageIDs(rows, stored: identity.stored.text)
+        let disputed = unavailable.filter { ChatMessage.isStableID($0, storedID: identity.stored.text) }
+        func malformedPage() -> any Error {
+            if !disputed.isEmpty {
+                return ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: disputed)
+            }
+            return HermesServiceError.incompatible
+        }
+        guard rows.count <= 100 else { throw malformedPage() }
         let pagination = page["pagination"]
         if pagination != .null {
             guard pagination["offset"].integer == offset, pagination["limit"].integer == 100,
                   pagination["order"].text == "latest", pagination["returned"].integer == rows.count else {
-                throw HermesServiceError.incompatible
+                throw malformedPage()
             }
         }
         // A library needs stable row identities across pages and refreshes. The
@@ -32,10 +40,9 @@ extension HermesBotService {
         var ids = Set<Int>()
         for row in rows {
             guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer,
-                  id >= 0 else { throw HermesServiceError.incompatible }
+                  id >= 0 else { throw malformedPage() }
             ids.insert(id)
         }
-        let unavailable = HermesConversationState.unavailableMessageIDs(rows, stored: identity.stored.text)
         let projected = rows.map { raw -> HermesJSON in
             guard raw["display_content"] != .null else { return raw }
             var display = raw

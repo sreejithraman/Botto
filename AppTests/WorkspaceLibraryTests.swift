@@ -36,6 +36,221 @@ import BottoCore
         #expect(library.chats.first?.messages == snapshot.messages)
     }
 
+    @Test(arguments: [false, true])
+    func observedRosterWithdrawsWorkingBotsBeforeAnOldScanReturns(seedOldBook: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true), gate = StoreTestBarrier()
+        defer { gate.release() }
+        let settled = ChatMessage(id: "side-file", role: .assistant, text: "Withdrawn needle\nMEDIA:/removed.txt")
+        service.messages[service.second] = [settled]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(bots: service.profiles)
+        let removed = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        _ = try await library.download(removed)
+        _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.first }))
+        let working = Conversation(id: "side", storedID: "side", profileID: "other",
+            messages: [settled, .init(id: "working-tail", role: .assistant, text: "Still working")], isWorking: true)
+        library.accept(identity: service.second, snapshot: working, title: "Other",
+            evidence: .read(startedAt: .now, observedSource: service.second))
+        #expect(library.isCurrent(removed))
+        service.directoryBarriers[service.first.profile] = gate
+        let reading = Task { await library.refresh(bots: service.profiles) }
+        await gate.waitUntilEntered()
+        library.observeBots([service.profiles[0]])
+        #expect(!library.isCurrent(removed))
+        #expect(!library.chats.contains { $0.identity == service.second })
+        #expect(LibrarySearchResults(query: "Withdrawn needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(try await session.metadataRecovery().contains(service.second))
+        let reads = service.historyOffsets.count
+        let joined = library.indexingMetrics.forcedRefreshesJoined
+        let forced = Task { await library.refresh(bots: [service.profiles[0]], force: true) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while library.indexingMetrics.forcedRefreshesJoined == joined, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(library.indexingMetrics.forcedRefreshesJoined > joined)
+        gate.release(); await reading.value; await forced.value
+        #expect(service.historyOffsets.count > reads, "The joined forced refresh still checks the remaining profile")
+        #expect(!library.chats.contains { $0.identity == service.second })
+        library.accept(identity: service.second,
+            snapshot: .init(id: "side", storedID: "side", profileID: "other", messages: [settled]),
+            title: "Late idle", evidence: .incremental(previous: working))
+        #expect(!library.isCurrent(removed))
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        if seedOldBook { cold.seed(book: book, bots: service.profiles) }
+        await cold.restore()
+        #expect(!cold.chats.contains { $0.identity == service.second })
+        let unaffected = try #require(cold.artifacts.first { $0.chat.identity == service.first })
+        let downloads = service.downloadCount
+        #expect(try await cold.download(unaffected).data == Data("main".utf8))
+        #expect(service.downloadCount == downloads)
+        cold.retire(); await coldCache.close()
+    }
+
+    @Test func quickRosterReentryDoesNotReuseItsOldObservation() async throws {
+        let service = LibraryTestService(), library = WorkspaceLibrary(service: service)
+        defer { library.retire() }
+        await library.restore(); library.observeBots(service.profiles)
+        let snapshot = Conversation(id: "main", storedID: "main", profileID: "helper", messages: service.messages[service.first]!)
+        library.accept(identity: service.first, snapshot: snapshot, title: "Current", evidence: .read(startedAt: .now, observedSource: service.first))
+        let started = ContinuousClock.now
+        library.observeBots([]); library.observeBots(service.profiles)
+        var late = snapshot; late.messages.append(.init(id: "late", role: .assistant, text: "MEDIA:/stale.txt"))
+        library.accept(identity: service.first, snapshot: late, title: "Old event", evidence: .incremental(previous: snapshot))
+        library.accept(identity: service.first, snapshot: late, title: "Old read", evidence: .read(startedAt: started, observedSource: service.first))
+        #expect(library.chats.isEmpty)
+        library.accept(identity: service.first, snapshot: snapshot, title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.first))
+        #expect(library.chats.first?.messages == snapshot.messages)
+    }
+
+    @Test(arguments: [false, true])
+    func malformedHistoryFailureWithdrawsItsDisputedCaptureBeforeCommit(force: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(), gate = CaptureCommitGate()
+        defer { gate.release() }
+        let old = ChatMessage(id: "main-file", role: .assistant, text: "Disputed needle\nMEDIA:/disputed.txt")
+        service.messages[service.first] = [old]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(bots: service.profiles)
+        let item = try #require(library.artifacts.first { $0.chat.identity == service.first })
+        _ = try await library.download(try #require(library.artifacts.first { $0.chat.identity == service.second }))
+        gate.arm()
+        let capturing = Task { try await library.download(item) }
+        defer { capturing.cancel() }
+        var deadline = ContinuousClock.now + .seconds(5)
+        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(gate.isEntered)
+        service.historyFailures[service.first] = ConversationHistoryPage.Failure(identity: service.first,
+            unavailableMessageIDs: [Data(old.id.utf8)])
+        let reading = Task { await library.refresh(bots: service.profiles, force: force) }
+        defer { reading.cancel() }
+        deadline = .now + .seconds(5)
+        while library.isCurrent(item), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!library.isCurrent(item))
+        #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        gate.release()
+        await #expect(throws: (any Error).self) { _ = try await capturing.value }
+        await reading.value
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        let cold = WorkspaceLibrary(service: service, cache: coldSession)
+        cold.seed(book: book, bots: service.profiles); await cold.restore()
+        #expect(!cold.artifacts.contains { $0.artifact.messageID == old.id })
+        #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
+        let key = try #require(await WorkspaceLibrary.originalKey(identity: service.first,
+            attachment: ChatAttachment(name: "disputed.txt", path: "/disputed.txt"), messages: [old]))
+        #expect(try await coldSession.original(for: key) == nil)
+        let peer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
+        let downloads = service.downloadCount
+        #expect(try await cold.download(peer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        service.historyFailures = [:]
+        cold.setOnline(true); await cold.refresh(bots: service.profiles, force: true)
+        #expect(cold.artifacts.contains { $0.artifact.messageID == old.id })
+        cold.retire(); await coldCache.close()
+    }
+
+    @Test func recoveredStorageCannotRestoreAnEvictedFreshProducer() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService()
+        let old = ChatMessage(id: "main-file", role: .assistant, text: "Retired needle\nMEDIA:/old.txt", timestamp: Date(timeIntervalSince1970: 10_000))
+        service.messages[service.first] = [old]
+        service.messages[service.second] = [.init(id: "side-file", role: .assistant, text: "MEDIA:/peer.txt", timestamp: Date(timeIntervalSince1970: 5_000))]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second }))
+        warm.retire(); await warmCache.close()
+        var handle: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+        try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let ledger = root.appendingPathComponent("metadata-recovery.plist"), unknown = Data("temporarily unreadable recovery".utf8)
+        try unknown.write(to: ledger)
+        let cache = ArtifactCache(root: root)
+        cache.prune(reachableConfigurationIDs: [scope.configurationID])
+        let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, limits: .init(chatCount: 1), cache: session)
+        await library.restore()
+        library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
+            messages: [.init(id: old.id, role: .assistant, text: "Producer no longer references any file")]),
+            title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.first))
+        let newer = SessionIdentity(profile: service.first.profile, root: try ExactID("newer"), stored: try ExactID("newer"), aliases: [])
+        library.accept(identity: newer, snapshot: .init(id: "newer", storedID: "newer", profileID: "helper",
+            messages: [.init(id: "new", role: .assistant, text: "Newer content", timestamp: Date(timeIntervalSince1970: 20))]),
+            title: "Newer", evidence: .read(startedAt: .now, observedSource: newer))
+        #expect(!library.chats.contains { $0.identity == service.first })
+        #expect(try Data(contentsOf: ledger) == unknown)
+        try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        try FileManager.default.removeItem(at: ledger)
+        await library.restore()
+        #expect(!library.artifacts.contains { $0.artifact.messageID == old.id })
+        #expect(LibrarySearchResults(query: "Retired needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(try await session.metadataRecovery().contains(service.first))
+        let peer = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        let downloads = service.downloadCount
+        #expect(try await library.download(peer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        cold.seed(book: book, bots: service.profiles); await cold.restore()
+        #expect(!cold.artifacts.contains { $0.artifact.messageID == old.id })
+        cold.retire(); await coldCache.close()
+    }
+
+    @Test(arguments: [false, true])
+    func sameMountRecoveryGuardsAnAbsentBotBeforeAnotherDirectoryRead(seedOldBook: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true), gate = StoreTestBarrier()
+        defer { gate.release() }
+        service.messages[service.second] = [.init(id: "side-file", role: .assistant, text: "Removed recovery needle\nMEDIA:/removed.txt")]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
+        warm.setOnline(true); await warm.refresh(bots: service.profiles)
+        _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.first }))
+        warm.retire(); await warmCache.close()
+        var handle: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+        try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        if seedOldBook { library.seed(book: book, bots: service.profiles) }
+        await library.restore()
+        library.observeBots([service.profiles[0]])
+        try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        service.directoryBarriers[service.first.profile] = gate
+        library.setOnline(true)
+        let refreshing = Task { await library.refresh(bots: [service.profiles[0]], force: true) }
+        defer { refreshing.cancel() }
+        await gate.waitUntilEntered()
+        #expect(!library.chats.contains { $0.identity == service.second })
+        #expect(LibrarySearchResults(query: "Removed recovery needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(try await session.metadataRecovery().contains(service.second))
+        library.retire(); gate.release(); await refreshing.value; await cache.close()
+        service.directoryBarriers = [:]
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        cold.seed(book: book, bots: service.profiles); await cold.restore()
+        #expect(!cold.chats.contains { $0.identity == service.second })
+        let peer = try #require(cold.artifacts.first { $0.chat.identity == service.first })
+        let downloads = service.downloadCount
+        #expect(try await cold.download(peer).data == Data("main".utf8))
+        #expect(service.downloadCount == downloads)
+        cold.setOnline(true); await cold.refresh(bots: service.profiles, force: true)
+        #expect(cold.artifacts.contains { $0.chat.identity == service.second })
+        cold.retire(); await coldCache.close()
+    }
+
     @Test func aLateRealOpeningCannotReintroduceAWithdrawnBot() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -117,10 +332,14 @@ import BottoCore
         #expect(service.downloadCount == downloads + 1)
         library.retire(); await cache.close()
         let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        let cold = WorkspaceLibrary(service: service, cache: coldSession)
+        await cold.restore()
+        #expect(cold.artifacts.contains { $0.chat.identity == service.second }, "A checked saved row remains visible after another cold reopen")
         let attachment = try #require(retained.artifact.attachment)
         let key = try #require(await WorkspaceLibrary.originalKey(identity: retained.chat.identity,
             attachment: attachment, messages: retained.chat.messages))
         #expect(try await coldSession.original(for: key)?.artifact.data == service.fileBytes)
+        cold.retire()
         await coldCache.close()
     }
 
@@ -2878,6 +3097,7 @@ private actor NextLibraryProjectionPause {
     var historyOffsets: [Int] = []
     var historyBarrier: StoreTestBarrier?
     var historyBarriers: [SessionIdentity: StoreTestBarrier] = [:]
+    var historyFailures: [SessionIdentity: any Error] = [:]
     var downloadBarrier: StoreTestBarrier?
     var openCount = 0
     var summaryTitle = "Research notes"
@@ -2927,6 +3147,7 @@ private actor NextLibraryProjectionPause {
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
         historyOffsets.append(offset)
         await (historyBarriers[identity] ?? historyBarrier)?.wait()
+        if let failure = historyFailures[identity] { throw failure }
         if failHistory || identity == failingHistorySource { throw HermesServiceError.disconnected }
         if hiddenFirstPage, offset == 0 { return .init(messages: [], nextOffset: 100, isComplete: true, sourceIDs: [Data("hidden-head".utf8)]) }
         let rows = messages[identity] ?? []

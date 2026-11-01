@@ -101,7 +101,7 @@ import BottoCore
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
     private(set) var serverInfo: ServerInfo?
-    private var cachedBots: [BotProfile] = [] { didSet { library.observeBots(cachedBots) } }
+    private var cachedBots: [BotProfile] = [] { didSet { library.observeBots(cachedBots, evidence: .cached) } }
     private var pinned: Set<ExactID> = []
     private var unpinned: Set<ExactID> = []
     private(set) var chats: ConversationWorkspace
@@ -686,6 +686,7 @@ import BottoCore
             do {
                 let profiles = try await service.bots()
                 guard generation == owner, botRefresh === refresh else { return }
+                library.observeBots(profiles)
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
                 bindPushNotifications()

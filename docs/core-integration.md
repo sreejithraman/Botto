@@ -129,6 +129,9 @@ access, while library discovery, Search references and durable capture keys
 require stable row identity. A later persisted-row receipt clears the transient
 token. Missing legacy metadata stays decodable; `inflight-user` without a token
 is not a stable or current occurrence.
+The actual submit and steer producers attach that token when they publish a
+local row. Message ID prefixes alone cannot distinguish local Core rows from
+durable rows supplied by another provider, including Demo.
 
 Transcript cards carry their exact producing message into capture lookup;
 whole-chat path deduplication is reserved for the gallery. Decoded covers use
@@ -398,3 +401,14 @@ watermark that rejects uncertain stale results. Repeated updates to a retained
 ID do not invalidate an unrelated read. This is runtime state, not host revision
 or mutation authority. Startup cleanup checkpoints preserve newer active-lease
 guards while SQL readiness and retirement still gate cache reads and writes.
+
+Only an observed roster changes membership; cached bot names supply labels.
+Roster withdrawal includes working chats and invalidates their observations
+synchronously. Seed, restore and every scan await check the roster revision;
+a joined forced refresh uses the latest observed roster. Reentry needs fresh
+read evidence. Recovery admits a checked saved row without creating a new write
+guard. If both initial storage and guard admission fail, bounded acceptance
+stamps withhold changed or evicted rows when the same mount retries storage.
+Correctly associated history failures carry known duplicate IDs even when
+another row or pagination field is malformed. Head probes and full scans
+quarantine those IDs before further publication or suspension.

@@ -52,3 +52,13 @@ A deliberate library entry or refresh retries failed startup storage and saved
 index reconciliation within the same mount. Retries serialize; they preserve
 withdrawal guards, fresh read evidence and retired-lease fences. Failed recovery
 admission retains bookkeeping only for current, persisted or in-flight owners.
+After an unknown initial index and failed guard admission, the existing bounded
+acceptance fence conservatively rejects changed or evicted saved rows on retry.
+It does not establish durability while the filesystem cannot record a guard.
+Successfully checked saved rows replace temporary recovery hints without
+creating a speculative write guard.
+
+Observed roster membership gates canonical admission, asynchronous scan/restore
+completion and seed installation. Whole-bot withdrawal includes working tails;
+cached labels do not establish roster membership. A new roster invalidates old
+scan admission, and a joined forced pass reads the latest roster.

@@ -128,6 +128,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var galleryConsumersRegistered = 0
         var retainedAcceptanceFences = 0
         var pendingMetadataIdentities = 0
+        var forcedRefreshesJoined = 0
     }
     @ObservationIgnored private(set) var indexingMetrics = IndexingMetrics()
     struct Projection: Sendable {
@@ -182,6 +183,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
     }
     private var acceptanceFence: AcceptanceFence
+    private let initialRestorationStamp: AcceptanceFence.Stamp
     private var captureRevisions: [Data: UUID] = [:]
     private(set) var thumbnailAvailabilityRevision = UUID()
     private(set) var revalidationRevision = UUID()
@@ -204,11 +206,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var inFlightUpsert: LibraryChat.ID?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var seedTask: Task<Void, Never>?
-    private var pendingSeed: (book: ConversationBook, bots: [BotProfile], accepted: AcceptanceFence.Stamp, request: UUID)?
+    private var pendingSeed: (book: ConversationBook, bots: [BotProfile], accepted: AcceptanceFence.Stamp, roster: UUID, request: UUID)?
     private var seedVersion = UUID()
     private var localWorkCount = 0
     private var restored = false
     private var restorationFailed = false
+    private var unverifiedPersistenceChanges = false
+    private var guardAdmissionFailure = UUID()
     private var metadataRecovery = ArtifactMetadataRecovery()
     private var restorationHints = Set<LibraryChat.ID>()
     private var persistedIDs: Set<LibraryChat.ID> = []
@@ -230,6 +234,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
     private var botNames: [ExactID: String] = [:]
     private var rosterReadFloors: [ExactID: ContinuousClock.Instant]?
+    private var rosterBots: [BotProfile] = []
+    private var rosterRevision = UUID()
+    enum RosterEvidence { case cached, observed }
+
+    private func rosterPermits(_ profile: ExactID) -> Bool {
+        rosterReadFloors == nil || rosterReadFloors?[profile] != nil
+    }
     private struct OriginalConsumer {
         let validate: @MainActor () throws -> Void
         let projection: LibraryChat.ID?
@@ -281,7 +292,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
          projector: @escaping ProjectionWorker = { messages, tail in await WorkspaceLibrary.project(messages, streamingMessage: tail) }) {
         self.service = service; self.limits = limits; self.projector = projector
         let (fenceCapacity, overflow) = max(1, limits.chatCount).multipliedReportingOverflow(by: 2)
-        acceptanceFence = AcceptanceFence(capacity: overflow ? Int.max : fenceCapacity)
+        let fence = AcceptanceFence(capacity: overflow ? Int.max : fenceCapacity)
+        acceptanceFence = fence; initialRestorationStamp = fence.stamp
         self.now = now
         self.cache = cache ?? ArtifactCache(root: nil).session(scope: .init(configurationID: UUID(),
             serverURL: Data(), installationID: nil, username: Data(), provider: nil))
@@ -304,6 +316,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 localWorkCount -= 1; schedulePersistence()
             }
             guard let cache else { return }
+            let roster = rosterRevision, guardFailure = guardAdmissionFailure
             do {
                 if restorationFailed { try await cache.retryStorage() }
                 try await readMetadataRecovery()
@@ -311,15 +324,21 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 if metadataRecovery.all || !metadataRecovery.invalidated.isEmpty {
                     for hint in try await cache.metadataRecoveryHints() {
                         let id = key(for: hint.identity), stamp = acceptanceFence.stamp
-                        await installRestorationHint(hint, admittedBy: { !self.isRetired && self.acceptanceFence.permits(id, since: stamp) })
+                        await installRestorationHint(hint, admittedBy: {
+                            !self.isRetired && self.rosterRevision == roster && self.rosterPermits(hint.identity.profile)
+                                && self.acceptanceFence.permits(id, since: stamp)
+                        })
                     }
                 }
                 let loaded = try await cache.loadChats()
-                guard !isRetired else { return }
+                guard !isRetired, rosterRevision == roster else { restorationFailed = true; return }
                 @MainActor func canRestore(_ row: CachedArtifactChat) -> Bool {
-                    guard !isRetired else { return false }
+                    guard !isRetired, self.rosterRevision == roster, self.rosterPermits(row.identity.profile) else { return false }
                     let id = key(for: row.identity)
-                    guard let current = records[id] else { return true }
+                    guard let current = records[id] else {
+                        return !self.unverifiedPersistenceChanges
+                            || self.acceptanceFence.permits(id, since: self.initialRestorationStamp)
+                    }
                     if row.directoryAbsent == true {
                         return initialSourceProofs[id] != current.identity.stored
                     }
@@ -329,9 +348,20 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         && row.retiredStoredIDs?.contains(current.identity.stored.bytes) == true
                 }
                 for row in loaded {
+                    guard rosterRevision == roster else { restorationFailed = true; return }
                     let id = key(for: row.identity)
                     persistedIDs.insert(id)
+                    if !rosterPermits(row.identity.profile) || (records[id] == nil && unverifiedPersistenceChanges
+                        && !acceptanceFence.permits(id, since: initialRestorationStamp)) {
+                        recordAcceptance(id)
+                        withdraw([id])
+                        scanNotice = .failure("Saved artifacts need a fresh history check. Pull to refresh to try again.")
+                        continue
+                    }
                     guard canRestore(row) else { continue }
+                    // A checked saved row replaces the row-free hint left by a
+                    // failed read. Keep its actual negative row evidence.
+                    restorationHints.remove(id)
                     if let seeded = records[id], seeded.identity.stored != row.identity.stored {
                         initialReadRows[id] = nil; initialSourceProofs[id] = nil
                     }
@@ -345,18 +375,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         removedMessageIDs: row.removedMessageIDs ?? [],
                         retiredStoredIDs: row.retiredStoredIDs ?? [],
                         directoryAbsent: row.directoryAbsent == true,
-                        admittedBy: { canRestore(row) },
-                        onCommit: {
-                            guard let chat = self.records[id], chat.unavailableMessageIDs.isEmpty,
-                                  self.sameMessages(chat.messages, row.messages),
-                                  self.unsettledTail[id] == nil,
-                                  (self.coverage[id] == .complete) == (row.coverage == .complete) else { return }
-                            self.summaries[id] = row.summary; self.heads[id] = row.headFingerprint
-                            if let admitted = self.cachedChat(id), self.sameCachedChat(admitted, row) { self.dirtyChats.remove(id) }
-                        })
+                        persistedRead: row, admittedBy: { canRestore(row) })
                 }
                 unreconciledSeedIDs = []
-                restorationFailed = false
+                restorationFailed = metadataRecovery.all || guardAdmissionFailure != guardFailure
+                if !restorationFailed { unverifiedPersistenceChanges = false }
             } catch {
                 if !isRetired {
                     restorationFailed = true
@@ -419,7 +442,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func installRestorationHint(_ hint: ArtifactMetadataHint, admittedBy: @MainActor () -> Bool) async {
         let id = key(for: hint.identity)
-        guard admittedBy() else { return }
+        guard rosterPermits(hint.identity.profile), admittedBy() else { return }
         if let current = records[id] {
             guard restorationHints.contains(id), current.identity.stored == hint.identity.stored else { return }
         }
@@ -430,10 +453,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         if restorationHints.contains(id), admittedBy() { dirtyChats.remove(id) }
     }
 
-    private func sameCachedChat(_ a: CachedArtifactChat, _ b: CachedArtifactChat) -> Bool {
+    private func sameCachedChat(_ a: CachedArtifactChat, _ b: CachedArtifactChat, includingCertificate: Bool = true) -> Bool {
         a.identity == b.identity && Data(a.botName.utf8) == Data(b.botName.utf8) && Data(a.title.utf8) == Data(b.title.utf8)
             && sameMessages(a.messages, b.messages) && a.updatedAt == b.updatedAt && a.coverage == b.coverage
-            && a.summary == b.summary && a.headFingerprint == b.headFingerprint
+            && (!includingCertificate || (a.summary == b.summary && a.headFingerprint == b.headFingerprint))
             && (a.unavailableMessageIDs ?? []) == (b.unavailableMessageIDs ?? [])
             && (a.removedMessageIDs ?? []) == (b.removedMessageIDs ?? [])
             && (a.retiredStoredIDs ?? []) == (b.retiredStoredIDs ?? [])
@@ -476,6 +499,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         do {
             try cache.invalidateMetadata(pending.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
         } catch {
+            guardAdmissionFailure = UUID()
+            if !restored || restorationFailed { unverifiedPersistenceChanges = true }
             scanNotice = .failure("Artifacts are available, but changes couldn’t be saved on this device.")
             return
         }
@@ -509,14 +534,20 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         persistenceTask = task
     }
 
-    func observeBots(_ bots: [BotProfile]) {
+    func observeBots(_ bots: [BotProfile], evidence: RosterEvidence = .observed) {
         let names = Dictionary(bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } }, uniquingKeysWith: { first, _ in first })
-        let previous = rosterReadFloors
-        if previous != nil || !names.isEmpty {
+        if evidence == .observed {
+            let previous = rosterReadFloors
+            if Set(previous?.keys.map { $0 } ?? Array(botNames.keys)) != Set(names.keys) { rosterRevision = UUID() }
+            rosterBots = bots
             rosterReadFloors = names.mapValues { _ in mountedAt }
             for profile in names.keys {
                 rosterReadFloors?[profile] = previous?[profile] ?? (previous == nil ? mountedAt : .now)
             }
+            // Whole-profile absence withdraws even working chats before another
+            // directory/history await can reuse their old observations.
+            withdraw(Set(records.keys.filter { names[$0.profile] == nil }))
+            observations = observations.filter { names[$0.key.profile] != nil }
         }
         if names != botNames { botNames = names; invalidateRevalidation() }
     }
@@ -661,7 +692,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         return freshnessUnverified ? .checkOlderHistory : nil
     }
     var chats: [LibraryChat] {
-        records.values.filter { !$0.directoryAbsent && !restorationHints.contains($0.id) && !unreconciledSeedIDs.contains($0.id) }.sorted {
+        records.values.filter { rosterPermits($0.identity.profile) && !$0.directoryAbsent && !restorationHints.contains($0.id) && !unreconciledSeedIDs.contains($0.id) }.sorted {
             if $0.updatedAt != $1.updatedAt { return ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
             let name = $0.botName.localizedStandardCompare($1.botName)
             if name != .orderedSame { return name == .orderedAscending }
@@ -691,7 +722,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     func seed(book: ConversationBook, bots: [BotProfile]) {
         guard !isRetired else { return }
         seedVersion = UUID()
-        pendingSeed = (book, bots, acceptanceFence.stamp, seedVersion)
+        pendingSeed = (book, bots, acceptanceFence.stamp, rosterRevision, seedVersion)
         guard seedTask == nil else { return }
         localWorkCount += 1
         seedTask = Task { [weak self] in
@@ -704,11 +735,12 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 let names = Dictionary(seed.bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } },
                     uniquingKeysWith: { first, _ in first })
                 for record in seed.book.records where !record.isUnverified {
-                    guard seedVersion == seed.request else { break }
+                    guard seedVersion == seed.request, rosterRevision == seed.roster else { break }
                     guard let source = record.binding.identity, let name = names[source.profile], let transcript = record.transcript,
                           Data(transcript.profileID.utf8) == source.profile.bytes,
                           Data(transcript.storedID.utf8) == source.stored.bytes else { continue }
                     let id = key(for: source)
+                    guard rosterPermits(source.profile) else { continue }
                     guard acceptanceFence.permits(id, since: seed.accepted), records[id]?.directoryAbsent != true,
                           records[id] == nil || records[id]?.identity.stored == source.stored else { continue }
                     if metadataRecovery.contains(source) {
@@ -732,6 +764,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         removedMessageIDs: [],
                         retiredStoredIDs: [],
                         admittedBy: { !self.isRetired && !Task.isCancelled && self.seedVersion == seed.request
+                            && self.rosterRevision == seed.roster && self.rosterPermits(source.profile)
                             && self.records[id]?.directoryAbsent != true
                             && self.acceptanceFence.permits(id, since: seed.accepted)
                             && (self.records[id] == nil || self.records[id]?.identity.stored == source.stored) })
@@ -772,18 +805,24 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                lastRevalidation.revision == revalidationRevision,
                lastRevalidation.at.duration(to: now()) < .seconds(60) { return }
             // Tab navigation does not own the mounted library's background read.
-            let revalidation = Task { await refresh(bots: bots) }
+            let revalidation = Task { await refreshCurrentRoster(force: false) }
             await revalidation.value
         }
     }
 
     func refresh(bots: [BotProfile], force: Bool = false) async {
         observeBots(bots)
-        let revision = revalidationRevision
+        await refreshCurrentRoster(force: force)
+    }
+
+    private func refreshCurrentRoster(force: Bool) async {
         await restore()
         guard !isRetired, online, !Task.isCancelled else { return }
         if let scanTask {
-            if force, !scanningForced { requiresForcedPass = true }
+            if force, !scanningForced {
+                requiresForcedPass = true
+                indexingMetrics.forcedRefreshesJoined += 1
+            }
             await scanTask.value
             return
         }
@@ -796,15 +835,22 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let task = Task {
             defer {
                 if generation == owner, scanIdentity == request {
-                    if !Task.isCancelled { lastRevalidation = (now(), revision) }
                     scanTask = nil; isScanning = false; statusBeforeScan = nil
                     requiresForcedPass = false; scanningForced = false
                 }
             }
-            await scan(bots: bots, owner: owner, force: force)
-            if accepts(owner), requiresForcedPass {
-                requiresForcedPass = false; scanningForced = true
-                await scan(bots: bots, owner: owner, force: true)
+            var nextForced = force
+            while accepts(owner) {
+                let roster = rosterRevision, revision = revalidationRevision
+                scanningForced = nextForced
+                await scan(bots: rosterBots, owner: owner, force: nextForced)
+                guard accepts(owner) else { return }
+                if rosterRevision == roster, !requiresForcedPass {
+                    lastRevalidation = (now(), revision)
+                    return
+                }
+                nextForced = nextForced || requiresForcedPass
+                requiresForcedPass = false
             }
         }
         scanTask = task
@@ -945,6 +991,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         candidates.append(Candidate(id: key, source: source, botName: botName, title: title,
             updatedAt: date, messages: local.messages, coverage: sourceCoverage, unavailableMessageIDs: unavailable, removedMessageIDs: removed,
             retiredStoredIDs: retired, directoryAbsent: absent))
+        candidates.removeAll { !rosterPermits($0.source.profile) }
         candidates.sort { a, b in
             if a.updatedAt != b.updatedAt { return (a.updatedAt ?? .distantPast) > (b.updatedAt ?? .distantPast) }
             if a.source.profile != b.source.profile { return a.source.profile.bytes.lexicographicallyPrecedes(b.source.profile.bytes) }
@@ -987,7 +1034,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func commit(_ admission: Admission, discoveries: [LibraryChat.ID: Projection]) {
         var next: [LibraryChat.ID: LibraryChat] = [:], nextCoverage: [LibraryChat.ID: Coverage] = [:]
-        for candidate in admission.candidates {
+        for candidate in admission.candidates where rosterPermits(candidate.source.profile) {
             let chat = LibraryChat(workspace: identity, identity: candidate.source, botName: candidate.botName,
                 title: candidate.title, messages: candidate.messages, updatedAt: candidate.updatedAt,
                 discoveredArtifacts: discoveries[candidate.id]?.artifacts ?? [], sourceRevisions: discoveries[candidate.id]?.revisions ?? [:],
@@ -1048,7 +1095,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func commitCanonical(_ admission: Admission, target: LibraryChat.ID,
-                                 projectionOwner: ProjectionOwner = .background) {
+                                 projectionOwner: ProjectionOwner = .background, persistedRead: CachedArtifactChat? = nil) {
         let savedBefore = cachedChat(target), wasDirty = dirtyChats.contains(target)
         let previousVersions = projectionStates.mapValues(\.version)
         var retained: [LibraryChat.ID: Projection] = [:]
@@ -1065,6 +1112,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 searchableText: old.searchableText.filter { stable.contains($0.key) })
         }
         commit(admission, discoveries: retained)
+        // Reinstalling a checked saved row is a read, not a new metadata edit.
+        // Resolve it before persistence can create a speculative guard.
+        if !wasDirty, let persistedRead, let current = cachedChat(target),
+           sameCachedChat(current, persistedRead, includingCertificate: false) {
+            summaries[target] = persistedRead.summary; heads[target] = persistedRead.headFingerprint
+            dirtyChats.remove(target); dirtyVersions[target] = nil
+        }
         var needsProjection = false
         for (id, state) in projectionStates where (id != target || projectionOwner == .background) && !projectionIsCurrent(id)
             && state.version != previousVersions[id] && records[id]?.directoryAbsent == false && !restorationHints.contains(id) {
@@ -1145,6 +1199,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             unavailableMessageIDs: unavailable, removedMessageIDs: [], retiredStoredIDs: []), target: id)
     }
 
+    private func quarantineFailure(_ error: any Error, source: SessionIdentity) {
+        guard let failure = error as? ConversationHistoryPage.Failure,
+              failure.identity.profile == source.profile, failure.identity.root == source.root,
+              failure.identity.stored == source.stored else { return }
+        quarantine(failure.unavailableMessageIDs, source: source)
+    }
+
     private func pageAmbiguity(_ page: ConversationHistoryPage, source: SessionIdentity) -> Set<Data> {
         let visible = Set(page.messages.map { Data($0.id.utf8) })
         let hidden = (page.sourceIDs ?? visible).subtracting(visible)
@@ -1166,17 +1227,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         removedMessageIDs: Set<Data>,
         retiredStoredIDs: Set<Data>,
         directoryAbsent: Bool = false,
+        persistedRead: CachedArtifactChat? = nil,
         admittedBy: @MainActor () -> Bool, onCommit: @MainActor () -> Void = {}) async -> Bool {
-        guard admittedBy() else { return false }
+        guard rosterPermits(source.profile), admittedBy() else { return false }
         let target = key(for: source)
         commitCanonical(prepareAdmission(source: source, botName: botName, title: title, messages: messages,
             updatedAt: updatedAt, reconciliation: reconciliation, incomingCoverage: incomingCoverage,
             unavailableMessageIDs: unavailableMessageIDs, removedMessageIDs: removedMessageIDs,
-            retiredStoredIDs: retiredStoredIDs, directoryAbsent: directoryAbsent), target: target, projectionOwner: .caller)
+            retiredStoredIDs: retiredStoredIDs, directoryAbsent: directoryAbsent), target: target,
+            projectionOwner: .caller, persistedRead: persistedRead)
         let admitted = cachedChat(target)
         // Passive discovery follows the workspace after admission; completion
         // metadata still belongs to the original read and canonical rows.
-        _ = await enrichCurrent(target, while: { !self.isRetired })
+        _ = await enrichCurrent(target, while: { !self.isRetired && admittedBy() })
         guard admittedBy(), let admitted, let current = cachedChat(target), sameCachedChat(admitted, current) else { return false }
         let beforeCompletion = cachedChat(target), wasDirty = dirtyChats.contains(target)
         onCommit()
@@ -1188,13 +1251,16 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func scan(bots: [BotProfile], owner: UUID, force: Bool) async {
+        let roster = rosterRevision
+        func currentScan() -> Bool { current(owner) && rosterRevision == roster }
+        func acceptsScan() -> Bool { accepts(owner) && rosterRevision == roster }
         defer {
             schedulePersistence()
-            if accepts(owner) { thumbnailAvailabilityRevision = UUID() }
+            if acceptsScan() { thumbnailAvailabilityRevision = UUID() }
         }
         let acceptedAtStart = acceptanceFence.stamp
         func canScan(_ id: LibraryChat.ID) -> Bool {
-            acceptanceFence.permits(id, since: acceptedAtStart)
+            rosterRevision == roster && rosterPermits(id.profile) && acceptanceFence.permits(id, since: acceptedAtStart)
         }
         var failures = 0, incomplete = false, readMessages = 0, readBytes = 0
         let maximumReadMessages = 25_000, maximumReadBytes = 32 * 1024 * 1024
@@ -1211,11 +1277,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
         }
         for bot in bots {
-            guard accepts(owner) else { return }
+            guard acceptsScan() else { return }
             guard let profile = try? ExactID(bot.id) else { failures += 1; continue }
             do {
                 let directory = try await service.conversations(profile: profile)
-                guard accepts(owner) else { return }
+                guard acceptsScan() else { return }
                 incomplete = incomplete || !directory.isComplete
                 if directory.isComplete { completeDirectories.insert(profile) }
                 var observedRetained = Set<LibraryChat.ID>()
@@ -1267,19 +1333,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 }
                 reconcileOriginalConsumers()
             } catch is CancellationError {
-                if current(owner) { scanNotice = .failure("Loading stopped before all history was indexed. Refresh to load the remaining results.") }
+                if currentScan() { scanNotice = .failure("Loading stopped before all history was indexed. Refresh to load the remaining results.") }
                 return
             }
-            catch { guard accepts(owner) else { return }; failures += 1 }
+            catch { guard acceptsScan() else { return }; failures += 1 }
         }
-        guard accepts(owner) else { return }
+        guard acceptsScan() else { return }
         let profiles = Set(bots.compactMap { try? ExactID($0.id) })
-        let removed = Set(records.keys.filter { !profiles.contains($0.profile) && canScan($0) && unsettledTail[$0] == nil })
+        let removed = Set(records.keys.filter { !profiles.contains($0.profile) && canScan($0) })
         withdraw(removed)
         if summaries.count > limits.chatCount { incomplete = true }
         summaries = Array(newestSummaries(summaries).prefix(limits.chatCount))
         chatScan: for (bot, summary) in summaries {
-            guard accepts(owner) else { return }
+            guard acceptsScan() else { return }
             if readMessages >= maximumReadMessages || readBytes >= maximumReadBytes { incomplete = true; break }
             let chatKey = key(for: summary.identity)
             guard canScan(chatKey) else { incomplete = true; continue }
@@ -1293,20 +1359,23 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             if !force, retainedComplete, summary.messageCount == nil || summary.updatedAt == nil || summary.hasPreview != true {
                 do {
                     let page = try await service.conversationHistory(summary.identity, offset: 0)
-                    guard accepts(owner) else { return }
+                    guard acceptsScan() else { return }
                     guard canScan(chatKey) else { incomplete = true; continue chatScan }
                     observe(summary.identity, content: true)
                     quarantine(pageAmbiguity(page, source: summary.identity), source: summary.identity)
                     let fingerprint = await Self.headFingerprint(page)
-                    guard accepts(owner), canScan(chatKey) else { incomplete = true; continue chatScan }
+                    guard acceptsScan(), canScan(chatKey) else { incomplete = true; continue chatScan }
                     if page.sourceIDs != nil, heads[chatKey] == fingerprint, page.isComplete,
                        page.unavailableMessageIDs.isEmpty, page.nextOffset != nil {
                         freshnessUnverified = true; continue
                     }
                     probed = page
                 } catch {
-                    guard accepts(owner) else { return }
-                    if canScan(chatKey) { invalidateHistoryCertificate(chatKey) }
+                    guard acceptsScan() else { return }
+                    if canScan(chatKey) {
+                        quarantineFailure(error, source: summary.identity)
+                        invalidateHistoryCertificate(chatKey)
+                    }
                     failures += 1; continue
                 }
             }
@@ -1324,7 +1393,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     unavailableMessageIDs: unavailableMessageIDs,
                     removedMessageIDs: [],
                     retiredStoredIDs: [],
-                    admittedBy: { self.current(owner) && canScan(chatKey) && (allowingCancellation || !Task.isCancelled) },
+                    admittedBy: { currentScan() && canScan(chatKey) && (allowingCancellation || !Task.isCancelled) },
                     onCommit: {
                         self.heads[chatKey] = pageHead
                         self.summaries[chatKey] = final && complete && self.coverage[chatKey] == .complete ? summary : nil
@@ -1337,7 +1406,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     let page: ConversationHistoryPage
                     if offset == 0, let first = probed { page = first; probed = nil }
                     else { page = try await service.conversationHistory(summary.identity, offset: offset) }
-                    guard current(owner) else { return }; try Task.checkCancellation()
+                    guard currentScan() else { return }; try Task.checkCancellation()
                     guard canScan(chatKey) else { incomplete = true; continue chatScan }
                     observe(summary.identity, content: true)
                     pages += 1; receivedPage = true
@@ -1388,14 +1457,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         offset = next
                     } else { break }
                 }
-                guard current(owner) else { return }; try Task.checkCancellation()
+                guard currentScan() else { return }; try Task.checkCancellation()
                 guard await publish(true) else {
                     if Task.isCancelled { _ = await publish(false, allowingCancellation: true); return }
                     incomplete = true; continue chatScan
                 }
                 incomplete = incomplete || !complete
             } catch is CancellationError {
-                if current(owner) {
+                if currentScan() {
                     if receivedPage { _ = await publish(false, allowingCancellation: true) }
                     if canScan(chatKey) { invalidateHistoryCertificate(chatKey) }
                     scanNotice = .failure("Loading stopped before all history was indexed. Refresh to load the remaining results.")
@@ -1403,13 +1472,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 return
             }
             catch {
-                guard current(owner) else { return }
+                guard currentScan() else { return }
+                if canScan(chatKey) { quarantineFailure(error, source: summary.identity) }
                 if receivedPage { _ = await publish(false, allowingCancellation: Task.isCancelled) }
                 if canScan(chatKey) { invalidateHistoryCertificate(chatKey) }
                 failures += 1
             }
         }
-        guard accepts(owner) else { return }
+        guard acceptsScan() else { return }
         await persist()
         if failures > 0 { scanNotice = .failure("Some chats couldn’t be loaded. Showing available results; refresh to try again.") }
         else if incomplete { scanNotice = .incomplete }
@@ -1425,7 +1495,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func accepts(_ owner: UUID) -> Bool { current(owner) && !Task.isCancelled }
 
     func isCurrent(_ chat: LibraryChat) -> Bool {
-        !isRetired && !restorationHints.contains(chat.id) && !unreconciledSeedIDs.contains(chat.id) && records[chat.id]?.directoryAbsent == false && records[chat.id]?.identity == chat.identity
+        !isRetired && rosterPermits(chat.identity.profile) && !restorationHints.contains(chat.id) && !unreconciledSeedIDs.contains(chat.id) && records[chat.id]?.directoryAbsent == false && records[chat.id]?.identity == chat.identity
     }
     func isCurrent(_ item: LibraryArtifact) -> Bool {
         guard isCurrent(item.chat), let chat = records[item.chat.id] else { return false }

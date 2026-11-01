@@ -3,6 +3,50 @@ import Testing
 @testable import BottoCore
 
 struct HermesResultProjectionTests {
+    @MainActor @Test(arguments: [false, true], ["submit", "steer"])
+    func directMutationPublicationsCarryTransientIdentity(authority: Bool, kind: String) async throws {
+        let host = try HermesTestHost(authority: authority), service = host.service(requestTimeout: .seconds(5))
+        defer { service.disconnect() }
+        host.snapshot["running"] = .bool(kind == "steer")
+        let method = kind == "steer" ? "session.steer" : "prompt.submit"
+        host.methodOverride = { frame, socket in
+            if frame["method"].text == method { return nil }
+            return host.defaultReply(frame, socket: socket)
+        }
+        _ = try await service.connect(configuration: host.configuration)
+        let opened = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+        var latest = opened
+        service.onEvent = { if case .conversation(let value) = $0 { latest = value } }
+        let operation = UUID(), text = "@file:/pending-report.txt"
+        let sending = Task {
+            try await service.send(text: text, attachments: [], delivery: kind == "steer" ? .steer : .queue,
+                access: opened.access, operationID: operation)
+        }
+        defer { sending.cancel() }
+        try await eventually { host.sockets.first?.sent.contains { $0["method"].text == method } == true }
+        let socket = try #require(host.sockets.first)
+        let request = try #require(socket.sent.first { $0["method"].text == method })
+        let id = (kind == "steer" ? "steer:" : "submission:") + operation.uuidString
+        if kind == "steer" {
+            #expect(!latest.snapshot.messages.contains { $0.id == id }, "Steering publishes only after its receipt")
+            socket.push(.object(["jsonrpc": .string("2.0"), "id": request["id"], "result": .object([
+                "status": .string("queued"), "execution_generation": .number(7)])]))
+            _ = try await sending.value
+        }
+        let local = try #require(latest.snapshot.messages.first { $0.id == id })
+        #expect(local.text == text && local.transientID != nil)
+        #expect(!local.hasStableIdentity(storedID: opened.identity.stored.text))
+        if kind == "submit" {
+            socket.reject(request, code: -32602)
+            await #expect(throws: HermesServiceError.self) { _ = try await sending.value }
+            #expect(!latest.snapshot.messages.contains { $0.id == id })
+        }
+        let row: HermesJSON = .object(["row_id": .number(7), "role": .string("user"), "text": .string(text)])
+        host.snapshot["running"] = .bool(false); host.snapshot["messages"] = .array([row]); host.storedRows = [row]
+        let refreshed = try await service.openChat(.canonical(profile: ExactID(host.bot.id), expectedRoot: nil))
+        let durable = try #require(refreshed.snapshot.messages.first { $0.id == opened.identity.stored.text + ":row:7" })
+        #expect(durable.transientID == nil && durable.hasStableIdentity(storedID: opened.identity.stored.text))
+    }
     @Test(arguments: ["process_complete", "hidden", "model_only", "ordinary"])
     func timestampOnlyInflightAppliesHostProvenanceToItsPersistedRow(_ kind: String) throws {
         let history: [HermesJSON] = [

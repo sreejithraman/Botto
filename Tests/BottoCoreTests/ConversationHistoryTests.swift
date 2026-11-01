@@ -78,6 +78,37 @@ func libraryHistoryPreservesDuplicateIdentityEvidence(hidden: Bool) async throws
     #expect(page.messages.contains { $0.text == "Retained" })
 }
 
+@MainActor @Test(arguments: ["missing", "negative", "pagination", "oversized"])
+func malformedHistoryStillReportsItsKnownDuplicateEvidence(shape: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            let invalid: HermesJSON = shape == "missing"
+                ? .object(["role": .string("assistant"), "content": .string("Missing identity")])
+                : historyRow(-1, text: "Invalid identity")
+            var rows = [historyRow(7, text: "MEDIA:/disputed.html"), historyRow(7, text: "Conflicting occurrence")]
+            rows += shape == "oversized" ? (100..<199).map { historyRow($0, text: "Surplus") } : [invalid]
+            var page = historyPage(identity: identity, offset: 0, rows: rows)
+            if shape == "pagination" { page["pagination"]["limit"] = .number(99) }
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    var observed: ConversationHistoryPage.Failure?
+    do {
+        _ = try await service.conversationHistory(identity, offset: 0)
+        Issue.record("Malformed history must not be returned as an admitted page")
+    } catch { observed = error as? ConversationHistoryPage.Failure }
+    let failure = try #require(observed)
+    #expect(failure.identity == identity)
+    #expect(failure.unavailableMessageIDs == [Data((identity.stored.text + ":row:7").utf8)])
+    #expect(failure.errorDescription == HermesServiceError.incompatible.errorDescription)
+}
+
 @MainActor @Test(arguments: [true, false], [true, false])
 func activeAttachmentRetainsRawDuplicateEvidence(authority: Bool, hidden: Bool) async throws {
     let host = try HermesTestHost(authority: authority), service = host.service()

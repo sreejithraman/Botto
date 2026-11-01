@@ -530,3 +530,40 @@ unsigned generic app/test build passes in 34.442 seconds; all 69 before/after
 hashes match. Core source remains the same405-test/MainActor checked source.
 This follow-up changes the roster admission branch and its fixture; prior hosted
 68085 results need an impact assessment, not an unrelated gate reset.
+
+## R16 execution and R17 repairs — 1 November 2026
+
+Hosted targeted native run `41315488702` used all 69 feature blobs from
+`68085fc`, with four disjoint main diagnostics files and root-owned routing.
+The actual result matched all 136 selected method IDs: 135 passed and one
+failed, with no skips. AppStoreRichReply, ArtifactCache, NativeTranscriptIdentity
+and ReplyFileBodyLayout passed completely. WorkspaceLibrary passed 84 of 85;
+`aMountedLibraryRetriesStartupStorageAfterTheLockClears` failed because its
+unaffected saved artifact remained hidden after recovery. The original assertion
+and deadline remain. R17 clears the temporary recovery hint when admitting the
+checked row and resolves unchanged saved reads before scheduling new guards.
+
+R17 also repairs actual submit/steer transient provenance, working-bot roster
+withdrawal, quick reentry, stale roster scans and forced joins, same-mount
+restoration of withdrawn or evicted producers, and duplicate evidence carried
+through malformed history failures. Gated native fixtures cover these paths and
+independent cold readback. They compile but remain unexecuted locally.
+All original 69 paths remain; the actual Core mutation producer adds one path.
+The final unsigned generic arm64 Debug app and both test bundles compile in
+35.238 seconds, with all 70 before/after file hashes equal. Core passes 407
+methods in ten suites in 13.184 seconds; MainActor compatibility builds in
+3.12 seconds. Raw receipts and original R16 review packets remain preserved.
+
+Public UI run `41315488498` executed two methods against the same feature pin.
+The inbox still showed ongoing output through Word 80 when its unchanged
+30-second completion assertion failed. Actual video and AX agree; no product
+hotspot or scheduling cause is established. A portable same-workload Mac
+measurement does not establish iOS frame or UI causality. Baseline run
+`41317355662` timed out at app launch before Send and is inconclusive.
+The Files case reached the native local root and enabled Save, then failed its
+filename-editor prerequisite before any Save tap. No output file was produced;
+this is not evidence of corrupt exported bytes. Root owns startup diagnosis,
+the separate Files fixture repair, affected hosted execution, full-main
+acceptance, merge and final beta delivery. The prior ten passing UI workflows
+retain their original source binding; these results do not prove final release
+acceptance.
