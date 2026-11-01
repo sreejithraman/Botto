@@ -15,6 +15,14 @@ incomplete information when it affects how the user interprets the content.
 This accepts qualified stale information in exchange for continuity during
 revalidation; fresh results update the existing presentation in place.
 
+Artifacts and Search read a maintained list for the saved connection, restored
+from its local index and updated by accepted chat history. Entering a tab does
+not invalidate that list. Check freshness on entry, connection recovery, and
+observed server changes. A 60-second window limits those checks; explicit refresh
+bypasses it. Expiry alone does not schedule another read. Keep stable item
+identities and known ordering metadata when a response
+omits a field, so checking freshness does not reshuffle unchanged content.
+
 Availability follows the same rule: unknown or pending connection and bot
 activity stay neutral until evidence establishes unavailability. Sleeping and
 offline cues require a failed or lost connection or explicitly unavailable

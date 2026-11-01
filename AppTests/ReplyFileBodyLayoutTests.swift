@@ -11,6 +11,11 @@ import BottoCore
         defer { fixture.close() }
         try await wait("actual tall HTML body") { fixture.state.size.height > 500 && fixture.webViews.count == 1 }
         let initial = fixture.state.size.height
+        let source = fixture.service.summaries[0].identity
+        let access = try #require(fixture.service.completedOpens.last?.access)
+        fixture.service.snapshots[source.root]?.isWorking = true
+        fixture.service.onEvent?(.conversation(.init(identity: source,
+            snapshot: try #require(fixture.service.snapshots[source.root]), access: access)))
         fixture.state.settled = false
         try await wait("incomplete directive withdraws native document") { fixture.webViews.isEmpty }
         try await wait("pending body keeps its measured space") { abs(fixture.state.size.height - initial) < 2 }
@@ -19,13 +24,19 @@ import BottoCore
         let gate = WorkspaceGate(); fixture.service.downloadGate = gate
         fixture.service.downloadData = Data("<!doctype html><html><body><p>Short replacement.</p></body></html>".utf8)
         fixture.state.settled = true
-        try await wait("replacement download is held") { fixture.service.downloads == 2 }
+        fixture.service.snapshots[source.root]?.isWorking = false
+        fixture.service.onEvent?(.conversation(.init(identity: source,
+            snapshot: try #require(fixture.service.snapshots[source.root]), access: access)))
+        defer { gate.release() }
+        try await wait("settled work requests fresh host bytes") { fixture.service.downloads == 2 }
         #expect(fixture.webViews.isEmpty)
         #expect(abs(fixture.state.size.height - initial) < 2)
         gate.release()
+        fixture.service.downloadGate = nil
         try await wait("shorter resolved HTML takes natural height") {
             fixture.webViews.count == 1 && fixture.state.size.height > 70 && fixture.state.size.height < initial - 150
         }
+        #expect(fixture.service.downloads == 2, "Settled work must refresh once without a separate reader Reload")
         let smaller = fixture.state.size.height
         fixture.state.settled = false
         try await wait("replacement document is withdrawn") { fixture.webViews.isEmpty }

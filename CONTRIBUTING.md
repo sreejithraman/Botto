@@ -46,7 +46,7 @@ in public repositories. It also supports manual dispatch. See the
 For UI or file-export changes, also run the full local suite:
 
 ```sh
-./scripts/check.sh
+BOTTO_TEST_DESTINATION='platform=iOS Simulator,id=YOUR_OWNED_UUID' ./scripts/check.sh
 ```
 
 It runs UI tests serially and independently checks exported file bytes. It does

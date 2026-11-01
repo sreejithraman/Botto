@@ -114,7 +114,10 @@ import UniformTypeIdentifiers
         service.onEvent?(.disconnected("Offline"))
         #expect(store.isAuthorizedArtifactPresentation(destination))
         #expect(!store.isCurrentArtifactDestination(destination))
-        #expect(store.artifactDestination(for: attachment, botID: "canvas") == nil)
+        let offline = try #require(store.artifactDestination(for: attachment, botID: "canvas"))
+        #expect(store.isAuthorizedArtifactPresentation(offline))
+        #expect(!store.isCurrentArtifactDestination(offline))
+        store.finishArtifact(offline)
         await #expect(throws: (any Error).self) { _ = try await store.downloadArtifact(destination) }
         #expect(service.downloads.count == 1)
         if recover { service.onEvent?(.connected(.init(version: "test"))) }

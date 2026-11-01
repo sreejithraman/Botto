@@ -3,11 +3,77 @@ import Testing
 import BottoCore
 import SwiftUI
 import UIKit
+import WebKit
+import Vision
 @testable import Botto
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
+    @Test func transientAttachmentsReadCurrentBytesAndOnlyIdentifiedRowsRetainCaptures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RichReplyTestService(), cache = ArtifactCache(root: root)
+        let attachment = ChatAttachment(name: "report.html", path: "/report.html", mimeType: "text/html")
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://transient-files.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}), artifactCache: cache)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        service.chat.messages = [.init(id: "inflight-user", role: .user, text: "@file:/report.html", attachments: [attachment], transientID: UUID())]
+        try #require(await store.connect(configuration)); await store.open(service.bot)
+        let source = try service.authority.identity(service.chat)
+        let first = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        let firstBytes = try await store.downloadArtifact(first)
+        store.finishArtifact(first)
+        #expect(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: service.chat.messages) == nil)
+        service.chat.messages[0].transientID = UUID()
+        service.downloadData = Data("<p>Later turn at the same path</p>".utf8)
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        #expect(!store.isAuthorizedArtifactPresentation(first))
+        let second = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        #expect(try await store.downloadArtifact(second).data != firstBytes.data)
+        store.finishArtifact(second)
+        #expect(service.downloads.count == 2)
+        service.chat.messages[0].id = service.chat.storedID + ":row:7"
+        service.chat.messages[0].transientID = nil
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        let durable = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        let captured = try await store.downloadArtifact(durable)
+        store.finishArtifact(durable)
+        let key = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: service.chat.messages))
+        #expect(service.downloads.count == 3)
+        store.library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root)
+        let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
+            installationID: nil, username: Data(), provider: nil)
+        #expect(try await coldCache.session(scope: scope).original(for: key)?.artifact.data == captured.data)
+        #expect(service.downloads.count == 3)
+        await coldCache.close()
+    }
+    @Test func previewScopeCreatedDuringWorkRefreshesThePreviousCaptureWhenWorkSettles() async throws {
+        let service = RichReplyTestService()
+        service.chat.messages[0].text = "::preview{file='report.html'}"
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://already-working-preview.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration)); await store.open(service.bot)
+        let block = try #require(ReplyContent(message: service.chat.messages[0]).blocks.first)
+        let attachment = try #require(block.filePreview?.attachment)
+        let destination = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        _ = try await store.downloadArtifact(destination)
+        store.finishArtifact(destination)
+        service.chat.isWorking = true
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        let context = store.richReplyContext(for: service.bot.id, messageID: "m0")
+        #expect(!context.permits(block))
+        service.downloadData = Data("<button>Finished later work</button>".utf8)
+        service.chat.isWorking = false
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        let loaded = try await context.loadFile(block)
+        defer { loaded.finishInstallation() }
+        #expect(loaded.resolved.block.source == "<button>Finished later work</button>")
+        #expect(service.downloads.count == 2)
+    }
+
     @Test(arguments: ["working", "canonical"])
-    func mountedFilePreviewReloadsWhenRevocationAndRestorationArriveBeforeViewUpdate(event: String) async throws {
+    func mountedFilePreviewReauthorizationUsesCapturedBytesWithoutRevivingOldGrant(event: String) async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file='report.html'}"
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mounted-preview.invalid")!)
@@ -15,29 +81,67 @@ import UIKit
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         #expect(await store.connect(configuration)); await store.open(service.bot)
         let context = store.richReplyContext(for: service.bot.id, messageID: "m0")
+        let block = try #require(ReplyContent(message: service.chat.messages[0]).blocks.first)
+        let first = try await context.loadFile(block)
+        first.finishInstallation()
+        let originalFile = first.resolved
         let view = ScrollView {
             AssistantReplyBody(message: service.chat.messages[0], isStreaming: false)
                 .environment(\.richReplyContext, context)
+                .environment(\.scenePhase, .active)
         }
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-        window.rootViewController = UIHostingController(rootView: view)
-        window.makeKeyAndVisible()
-        defer { window.isHidden = true; window.rootViewController = nil }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while service.downloads.count < 1, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(service.downloads.count == 1)
-        // Let the successful bytes publish, then coalesce both canonical events.
-        try await Task.sleep(for: .milliseconds(50))
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let host = UIHostingController(rootView: view), window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
+        let mounted = try await MountedReplyFileDocument.waitForText("Native file preview", in: host.view)
+        #expect(service.downloads.count == 1)
+        // Coalesce both publications without giving SwiftUI an intermediate body.
         let original = service.chat.messages[0].text
-        if event == "working" { service.chat.isWorking = true }
+        if event == "working" {
+            service.chat.isWorking = true
+            service.downloadData = Data("<button>Updated after work</button>".utf8)
+        }
         else { service.chat.messages[0].text = "Replaced" }
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
         service.chat.isWorking = false; service.chat.messages[0].text = original
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
-        deadline = ContinuousClock.now + .seconds(5)
-        while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(service.downloads.count == 2, "A revoked document must receive a fresh authorized load")
+        #expect(!originalFile.context.permits(originalFile.block), "Restoring source must not revive the original file grant")
+        let recovered = try await MountedReplyFileDocument.waitForText(event == "working" ? "Updated after work" : "Native file preview", in: host.view, excluding: mounted)
+        #expect(recovered !== mounted && mounted.superview == nil,
+                "The mounted preview must replace its revoked document, not just reauthorize a direct loader")
+        let replacement = try await context.loadFile(block)
+        defer { replacement.finishInstallation() }
+        #expect(replacement.resolved.context.permits(replacement.resolved.block))
+        #expect(replacement.resolved.block.source == (event == "working" ? "<button>Updated after work</button>" : originalFile.block.source))
+        #expect(service.downloads.count == (event == "working" ? 2 : 1), "Settled work refreshes once; authority recovery and ordinary reopen reuse the capture")
     }
+    @Test func failedSettledWorkRefreshKeepsTheCapturedFileUsableWithoutRevivingInlineAuthority() async throws {
+        let service = RichReplyTestService()
+        service.chat.messages[0].text = "::preview{file='report.html'}"
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://work-refresh-failure.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration)); await store.open(service.bot)
+        let block = try #require(ReplyContent(message: service.chat.messages[0]).blocks.first)
+        let context = store.richReplyContext(for: service.bot.id, messageID: "m0")
+        let first = try await context.loadFile(block); first.finishInstallation()
+        service.chat.isWorking = true
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        service.chat.isWorking = false
+        service.onEvent?(.conversation(try service.authority.opened(service.chat)))
+        service.downloadError = HermesServiceError.disconnected
+        await #expect(throws: (any Error).self) { _ = try await context.loadFile(block) }
+        #expect(!first.resolved.context.permits(first.resolved.block))
+        let attachment = try #require(block.filePreview?.attachment)
+        let destination = try #require(store.artifactDestination(for: attachment, botID: service.bot.id, producingMessage: service.chat.messages[0]))
+        defer { store.finishArtifact(destination) }
+        #expect(try await store.downloadArtifact(destination).data == Data("<button>Native file preview</button>".utf8))
+    }
+
     @Test func previewDirectiveLoadsThroughItsOwningChatAndBindsDownloadedHTML() async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file=\"report.html\"}"
@@ -176,7 +280,7 @@ import UIKit
     }
 
     @Test(arguments: ["unchanged", "revoked", "message"])
-    func filePreviewReloadRetainsOnlyTheSameAuthorizedSuccess(event: String) async throws {
+    func filePreviewReloadReusesCapturesOnlyForTheSameOccurrence(event: String) async throws {
         let service = RichReplyTestService()
         let directive = "::preview{file='report.html'}"
         service.chat.messages[0].text = directive
@@ -203,18 +307,25 @@ import UIKit
         let reloadContext = event == "message"
             ? store.richReplyContext(for: service.bot.id, messageID: "m1") : context
         #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        let gate = RichReplyFileGate()
-        service.downloadGate = gate
         service.downloadError = HermesServiceError.disconnected
-        let reload = Task { await model.load(block, context: reloadContext) }
-        await gate.entered()
-        #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        gate.release()
-        await reload.value
-        #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        if event == "unchanged" {
-            #expect(model.resolved?.context.requestIdentity == original.context.requestIdentity,
-                    "A failed background reload keeps the existing authorized document")
+        if event == "message" {
+            let gate = RichReplyFileGate()
+            service.downloadGate = gate
+            let reload = Task { await model.load(block, context: reloadContext) }
+            defer { gate.release(); reload.cancel() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            try #require(service.downloads.count == 2, "A different occurrence must request its own capture")
+            #expect(model.resolved(for: block, context: reloadContext) == nil)
+            gate.release(); await reload.value
+            #expect(model.resolved(for: block, context: reloadContext) == nil)
+        } else {
+            await model.load(block, context: reloadContext)
+            let captured = try #require(model.resolved(for: block, context: reloadContext))
+            #expect(captured.block.source == original.block.source)
+            #expect(captured.context.permits(captured.block))
+            #expect(service.downloads.count == 1)
+            if event == "revoked" { #expect(!original.context.permits(original.block)) }
         }
         model.cancel()
         #expect(model.resolved == nil)
@@ -354,6 +465,7 @@ import UIKit
     var downloads: [(ChatAttachment, Conversation)] = []
     var downloadGate: RichReplyFileGate?
     var downloadError: (any Error)?
+    var downloadData = Data("<button>Native file preview</button>".utf8)
     var downloadWasCancelled = false
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         let conversation = try authority.resolve(access)
@@ -361,7 +473,7 @@ import UIKit
         if let downloadGate { await downloadGate.wait() }
         downloadWasCancelled = Task.isCancelled
         if let downloadError { throw downloadError }
-        return .init(data: Data("<button>Native file preview</button>".utf8), filename: "report.html", mimeType: "text/html")
+        return .init(data: downloadData, filename: "report.html", mimeType: "text/html")
     }
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { .init(version: "test") }
     func disconnect() {}
@@ -381,4 +493,63 @@ import UIKit
     func wait() async { await withCheckedContinuation { continuation = $0 } }
     func entered() async { while continuation == nil { await Task.yield() } }
     func release() { continuation?.resume(); continuation = nil }
+}
+
+/// Observes the document actually mounted by the native preview, independently
+/// of the direct-loader grants and the service's captured-byte count.
+@MainActor enum MountedReplyFileDocument {
+    static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil) async throws -> WKWebView {
+        // Match the renderer's fifteen-second cold startup plus document budget.
+        let deadline = ContinuousClock.now + .seconds(21)
+        var observed: (words: String?, image: UIImage?)?
+        while ContinuousClock.now < deadline {
+            for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
+                observed = await renderedText(in: web)
+                if let words = observed?.words, words.localizedStandardContains(expected) { return web }
+            }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        let diagnostic = FileManager.default.temporaryDirectory.appendingPathComponent("botto-mounted-\(UUID().uuidString).png")
+        if let image = observed?.image?.pngData() { try? image.write(to: diagnostic) }
+        print("BOTTO_MOUNTED_DOCUMENT stage=\(previous == nil ? "initial" : "replacement") views=\(webViews(in: root).count) root=\(root.bounds) words=\(observed?.words ?? "<none>") image=\(diagnostic.path)")
+        Issue.record("The actual mounted document did not render: \(expected)")
+        throw DocumentFailure.notRendered
+    }
+
+    private static func webViews(in view: UIView) -> [WKWebView] {
+        (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
+    }
+
+    private static func renderedText(in web: WKWebView) async -> (words: String?, image: UIImage?) {
+        let image: UIImage? = await withCheckedContinuation { continuation in
+            let pending = PendingSnapshot(continuation)
+            let timeout = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                pending.finish(nil)
+            }
+            web.takeSnapshot(with: nil) { image, _ in
+                timeout.cancel(); pending.finish(image)
+            }
+        }
+        guard let pixels = image?.cgImage else { return (nil, image) }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        do {
+            try VNImageRequestHandler(cgImage: pixels).perform([request])
+            let words = request.results?.compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return (words, image)
+        } catch { return (nil, image) }
+    }
+
+    private enum DocumentFailure: Error { case notRendered }
+    private final class PendingSnapshot {
+        private var continuation: CheckedContinuation<UIImage?, Never>?
+        init(_ continuation: CheckedContinuation<UIImage?, Never>) { self.continuation = continuation }
+        func finish(_ image: UIImage?) {
+            continuation?.resume(returning: image); continuation = nil
+        }
+    }
 }

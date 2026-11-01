@@ -43,9 +43,9 @@ struct NativeTranscriptMessagePlan {
         flushTools()
         return rows
     }
-    init(_ messages: [ChatMessage], queuedMessages: [QueuedMessage] = []) {
+    init(_ messages: [ChatMessage], queuedMessages: [QueuedMessage] = [], unavailableMessageIDs: Set<Data> = []) {
         let pending = Set(queuedMessages.compactMap { $0.submissionID.map { Data(("submission:" + $0).utf8) } })
-        let repeated = repeatedIdentities(messages.map { Data($0.id.utf8) })
+        let repeated = repeatedIdentities(messages.map { Data($0.id.utf8) }).union(unavailableMessageIDs)
         entries = messages.enumerated().compactMap { index, message in
             guard message.isVisible, !pending.contains(Data(message.id.utf8)) else { return nil }
             let exact = Data(message.id.utf8), ambiguous = repeated.contains(exact)

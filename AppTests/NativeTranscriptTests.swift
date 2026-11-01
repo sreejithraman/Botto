@@ -6,6 +6,152 @@ import WebKit
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptTests {
+    @Test func coveringAPendingSearchRevealRetiresItBeforeDelayedGeometryArrives() async throws {
+        let fixture = try await searchFocusFixture(initiallyActive: true)
+        defer { fixture.close() }
+        try await wait("pending target has settled native geometry") { fixture.targetCellHeight > 2200 }
+        #expect(fixture.results.isEmpty)
+
+        fixture.apply(active: false)
+        #expect(fixture.cancelledCount == 1)
+        #expect(fixture.revealedCount == 0)
+        fixture.state.showsMarker = true
+        try await wait("delayed native glyph marker arrives while covered") { fixture.marker != nil }
+        let coveredOffset = fixture.controller.collection.contentOffset
+
+        // Keep supplying the same captured value: the scene's removal may not
+        // have propagated through SwiftUI before the transcript is uncovered.
+        fixture.apply(active: true)
+        try await wait("the uncovered native scope is active") { fixture.targetScope?.canPresent == true }
+        fixture.controller.collection.layoutIfNeeded()
+        await Task.yield()
+        #expect(fixture.cancelledCount == 1)
+        #expect(fixture.revealedCount == 0)
+        #expect(abs(fixture.controller.collection.contentOffset.y - coveredOffset.y) < 1,
+            "A covered Search intent must not replay its delayed scroll")
+    }
+
+    @Test func initiallyInactiveSearchFocusRevealsOnItsFirstExposure() async throws {
+        let fixture = try await searchFocusFixture(initiallyActive: false)
+        defer { fixture.close() }
+        fixture.state.showsMarker = true
+        try await wait("inactive mount receives its measured glyph range") { fixture.marker != nil }
+        #expect(fixture.results.isEmpty)
+
+        fixture.apply(active: true)
+        try await wait("first exposure reveals the captured Search match") { fixture.revealedCount == 1 }
+        #expect(fixture.cancelledCount == 0)
+        let marker = try #require(fixture.marker)
+        let visible = marker.convert(marker.bounds, to: fixture.window)
+            .intersection(fixture.controller.collection.convert(fixture.controller.collection.bounds, to: fixture.window))
+        #expect(!visible.isNull && visible.width > 0 && visible.height > 0)
+        #expect(fixture.controller.collection.contentOffset.y > 1000)
+    }
+
+    @MainActor @Observable final class SearchMarkerState {
+        var showsMarker = false
+    }
+    private struct DelayedSearchRow: View {
+        let state: SearchMarkerState
+        let text: String
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Color.clear.frame(height: 1200)
+                if state.showsMarker { SearchMatchText(text) }
+                else { Text(text) }
+                Color.clear.frame(height: 1200)
+            }
+            .font(.body)
+        }
+    }
+    private func searchFocusFixture(initiallyActive: Bool) async throws -> SearchFocusFixture {
+        let service = try WorkspaceTestService(), session = service.summaries[0].identity
+        let message = ChatMessage(id: "main-tip:row:9", role: .assistant, text: "Delayed native search needle")
+        service.snapshots[session.root] = .init(id: session.root.text, storedID: session.stored.text,
+            profileID: session.profile.text, messages: [message] + (0..<20).map {
+                .init(id: "tail-\($0)", role: .assistant, text: "Later message \($0)")
+            })
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-search-coverage.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence,
+                             artifactCache: ArtifactCache(root: nil))
+        var transferred = false
+        defer {
+            if !transferred { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        }
+        try #require(await store.connect(configuration))
+        await store.open(try #require(store.bots.first))
+        try await wait("accepted current transcript is indexed") {
+            store.library.chats.contains { $0.identity == session && $0.messages.contains { $0.id == message.id } }
+        }
+        let chat = try #require(store.library.chats.first { $0.identity == session })
+        guard case .opened(let focus) = await store.openSearchMessage(.init(chat: chat, message: message, query: "search needle")) else {
+            throw HermesServiceError.staleConversation
+        }
+        try #require(focus.matches(workspace: store.chats))
+        let snapshot = try #require(store.chats.screen(profile: session.profile)?.snapshot)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first {
+            $0.activationState == .foregroundActive
+        })
+        let fixture = SearchFocusFixture(store: store, configuration: configuration, focus: focus,
+                                         snapshot: snapshot, scene: scene)
+        fixture.apply(active: initiallyActive)
+        transferred = true
+        return fixture
+    }
+    @MainActor private final class SearchFocusFixture {
+        let store: AppStore
+        let configuration: ConnectionConfiguration
+        let focus: SearchMessageFocus
+        let snapshot: Conversation
+        let context: NativeTranscriptContext
+        let rows: [NativeTranscriptRow]
+        let state: SearchMarkerState
+        let controller = NativeTranscriptController()
+        let window: UIWindow
+        weak var previous: UIWindow?
+        var results: [SearchFocusResult] = []
+
+        init(store: AppStore, configuration: ConnectionConfiguration, focus: SearchMessageFocus,
+             snapshot: Conversation, scene: UIWindowScene) {
+            self.store = store; self.configuration = configuration; self.focus = focus; self.snapshot = snapshot
+            context = .init(workspace: ObjectIdentifier(store.chats), profile: focus.identity.profile.bytes,
+                chat: focus.owner.chat, owner: focus.owner, generation: store.artifactGeneration, reviewingConnection: false)
+            let state = SearchMarkerState(); self.state = state
+            rows = snapshot.messages.map { message in
+                .init(id: .message(Data(message.id.utf8)), value: .message(message, working: false)) { _, _ in
+                    if Data(message.id.utf8) == Data(focus.message.id.utf8) {
+                        AnyView(DelayedSearchRow(state: state, text: message.text))
+                    } else { AnyView(Text(message.text).font(.body).padding(.vertical, 12)) }
+                }
+            } + [.init(id: .terminal, value: .auxiliary("terminal")) { _, _ in AnyView(Color.clear.frame(height: 1)) }]
+            previous = scene.windows.first { $0.isKeyWindow }
+            window = UIWindow(windowScene: scene)
+            window.rootViewController = controller; window.makeKeyAndVisible()
+        }
+        var targetScope: NativeTranscriptRowExposure? {
+            (controller.collection.cellForItem(at: IndexPath(item: 0, section: 0)) as? NativeTranscriptCell)?.exposure
+        }
+        var targetCellHeight: CGFloat {
+            controller.collection.cellForItem(at: IndexPath(item: 0, section: 0))?.bounds.height ?? 0
+        }
+        var marker: UIView? { targetScope?.firstSearchMarker(id: focus.id)?.marker }
+        var cancelledCount: Int { results.filter { if case .cancelled = $0 { true } else { false } }.count }
+        var revealedCount: Int { results.filter { if case .revealed = $0 { true } else { false } }.count }
+        func apply(active: Bool) {
+            controller.apply(context, snapshot: snapshot, rows: rows, active: active,
+                currentTaskSnapshot: { [snapshot] in snapshot }, searchFocus: focus,
+                reportSearchFocus: { [weak self] id, result in
+                    guard let self, id == focus.id else { return }
+                    results.append(result)
+                })
+            controller.view.layoutIfNeeded()
+        }
+        func close() {
+            controller.retire(); window.isHidden = true; window.rootViewController = nil
+            previous?.makeKeyAndVisible(); store.forgetConnection(); LocalHistory.remove(for: configuration.id)
+        }
+    }
+
     @Test func asynchronousSameCellGrowthKeepsTheActualTerminalVisibleWithoutAnotherApply() async throws {
         let fixture = try growthFixture()
         defer { fixture.close() }

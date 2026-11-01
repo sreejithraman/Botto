@@ -2,40 +2,38 @@
 import SwiftUI
 import QuickLook
 import UniformTypeIdentifiers
+import BottoCore
 
 /// A reader of a scene-owned session. Native host changes never load or retire it.
 struct ArtifactPreview: View {
-    let session: ArtifactPreviewSession
+    let session: any ArtifactReadingSession
     let isExpanded: Bool
     var isActive = true
     let onClose: () -> Void
-    let onToggleExpanded: () -> Void
+    var onToggleExpanded: (() -> Void)? = nil
     let onRetry: () -> Void
     var onBrowseBots: (() -> Void)? = nil
     var canPresentOutput: () -> Bool = { true }
 
     var body: some View {
-        let output = session.output
         let errorID = session.exportErrorID
         VStack(spacing: 0) {
             header
+            if session.file != nil, let error = session.errorMessage {
+                Text(error).font(.footnote).foregroundStyle(.secondary)
+                    .padding(.horizontal).padding(.vertical, 8)
+                    .accessibilityIdentifier("artifact-reload-error")
+            }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("artifact-preview")
         }
         .background(BottoTheme.paper)
-        .sheet(item: shareBinding(output)) { output in
-            ArtifactShare(file: output.file) { error in session.endOutput(id: output.id, error: error) }
-        }
-        .fileExporter(isPresented: saveBinding(output),
-                      document: output.map { ArtifactDocument(data: $0.file.data) },
-                      contentTypes: [output.map { ArtifactDocument.exportType(filenameExtension: $0.file.url.pathExtension, mimeType: $0.file.mimeType) } ?? .data],
-                      defaultFilename: output?.file.filename) { result in
-            guard let output else { return }
-            if case .failure(let error) = result { session.endOutput(id: output.id, error: error) }
-            else { session.endOutput(id: output.id) }
-        } onCancellation: {
-            if let output { session.endOutput(id: output.id) }
+        .background {
+            if let file = session.output?.file ?? session.file {
+                ArtifactOutputPresenter(session: session, file: file, isActive: isActive)
+                    .id(file.id)
+            }
         }
         .alert("Export Failed", isPresented: Binding(get: { isActive && session.exportError != nil }, set: { if !$0 { session.clearExportError(id: errorID) } })) {
             Button("OK") { session.clearExportError(id: errorID) }
@@ -55,6 +53,9 @@ struct ArtifactPreview: View {
             Text(session.title).font(.headline).lineLimit(2).truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading).layoutPriority(1)
                 .accessibilityIdentifier("artifact-title")
+            if session.isLoading, session.file != nil {
+                ProgressView().controlSize(.small).accessibilityLabel("Reloading file")
+            }
             Menu {
                 Button("Save to Files", systemImage: "square.and.arrow.down") {
                     if isActive && canPresentOutput() { session.beginOutput(.save) }
@@ -62,6 +63,11 @@ struct ArtifactPreview: View {
                 Button("Share", systemImage: "square.and.arrow.up") {
                     if isActive && canPresentOutput() { session.beginOutput(.share) }
                 }.accessibilityIdentifier("artifact-share")
+                if session.canReload {
+                    Button("Reload from Bot", systemImage: "arrow.clockwise") {
+                        if isActive && canPresentOutput() { session.reload() }
+                    }.disabled(session.isLoading)
+                }
                 if let onBrowseBots {
                     Button("Bots", systemImage: "sidebar.left", action: onBrowseBots)
                 }
@@ -70,32 +76,20 @@ struct ArtifactPreview: View {
                     .frame(minWidth: 44, minHeight: 44)
             }
             .accessibilityIdentifier("artifact-actions")
-            .disabled(!isActive || session.file == nil || !session.isCurrent || session.isPresentingOutput)
-            Button {
-                onToggleExpanded()
-            } label: {
-                Label(isExpanded ? "Exit full screen" : "Full screen",
-                      systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                    .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-            }
+            .disabled(!isActive || session.file == nil || !session.isCurrent || session.isPresentingOutput || session.isLoading)
+            if let onToggleExpanded {
+                Button(action: onToggleExpanded) {
+                    Label(isExpanded ? "Exit full screen" : "Full screen",
+                          systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }
                 .accessibilityIdentifier("artifact-toggle-expanded")
                 .disabled(!isActive || session.isPresentingOutput)
+            }
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(BottoTheme.paper)
         .overlay(alignment: .bottom) { Divider() }
-    }
-
-    private func shareBinding(_ renderedOutput: ArtifactPreviewSession.Output?) -> Binding<ArtifactPreviewSession.Output?> {
-        Binding(get: { isActive && session.output?.kind == .share ? session.output : nil }, set: { value in
-            if value == nil, let renderedOutput { session.endOutput(id: renderedOutput.id) }
-        })
-    }
-
-    private func saveBinding(_ renderedOutput: ArtifactPreviewSession.Output?) -> Binding<Bool> {
-        // Native false precedes completion too. Explicit completion/cancellation
-        // callbacks finish the captured token, preserving genuine export errors.
-        Binding(get: { isActive && session.output?.kind == .save }, set: { _ in })
     }
 
     @ViewBuilder private var content: some View {
@@ -103,6 +97,12 @@ struct ArtifactPreview: View {
             ContentUnavailableView("File Unavailable", systemImage: "network.slash",
                                    description: Text("This chat or connection changed. Reopen the file from its original chat."))
                 .accessibilityIdentifier("artifact-error")
+        } else if let block = session.previewBlock {
+            ScrollView {
+                RichReplyBlockView(block: block, initialHeight: 440)
+                    .padding()
+            }
+            .environment(\.richReplyContext, .isolated)
         } else if let file = session.file {
             if !file.data.isEmpty, ArtifactPlainText.supports(filename: file.filename, mimeType: file.mimeType) {
                 ArtifactTextReader(file: file).background(BottoTheme.paper)
@@ -125,6 +125,44 @@ struct ArtifactPreview: View {
         } else {
             ProgressView("Loading file…").accessibilityIdentifier("artifact-loading")
         }
+    }
+}
+
+/// Mount native output configuration only after the original file is available.
+/// Files can retain its initial document configuration across presentation changes.
+private struct ArtifactOutputPresenter: View {
+    let session: any ArtifactReadingSession
+    let file: ArtifactPreviewFile
+    let isActive: Bool
+
+    var body: some View {
+        let output = session.output
+        Color.clear.frame(width: 0, height: 0)
+            .sheet(item: shareBinding(output)) { output in
+                ArtifactShare(file: output.file) { error in session.endOutput(id: output.id, error: error) }
+            }
+            .fileExporter(isPresented: saveBinding,
+                          document: ArtifactDocument(data: file.data),
+                          contentTypes: [ArtifactDocument.exportType(filenameExtension: file.url.pathExtension, mimeType: file.mimeType)],
+                          defaultFilename: file.filename) { result in
+                guard let output else { return }
+                if case .failure(let error) = result { session.endOutput(id: output.id, error: error) }
+                else { session.endOutput(id: output.id) }
+            } onCancellation: {
+                if let output { session.endOutput(id: output.id) }
+            }
+    }
+
+    private func shareBinding(_ renderedOutput: ArtifactOutput?) -> Binding<ArtifactOutput?> {
+        Binding(get: { isActive && session.output?.kind == .share ? session.output : nil }, set: { value in
+            if value == nil, let renderedOutput { session.endOutput(id: renderedOutput.id) }
+        })
+    }
+
+    private var saveBinding: Binding<Bool> {
+        // Native false precedes completion too. Finish only the captured token
+        // in explicit completion/cancellation callbacks, retaining genuine errors.
+        Binding(get: { isActive && session.output?.kind == .save }, set: { _ in })
     }
 }
 

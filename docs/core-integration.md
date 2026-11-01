@@ -41,6 +41,151 @@ opening choice and newer transcript checks reject stale completions. Preview
 reads never change unread or seen evidence. The row uses the message timestamp
 when a projected message is available.
 
+## Read-only library
+
+`WorkspaceLibrary` owns Artifacts and Search for one mounted workspace. It seeds
+visited chats from saved history and restores its separate artifact index, then
+reads each bot's directory and changed or unverified
+`conversationHistory(_:offset:)` without attaching, acknowledging messages, or
+changing drafts. The service verifies its current lineage proof, exact returned
+profile/session, pagination, and connection before accepting each page. A page's
+`isComplete` describes content fidelity; `nextOffset` independently identifies
+older pages. Hidden rows can leave a projected page empty.
+A new app process derives artifact projections locally from saved rows. Server
+revalidation begins when Artifacts or Search opens. Pending online indexing
+keeps usable results quiet. Settled partial coverage uses a neutral notice;
+actual failures retain retry guidance.
+
+Scanning publishes available results as it goes. The retained index holds at most
+25,000 messages, 32 MiB of message text, and 1,000 chats across cache seeding and
+refreshes. It favors the newest chats and fitting messages before building their
+artifact projections. Each scan also bounds network work and reads at most 1,000
+pages per chat. Partial, cancelled, and failed scans show a warning and merge
+useful same-tip results within those limits. A changed stored tip retires the old
+tip's artifacts. Strong unchanged complete summaries skip history reads; weak
+summaries probe the newest page and keep older history visibly unverified.
+Explicit refresh rebuilds history. Accepted workspace transcripts feed a
+coalesced local projection after successful installation, without library reads
+or changes to unread evidence.
+
+Canonical admission synchronously withdraws ambiguous IDs, changed producers,
+and retired tips within the retained budgets. It keeps only projections still
+bound to unchanged rows and revokes affected capture consumers before returning.
+Coalesced discovery enriches current canonical rows; it never reinstalls a queued
+snapshot. Local accepted versions fence older directory/history responses; an
+per-chat projection version rejects detached work when that chat's canonical
+rows or working tail change, including shared-budget eviction. Unrelated chat
+updates do not restart it. Gallery capture publication waits asynchronously for
+that version's path provenance; a pending commit rolls back before retrying,
+without holding the cache actor. Valid historical readers retain their own admission.
+Each gallery reader also awaits its own current provenance before returning;
+a ready historical peer cannot release that reader. Canonical records start with
+an explicit empty or retained Search projection. Only the detached projector
+parses their text.
+Every history page applies known ambiguity before projection or the next read.
+Partial reads discover the final merged, bounded messages. Cold
+history seeds coalesce off MainActor and complete before restore/scan readiness.
+Known working tails survive inert reseeding; refresh can add older rows without
+replacing those tails or certifying complete coverage.
+Complete directory absence is a bounded, hidden cache row. Inert history seeds
+cannot undo it; a current directory observation or proven service read can.
+Failed history checks invalidate reusable summary/head certificates and persist
+partial coverage until a current check succeeds.
+
+`ArtifactCache` owns a separate disposable SQLite index and captured files on a
+private actor. Its per-mount session includes the saved connection UUID and
+exact origin, installation, username, and provider bytes. It persists bounded
+inert transcripts and inline source; discovery runs off MainActor. Accepted live
+updates omit unsettled assistant tails until completion. Legacy saved chat
+history already clears working state; seeding that history cannot recover
+whether a syntactically closed tail was still streaming. Shared originals are
+keyed by profile, root, stored tip, producing message, path, and source revision;
+thumbnails add the original digest and decoder parameters. Original and
+thumbnail budgets are 256 MiB and 32 MiB; encoded metadata and its physical
+database footprint have a 40 MiB allowance. Individual originals stay within
+25 MiB. Missing or corrupt blobs miss; locked or unknown databases remain intact.
+The saved-history writer and version remain unchanged. Conversations add a
+backward-compatible optional ambiguity field.
+
+Before attempting changed metadata rows, the cache atomically records their
+scoped invalidation hashes outside SQLite. A successful replacement clears its
+entry. After a failed database write, seed and restore withhold that chat's old
+index and completeness certificate until current history is checked and saved;
+other chats and captured original bytes remain available. Recovery keeps
+hidden, row-free source hints and quarantined old row IDs, so a fresh
+successor can retire the old tip without exposing its content or letting a
+partial directory update restore it.
+It reserves at most 256 KiB within the metadata allowance and compacts overflow to
+configuration quarantine and treats unreadable or future recovery records as
+untrusted. It cannot promise restart recovery when the filesystem itself cannot
+record the invalidation; that failure remains explicit. It does not change
+selected-chat history or grant network access.
+Configuration quarantine lasts until that cache is discarded or pruned.
+Unknown recovery formats remain untouched and unavailable.
+
+Known cache limit: if the initial index is unreadable and local history supplies
+no chat IDs, an observed bot withdrawal cannot yet guard unknown saved rows.
+An offline restart before successful reconciliation can show stale metadata.
+The existing read-failure warning remains. Reenter the library or refresh after
+storage becomes readable to reconcile it. Original bytes remain retained; current
+service authority and account-scope checks still apply independently of metadata.
+
+Core marks local inflight, optimistic and streaming occurrences with
+`ChatMessage.transientID`. A current exact occurrence can use selected-chat file
+access, while library discovery, Search references and durable capture keys
+require stable row identity. A later persisted-row receipt clears the transient
+token. Missing legacy metadata stays decodable; `inflight-user` without a token
+is not a stable or current occurrence.
+The actual submit and steer producers attach that token when they publish a
+local row. Message ID prefixes alone cannot distinguish local Core rows from
+durable rows supplied by another provider, including Demo.
+
+Transcript cards carry their exact producing message into capture lookup;
+whole-chat path deduplication is reserved for the gallery. Decoded covers use
+the same producer digest, and explicit reload invalidates cover requests.
+Reader loads and exports serialize; the native presenter pins the output's
+captured file until its completion or cancellation.
+
+`downloadArtifact(_:in:)` is a read-only library operation. It requires a current
+connection and service-observed identity proof before and after the bounded
+authenticated download; cached `SessionIdentity` values do not grant authority.
+It preserves selected-chat access. Workspace replacement retires the library
+and pending reads. Completed original bytes remain usable offline while their
+library item remains current. Ordinary capture hits require their current
+semantic owner and no network capability. Cache misses and explicit reloads
+retain the appropriate strict service proof, including selected-chat access for
+in-chat readers. Concurrent gallery, thumbnail, and in-chat consumers share one
+original request; cancelling a consumer does not cancel its peers. If a selected
+reader’s access retires, a surviving library reader can continue through its own
+authorized loader. An error from a still-current loader is returned without
+automatically retrying through every peer. Confirmed
+Forget revokes cache sessions before serialized purge, and successful startup
+setup reads prune unreachable connection IDs. Failed credential removal keeps
+the existing cache usable. Inline previews keep the existing renderer sandbox.
+
+Library result navigation deliberately opens the exact originating lineage,
+including sibling chats. It never falls back to a bot's preferred chat when that
+result is unavailable. Bots, Artifacts, and Search retain separate presentation
+state; hidden Bots content cannot acknowledge messages or accept editor actions.
+Library opening commits bot selection, chat selection, and its saved last selection
+in one actor turn after a current successful attachment. A pending attempt keeps
+the original cached chat and draft while retiring its old action grant. Failure
+or cancellation reattaches the original with fresh authority only while that attempt still owns
+navigation. If reattachment also fails, the original draft stays editable without
+reviving the retired grant. Newer navigation and connection changes fence cleanup.
+Bot, picker, and library intents claim their navigation request before queued
+work or directory lookup. Library lookup, attachment, and recovery share that
+owner. A superseded request cannot commit or recover over a newer intent; if
+the newer lookup fails too, its own recovery keeps the original draft usable.
+Creation keeps its separate mutation reservation: a newer navigation request
+does not undo an authorized creation or discard its valid receipt. Only its
+optional automatic opening requires the creation's navigation claim to remain
+current. An attention lookup likewise rechecks its claim before opening a chat.
+Foreground reconnect captures its restoration intent before refreshing the
+roster and directories. Its later restoration must still own that intent;
+it cannot replace a newer library lookup. If the newer lookup fails or is
+cancelled before attachment, it can freshly restore the original chat's access.
+
 ## Cached activity presentation
 
 The workspace persists the last successful `ActivityObservation` with its check
@@ -177,7 +322,7 @@ The runtime's owner is responsible for teardown.
 - Stop and clarification routing have simulated boundary tests. A fixture reconnect does not establish gateway process-restart recovery. Background/iOS interaction, real model providers, authority restart/unknown-admission recovery and long compacted histories still need broader interoperability testing.
 - A truncated authority replay ring can omit unfinished text that has not reached durable history. Botto restores the available durable rows and current prompts; later stream events or completion restore the remaining text. It cannot reconstruct bytes the host no longer supplies.
 - The submission journal retains up to 500 identities without prompt text or credentials. It is not an offline outbox or a user-facing receipt inspector. Unknown admissions exposed by the host remain visible and require Desktop resolution.
-- Unknown and credential requests are unsupported cards. The Domain interface has no secret-entry, model/provider catalog or multi-select response type. Those features need deliberate interface additions before exposing them in the UI. Artifact downloads use captured live access and the authenticated bounded transport; see [rich replies and files](rich-content.md).
+- Unknown and credential requests are unsupported cards. The Domain interface has no secret-entry, model/provider catalog or multi-select response type. Those features need deliberate interface additions before exposing them in the UI. In-chat artifact downloads use captured live access and the authenticated bounded transport; see [rich replies and files](rich-content.md).
 - Authority does not include true one-shot server request envelopes in its snapshot. During automatic recovery, Botto retains previously seen envelopes as unsupported reminders and consumes replayed/live cancellations. They cannot authorize an answer from cached state. A process relaunch cannot recover request parameters the host does not publish; use Desktop for those requests.
 
 ## Existing profile edits
@@ -190,3 +335,98 @@ a concurrent description write after that read remains a server limitation.
 Profile sections and avatar image clearing are independent operations. A
 partial or unconfirmed save requires reload and a deliberate new save; recovery
 never replays the mutation.
+
+### Message results in Search
+
+Search captures one occurrence and its query. The current Library projection
+validates the captured result; normal chat attachment then resolves the same
+profile, root, stored tip and unique byte message ID before selection commits.
+The attached native presentation must contain the query. Different history
+projections and in-place edits can preserve the occurrence, but hidden content,
+missing matches, ambiguous IDs and changed stored tips cannot substitute a row.
+No cached text enters the live transcript.
+
+Search indexes the same role-specific native text segments used by the
+occurrence resolver. Assistant Markdown is readable text; user and bot-sender
+text remains literal. Preview source and file directives stay artifact results.
+Derived searchable segments are prepared with artifact discovery off the main
+actor and reused until the retained message revision changes. A newer accepted
+row replaces that occurrence’s content even when it removes a suffix; partial
+or inert history cannot restore deleted accepted content.
+
+Core read publications carry a runtime-only monotonic start instant captured
+before resume/history. Source evidence is included when the preceding service
+observation still matches the published tip. Incremental publications omit both.
+A read can replace newer library knowledge
+only when it began after that observation; switching stored tips also requires
+matching service-observed source evidence. Incremental rows can advance a matching
+prior canonical row within the currently observed tip. Inherited rows cannot clear
+newer removal, ambiguity, or tip retirement. These runtime facts are not persisted
+host revisions or mutation authority. Missing provenance remains conservative. Positional
+or invalid raw IDs remain visible in chat but cannot identify actions, Search
+jumps, or durable captures; legacy saved IDs follow the same rule.
+
+Saved chat history and the artifact index persist independently. Inert reseeding
+preserves raw ambiguity evidence and never replaces an indexed same-ID revision.
+A complete history read also retains bounded IDs of removed rows, so later
+partial reads and saved history cannot restore them. Accepted rows or complete
+history can restore those IDs; known removals do not invalidate complete coverage.
+At cold restore, conflicting same-ID content or a seed-only row absent from an
+independently saved complete index has no verifiable revision order: Library
+quarantines that row until fresh accepted or complete evidence resolves it.
+Legacy records without removal metadata carry no known removals. Seeds remain
+partial, and missing evidence cannot clear a known quarantine. Observed tip
+changes keep a bounded retired-stored-ID set, including through a failed history
+read and cold restore from an older chat book. A fresh service-proven source can
+restore a retired tip. Current network source proof outranks older persisted tip
+retirement during startup; an inherited snapshot does not. Message exclusions and
+retired stored IDs share the retained count and byte limits. Unrelated rows and
+captures remain available. Derived gallery provenance changes reconcile capture
+consumers in the same actor turn as canonical changes.
+
+The scene owns a short-lived focus receipt with the actual attached message
+revision. The native controller reveals a measured glyph range and retains its
+reading landmark. Native Text paints complete content and query highlights; a
+transparent text-layout overlay measures only the focused text. Covering an
+already exposed transcript cancels a pending reveal; initial inactive mounting
+can still receive its first reveal. Dragging, Latest, owner replacement or
+navigation retires the receipt. Its display
+attributes grant no action authority.
+
+Metadata recovery guards serialize independently of SQLite. Each changed row
+gets a runtime-only local write token before the SQL writer check; checked replacement clears
+only that token. Deletion and quota eviction retain bounded scoped guards. Cold
+book seeds remain unavailable to Search, gallery and capture admission until the
+saved index has reconciled their removal, ambiguity and retired-tip evidence.
+A failed initial SQLite open can still record guards in the writable ledger.
+
+The library versions canonical roster withdrawals before another history await
+and includes its first in-flight metadata writer in durable invalidation. Its
+acceptance fence retains at most twice the injected chat budget (minimum two
+entries); seed/scan operations hold a small stamp. An evicted version leaves a
+watermark that rejects uncertain stale results. Repeated updates to a retained
+ID do not invalidate an unrelated read. This is runtime state, not host revision
+or mutation authority. Startup cleanup checkpoints preserve newer active-lease
+guards while SQL readiness and retirement still gate cache reads and writes.
+
+Only an observed roster changes membership; cached bot names supply labels.
+Refresh callers must state which evidence they carry; offline tab entry never
+upgrades cached labels to observed membership.
+Before the first observed roster, reconnecting tab reads retain saved results
+without scanning membership or certifying freshness. The first observation
+invalidates revalidation even when its labels match the cached labels; an
+observed empty roster remains authoritative.
+Roster withdrawal includes working chats and invalidates their observations
+synchronously. Seed, restore and every scan await check the roster revision;
+a joined forced refresh uses the latest observed roster. Reentry needs fresh
+read evidence. Recovery admits a checked saved row without creating a new write
+guard. If both initial storage and guard admission fail, bounded acceptance
+stamps withhold changed or evicted rows when the same mount retries storage.
+Correctly associated history failures carry known duplicate IDs even when
+another row or pagination field is malformed. Head probes and full scans
+quarantine those IDs before further publication or suspension.
+Rejected pages also carry at most 100 raw stable IDs. Their overlap with retained
+rows is quarantined even if the conflicting occurrence was on an earlier page.
+An oversized page withholds all retained references in that chat because its
+complete overlap cannot be enumerated within that limit. No rejected content is
+admitted, and unrelated chats and captured original bytes remain available.

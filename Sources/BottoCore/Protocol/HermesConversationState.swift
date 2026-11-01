@@ -65,6 +65,8 @@ struct HermesConversationState {
             self.profileIdentity = profileIdentity
             conversation.lastSequence = sequence
         }
+        let unavailable = Self.unavailableMessageIDs(history, stored: conversation.storedID)
+        conversation.unavailableMessageIDs = unavailable.isEmpty ? nil : unavailable
         conversation.messages = Self.messages(history, stored: conversation.storedID)
         conversation.isWorking = snapshot["running"].flag == true
         motion.restore(working: conversation.isWorking, generation: generation,
@@ -115,7 +117,7 @@ struct HermesConversationState {
                     conversation.messages[index].displayText = displayText
                 } else if !savedByDate {
                     conversation.messages.append(ChatMessage(id: "inflight-user", role: .user, text: user, timestamp: started,
-                        displayKind: kind, displayText: displayText))
+                        displayKind: kind, displayText: displayText, transientID: UUID()))
                 }
             }
             if let text = inflight["assistant"].nonempty { setStream(text) }
@@ -234,6 +236,7 @@ struct HermesConversationState {
                let index = conversation.messages.firstIndex(where: { $0.id == id }) {
                 renameReplacementBoundary(id, to: finalID)
                 conversation.messages[index].id = finalID
+                conversation.messages[index].transientID = nil
             }
             // A completion can belong to a different client while our input is queued.
             // Authority carries the submitted identity; the sidecar has no such proof.
@@ -249,7 +252,10 @@ struct HermesConversationState {
                let index = conversation.messages.firstIndex(where: { $0.id == id }) {
                 renameReplacementBoundary(id, to: rowKey(row))
                 if conversation.messages.contains(where: { $0.id == rowKey(row) }) { conversation.messages.remove(at: index) }
-                else { conversation.messages[index].id = rowKey(row) }
+                else {
+                    conversation.messages[index].id = rowKey(row)
+                    conversation.messages[index].transientID = nil
+                }
                 optimistic.removeAll { $0 == id }
             }
             if ["error", "interrupted", "cancelled", "unknown"].contains(payload["status"].text ?? "") {
@@ -442,7 +448,8 @@ struct HermesConversationState {
         let durableID = exact(queuedReplacement?.submission, submission) ? queuedReplacement?.durableUserID : nil
         let id = durableID ?? "submission:" + submission
         guard !conversation.messages.contains(where: { exact($0.id, id) }) else { return }
-        let message = ChatMessage(id: id, role: .user, text: text, timestamp: .now)
+        let message = ChatMessage(id: id, role: .user, text: text, timestamp: .now,
+            transientID: durableID == nil ? UUID() : nil)
         if let beforeMessageID, let index = conversation.messages.firstIndex(where: { exact($0.id, beforeMessageID) }) {
             conversation.messages.insert(message, at: index)
         } else { conversation.messages.append(message) }
@@ -465,7 +472,7 @@ struct HermesConversationState {
     }
     mutating func note(_ text: String, id: String) {
         guard !conversation.messages.contains(where: { $0.id == id }) else { return }
-        conversation.messages.append(ChatMessage(id: id, role: .system, text: text))
+        conversation.messages.append(ChatMessage(id: id, role: .system, text: text, transientID: UUID()))
         captureReplacementBoundary(id)
     }
     mutating func settleStreamSilence() {
@@ -486,7 +493,7 @@ struct HermesConversationState {
         } else if !text.isEmpty {
             let id = "live:" + UUID().uuidString; streamingID = id
             conversation.messages.append(ChatMessage(id: id, role: .assistant, text: text,
-                isSilent: HermesMessagePresentation.isSilence(text)))
+                isSilent: HermesMessagePresentation.isSilence(text), transientID: UUID()))
             captureReplacementBoundary(id)
         }
     }
@@ -495,20 +502,31 @@ struct HermesConversationState {
         let name = payload["name"].text ?? "Tool"
         let result = payload["result_text"].text ?? payload.fields?["result"].flatMap(Self.toolResultText)
         let text = complete ? (result ?? payload["summary"].text ?? "Finished") : (payload["args"]["command"].text ?? "Running…")
-        let row = ChatMessage(id: id, role: .tool, text: text, toolName: name)
+        let occurrence = conversation.messages.first { $0.id == id }?.transientID ?? UUID()
+        let row = ChatMessage(id: id, role: .tool, text: text, toolName: name, transientID: occurrence)
         if let index = conversation.messages.firstIndex(where: { $0.id == id }) { conversation.messages[index] = row }
         else { conversation.messages.append(row); captureReplacementBoundary(id) }
     }
     func rowKey(_ id: Int) -> String { conversation.storedID + ":row:" + String(id) }
 
+    static func unavailableMessageIDs(_ rows: [HermesJSON], stored: String) -> Set<Data> {
+        var seen = Set<Data>(), duplicates = Set<Data>()
+        for (offset, row) in rows.enumerated() {
+            guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer else {
+                duplicates.insert(Data((stored + ":index:" + String(offset)).utf8)); continue
+            }
+            let key = Data((stored + ":row:" + String(id)).utf8)
+            if id < 0 || !seen.insert(key).inserted { duplicates.insert(key) }
+        }
+        return duplicates
+    }
+
     static func messages(_ rows: [HermesJSON], stored: String) -> [ChatMessage] {
-        var seen = Set<String>()
         return rows.enumerated().compactMap { offset, row in
             guard row["display_kind"].text != "hidden", row["display_metadata"]["model_only"].flag != true,
                   let roleName = row["role"].text, let role = ChatMessage.Role(rawValue: roleName) else { return nil }
             let id = (row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer).map { stored + ":row:" + String($0) }
                 ?? stored + ":index:" + String(offset)
-            guard seen.insert(id).inserted else { return nil }
             let images = role == .user ? historyImages(row["content"], messageID: id) : (attachments: [], parts: Set<Int>())
             let text = row["text"].text ?? (role == .tool ? toolResultText(row["content"]) ?? "" : contentText(row["content"], omitting: images.parts))
             if text.isEmpty, images.attachments.isEmpty, row["tool_calls"].list != nil { return nil }

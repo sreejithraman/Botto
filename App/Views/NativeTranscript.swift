@@ -90,16 +90,21 @@ struct NativeTranscript: UIViewControllerRepresentable {
     var preview: NativeTranscriptPreview? = nil
     var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
+    var searchFocus: SearchMessageFocus?
+    var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
     // SwiftUI's representable diff must observe exact row values, not canonical String equality.
     private let displayRevision: [NativeTranscriptRowValue]
 
     init(context: NativeTranscriptContext, snapshot: Conversation?, rows: [NativeTranscriptRow], active: Bool,
          currentTaskSnapshot: @escaping @MainActor () -> Conversation?,
          admitsAction: @escaping @MainActor () -> Bool = { true },
-         preview: NativeTranscriptPreview? = nil, topContentInset: CGFloat = 0, bottomContentInset: CGFloat = 0) {
+         preview: NativeTranscriptPreview? = nil, topContentInset: CGFloat = 0, bottomContentInset: CGFloat = 0,
+         searchFocus: SearchMessageFocus? = nil,
+         reportSearchFocus: @escaping @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }) {
         self.context = context; self.snapshot = snapshot; self.rows = rows; self.active = active
         self.currentTaskSnapshot = currentTaskSnapshot; self.admitsAction = admitsAction
         self.preview = preview; self.topContentInset = topContentInset; self.bottomContentInset = bottomContentInset
+        self.searchFocus = searchFocus; self.reportSearchFocus = reportSearchFocus
         displayRevision = rows.map(\.value)
     }
 
@@ -108,7 +113,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
         if let preview { preview.bind(controller) }
         else { controller.previewReceiver?.unbind(controller) }
         controller.updateContentInsets(top: topContentInset, bottom: bottomContentInset)
-        controller.apply(self.context, snapshot: snapshot, rows: rows, active: active, currentTaskSnapshot: currentTaskSnapshot, admitsAction: admitsAction)
+        controller.apply(self.context, snapshot: snapshot, rows: rows, active: active, currentTaskSnapshot: currentTaskSnapshot, admitsAction: admitsAction,
+                         searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
         preview?.refreshHeader()
         preview?.requestCapture(from: controller)
     }
@@ -142,6 +148,8 @@ struct NativeTranscriptHeader<Content: View>: UIViewControllerRepresentable {
 final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     private let preview: NativeTranscriptPreview
     private var scrollEdge: (any UIInteraction)?
+    private weak var barContentOwner: UIViewController?
+    private weak var barScrollView: UIScrollView?
     var onActivate: (@MainActor () -> Void)?
     private let navigationTarget = UIButton(type: .custom)
     private var retired = false
@@ -175,11 +183,13 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        updateScrollView()
         updateNavigationTarget()
     }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         navigationTarget.removeFromSuperview()
+        releaseBarScrollView()
     }
     private func updateNavigationTarget() {
         // The bar receives touches above the content. Mirror only the header's actual overlap.
@@ -201,12 +211,34 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
         retired = true
         onActivate = nil
         navigationTarget.removeFromSuperview()
+        releaseBarScrollView()
+        if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
+            interaction.scrollView = nil
+        }
     }
     func updateScrollView() {
         if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
-            let scrollView = preview.viewportView as? UIScrollView
+            let scrollView = retired ? nil : preview.viewportView as? UIScrollView
             if interaction.scrollView !== scrollView { interaction.scrollView = scrollView }
+            guard !retired, let scrollView, let owner = navigationController?.topViewController,
+                  view.window != nil, view.isDescendant(of: owner.view), scrollView.isDescendant(of: owner.view) else {
+                releaseBarScrollView()
+                return
+            }
+            if barContentOwner !== owner || barScrollView !== scrollView {
+                releaseBarScrollView()
+                owner.setContentScrollView(scrollView, for: .top)
+                barContentOwner = owner; barScrollView = scrollView
+            }
         }
+    }
+
+    private func releaseBarScrollView() {
+        if let owner = barContentOwner, let scrollView = barScrollView,
+           owner.contentScrollView(for: .top) === scrollView {
+            owner.setContentScrollView(nil, for: .top)
+        }
+        barContentOwner = nil; barScrollView = nil
     }
 }
 
@@ -221,7 +253,11 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     }
     private weak var controller: NativeTranscriptController?
     private weak var header: NativeTranscriptHeaderController?
-    func bindHeader(_ header: NativeTranscriptHeaderController) { self.header = header; refreshHeader() }
+    func bindHeader(_ header: NativeTranscriptHeaderController) {
+        if self.header !== header { self.header?.retire() }
+        self.header = header
+        refreshHeader()
+    }
     func refreshHeader() { header?.updateScrollView() }
     var viewportView: UIView? { controller?.collection }
     func viewportView(for id: String) -> UIView? {
@@ -297,8 +333,10 @@ private struct NativeTranscriptHostedRow: View {
     let scope: NativeTranscriptRowExposure
     let history: ReplyBodyMeasurements
     let width: NativeTranscriptWidth
+    let searchMatch: NativeSearchMatch?
     var body: some View {
         row.content(scope, history).environment(\.nativeTranscriptRow, scope)
+            .environment(\.nativeSearchMatch, searchMatch)
             .tint(BottoTheme.action)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: width.value, alignment: .leading)
@@ -454,7 +492,13 @@ private struct NativeTranscriptHostedRow: View {
     private var actionAdmission: @MainActor () -> Bool = { false }
     private var scrollPolicy = TranscriptScrollPolicy()
     var followsLatest: Bool { scrollPolicy.followsLatest }
-    private enum ViewportTarget { case end, reading(Landmark?, fallback: CGPoint) }
+    private enum ViewportTarget { case end, reading(Landmark?, fallback: CGPoint), search }
+    private var searchFocus: SearchMessageFocus?
+    private var displayedSearchID: UUID?
+    private var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
+    private var pendingSearch = false
+    private var positioningSearch = false
+    private var scheduledSearch = false
     private var viewportTarget = ViewportTarget.end
     private var positionedContent = false
     private var quietHeld = false
@@ -533,6 +577,7 @@ private struct NativeTranscriptHostedRow: View {
         self.latestBottom = latestBottom
         NSLayoutConstraint.activate([latest.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             latestBottom,
+            latest.widthAnchor.constraint(equalTo: latest.heightAnchor),
             latest.widthAnchor.constraint(greaterThanOrEqualToConstant: 44), latest.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)])
         registerForTraitChanges([UITraitAccessibilityContrast.self]) { (controller: NativeTranscriptController, _: UITraitCollection) in
             if let context = controller.context { controller.updateLatestAppearance(context) }
@@ -541,7 +586,9 @@ private struct NativeTranscriptHostedRow: View {
 
     func apply(_ next: NativeTranscriptContext, snapshot nextSnapshot: Conversation?, rows nextRows: [NativeTranscriptRow], active: Bool,
                currentTaskSnapshot: @escaping @MainActor () -> Conversation?,
-               admitsAction: @escaping @MainActor () -> Bool = { true }) {
+               admitsAction: @escaping @MainActor () -> Bool = { true },
+               searchFocus nextFocus: SearchMessageFocus? = nil,
+               reportSearchFocus: @escaping @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }) {
         loadViewIfNeeded()
         #if DEBUG
         scrollTrace?.working = nextSnapshot?.isWorking == true
@@ -557,6 +604,19 @@ private struct NativeTranscriptHostedRow: View {
         applicationSequence &+= 1
         let applyingSequence = applicationSequence
         self.currentTaskSnapshot = currentTaskSnapshot
+        let focusChanged = displayedSearchID != nextFocus?.id
+        displayedSearchID = nextFocus?.id
+        self.reportSearchFocus = reportSearchFocus
+        if focusChanged {
+            searchFocus = nextFocus
+            pendingSearch = nextFocus?.needsReveal == true
+            if nextFocus == nil, case .search = viewportTarget {
+                viewportTarget = .reading(captureLandmark(), fallback: collection.contentOffset)
+            }
+            if nextFocus == nil, case .search? = readingLandmark?.role {
+                viewportTarget = .reading(captureLandmark(), fallback: collection.contentOffset)
+            }
+        }
         let taskChanged = context?.workspace != next.workspace || context?.profile != next.profile || context?.chat != next.chat
         let contentChanged = !TranscriptContentRevision.sameSnapshotContent(snapshot, nextSnapshot)
         let followsChange = scrollPolicy.snapshotChanged(from: snapshot, to: nextSnapshot)
@@ -581,11 +641,15 @@ private struct NativeTranscriptHostedRow: View {
         if let context, context != next, !taskChanged {
             permitsLayoutAttention = false; clearFittingBaselines()
         }
+        if pendingSearch {
+            scrollPolicy.requestHistoricalPosition()
+            viewportTarget = .search
+        }
         self.snapshot = nextSnapshot
         updateLatestAppearance(next)
         let authorityChanged = context != next
         let changed = nextRows.filter { nextRow in
-            authorityChanged || lookup[nextRow.id]?.value != nextRow.value
+            authorityChanged || focusChanged || lookup[nextRow.id]?.value != nextRow.value
         }.map(\.id)
         let structural = rows.map(\.id) != nextRows.map(\.id)
         let unchanged = !authorityChanged && !structural && changed.isEmpty
@@ -613,9 +677,15 @@ private struct NativeTranscriptHostedRow: View {
         rowAuthorities = rowAuthorities.filter { $0.value.isCurrent }
         foreground.reconcile(environment: next)
         guard applicationSequence == applyingSequence else { return }
+        let becameCovered = self.active && !active
         self.active = active
+        if becameCovered, pendingSearch {
+            cancelSearchPosition()
+            guard applicationSequence == applyingSequence else { return }
+        }
         for scope in scopes.allObjects { scope.setActive(active && committed) }
         if unchanged {
+            settleViewport()
             updateLatest()
             return
         }
@@ -703,6 +773,7 @@ private struct NativeTranscriptHostedRow: View {
     func prepare(_ cell: NativeTranscriptCell, for row: NativeTranscriptRow) {
         cell.exposure?.invalidate(); cell.committedFittingSize = nil
         let scope = NativeTranscriptRowExposure(viewport: collection)
+        scope.searchGeometryChanged = { [weak self] in self?.scheduleSearchPosition() }
         scope.actionAdmission = { [weak self] in
             guard let self, self.actionAdmission() else { return false }
             return self.rowActionsAreCurrent(row, in: self.currentTaskSnapshot())
@@ -749,7 +820,8 @@ private struct NativeTranscriptHostedRow: View {
         }
         let history = measurements[row.id] ?? ReplyBodyMeasurements(); measurements[row.id] = history
         cell.contentConfiguration = UIHostingConfiguration {
-            NativeTranscriptHostedRow(row: row, scope: scope, history: history, width: rowWidth)
+            NativeTranscriptHostedRow(row: row, scope: scope, history: history, width: rowWidth,
+                searchMatch: searchFocus.flatMap { row.id == .message(Data($0.message.id.utf8)) ? NativeSearchMatch(id: $0.id, query: $0.query) : nil })
         }.margins(.all, 0)
         cell.backgroundColor = .clear
         scope.setActive(active && committed)
@@ -757,6 +829,7 @@ private struct NativeTranscriptHostedRow: View {
     }
     func retire() {
         previewReceiver?.unbind(self)
+        pendingSearch = false; searchFocus = nil
         #if DEBUG
         performanceStreamRelease?.cancel()
         performanceStreamRelease = nil
@@ -822,6 +895,7 @@ private struct NativeTranscriptHostedRow: View {
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         previewReceiver?.cancel(from: self)
+        cancelSearchPosition()
         #if DEBUG
         scrollTrace?.begin()
         if PerformanceStreamGate.mode == "scroll", let ticket = PerformanceStreamGate.pending,
@@ -895,10 +969,84 @@ private struct NativeTranscriptHostedRow: View {
         guard !collection.isTracking, !collection.isDragging, !collection.isDecelerating else { return }
         switch viewportTarget {
         case .end: if scrollPolicy.shouldFollowLatest { scrollToTerminal() }
+        case .search: positionSearchMatch()
         case let .reading(anchor, fallback):
             if let anchor, restore(anchor) { return }
             setClampedOffset(fallback)
         }
+    }
+    private func scheduleSearchPosition() {
+        guard pendingSearch, !scheduledSearch else { return }
+        scheduledSearch = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.scheduledSearch = false
+            self.positionSearchMatch()
+        }
+    }
+
+    private func positionSearchMatch() {
+        guard pendingSearch, !positioningSearch, active, let focus = searchFocus,
+              let context, context.workspace == focus.workspace, context.owner == focus.owner,
+              context.profile == focus.identity.profile.bytes, !context.reviewingConnection,
+              collection.window != nil, collection.bounds.height > 0, collection.bounds.width > 0,
+              !collection.isTracking, !collection.isDragging, !collection.isDecelerating else { return }
+        guard TranscriptMessageIndex(currentTaskSnapshot()).matches(focus.message) else {
+            pendingSearch = false; searchFocus = nil
+            viewportTarget = .reading(captureLandmark(), fallback: collection.contentOffset)
+            reportSearchFocus(focus.id, .unavailable)
+            return
+        }
+        let item = NativeTranscriptItemID.message(Data(focus.message.id.utf8))
+        guard let index = source.indexPath(for: item) else { return }
+        positioningSearch = true
+        defer { positioningSearch = false }
+        if collection.cellForItem(at: index) == nil {
+            collection.scrollToItem(at: index, at: .top, animated: false)
+            collection.layoutIfNeeded()
+        }
+        guard let scope = (collection.cellForItem(at: index) as? NativeTranscriptCell)?.exposure,
+              let hit = scope.firstSearchMarker(id: focus.id) else { return }
+        // Code owns an inner horizontal scroll view; reveal its real glyph range
+        // before positioning the outer transcript on the same native marker.
+        var ancestor = hit.marker.superview
+        while let view = ancestor, view !== collection {
+            if let scroll = view as? UIScrollView, scroll.contentSize.width > scroll.bounds.width + 1 {
+                scroll.scrollRectToVisible(hit.marker.convert(hit.marker.bounds, to: scroll), animated: false)
+                scroll.layoutIfNeeded()
+            }
+            ancestor = view.superview
+        }
+        let position = hit.marker.convert(hit.marker.bounds, to: collection)
+        setClampedOffset(CGPoint(x: collection.contentOffset.x,
+            y: position.minY - collection.adjustedContentInset.top - 24))
+        collection.layoutIfNeeded()
+        guard pendingSearch, searchFocus?.id == focus.id,
+              TranscriptMessageIndex(currentTaskSnapshot()).matches(focus.message),
+              let window = collection.window, hit.marker.window === window else { return }
+        var visible = hit.marker.convert(hit.marker.bounds, to: window)
+        ancestor = hit.marker.superview
+        while let view = ancestor {
+            guard !view.isHidden, view.alpha > 0 else { return }
+            if view.clipsToBounds { visible = visible.intersection(view.convert(view.bounds, to: window)) }
+            ancestor = view.superview
+        }
+        let viewport = collection.bounds.inset(by: collection.adjustedContentInset)
+        visible = visible.intersection(collection.convert(viewport, to: window)).intersection(window.bounds)
+        guard !visible.isNull, visible.width > 0, visible.height > 0 else { return }
+        let y = hit.marker.convert(hit.marker.bounds, to: collection).minY - collection.bounds.minY
+        viewportTarget = .reading(.init(item: item, block: hit.block, role: .search(focus.id), y: y, marker: hit.marker),
+                                  fallback: collection.contentOffset)
+        pendingSearch = false
+        reportSearchFocus(focus.id, .revealed)
+        UIAccessibility.post(notification: .announcement, argument: "Search match")
+    }
+
+    private func cancelSearchPosition() {
+        guard let focus = searchFocus else { return }
+        pendingSearch = false; searchFocus = nil
+        viewportTarget = .reading(captureLandmark(), fallback: collection.contentOffset)
+        reportSearchFocus(focus.id, .cancelled)
     }
     private func setClampedOffset(_ point: CGPoint) {
         let lower = -collection.adjustedContentInset.top
@@ -994,25 +1142,22 @@ private struct NativeTranscriptHostedRow: View {
         collection.scrollToItem(at: index, at: .bottom, animated: false)
     }
     private func updateLatestAppearance(_ context: NativeTranscriptContext) {
-        let compact = context.dynamicType.isAccessibilitySize
         let traits = traitCollection.modifyingTraits {
             $0.userInterfaceStyle = context.colorScheme == .dark ? .dark : .light
         }
         var button = UIButton.Configuration.filled()
-        button.title = compact ? nil : "Latest messages"
         button.image = UIImage(systemName: "arrow.down")
         button.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
-        button.imagePadding = compact ? 0 : 8
         button.cornerStyle = .capsule
         button.baseBackgroundColor = UIColor(resource: .accent).resolvedColor(with: traits)
         button.baseForegroundColor = UIColor(resource: .bottoOnAction).resolvedColor(with: traits)
-        button.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: compact ? 10 : 16,
-                                                       bottom: 10, trailing: compact ? 10 : 16)
+        button.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
         latest.configuration = button
     }
 
     @objc private func requestLatest() {
         guard active, committed, actionAdmission() else { return }
+        cancelSearchPosition()
         interruptedReaderScroll = true
         collection.setContentOffset(collection.contentOffset, animated: false)
         scrollPolicy.requestLatest(); quietHeld = false; viewportTarget = .end

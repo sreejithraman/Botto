@@ -12,7 +12,22 @@ public enum ArtifactReferencePart: Equatable, Sendable {
 /// A read-only projection for native assistant paragraphs, after ReplyContent separates fences.
 /// Paths are opaque server identities. This parser never resolves or opens a local file.
 public enum ArtifactReferences {
+    public enum Provenance: Equatable, Sendable { case delivered, referenced }
+    public enum Part: Equatable, Sendable {
+        case text(String)
+        case attachment(ChatAttachment, provenance: Provenance)
+    }
+
     public static func segments(in text: String) -> [ArtifactReferencePart] {
+        parts(in: text).map { part in
+            switch part {
+            case .text(let text): .text(text)
+            case .attachment(let attachment, _): .attachment(attachment)
+            }
+        }
+    }
+
+    public static func parts(in text: String) -> [Part] {
         guard !text.isEmpty else { return [] }
         // The caller owns fenced blocks. Unexpected fences fail closed as one source paragraph;
         // this avoids maintaining another whole-transcript fence parser here.
@@ -21,7 +36,7 @@ public enum ArtifactReferences {
                 line.firstMatch(of: /^ {0,3}(?:`{3,}|~{3,})/) != nil
         }) else { return [.text(text)] }
 
-        var parts: [ArtifactReferencePart] = []
+        var parts: [Part] = []
         var cursor = text.startIndex
         var textStart = cursor
         var lineRange = text.lineRange(for: cursor..<cursor)
@@ -42,11 +57,11 @@ public enum ArtifactReferences {
             }
             let lineStart = lineRange.lowerBound
             let indented = text[lineStart...].hasPrefix("    ") || text[lineStart] == "\t"
-            var reference: (path: String, end: String.Index)?
+            var reference: (path: String, end: String.Index, provenance: Provenance)?
             if !indented, text[cursor] == "[" || text[cursor...].hasPrefix("![") {
                 let link = markdown(in: text, from: cursor)
                 if let path = link.path {
-                    reference = (path, link.end)
+                    reference = (path, link.end, .referenced)
                 } else {
                     cursor = link.end
                     continue
@@ -57,20 +72,20 @@ public enum ArtifactReferences {
                    let token = token(in: text, from: text.index(cursor, offsetBy: 6)),
                    text[token.end..<(text[token.end...].firstIndex(where: \.isNewline) ?? text.endIndex)].allSatisfy(\.isWhitespace),
                    let path = localPath(token.value, relative: true, bareRelative: true) {
-                    reference = (path, token.end)
+                    reference = (path, token.end, .delivered)
                 } else if text[cursor...].hasPrefix("MEDIA:"),
                    let token = token(in: text, from: text.index(cursor, offsetBy: 6)),
                    let path = localPath(token.value, relative: false) {
-                    reference = (path, token.end)
+                    reference = (path, token.end, .delivered)
                 } else if text[cursor...].hasPrefix("file://"),
                           let token = token(in: text, from: cursor),
                           let path = localPath(token.value, relative: false) {
-                    reference = (path, token.end)
+                    reference = (path, token.end, .referenced)
                 }
             }
             if let reference {
                 if textStart < cursor { parts.append(.text(String(text[textStart..<cursor]))) }
-                parts.append(.attachment(attachment(path: reference.path)))
+                parts.append(.attachment(attachment(path: reference.path), provenance: reference.provenance))
                 cursor = reference.end
                 textStart = cursor
                 continue

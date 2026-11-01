@@ -121,3 +121,14 @@ func machineryCommandLabelsStayCompactWithoutLosingDetails(_ kind: String) throw
         displayKind: "process_complete", displayText: "echo hello")
     #expect(message.notificationPresentation?.title == "Background process finished")
 }
+
+@Test(arguments: [ChatMessage.Role.user, .assistant, .tool, .system])
+func hiddenDisplayMetadataNeverCreatesVisibleAttention(role: ChatMessage.Role) {
+    let hidden = ChatMessage(id: "hidden", role: role, text: "Private diagnostic", displayKind: "hidden")
+    #expect(!hidden.isVisible)
+    #expect(!hidden.requiresAttention)
+    #expect(ConversationPreview(message: hidden) == nil)
+    let snapshot = Conversation(id: "root", storedID: "stored", profileID: "bot", messages: [hidden])
+    #expect(snapshot.visibleMessages.isEmpty && snapshot.attentionMessages.isEmpty)
+    #expect(snapshot.messages.count == 1, "Raw identity evidence remains intact")
+}

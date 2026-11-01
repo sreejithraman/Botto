@@ -112,6 +112,15 @@ public struct ChatAttachment: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
+    public nonisolated static func isStableID(_ id: Data, storedID: String) -> Bool {
+        guard id != Data("inflight-user".utf8) else { return false }
+        guard !id.starts(with: Data((storedID + ":index:").utf8)) else { return false }
+        let row = Data((storedID + ":row:").utf8)
+        guard id.starts(with: row) else { return true }
+        let suffix = id.dropFirst(row.count)
+        guard let number = Int(String(decoding: suffix, as: UTF8.self)), number >= 0 else { return false }
+        return Data(String(number).utf8) == suffix
+    }
     public enum Role: String, Codable, Sendable { case user, assistant, tool, system }
     public var id: String
     public var role: Role
@@ -119,15 +128,21 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var timestamp: Date?
     public var toolName: String?
     public var attachments: [ChatAttachment]
+    /// A local occurrence can use current service authority but cannot identify a durable capture.
+    public var transientID: UUID?
+    public nonisolated func hasStableIdentity(storedID: String) -> Bool {
+        transientID == nil && Self.isStableID(Data(id.utf8), storedID: storedID)
+    }
     /// Host-authored provenance. Missing metadata never authorizes automation classification.
     public var displayKind: String?
     public var displayText: String?
     /// Presentation only; the original text and row remain in the cached transcript.
     /// Exact control matching repairs stale partial-marker projections in older caches.
     public var isSilent: Bool?
-    public init(id: String, role: Role, text: String, timestamp: Date? = nil, toolName: String? = nil, attachments: [ChatAttachment] = [], displayKind: String? = nil, isSilent: Bool? = nil, displayText: String? = nil) {
+    public init(id: String, role: Role, text: String, timestamp: Date? = nil, toolName: String? = nil, attachments: [ChatAttachment] = [], displayKind: String? = nil, isSilent: Bool? = nil, displayText: String? = nil, transientID: UUID? = nil) {
         self.id = id; self.role = role; self.text = text; self.timestamp = timestamp
         self.toolName = toolName; self.attachments = attachments
+        self.transientID = transientID
         self.displayKind = displayKind; self.isSilent = isSilent; self.displayText = displayText
     }
 }
@@ -185,6 +200,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var storedID: String
     public var profileID: String
     public var messages: [ChatMessage]
+    public var unavailableMessageIDs: Set<Data>?
     public var pendingRequests: [PendingRequest]
     public var queuedMessages: [QueuedMessage]
     public var isWorking: Bool
@@ -197,7 +213,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, storedID, profileID, messages, pendingRequests, queuedMessages, isWorking, lastSequence
+        case id, storedID, profileID, messages, unavailableMessageIDs, pendingRequests, queuedMessages, isWorking, lastSequence
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -205,6 +221,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
         storedID = try values.decode(String.self, forKey: .storedID)
         profileID = try values.decode(String.self, forKey: .profileID)
         messages = try values.decode([ChatMessage].self, forKey: .messages)
+        unavailableMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .unavailableMessageIDs)
         pendingRequests = try values.decode([PendingRequest].self, forKey: .pendingRequests)
         queuedMessages = try values.decodeIfPresent([QueuedMessage].self, forKey: .queuedMessages) ?? []
         isWorking = try values.decode(Bool.self, forKey: .isWorking)
@@ -236,6 +253,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead
+    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
@@ -252,6 +270,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult
     func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws
     func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult
+    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact
 }
 
 public extension BotService {
@@ -260,6 +279,14 @@ public extension BotService {
     func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult { throw PushError.unsupported }
     func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws { throw PushError.unsupported }
     func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult { throw PushError.unsupported }
+    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
+        throw HermesServiceError.rejected(-32601)
+    }
+
+    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
+        throw HermesServiceError.rejected(-32601)
+    }
+
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
         .init(preview: nil, isComplete: false)
     }

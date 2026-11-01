@@ -36,12 +36,14 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public let isCanonical: Bool
     public let persistence: SessionPersistence // display fact; never grants a history-404 exception
     public let preview: String
+    public let hasPreview: Bool?
     public let updatedAt: Date?
     public let messageCount: Int?
     public init(identity: SessionIdentity, title: String, isCanonical: Bool, persistence: SessionPersistence,
-                preview: String = "", updatedAt: Date? = nil, messageCount: Int? = nil) {
+                preview: String? = nil, updatedAt: Date? = nil, messageCount: Int? = nil) {
         self.identity = identity; self.title = title; self.isCanonical = isCanonical; self.persistence = persistence
-        self.preview = preview; self.updatedAt = updatedAt; self.messageCount = messageCount
+        self.preview = preview ?? ""; hasPreview = preview != nil
+        self.updatedAt = updatedAt; self.messageCount = messageCount
     }
 }
 public enum ObservedActivity: Sendable { case known(BotStatus, Date), unknown(String) }
@@ -106,12 +108,18 @@ public struct OpenedConversation: Sendable {
     public let snapshot: Conversation
     public let access: ConversationAccess
     public let readEvidence: ConversationReadEvidence?
+    /// Process-local causal ordering for this read; absent on incremental publications.
+    public let historyReadStartedAt: ContinuousClock.Instant?
+    public let observedSource: SessionIdentity?
     public let activity: ConversationActivity?
     public init(identity: SessionIdentity, snapshot: Conversation, access: ConversationAccess,
-                readEvidence: ConversationReadEvidence? = nil, activity: ConversationActivity? = nil) {
+                readEvidence: ConversationReadEvidence? = nil, activity: ConversationActivity? = nil,
+                historyReadStartedAt: ContinuousClock.Instant? = nil, observedSource: SessionIdentity? = nil) {
         self.identity = identity; self.snapshot = snapshot; self.access = access
         self.readEvidence = readEvidence
         self.activity = activity
+        self.historyReadStartedAt = historyReadStartedAt
+        self.observedSource = observedSource
     }
 }
 public struct CreatedSession: Sendable {

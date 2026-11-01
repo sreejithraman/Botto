@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import BottoCore
 
-enum NativeTranscriptMarkerRole: Hashable { case content, document }
+enum NativeTranscriptMarkerRole: Hashable { case content, document, search(UUID) }
 
 /// A block's native clipped exposure is an additional prerequisite, never a grant.
 @MainActor @Observable final class NativeTranscriptBlockPresence {
@@ -49,6 +49,7 @@ enum NativeTranscriptMarkerRole: Hashable { case content, document }
     func register(_ marker: NativeTranscriptBlockMarker) {
         markers[marker.identity] = WeakMarker(view: marker)
         refresh()
+        marker.reportSearchGeometryIfChanged()
     }
     func setDisplayed(_ value: Bool) { displayed = value; refresh() }
     func setActive(_ value: Bool) {
@@ -100,6 +101,17 @@ enum NativeTranscriptMarkerRole: Hashable { case content, document }
         clipped = clipped.intersection(viewport.convert(viewport.bounds, to: window)).intersection(window.bounds)
         return !clipped.isNull && clipped.width > 0 && clipped.height > 0
     }
+    @ObservationIgnored var searchGeometryChanged: @MainActor () -> Void = {}
+    func firstSearchMarker(id: UUID) -> (block: Int, marker: UIView)? {
+        guard isCurrent, let viewport else { return nil }
+        return markers.values.compactMap(\.view).filter {
+            $0.role == .search(id) && $0.window != nil && $0.window === viewport.window &&
+                $0.bounds.width > 0 && $0.bounds.height > 0
+        }.sorted {
+            let a = $0.convert($0.bounds, to: viewport), b = $1.convert($1.bounds, to: viewport)
+            return a.minY == b.minY ? a.minX < b.minX : a.minY < b.minY
+        }.first.map { ($0.block, $0 as UIView) }
+    }
     func blockOffsetInPreferredRow(_ marker: UIView) -> CGFloat? {
         guard isCurrent, let rowGeometry, rowGeometry.window != nil, rowGeometry.window === marker.window else { return nil }
         return marker.convert(marker.bounds, to: rowGeometry).minY
@@ -115,6 +127,7 @@ enum NativeTranscriptMarkerRole: Hashable { case content, document }
         guard let viewport else { return nil }
         return markers.values.compactMap { entry in
             guard let marker = entry.view, permits(marker) else { return nil }
+            if case .search = marker.role { return nil }
             return (marker.block, marker.role, marker as UIView, marker.convert(marker.bounds, to: viewport).minY - viewport.bounds.minY)
         }.sorted { abs($0.3) < abs($1.3) }.first
     }
@@ -126,13 +139,28 @@ enum NativeTranscriptMarkerRole: Hashable { case content, document }
     weak var presence: NativeTranscriptBlockPresence?
     var block = 0
     var role = NativeTranscriptMarkerRole.content
+    private struct SearchGeometry: Equatable {
+        let rect: CGRect
+        let window: ObjectIdentifier?
+        let scope: ObjectIdentifier?
+        let role: NativeTranscriptMarkerRole
+    }
+    private var searchGeometry: SearchGeometry?
+    fileprivate func reportSearchGeometryIfChanged() {
+        guard case .search = role else { return }
+        let geometry = SearchGeometry(rect: convert(bounds, to: scope?.rowGeometry ?? superview),
+            window: window.map(ObjectIdentifier.init), scope: scope.map(ObjectIdentifier.init), role: role)
+        guard geometry != searchGeometry else { return }
+        searchGeometry = geometry
+        scope?.searchGeometryChanged()
+    }
     func connect(scope: NativeTranscriptRowExposure, presence: NativeTranscriptBlockPresence, block: Int, role: NativeTranscriptMarkerRole = .content) {
         if self.scope !== scope || self.presence !== presence { self.presence?.isVisible = false }
         self.scope = scope; self.presence = presence; self.block = block; self.role = role
         scope.register(self)
     }
-    override func layoutSubviews() { super.layoutSubviews(); scope?.refresh() }
-    override func didMoveToWindow() { super.didMoveToWindow(); scope?.refresh() }
+    override func layoutSubviews() { super.layoutSubviews(); scope?.refresh(); reportSearchGeometryIfChanged() }
+    override func didMoveToWindow() { super.didMoveToWindow(); scope?.refresh(); reportSearchGeometryIfChanged() }
 }
 /// Coordinates owned by the SwiftUI row itself. During fitting, UIKit may
 /// center a larger hosted root in the old cell allocation; block-local offsets
@@ -172,7 +200,7 @@ struct NativeTranscriptBlock<Content: View>: View {
     var body: some View {
         Group {
         if let row {
-            content().environment(\.nativeTranscriptBlock, presence)
+            content().environment(\.nativeTranscriptBlock, presence).environment(\.nativeTranscriptBlockID, block)
                 .background(NativeTranscriptMarker(scope: row, presence: presence, block: block))
         } else { content() }
         }

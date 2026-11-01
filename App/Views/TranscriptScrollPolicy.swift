@@ -69,6 +69,12 @@ nonisolated struct TranscriptScrollPolicy {
         hasNewMessages = false
     }
 
+    mutating func requestHistoricalPosition() {
+        isUserScrolling = false
+        followsLatest = false
+        hasNewMessages = true
+    }
+
     /// Native delegates call this only for reader interaction, including its
     /// final position. Programmatic fitting never supplies reader intent.
     mutating func readerChanged(isUserScrolling: Bool, isNearBottom: Bool) {
@@ -85,16 +91,19 @@ nonisolated struct TranscriptScrollPolicy {
 
 nonisolated struct TranscriptMessageIndex {
     private let messages: [Data: ChatMessage]
+    let unavailableIDs: Set<Data>
 
     init(_ snapshot: Conversation?) {
         var messages: [Data: ChatMessage] = [:]
-        var ambiguous: Set<Data> = []
+        var ambiguous = snapshot?.unavailableMessageIDs ?? []
         for message in snapshot?.messages ?? [] {
             let id = Data(message.id.utf8)
+            if message.transientID == nil && !ChatMessage.isStableID(id, storedID: snapshot?.storedID ?? "") { ambiguous.insert(id) }
             if messages.updateValue(message, forKey: id) != nil { ambiguous.insert(id) }
         }
         for id in ambiguous { messages[id] = nil }
         self.messages = messages
+        unavailableIDs = ambiguous
     }
 
     func matches(_ expected: ChatMessage) -> Bool {
@@ -109,7 +118,7 @@ nonisolated struct TranscriptMessageIndex {
 /// No content digest or second history is retained.
 nonisolated enum TranscriptContentRevision {
     static func sameMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
-        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent &&
+        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID &&
         exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) &&
         exact(a.displayKind, b.displayKind) && exact(a.displayText, b.displayText) && a.attachments.count == b.attachments.count &&
         zip(a.attachments, b.attachments).allSatisfy { first, second in
@@ -124,11 +133,12 @@ nonisolated enum TranscriptContentRevision {
         case (nil, nil): true
         case let (a?, b?):
             a.messages.elementsEqual(b.messages, by: sameMessage) && a.pendingRequests.elementsEqual(b.pendingRequests, by: sameRequest)
+                && (a.unavailableMessageIDs ?? []) == (b.unavailableMessageIDs ?? [])
         default: false
         }
     }
     static func uniqueMessage(_ expected: ChatMessage, in snapshot: Conversation?) -> Bool {
-        guard let snapshot else { return false }
+        guard let snapshot, snapshot.unavailableMessageIDs?.contains(Data(expected.id.utf8)) != true else { return false }
         var found = false
         for message in snapshot.messages where exact(message.id, expected.id) {
             guard !found, message.isVisible, sameMessage(message, expected) else { return false }

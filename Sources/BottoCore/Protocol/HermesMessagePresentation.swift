@@ -113,6 +113,7 @@ public extension ChatMessage {
         return HermesMessagePresentation.scheduledJobName(text)
     }
     var isVisible: Bool {
+        if displayKind == "hidden" { return false }
         if displayKind == "failed_turn" { return true }
         if role == .assistant, attachments.isEmpty, HermesMessagePresentation.isSilence(text) { return false }
         if isSilent == true {
