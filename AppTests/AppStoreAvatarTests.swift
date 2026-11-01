@@ -565,6 +565,37 @@ import BottoCore
         #expect(store.avatar(for: store.bots[0]) == nil)
     }
 
+    #if DEBUG
+    @Test func retirementCancelsTheWorkerBeforeAvatarDecodingStarts() async throws {
+        let gate = StoreTestBarrier()
+        defer { gate.release() }
+        let owner = "AppStoreAvatarTests/" + (Test.current?.name ?? "cancelled decode")
+        let avatars = AvatarDecodeLedger.$testOwner.withValue(owner) {
+            AvatarDecodeLedger.$beforeDecode.withValue({ await gate.wait() }) { BotAvatarStore() }
+        }
+        defer { avatars.cancel() }
+        let service = AvatarService(); service.holdImages = false
+        let bot = try #require(service.profiles.first)
+        avatars.refresh([bot], connectionID: UUID(), using: service)
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        avatars.cancel()
+        gate.release()
+        func finishedAttempt() throws -> [String: Any]? {
+            let data = Data(AvatarDecodeLedger.shared.failureSnapshot().utf8)
+            let snapshot = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return (snapshot["recent"] as? [[String: Any]])?.last { $0["testOwner"] as? String == owner }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try finishedAttempt() == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let finished = try #require(try finishedAttempt())
+        #expect(finished["workerCancelledAtEntry"] as? Bool == true)
+        #expect(finished["imageProduced"] as? Bool != true)
+        #expect(avatars.image(for: bot) == nil && !avatars.isLoading(bot))
+    }
+    #endif
+
     @Test(arguments: ["image/png", "image/jpeg", "image/webp"])
     func hermesPetAndImageAssetsKeepAspectAndTransparency(mime: String) async throws {
         let pet = mime != "image/jpeg"
