@@ -4,10 +4,12 @@
 import argparse
 import base64
 import datetime
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Optional
 import plistlib
 import re
 import secrets
@@ -21,6 +23,10 @@ from urllib.parse import quote
 
 
 class ReleaseError(Exception):
+    pass
+
+
+class PublicationInterrupted(Exception):
     pass
 
 
@@ -582,25 +588,47 @@ def package(temp, output, version, number, team, env):
                 )
 
 
+@dataclass(frozen=True)
+class BuildNotes:
+    localization_id: Optional[str]
+    text: Optional[str]
+
+
 def existing_notes(build_id, source, version, number, env):
     localizations = asc(
         "builds", "test-notes", "list", "--build-id", build_id,
         "--locale", "en-US", "--paginate", env=env,
     )["data"]
+    if not isinstance(localizations, list):
+        raise ReleaseError("invalid What to Test localization response; review this build manually")
     if not localizations:
-        return None
-    prefix = notes_prefix(source, version, number)
-    notes = localizations[0]["attributes"].get("whatsNew")
+        return BuildNotes(None, None)
+    if len(localizations) != 1:
+        raise ReleaseError("existing What to Test notes are ambiguous; review this build manually")
+    localization = localizations[0]
+    if not isinstance(localization, dict) or not isinstance(localization.get("attributes"), dict):
+        raise ReleaseError("invalid What to Test localization; review this build manually")
+    localization_id = localization.get("id")
+    attributes = localization.get("attributes", {})
     if (
-        len(localizations) != 1
-        or not isinstance(notes, str)
+        localization.get("type") != "betaBuildLocalizations"
+        or not isinstance(localization_id, str) or not localization_id
+        or attributes.get("locale") != "en-US"
+    ):
+        raise ReleaseError("invalid What to Test localization; review this build manually")
+    prefix = notes_prefix(source, version, number)
+    notes = attributes.get("whatsNew")
+    if notes is None or isinstance(notes, str) and not notes.strip():
+        return BuildNotes(localization_id, None)
+    if (
+        not isinstance(notes, str)
         or not notes.startswith(prefix)
         or not notes[len(prefix):].strip()
     ):
         raise ReleaseError(
             "existing What to Test notes belong to another source, are ambiguous or empty; review this build manually"
         )
-    return notes
+    return BuildNotes(localization_id, notes)
 
 
 def project_version(env):
@@ -801,23 +829,37 @@ def publish(args, temp, env):
         raise ReleaseError(
             "build export compliance is unknown; set ITSAppUsesNonExemptEncryption=false and start a new workflow run"
         )
-    notes = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+    current_notes = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+    notes = current_notes.text
     if notes is None:
         notes = selected_notes if selected_notes is not None else prepared_notes(
             output, args.source_sha, version, args.build_number
         )
+        current_notes = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+        if current_notes.text is not None:
+            notes = current_notes.text
+    if current_notes.text is None:
         body = {"data": {
             "type": "betaBuildLocalizations",
-            "attributes": {"locale": "en-US", "whatsNew": notes},
-            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+            "attributes": {"whatsNew": notes},
         }}
+        method, endpoint = "POST", "/v1/betaBuildLocalizations"
+        if current_notes.localization_id:
+            body["data"]["id"] = current_notes.localization_id
+            method, endpoint = "PATCH", f"/v1/betaBuildLocalizations/{quote(current_notes.localization_id, safe='')}"
+        else:
+            body["data"]["attributes"]["locale"] = "en-US"
+            body["data"]["relationships"] = {"build": {"data": {"type": "builds", "id": build_id}}}
         request = private_file(temp / "notes-request.json", json.dumps(body).encode())
         try:
-            # The high-level asc test-notes create command is an upsert.
-            asc("api", "POST", "/v1/betaBuildLocalizations", "--body-file", str(request), "--confirm", env=env)
+            asc("api", method, endpoint, "--body-file", str(request), "--confirm", env=env)
         except ReleaseError:
             try:
-                recovered = existing_notes(build_id, args.source_sha, version, args.build_number, env)
+                recovered = existing_notes(build_id, args.source_sha, version, args.build_number, env).text
+                if method == "PATCH" and recovered is not None and recovered != notes:
+                    raise ReleaseError(
+                        "What to Test notes differ after an uncertain update; review this build manually"
+                    )
             except ReleaseError:
                 if FAILURE_PATH is not None:
                     FAILURE_PATH.unlink(missing_ok=True)
@@ -828,7 +870,7 @@ def publish(args, temp, env):
             if FAILURE_PATH is not None:
                 FAILURE_PATH.unlink(missing_ok=True)
         else:
-            if existing_notes(build_id, args.source_sha, version, args.build_number, env) != notes:
+            if existing_notes(build_id, args.source_sha, version, args.build_number, env).text != notes:
                 raise ReleaseError("What to Test notes were not confirmed; rerun to reconcile")
     internal_group(app, group, env)
     membership = asc("builds", "groups", "list", "--build-id", build_id, env=env)
@@ -859,7 +901,7 @@ def publish(args, temp, env):
 
 
 def interrupted(_number, _frame):
-    raise ReleaseError("publication interrupted; rerun this workflow to reconcile")
+    raise PublicationInterrupted("publication interrupted; rerun this workflow to reconcile")
 
 
 def main():
@@ -923,11 +965,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ReleaseError, OSError, ValueError, KeyError) as error:
+    except (ReleaseError, PublicationInterrupted, OSError, ValueError, KeyError) as error:
         # Unexpected structured-response errors must not print potentially secret values.
         message = (
             str(error)
-            if isinstance(error, ReleaseError)
+            if isinstance(error, (ReleaseError, PublicationInterrupted))
             else "invalid local data or tool response"
         )
         print(f"TestFlight: {message}", file=sys.stderr)
