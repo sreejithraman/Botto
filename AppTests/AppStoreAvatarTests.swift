@@ -520,11 +520,23 @@ import BottoCore
 
     @Test func revisionCacheRemovalAndImageFailuresStayLocal() async throws {
         let service = AvatarService(); service.holdImages = false
+        #if DEBUG
+        let trace = AvatarDecodeTrace()
+        let store = BotAvatarDecodeProbe.$current.withValue(trace.probe()) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         func diagnostics() -> String {
             let bot = store.bots.first
+            #if DEBUG
+            let decoding = trace.description
+            #else
+            let decoding = "Decoder tracing is excluded from this build"
+            #endif
             return """
             capturedAt=\(Date.now.timeIntervalSince1970)
             reads=\(service.reads)
@@ -533,6 +545,7 @@ import BottoCore
             revision=\(String(describing: bot?.lookRevision))
             failImages=\(service.failImages)
             pending=\(service.pending.count)
+            \(decoding)
             """
         }
         #expect(await store.connect(connection))
@@ -578,11 +591,25 @@ import BottoCore
         }
         let service = AvatarService(); service.holdImages = false
         service.suppliedAsset = BotAvatarAsset(data: bytes, mimeType: mime)
+        #if DEBUG
+        let trace = AvatarDecodeTrace()
+        let store = BotAvatarDecodeProbe.$current.withValue(trace.probe()) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
-        try await avatarEventually { !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually("\(mime) avatar finished loading", diagnostics: {
+            let state = "reads=\(service.reads) loading=\(store.isLoadingAvatar(for: store.bots[0])) image=\(store.avatar(for: store.bots[0]) != nil)"
+            #if DEBUG
+            return state + "\n" + trace.description
+            #else
+            return state
+            #endif
+        }) { !store.isLoadingAvatar(for: store.bots[0]) }
         let image = try #require(store.avatar(for: store.bots[0]))
         #expect(abs(image.size.width / image.size.height - size.width / size.height) < 0.001)
         let cgImage = try #require(image.cgImage)
@@ -597,6 +624,62 @@ import BottoCore
         #expect(pixels[3] == (pet ? 0 : 255))
         #expect(pixels[((height / 2) * width + width / 2) * 4 + 3] == 255)
     }
+
+    #if DEBUG
+    @Test(arguments: ["queued", "synchronous"], [false, true])
+    func retiredAvatarDecodeTracePreservesReplacementAuthority(hold: String, cancelStore: Bool) async throws {
+        let service = AvatarService(); service.holdImages = false
+        let trace = AvatarDecodeTrace(), gate = AvatarDecodeGate()
+        let probe = trace.probe(
+            beforeStart: { request in if hold == "queued", request.revision == 1 { await gate.waitBeforeStart() } },
+            decode: { request, decode in
+                if hold == "synchronous", request.revision == 1 { gate.waitDuringDecode() }
+                return decode()
+            })
+        let avatars = BotAvatarDecodeProbe.$current.withValue(probe) { BotAvatarStore() }
+        let connection = UUID(), original = service.profiles[0]
+        defer { gate.release(); avatars.cancel(); service.releaseImages() }
+        defer { Attachment.record(trace.description, named: "avatar-decode-\(hold)-cancel-\(cancelStore).txt") }
+
+        avatars.refresh([original], connectionID: connection, using: service)
+        try await avatarEventually("Original decode reached its controlled \(hold) boundary", diagnostics: { trace.description }) {
+            hold == "queued" ? trace.queuedCount == 1 : trace.runningCount == 1
+        }
+        let retired = try #require(trace.events.first?.request)
+        #expect(avatars.isLoading(original) && avatars.image(for: original) == nil)
+        if cancelStore { avatars.cancel() }
+        var replacement = original; replacement.lookRevision = 2
+        service.imageColor = .blue
+        avatars.refresh([replacement], connectionID: connection, using: service)
+        try await avatarEventually("Replacement decoded while the retired request remains held", diagnostics: { trace.description }) {
+            avatars.image(for: replacement) != nil && !avatars.isLoading(replacement)
+        }
+        let bytes = try #require(avatars.image(for: replacement)?.pngData())
+        #expect(avatars.image(for: original) == nil)
+        let current = try #require(trace.events.first { event in
+            if case .publication(let request, let authority) = event { return request.revision == 2 && authority.accepted }
+            return false
+        }?.request)
+        #expect((retired.generation != current.generation) == cancelStore)
+        #expect(trace.events.contains { event in
+            if case .cancelRequested(let request) = event { return request.id == retired.id }
+            return false
+        })
+        #expect(trace.outstandingCount == 1, "Retirement is distinct from completion of queued or synchronous decoder work")
+
+        gate.release()
+        try await avatarEventually("Retired decode completed without publication authority", diagnostics: { trace.description }) {
+            trace.events.contains { event in
+                if case .publication(let request, let authority) = event { return request.id == retired.id && !authority.accepted }
+                return false
+            }
+        }
+        #expect(trace.queuedCount == 0 && trace.runningCount == 0 && trace.outstandingCount == 0)
+        #expect(!gate.timedOut, "The synchronous safety deadline must not release the controlled decode")
+        #expect(avatars.image(for: replacement)?.pngData() == bytes)
+        #expect(!avatars.isLoading(replacement))
+    }
+    #endif
 
     @Test(arguments: [false, true]) func desktopFaceCopyFallsBackButPhotoRemains(photo: Bool) async throws {
         let service = AvatarService(); service.holdImages = false; service.imageSize = 160
@@ -762,6 +845,89 @@ import BottoCore
     }
     try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }
+
+#if DEBUG
+nonisolated private final class AvatarDecodeTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let origin = ContinuousClock.now
+    private var entries: [(ContinuousClock.Instant, BotAvatarDecodeProbe.Event)] = []
+
+    func probe(beforeStart: (@Sendable (BotAvatarDecodeProbe.Request) async -> Void)? = nil,
+               decode: (@Sendable (BotAvatarDecodeProbe.Request, @Sendable () -> BotAvatarStore.Decoded?) -> BotAvatarStore.Decoded?)? = nil) -> BotAvatarDecodeProbe {
+        .init(beforeStart: beforeStart, decode: decode, record: { [self] event in
+            lock.withLock { entries.append((.now, event)) }
+        })
+    }
+
+    var events: [BotAvatarDecodeProbe.Event] { lock.withLock { entries.map(\.1) } }
+    var queuedCount: Int { counts(events).queued }
+    var runningCount: Int { counts(events).running }
+    var outstandingCount: Int { counts(events).outstanding }
+
+    private func counts(_ events: [BotAvatarDecodeProbe.Event]) -> (queued: Int, running: Int, outstanding: Int) {
+        var queued = Set<UUID>(), running = Set<UUID>()
+        for event in events {
+            let id = event.request.id
+            switch event {
+            case .requested: queued.insert(id)
+            case .started: queued.remove(id); running.insert(id)
+            case .finished: running.remove(id)
+            case .cancelRequested, .publication: break
+            }
+        }
+        return (queued.count, running.count, queued.count + running.count)
+    }
+
+    var description: String {
+        let captured = lock.withLock { entries }
+        var prefix: [BotAvatarDecodeProbe.Event] = []
+        let lines = captured.map { instant, event in
+            prefix.append(event)
+            let state = counts(prefix)
+            return "elapsed=\(origin.duration(to: instant)) queued=\(state.queued) running=\(state.running) outstanding=\(state.outstanding) \(event)"
+        }
+        return (["decoderEvents=\(captured.count)"] + lines).joined(separator: "\n")
+    }
+}
+
+nonisolated private final class AvatarDecodeGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+    private var expired = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    var timedOut: Bool { condition.withLock { expired } }
+
+    func waitBeforeStart() async {
+        await withCheckedContinuation { continuation in
+            let resume = condition.withLock {
+                if released { return true }
+                waiting.append(continuation)
+                return false
+            }
+            if resume { continuation.resume() }
+        }
+    }
+
+    func waitDuringDecode() {
+        condition.lock()
+        defer { condition.unlock() }
+        let safetyDeadline = Date.now.addingTimeInterval(8)
+        while !released {
+            if !condition.wait(until: safetyDeadline) { expired = true; return }
+        }
+    }
+
+    func release() {
+        let continuations = condition.withLock {
+            released = true
+            let held = waiting; waiting = []
+            condition.broadcast()
+            return held
+        }
+        for continuation in continuations { continuation.resume() }
+    }
+}
+#endif
 
 @MainActor private final class AvatarStorage {
     var value: ConnectionConfiguration?
