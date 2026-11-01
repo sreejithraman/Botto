@@ -18,8 +18,8 @@ colors for that preset are appearance-independent; dedicated appearance and
 contrast tests remain. Source-derived renders fall from 20,400 to 10,200.
 No changed-matrix runtime improvement has been measured yet.
 
-All 375 core tests, the MainActor compatibility build, and 184 tooling tests
-pass locally, including 12 native-runner fixture tests. The audit repaired
+All 375 core tests, the MainActor compatibility build, and 188 tooling tests
+pass locally, including 14 native-runner fixture tests. The audit repaired
 Git signing/hook interference in note fixtures and post-reap group signaling in
 the two development hosts. Cleanup checks include no-signal doubles and a real
 disposable process group whose leader exits before its descendant. Exit

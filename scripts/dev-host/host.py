@@ -167,12 +167,14 @@ def serve(root, port):
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         try:
-            if child:
-                stop_group(child)
-        finally:
-            peer.shutdown()
-            (root / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
             (root / "ready.json").unlink(missing_ok=True)
+        finally:
+            try:
+                if child:
+                    stop_group(child)
+            finally:
+                peer.shutdown()
+                (root / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
     return child.returncode
 
 
@@ -210,8 +212,13 @@ def main():
             if proc.poll() is not None:
                 raise SystemExit("Host failed; inspect supervisor.log and gateway.log")
             if (root / "ready.json").exists():
-                print((root / "ready.json").read_text())
-                return
+                try:
+                    health = status(args.port)
+                    if health.get("install_id") == INSTALL_ID and health.get("auth_required") is True:
+                        print((root / "ready.json").read_text())
+                        return
+                except (OSError, ValueError):
+                    pass
             time.sleep(.25)
         os.kill(proc.pid, signal.SIGTERM)
         raise SystemExit("Readiness timeout")

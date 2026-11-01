@@ -157,12 +157,14 @@ def run():
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         try:
-            if child:
-                stop_group(child)
-        finally:
-            peer.shutdown()
-            (ROOT / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
             (ROOT / "ready.json").unlink(missing_ok=True)
+        finally:
+            try:
+                if child:
+                    stop_group(child)
+            finally:
+                peer.shutdown()
+                (ROOT / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
     return child.returncode
 
 
@@ -199,8 +201,13 @@ def main():
             if proc.poll() is not None:
                 raise SystemExit("Sidecar failed; inspect supervisor.log and backend.log")
             if (ROOT / "ready.json").exists():
-                print((ROOT / "ready.json").read_text())
-                return
+                try:
+                    current = health()
+                    if current.get("install_id") == INSTALL_ID and current.get("auth_required") is True:
+                        print((ROOT / "ready.json").read_text())
+                        return
+                except (OSError, ValueError):
+                    pass
             time.sleep(.25)
         os.kill(proc.pid, signal.SIGTERM)
         raise SystemExit("Readiness timeout")

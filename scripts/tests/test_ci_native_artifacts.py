@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check-native.sh"
@@ -12,7 +13,7 @@ DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1):
+    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
@@ -79,7 +80,14 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
                            CI_PASSED_TESTS=str(passed_tests),
                            CI_PRODUCES_RESULT="1" if produces_result else "0")
-        result = subprocess.run(["bash", str(repo / "scripts/check-native.sh"), suite], cwd=repo,
+        command = ["bash", str(repo / "scripts/check-native.sh"), suite]
+        if workflow_event:
+            workflow = (SCRIPT.parents[1] / ".github/workflows/ios.yml").read_text()
+            step = workflow.split("        id: checks\n", 1)[1].split("      - name:", 1)[0]
+            body = textwrap.dedent(step.split("        run: |\n", 1)[1])
+            environment.update(GITHUB_EVENT_NAME=workflow_event, NATIVE_TEST=suite)
+            command = ["bash", "-e", "-o", "pipefail", "-c", body]
+        result = subprocess.run(command, cwd=repo,
                                 env=environment, capture_output=True, text=True, timeout=10)
         return repo, parent, record, result
 
@@ -161,6 +169,22 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                 self.assertEqual(retained.read_text(), "build-for-testing proof")
                 if not build_status:
                     self.assertIn("Native tests were built but not executed", result.stdout)
+
+    def test_manual_input_cannot_select_the_pull_request_build_mode(self):
+        _, _, record, result = self.run_native(0, suite="--build-only", workflow_event="workflow_dispatch")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(record.exists(), "Invalid diagnostic input must fail before Xcode")
+
+    def test_workflow_events_preserve_build_only_and_test_execution_boundaries(self):
+        for event, selector, actions in (
+            ("pull_request", "", ["build-for-testing"]),
+            ("push", "", ["build-for-testing", "test-without-building"]),
+            ("workflow_dispatch", "FixtureTests", ["build-for-testing", "enumerate", "test-without-building"]),
+        ):
+            with self.subTest(event=event):
+                _, _, record, result = self.run_native(0, suite=selector, workflow_event=event)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual([call["action"] for call in json.loads(record.read_text())], actions)
 
     def test_parent_inside_the_package_is_rejected(self):
         _, parent, record, result = self.run_native(0, parent_inside_package=True)

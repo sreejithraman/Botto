@@ -79,6 +79,10 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             ./scripts/check-native.sh --build-only
           else
+            if [[ "$NATIVE_TEST" == -* ]]; then
+              echo 'Select a native suite or suite/test, not a runner option.' >&2
+              exit 2
+            fi
             ./scripts/check-native.sh "$NATIVE_TEST"
           fi
       - name: Runner resources after checks

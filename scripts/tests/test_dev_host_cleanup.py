@@ -155,6 +155,45 @@ class HostGroupCleanupTests(unittest.TestCase):
                 self.assertFalse((root / "ready.json").exists())
                 self.assertTrue((root / "mock-stats.json").exists())
 
+    def test_cleanup_withdraws_readiness_before_draining_the_group(self):
+        for kind in ("host", "sidecar_host"):
+            with self.subTest(kind=kind), self.host_fixture(kind, "normal") as (run, _, _, _, root):
+                def draining(_):
+                    self.assertFalse((root / "ready.json").exists(), "Cleanup cannot advertise a ready backend")
+                with mock.patch("time.sleep", side_effect=draining):
+                    run()
+
+    def test_start_checks_current_health_before_accepting_a_ready_marker(self):
+        for kind in ("host", "sidecar_host"):
+            for healthy in (False, True):
+                with self.subTest(kind=kind, healthy=healthy), tempfile.TemporaryDirectory() as directory:
+                    host = load_host(kind)
+                    root = Path(directory)
+                    supervisor = mock.Mock()
+                    supervisor.poll.side_effect = [None, 1]
+                    def spawn(*args, **kwargs):
+                        (root / "ready.json").write_text("{}")
+                        return supervisor
+                    health_name = "status" if kind == "host" else "health"
+                    with mock.patch.object(host, "runtime", return_value=root, create=True), \
+                            mock.patch.object(host, "ROOT", root, create=True), \
+                            mock.patch.object(host.subprocess, "Popen", side_effect=spawn), \
+                            mock.patch.object(host, health_name,
+                                              return_value={"install_id": host.INSTALL_ID, "auth_required": True},
+                                              side_effect=None if healthy else OSError("backend exited")) as health, \
+                            mock.patch.object(host.socket, "socket"), \
+                            mock.patch.object(host.os, "kill") as signal_process, \
+                            mock.patch.object(host.time, "sleep"), \
+                            mock.patch.object(sys, "argv", [kind, "start"]), \
+                            mock.patch("builtins.print"):
+                        if healthy:
+                            host.main()
+                        else:
+                            with self.assertRaisesRegex(SystemExit, "failed"):
+                                host.main()
+                        health.assert_called_once()
+                        signal_process.assert_not_called()
+
     def test_early_child_exit_drains_its_group_and_preserves_startup_failure(self):
         for kind in ("host", "sidecar_host"):
             with self.subTest(kind=kind), self.host_fixture(kind, "startup_exit") as (run, child, peer, events, root):

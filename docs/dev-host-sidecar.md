@@ -105,7 +105,8 @@ python3 -B scripts/dev-host/sidecar_host.py stop
 ```
 
 The script checks the saved supervisor's command, signals only that supervisor,
-and lets it drain its own backend process group and provider. Exit observation
+and lets it drain its own backend process group and provider. Readiness is
+withdrawn before cleanup; `start` confirms current backend health. Exit observation
 keeps the leader unreaped until the final group signal, including normal backend
 exit and startup failure. Unconfirmed delivery is reported on stderr before the
 bounded reap. It does not use
