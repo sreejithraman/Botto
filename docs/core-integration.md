@@ -115,20 +115,31 @@ other chats and captured original bytes remain available. Recovery keeps
 hidden, row-free source hints and quarantined old row IDs, so a fresh
 successor can retire the old tip without exposing its content or letting a
 partial directory update restore it.
-It reserves at most 256 KiB within the metadata allowance and compacts overflow to
-configuration quarantine and treats unreadable or future recovery records as
-untrusted. It cannot promise restart recovery when the filesystem itself cannot
+It reserves at most 256 KiB within the metadata allowance and treats unreadable
+or future recovery records as untrusted. It cannot promise restart recovery when the filesystem itself cannot
 record the invalidation; that failure remains explicit. It does not change
 selected-chat history or grant network access.
 Configuration quarantine lasts until that cache is discarded or pruned.
 Unknown recovery formats remain untouched and unavailable.
 
-Known cache limit: if the initial index is unreadable and local history supplies
-no chat IDs, an observed bot withdrawal cannot yet guard unknown saved rows.
-An offline restart before successful reconciliation can show stale metadata.
-The existing read-failure warning remains. Reenter the library or refresh after
-storage becomes readable to reconcile it. Original bytes remain retained; current
-service authority and account-scope checks still apply independently of metadata.
+An observed bot roster records a scoped restriction even before saved chat IDs
+can be read. The restriction survives SQLite recovery because an unreadable old
+chat book can later reappear. Checked SQLite replacements can admit their own
+chat; cached book text cannot inherit that permission, and reentry alone cannot
+revive withdrawn siblings. A later omission revokes the profile's checked rows.
+The existing recovery ledger owns these bounded records; original captures and
+current service authority remain separate. On quota exhaustion, metadata
+withholding starts with the affected namespace, expands to its configuration only
+if needed, and uses the existing global marker only when narrower protection
+cannot fit. An unwritable filesystem still prevents a durability guarantee and
+keeps the explicit save failure. Unsaved roster restrictions intersect and gate
+saved-row and book admission immediately. Library retry can save the pending
+evidence without treating cached labels as observed membership. Successful
+admission fences older restoration and seed work; fresh accepted reads remain.
+An unrelated row's acknowledgment cannot replace the restriction during seeding.
+Failed-recovery reseeding preserves admitted fresh rows and their dirty writes.
+Eligible queued book requests adopt the saved admission fence, while active
+work stays fenced. Deferred seed writes resume after reconciliation.
 
 Core marks local inflight, optimistic and streaming occurrences with
 `ChatMessage.transientID`. A current exact occurrence can use selected-chat file
