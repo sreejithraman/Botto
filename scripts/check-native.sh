@@ -8,8 +8,13 @@ if [ "$#" -gt 1 ]; then
   echo 'Usage: check-native.sh [SuiteName[/testFunction(...)]]' >&2
   exit 2
 fi
-selection=BottoTests
-if [ -n "$selector" ]; then
+selections=(BottoTests)
+if [ "$selector" = NativeReadinessPrefix ]; then
+  # Diagnostic branch only: restore the original same-process predecessor cohort.
+  selections=(BottoTests/BotAvatarProofTests BottoTests/DemoAvatarActivityTests
+    BottoTests/DemoConversationTests BottoTests/InboxPreviewRenderingTests
+    BottoTests/AdaptiveWorkspaceTests BottoTests/AppStoreAvatarTests)
+elif [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
 import re
 import sys
@@ -17,7 +22,7 @@ match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)(?:/([A-Za-z_][A-Za-z0-9_]*)(?:\(
 if not match:
     sys.exit("Expected a native test suite or suite/test selector.")
 PYTHON
-  selection="BottoTests/$selector"
+  selections=("BottoTests/$selector")
 fi
 
 destination=${BOTTO_TEST_DESTINATION:-}
@@ -48,8 +53,12 @@ native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
 result_id=$(uuidgen)
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
+selection_arguments=()
+for selection in "${selections[@]}"; do
+  selection_arguments+=("-only-testing:$selection")
+done
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
-  "-only-testing:$selection"
+  "${selection_arguments[@]}"
   -destination "$destination"
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
@@ -61,15 +70,16 @@ if [ "$native_status" -eq 0 ] && [ -n "$selector" ]; then
     -test-enumeration-style flat -test-enumeration-format text \
     -test-enumeration-output-path "$native_directory/selected-tests.txt" || native_status=$?
   if [ "$native_status" -eq 0 ]; then
-    python3 - "$selection" "$native_directory/selected-tests.txt" <<'PYTHON' || native_status=$?
+    python3 - "$native_directory/selected-tests.txt" "${selections[@]}" <<'PYTHON' || native_status=$?
 from pathlib import Path
 import sys
-requested = sys.argv[1].removesuffix("()")
-identifiers = [line.strip().removesuffix("()") for line in Path(sys.argv[2]).read_text().splitlines()]
-matches = [name for name in identifiers if name == requested or name.startswith(requested + "/")]
-if not matches:
-    sys.exit("The requested native test was not discovered by Xcode; no tests executed.")
-print("Xcode discovered %d matching test identifiers." % len(matches))
+identifiers = [line.strip().removesuffix("()") for line in Path(sys.argv[1]).read_text().splitlines()]
+for selection in sys.argv[2:]:
+    requested = selection.removesuffix("()")
+    matches = [name for name in identifiers if name == requested or name.startswith(requested + "/")]
+    if not matches:
+        sys.exit("The requested native test was not discovered by Xcode: " + requested)
+    print("Xcode discovered %d identifiers for %s." % (len(matches), requested))
 PYTHON
   fi
 fi
