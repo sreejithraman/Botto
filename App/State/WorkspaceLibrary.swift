@@ -532,7 +532,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             guard let floor = rosterReadFloors[source.profile] else { return }
             switch evidence {
             case .read(let startedAt, _): guard startedAt >= floor else { return }
-            case .incremental: guard observations[key(for: source)] != nil else { return }
+            case .incremental:
+                guard floor == mountedAt || observations[key(for: source)] != nil else { return }
             }
         }
         let id = key(for: source), observation = observations[id]

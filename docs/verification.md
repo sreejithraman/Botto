@@ -522,3 +522,11 @@ in 33.022 seconds with all 69 source hashes unchanged during the build. The firs
 attempt's nested test-macro compiler error is preserved and corrected. New native
 assertions remain unexecuted locally. Root owns focused next-pin native/UI,
 independent export readback, full-main acceptance, merge and final beta delivery.
+
+The R16 follow-up preserves an initially present legacy profile's first
+incremental publication while still rejecting events and pre-withdrawal reads
+after roster reentry. A positive/negative/fresh-recovery test compiles. Its exact
+unsigned generic app/test build passes in 34.442 seconds; all 69 before/after
+hashes match. Core source remains the same405-test/MainActor checked source.
+This follow-up changes the roster admission branch and its fixture; prior hosted
+68085 results need an impact assessment, not an unrelated gate reset.

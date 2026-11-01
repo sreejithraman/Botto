@@ -18,6 +18,24 @@ import BottoCore
         return book
     }
 
+    @Test func initialLegacyPublicationDoesNotAuthorizeAWithdrawnRosterReentry() async throws {
+        let service = LibraryTestService(), library = WorkspaceLibrary(service: service)
+        defer { library.retire() }
+        await library.restore(); library.observeBots(service.profiles)
+        let snapshot = Conversation(id: "main", storedID: "main", profileID: "helper", messages: service.messages[service.first]!)
+        library.accept(identity: service.first, snapshot: snapshot, title: "Legacy", evidence: .incremental(previous: nil))
+        #expect(library.chats.first?.messages == snapshot.messages)
+        let staleStart = ContinuousClock.now
+        library.setOnline(true); await library.refresh(bots: [])
+        #expect(library.chats.isEmpty)
+        library.observeBots(service.profiles)
+        library.accept(identity: service.first, snapshot: snapshot, title: "Old event", evidence: .incremental(previous: snapshot))
+        library.accept(identity: service.first, snapshot: snapshot, title: "Old read", evidence: .read(startedAt: staleStart, observedSource: service.first))
+        #expect(library.chats.isEmpty)
+        library.accept(identity: service.first, snapshot: snapshot, title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.first))
+        #expect(library.chats.first?.messages == snapshot.messages)
+    }
+
     @Test func aLateRealOpeningCannotReintroduceAWithdrawnBot() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
