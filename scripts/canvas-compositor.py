@@ -56,7 +56,7 @@ def main():
     log = args.output / "recorder.log"
     receipt = {"device": device, "started": stamp(), "command": command,
                "limits": "First-frame time is the observed log marker, not video PTS. Recording changes host workload. No paint or repair claim follows from a green test.",
-               "budgets_seconds": {"boot": 60, "first_frame": 5, "test": 360, "video_finalize": 5},
+               "budgets_seconds": {"boot": 300, "first_frame": 5, "test": 360, "video_finalize": 5},
                "first_frame_observed": False, "video_complete": False}
     boot = recorder = test = None
     native_status = None
@@ -68,7 +68,7 @@ def main():
             with (args.output / "boot.log").open("wb") as boot_log:
                 boot = subprocess.Popen(["xcrun", "simctl", "bootstatus", device, "-b"],
                                         stdout=boot_log, stderr=subprocess.STDOUT, start_new_session=True)
-                boot_finished = wait_until_exit(boot, 60)
+                boot_finished = wait_until_exit(boot, 300)
                 stop_group(boot, grace=0)
                 receipt["boot_status"] = boot.returncode if boot_finished else 124
             if receipt["boot_status"] == 0:
@@ -88,6 +88,9 @@ def main():
                     time.sleep(.05)
         except Exception as error:
             receipt["recording_setup_error"] = {"type": type(error).__name__, "message": str(error)}
+
+        if receipt.get("boot_status") != 0 or not receipt["first_frame_observed"]:
+            raise RuntimeError("Simulator boot and compositor recording must be ready before the selected test starts")
 
         receipt["test_started"] = stamp()
         test = subprocess.Popen(command, start_new_session=True)
