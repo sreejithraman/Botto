@@ -520,7 +520,13 @@ import BottoCore
 
     @Test func revisionCacheRemovalAndImageFailuresStayLocal() async throws {
         let service = AvatarService(); service.holdImages = false
+        #if DEBUG
+        let store = AvatarDecodeLedger.$testOwner.withValue(Test.current.map { "AppStoreAvatarTests/\($0.name)" }) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         func diagnostics() -> String {
@@ -578,7 +584,13 @@ import BottoCore
         }
         let service = AvatarService(); service.holdImages = false
         service.suppliedAsset = BotAvatarAsset(data: bytes, mimeType: mime)
+        #if DEBUG
+        let store = AvatarDecodeLedger.$testOwner.withValue(Test.current.map { "AppStoreAvatarTests/\($0.name)" }) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
@@ -755,10 +767,24 @@ import BottoCore
                                         sourceLocation: SourceLocation = #_sourceLocation,
                                         _ condition: () -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
-    while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    var polls = 0, maximumGap = Duration.zero
+    var previousPoll = ContinuousClock.now
+    while !condition(), ContinuousClock.now < deadline {
+        polls += 1
+        try await Task.sleep(for: .milliseconds(5))
+        let resumed = ContinuousClock.now
+        maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
+    }
     let passed = condition()
     if !passed {
-        Attachment.record("\(message)\n\(diagnostics())", named: "avatar-readiness-failure.txt")
+        maximumGap = max(maximumGap, previousPoll.duration(to: .now))
+        #if DEBUG
+        let decoding = AvatarDecodeLedger.shared.failureSnapshot()
+        #else
+        let decoding = "Decoder metadata is excluded from Release"
+        #endif
+        Attachment.record("\(message)\npolls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())\n\(decoding)",
+                          named: "avatar-readiness-failure.txt")
     }
     try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }

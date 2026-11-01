@@ -26,46 +26,7 @@ import BottoCore
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let richMessage = try #require(initial.snapshot?.messages.last)
         let fileBlock = try #require(ReplyContent(message: richMessage).blocks.first { $0.filePreview?.isHTML == true })
-        do {
-            try await requirePaintedFile(fileBlock.id, host: host, window: window)
-        } catch {
-            if let controller = collectionController(host) {
-                let rows: [[String: Any]] = controller.collection.visibleCells.map { cell in
-                    let scope = (cell as? NativeTranscriptCell)?.exposure
-                    let root = scope?.rowGeometry
-                    let blockGeometry: [[String: Any]] = markers(cell).map { marker in
-                        ["block": marker.block, "role": String(describing: marker.role),
-                         "bounds": NSCoder.string(for: marker.bounds),
-                         "viewport_frame": NSCoder.string(for: marker.convert(marker.bounds, to: controller.collection)),
-                         "visible": marker.presence?.isVisible ?? false,
-                         "current_scope": marker.scope === scope]
-                    }
-                    return ["index": controller.collection.indexPath(for: cell)?.item ?? -1,
-                            "cell": NSCoder.string(for: cell.frame),
-                            "allocation": NSCoder.string(for: cell.contentView.bounds),
-                            "root": root.map { NSCoder.string(for: $0.convert($0.bounds, to: cell.contentView)) } ?? "missing",
-                            "current": scope?.isCurrent ?? false, "can_present": scope?.canPresent ?? false,
-                            "admits_content": scope?.admitsContent ?? false,
-                            "root_descends_from_content": root?.isDescendant(of: cell.contentView) ?? false,
-                            "root_same_window": root?.window === cell.window,
-                            "blocks": blockGeometry]
-                }
-                let geometry: [String: Any] = ["target_block": fileBlock.id,
-                    "application_state": UIApplication.shared.applicationState.rawValue,
-                    "scene_state": scene.activationState.rawValue,
-                    "viewport": NSCoder.string(for: controller.collection.bounds),
-                    "web_views": webViews(host.view).count, "rows": rows]
-                if let data = try? JSONSerialization.data(withJSONObject: geometry, options: [.sortedKeys]),
-                   let text = String(data: data, encoding: .utf8) {
-                    Attachment.record(text, named: "Canvas initial file failure geometry.json")
-                }
-                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                    window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
-                }
-                Attachment.record(image, named: "Canvas initial file failure.png", as: .png)
-            }
-            throw error
-        }
+        try await requirePaintedFile(fileBlock.id, phase: .initial, host: host, window: window)
         let first = try #require(collectionController(host))
         await store.open(milo)
         try await wait("Milo actually replaced the native Canvas subtree") { collectionController(host).map { $0 !== first } ?? false }
@@ -81,7 +42,7 @@ import BottoCore
                 $0.scope === cell.exposure && $0.bounds.height > 300 } &&
                 !webViews(cell).isEmpty && abs(rect.minY) < 1 && abs(rect.height - cell.contentView.bounds.height) < 1
         }
-        try await requirePaintedFile(fileBlock.id, host: host, window: window)
+        try await requirePaintedFile(fileBlock.id, phase: .returned, host: host, window: window)
         let screen = try #require(store.chats.screen(profile: profile))
         store.chats.displayed(screen.owner)
         store.chats.editDraft("Canvas tail after rich preview\n  keep this source draft  ", owner: screen.owner)
@@ -118,28 +79,156 @@ import BottoCore
             }
         }
     }
-    private func requirePaintedFile(_ block: Int, host: UIViewController, window: UIWindow) async throws {
+    private enum PaintPhase: String { case initial, returned }
+
+    private struct PaintReadinessTrace {
+        let phase: PaintPhase
+        let started = CACurrentMediaTime()
+        var attempts = 0
+        var maximumAttemptGap: TimeInterval = 0
+        var previousAttempt: TimeInterval?
+        var samples: [[String: Any]] = []
+        var discardedSamples = 0
+        var lastImage: UIImage?
+        var lastCapture: [String: Any] = [:]
+        var oracleError: [String: Any] = [:]
+
+        mutating func beginAttempt() {
+            let now = CACurrentMediaTime()
+            if let previousAttempt { maximumAttemptGap = max(maximumAttemptGap, now - previousAttempt) }
+            previousAttempt = now
+            attempts += 1
+        }
+
+        mutating func record(_ stage: String, renderers: [String] = []) {
+            let sample: [String: Any] = ["elapsed_seconds": CACurrentMediaTime() - started,
+                "attempt": attempts, "stage": stage, "renderers_before_capture": renderers]
+            // Keep the latest evidence even when a deadline spans many display frames.
+            if samples.count == 64 { samples.removeFirst(); discardedSamples += 1 }
+            samples.append(sample)
+        }
+    }
+
+    private func requirePaintedFile(_ block: Int, phase: PaintPhase, host: UIViewController, window: UIWindow,
+                                    sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let display = NativeContentDisplayFrames()
         defer { display.stop() }
+        var trace = PaintReadinessTrace(phase: phase)
         // Allow the renderer's fifteen-second cold startup and five-second document budget.
         let deadline = ContinuousClock.now + .seconds(21)
         var painted = false
+        defer {
+            if !painted { recordPaintFailure(block, trace: trace, host: host, window: window) }
+        }
         while ContinuousClock.now < deadline {
-            guard let controller = collectionController(host),
-                  let cell = controller.collection.cellForItem(at: IndexPath(item: 2, section: 0)) as? NativeTranscriptCell,
-                  let document = markers(cell).first(where: { $0.block == block && $0.role == .document && $0.scope === cell.exposure }) else {
+            trace.beginAttempt()
+            guard let controller = collectionController(host) else {
+                trace.record("missing-controller")
                 await display.nextFrame(); continue
             }
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            guard let cell = controller.collection.cellForItem(at: IndexPath(item: 2, section: 0)) as? NativeTranscriptCell else {
+                trace.record("missing-cell")
+                await display.nextFrame(); continue
             }
+            guard let document = markers(cell).first(where: { $0.block == block && $0.role == .document && $0.scope === cell.exposure }) else {
+                trace.record("missing-current-document-marker")
+                await display.nextFrame(); continue
+            }
+            let states = webViews(cell).map { view in
+                "\(ObjectIdentifier(view)) renderer=\((view.navigationDelegate as? RichContentRenderer).map { String(describing: $0.state) } ?? "missing") loading=\(view.isLoading) attached=\(view.window === window)"
+            }
+            trace.record("capture-started", renderers: states)
+            let captureStarted = CACurrentMediaTime()
+            var drawn = false
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                drawn = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let captureFinished = CACurrentMediaTime()
             let visible = document.convert(document.bounds, to: window)
                 .intersection(controller.collection.convert(controller.collection.bounds, to: window)).intersection(window.bounds)
-            painted = try RenderedTranscriptFile.observe(image, in: visible).isComplete
+            trace.lastImage = image
+            trace.lastCapture = ["elapsed_seconds": captureFinished - trace.started,
+                "draw_seconds": captureFinished - captureStarted, "draw_succeeded": drawn,
+                "crop_in_window": NSCoder.string(for: visible), "image_scale": image.scale,
+                "image_size": NSCoder.string(for: image.size)]
+            do {
+                let observation = try RenderedTranscriptFile.observe(image, in: visible)
+                painted = observation.isComplete
+                trace.lastCapture["oracle_seconds"] = CACurrentMediaTime() - captureFinished
+                trace.lastCapture["has_bars"] = observation.hasBars
+                trace.lastCapture["ocr_attempted"] = observation.hasBars
+                trace.lastCapture["recognized_text"] = observation.text
+                trace.record(painted ? "painted" : "oracle-incomplete", renderers: states)
+            } catch {
+                let error = error as NSError
+                trace.oracleError = ["domain": error.domain, "code": error.code]
+                trace.record("oracle-threw", renderers: states)
+                throw error
+            }
             if painted { break }
             await display.nextFrame()
         }
-        try #require(painted, "actual visible file body must paint its known bars; WK presence and measured height alone do not pass")
+        try #require(painted, "\(phase.rawValue): actual visible file body must paint its known bars; WK presence and measured height alone do not pass",
+                     sourceLocation: sourceLocation)
+    }
+
+    private func recordPaintFailure(_ block: Int, trace: PaintReadinessTrace, host: UIViewController, window: UIWindow) {
+        let controller = collectionController(host)
+        let rows: [[String: Any]] = controller?.collection.visibleCells.map { cell in
+            let scope = (cell as? NativeTranscriptCell)?.exposure
+            let root = scope?.rowGeometry
+            let blocks: [[String: Any]] = markers(cell).map { marker in
+                ["block": marker.block, "role": String(describing: marker.role),
+                 "bounds": NSCoder.string(for: marker.bounds),
+                 "frame_in_window": NSCoder.string(for: marker.convert(marker.bounds, to: window)),
+                 "visible": marker.presence?.isVisible ?? false, "current_scope": marker.scope === scope]
+            }
+            return ["index": controller?.collection.indexPath(for: cell)?.item ?? -1,
+                    "cell": NSCoder.string(for: cell.frame), "allocation": NSCoder.string(for: cell.contentView.bounds),
+                    "root": root.map { NSCoder.string(for: $0.convert($0.bounds, to: cell.contentView)) } ?? "missing",
+                    "current": scope?.isCurrent ?? false, "can_present": scope?.canPresent ?? false,
+                    "admits_content": scope?.admitsContent ?? false,
+                    "root_descends_from_content": root?.isDescendant(of: cell.contentView) ?? false,
+                    "root_same_window": root?.window === cell.window, "blocks": blocks]
+        } ?? []
+        let documents: [[String: Any]] = webViews(host.view).map { view in
+            let renderer = view.navigationDelegate as? RichContentRenderer
+            return ["identity": String(describing: ObjectIdentifier(view)),
+                    "renderer_state": renderer.map { String(describing: $0.state) } ?? "missing",
+                    "renderer_height": renderer?.height ?? -1, "loading": view.isLoading,
+                    "estimated_progress": view.estimatedProgress, "attached_to_test_window": view.window === window,
+                    "hidden": view.isHidden, "alpha": view.alpha,
+                    "renderer_owns_view": renderer?.webView === view,
+                    "bounds": NSCoder.string(for: view.bounds),
+                    "frame_in_window": NSCoder.string(for: view.convert(view.bounds, to: window))]
+        }
+        let evidence: [String: Any] = ["phase": trace.phase.rawValue, "target_block": block,
+            "elapsed_seconds": CACurrentMediaTime() - trace.started, "attempts": trace.attempts,
+            "maximum_attempt_gap_seconds": max(trace.maximumAttemptGap, CACurrentMediaTime() - (trace.previousAttempt ?? trace.started)),
+            "discarded_samples": trace.discardedSamples,
+            "samples": trace.samples, "last_capture": trace.lastCapture, "oracle_error": trace.oracleError,
+            "application_state": UIApplication.shared.applicationState.rawValue,
+            "scene_state": window.windowScene?.activationState.rawValue ?? -1,
+            "test_window_key": window.isKeyWindow, "test_window_hidden": window.isHidden,
+            "test_window_bounds": NSCoder.string(for: window.bounds),
+            "host_in_test_window": host.view.window === window, "controller_present": controller != nil,
+            "viewport": controller.map { NSCoder.string(for: $0.collection.bounds) } ?? "missing",
+            "rows": rows, "web_views": documents]
+        let name = "Canvas \(trace.phase.rawValue) file failure"
+        if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            Attachment.record(text, named: "\(name).json")
+        } else {
+            Attachment.record(String(describing: evidence), named: "\(name) serialization fallback.txt")
+        }
+        if let image = trace.lastImage {
+            Attachment.record(image, named: "\(name) last observed.png", as: .png)
+        } else {
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            }
+            Attachment.record(image, named: "\(name) no oracle capture.png", as: .png)
+        }
     }
     private func collectionController(_ parent: UIViewController) -> NativeTranscriptController? {
         if let controller = parent as? NativeTranscriptController, controller.isViewLoaded, controller.view.window != nil { return controller }
