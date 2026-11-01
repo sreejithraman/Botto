@@ -15,7 +15,11 @@ project; [project.yml](../../project.yml) owns its generated settings.
   Simulator, disables signing, and writes to `.artifacts/`. On a shared machine, use an explicit owned
   destination for native checks and provider readback.
 - [Contributor CI](../../scripts/check-ci.sh) covers package, MainActor,
-  Python tooling, and unsigned Simulator/native unit-test checks. The
+  Python tooling, and unsigned app/test builds on PRs. Main pushes also run the
+  full serial native suite before TestFlight. Independent workflow jobs feed
+  the required aggregate `verify` check. [Native-only
+  diagnosis](../local-checks.md) uses `scripts/check-native.sh` and does not
+  replace that full gate. The
   [workflow](../../.github/workflows/ios.yml) runs automatically for public
   repositories and supports manual dispatch once Actions is enabled. Private
   repositories use manual dispatch. Hosted results appear in the repository's

@@ -2,11 +2,7 @@ import CoreGraphics
 import Foundation
 import Observation
 import SwiftUI
-#if os(iOS)
 import UIKit
-#else
-import AppKit
-#endif
 
 @MainActor enum DiagramAdmission {
     case pixels(DiagramPresentation, DiagramRenderTicket), render(DiagramRenderTicket), busy, denied
@@ -126,19 +122,15 @@ private final class DiagramStorage {
     @ObservationIgnored private var entries: [Entry] = []
     @ObservationIgnored private var scopes: [Scope] = []
     @ObservationIgnored private var pressureSource: DispatchSourceMemoryPressure?
-    #if os(iOS)
     @ObservationIgnored private var warningObserver: NSObjectProtocol?
-    #endif
     private init() {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         source.setEventHandler { Task { @MainActor in Self.shared.handlePressure() } }
         source.resume(); pressureSource = source
-        #if os(iOS)
         warningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
                                                                 object: nil, queue: .main) { _ in
             Task { @MainActor in Self.shared.handlePressure() }
         }
-        #endif
     }
     func register(_ scope: RichReplyPresentations) {
         scopes.removeAll { $0.value == nil }; scopes.append(Scope(scope))
@@ -185,7 +177,7 @@ private final class DiagramStorage {
 }
 
 /// Native drawing owns a charged companion. SwiftUI never receives a raw image
-/// or UIImage/NSImage value that could outlive the storage ledger.
+/// or UIImage value that could outlive the storage ledger.
 struct DiagramPixelsView: View {
     let presentation: DiagramPresentation
     var body: some View {
@@ -194,7 +186,6 @@ struct DiagramPixelsView: View {
     }
 }
 
-#if os(iOS)
 private struct NativeDiagramPixels: UIViewRepresentable {
     let presentation: DiagramPresentation
     func makeUIView(context: Context) -> DrawingView { DrawingView() }
@@ -215,25 +206,6 @@ private struct NativeDiagramPixels: UIViewRepresentable {
         }
     }
 }
-#else
-private struct NativeDiagramPixels: NSViewRepresentable {
-    let presentation: DiagramPresentation
-    func makeNSView(context: Context) -> DrawingView { DrawingView() }
-    func updateNSView(_ view: DrawingView, context: Context) { view.install(presentation) }
-    final class DrawingView: NSView {
-        private var presentation: DiagramPresentation?
-        private var companion: DiagramStorage?
-        func install(_ value: DiagramPresentation) {
-            presentation = value; companion = value.drawingStorage(); needsDisplay = true
-        }
-        override func draw(_ dirtyRect: NSRect) {
-            guard let context = NSGraphicsContext.current?.cgContext, let companion, presentation?.isAvailable == true else { return }
-            context.interpolationQuality = .high
-            context.draw(companion.image, in: fittedRect(width: companion.image.width, height: companion.image.height, bounds: bounds))
-        }
-    }
-}
-#endif
 
 private func fittedRect(width: Int, height: Int, bounds: CGRect) -> CGRect {
     let scale = min(bounds.width / CGFloat(width), bounds.height / CGFloat(height))

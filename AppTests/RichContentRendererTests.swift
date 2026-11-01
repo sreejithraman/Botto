@@ -5,13 +5,8 @@ import WebKit
 import CoreGraphics
 import ImageIO
 import SwiftUI
-#if RICH_CONTENT_STANDALONE
-@testable import RichContentHarness
-import AppKit
-#else
 @testable import Botto
 import UIKit
-#endif
 
 /// Production WKWebView checks; device interaction and external-network
 /// observation require separate acceptance.
@@ -83,9 +78,6 @@ struct RichContentRendererTests {
             let web = try #require(renderer.webView)
             let png = try await snapshot(web)
             #expect(try distinctPixelColors(png) > 8, "The actual snapshot must contain diagram ink, not only an empty background")
-            #if RICH_CONTENT_STANDALONE
-            try png.write(to: URL(fileURLWithPath: "/tmp/botto-rich-webkit-\(language).png"))
-            #endif
         }
     }
 
@@ -472,7 +464,6 @@ struct RichContentRendererTests {
         #expect(renderer.state == .idle)
     }
 
-    #if os(iOS)
     /// Offscreen previews release their document and watchdog even while SwiftUI retains the row.
     @Test func inlineViewportOwnsTheDocumentLifetime() async throws {
         let model = ViewportFixtureModel()
@@ -562,7 +553,6 @@ struct RichContentRendererTests {
         }
         throw ProbeFailure.javaScriptTimedOut
     }
-    #endif
 
     /// Native snapshots and their color interpretation travel with the result
     /// bundle. A missing image records state/geometry instead of inventing pixels.
@@ -589,15 +579,6 @@ struct RichContentRendererTests {
     /// must mount the host before capture so SwiftUI creates the drawing view.
     private func nativePixels(_ presentation: DiagramPresentation) async throws -> CGImage {
         let size = CGSize(width: presentation.pixelWidth, height: presentation.pixelHeight)
-        #if RICH_CONTENT_STANDALONE
-        let content = DiagramPixelsView(presentation: presentation).frame(width: size.width, height: size.height)
-        let host = NSHostingView(rootView: content)
-        host.frame = CGRect(origin: .zero, size: size)
-        host.layoutSubtreeIfNeeded()
-        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        return try #require(bitmap.cgImage)
-        #else
         try await wait {
             UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                 .contains { $0.activationState == .foregroundActive }
@@ -641,7 +622,6 @@ struct RichContentRendererTests {
         Attachment.record(result, named: "exact-native-drawing-capture.png", as: .png)
         Attachment.record("host=\(host.view.bounds) drawing=\(drawing.bounds) window=\(drawing.window != nil) display=\(drawing.layer.needsDisplay()) contents=\(drawing.layer.contents != nil)", named: "mounted-native-drawing.txt")
         return result
-        #endif
     }
 
     private func pixelHistogram(_ image: CGImage, space: CGColorSpace) throws -> String {
@@ -667,11 +647,7 @@ struct RichContentRendererTests {
         var lines = ["web.bounds=\(web.bounds) frame=\(web.frame) autoresizing=\(web.autoresizingMask.rawValue) attached=\(web.window != nil)"]
         var ancestor = web.superview
         while let view = ancestor {
-            #if RICH_CONTENT_STANDALONE
-            lines.append("\(type(of: view)) bounds=\(view.bounds) frame=\(view.frame)")
-            #else
             lines.append("\(type(of: view)) bounds=\(view.bounds) frame=\(view.frame) transform=\(view.transform) safeArea=\(view.safeAreaInsets)")
-            #endif
             ancestor = view.superview
         }
         if let window = web.window { lines.append("window.frame=\(window.frame)") }
@@ -682,23 +658,17 @@ struct RichContentRendererTests {
         Attachment.record("requested=\(expected)\n\(geometry(of: web))", named: "mounted-\(Int(expected.width))x\(Int(expected.height))-geometry.txt")
         #expect(web.bounds.size == expected, "The mounted native viewport must match the renderer request before readiness")
         #expect(web.window != nil)
-        #if !RICH_CONTENT_STANDALONE
         if let window = web.window {
             #expect(window.bounds.insetBy(dx: -1, dy: -1).contains(web.convert(web.bounds, to: window)),
                     "A fixed logical viewport must fit onscreen, including on narrower phones")
         }
-        #endif
     }
 
     private func snapshot(_ web: WKWebView) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             web.takeSnapshot(with: nil) { image, error in
                 if let error { continuation.resume(throwing: error); return }
-                #if RICH_CONTENT_STANDALONE
-                let data = image?.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }
-                #else
                 let data = image?.pngData()
-                #endif
                 if let data { continuation.resume(returning: data) }
                 else { continuation.resume(throwing: CocoaError(.fileReadUnknown)) }
             }
@@ -822,11 +792,7 @@ struct RichContentRendererTests {
     }
 
     private func makeRenderer() -> RichContentRenderer {
-        #if RICH_CONTENT_STANDALONE
-        RichContentRenderer(bundle: .module)
-        #else
         RichContentRenderer()
-        #endif
     }
 
     private func block(_ language: String, _ source: String) -> ReplyContent.Block {
@@ -896,23 +862,6 @@ struct RichContentRendererTests {
         }
     }
 
-    #if RICH_CONTENT_STANDALONE
-    private func attach(_ renderer: RichContentRenderer, size: CGSize? = nil) async throws -> NSWindow {
-        _ = NSApplication.shared
-        let bounds = CGRect(origin: .zero, size: size ?? CGSize(width: 420, height: 480))
-        let window = NSWindow(contentRect: bounds, styleMask: [.titled], backing: .buffered, defer: false)
-        let container = NSView(frame: bounds)
-        let web = try #require(renderer.webView)
-        web.frame = container.bounds
-        web.autoresizingMask = size == nil ? [.width, .height] : []
-        container.addSubview(web)
-        window.contentView = container
-        window.orderFront(nil)
-        if let size { recordMountedGeometry(web, expected: size) }
-        return window
-    }
-    private func detach(_ window: NSWindow) { window.orderOut(nil); window.contentView = nil }
-    #else
     private func attach(_ renderer: RichContentRenderer, size: CGSize? = nil) async throws -> UIWindow {
         // Swift Testing may start before the host scene has installed its first
         // window. Wait for that window before presenting this fixture.
@@ -958,5 +907,4 @@ struct RichContentRendererTests {
         return window
     }
     private func detach(_ window: UIWindow) { window.isHidden = true; window.rootViewController = nil }
-    #endif
 }

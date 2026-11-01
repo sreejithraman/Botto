@@ -46,7 +46,7 @@ final class RichContentRenderer: NSObject {
     init(bundle: Bundle = .main) {
         self.bundle = bundle
         super.init()
-        #if DEBUG && os(iOS) && !RICH_CONTENT_STANDALONE
+        #if DEBUG
         TranscriptMeasurements.current?.register(self)
         #endif
     }
@@ -137,10 +137,8 @@ final class RichContentRenderer: NSObject {
             configuration.preferences.inactiveSchedulingPolicy = .suspend
             configuration.allowsAirPlayForMediaPlayback = false
             configuration.mediaTypesRequiringUserActionForPlayback = .all
-            #if os(iOS)
             configuration.allowsPictureInPictureMediaPlayback = false
             configuration.dataDetectorTypes = []
-            #endif
             let controller = configuration.userContentController
             controller.add(rules)
             controller.add(WeakHandler(self), contentWorld: Self.bridgeWorld, name: "richContent")
@@ -149,19 +147,17 @@ final class RichContentRenderer: NSObject {
             controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true, in: Self.bridgeWorld))
             let view = AttachedRichWebView(frame: .zero, configuration: configuration)
-            #if DEBUG && os(iOS) && !RICH_CONTENT_STANDALONE
+            #if DEBUG
             TranscriptMeasurements.current?.register(view)
             #endif
             view.navigationDelegate = self
             view.uiDelegate = self
             view.allowsBackForwardNavigationGestures = false
             view.allowsLinkPreview = false
-            #if os(iOS)
             view.isOpaque = false
             view.backgroundColor = .clear
             view.scrollView.isScrollEnabled = false
             view.scrollView.contentInsetAdjustmentBehavior = .never
-            #endif
             webView = view
             initialNavigationAllowed = true
             childNavigationAllowed = true
@@ -326,11 +322,7 @@ final class RichContentRenderer: NSObject {
         let configuration = WKSnapshotConfiguration()
         configuration.rect = view.bounds
         configuration.afterScreenUpdates = true
-        #if os(iOS)
         let scale = max(1, view.traitCollection.displayScale)
-        #else
-        let scale = view.window?.backingScaleFactor ?? 1
-        #endif
         // WKSnapshotConfiguration uses points; the result uses the display scale.
         let factor = 1_024 / max(size.width, size.height) / scale
         configuration.snapshotWidth = NSNumber(value: Double(size.width * factor))
@@ -344,11 +336,7 @@ final class RichContentRenderer: NSObject {
                 self.suspend()
                 return
             }
-            #if os(iOS)
             let pixels = image?.cgImage
-            #else
-            let pixels = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-            #endif
             guard error == nil, let pixels else {
                 _ = capture.finishCapture(nil, height: 120)
                 self.fail("This preview could not load. Source is still available.")
@@ -379,11 +367,10 @@ final class RichContentRenderer: NSObject {
 }
 
 /// WebKit's `.suspend` policy stops detached documents. Begin both execution and
-/// its watchdog only after UIKit/AppKit actually attaches the view to a window.
+/// its watchdog only after UIKit actually attaches the view to a window.
 private final class AttachedRichWebView: WKWebView {
     var attachmentChanged: ((Bool) -> Void)?
     var layoutChanged: (() -> Void)?
-    #if os(iOS)
     override func layoutSubviews() {
         super.layoutSubviews()
         layoutChanged?()
@@ -392,16 +379,6 @@ private final class AttachedRichWebView: WKWebView {
         super.didMoveToWindow()
         attachmentChanged?(window != nil)
     }
-    #elseif os(macOS)
-    override func layout() {
-        super.layout()
-        layoutChanged?()
-    }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        attachmentChanged?(window != nil)
-    }
-    #endif
 }
 
 extension RichContentRenderer: WKNavigationDelegate {
