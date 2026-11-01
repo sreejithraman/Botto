@@ -36,6 +36,7 @@ import BottoCore
     @ObservationIgnored private let now: () -> Date
     #if DEBUG
     @ObservationIgnored private let diagnosticTestOwner = AvatarDecodeLedger.testOwner
+    @ObservationIgnored private let beforeDecode = AvatarDecodeLedger.beforeDecode
     #endif
 
     init(now: @escaping () -> Date = Date.init) { self.now = now }
@@ -118,18 +119,30 @@ import BottoCore
                     let photo = bot.appearance?.imageKind == "photo"
                     #if DEBUG
                     AvatarDecodeLedger.shared.mark(.queued, attempt)
-                    decoded = await Task.detached(priority: .utility) {
+                    let beforeDecode = self?.beforeDecode
+                    #endif
+                    let worker = Task.detached(priority: .utility) { () -> Decoded? in
+                        #if DEBUG
+                        await beforeDecode?()
                         AvatarDecodeLedger.shared.mark(.body, attempt, cancelled: Task.isCancelled)
+                        #endif
+                        guard !Task.isCancelled else { return nil }
                         let result = asset.flatMap { asset in
+                            #if DEBUG
                             AvatarDecodeLedger.shared.mark(.sync, attempt)
+                            #endif
                             return Self.decode(asset, photo: photo)
                         }
+                        #if DEBUG
                         AvatarDecodeLedger.shared.mark(.finish, attempt, imageProduced: result?.image != nil)
+                        #endif
                         return result
-                    }.value
-                    #else
-                    decoded = await Task.detached(priority: .utility) { asset.flatMap { Self.decode($0, photo: photo) } }.value
-                    #endif
+                    }
+                    decoded = await withTaskCancellationHandler {
+                        await worker.value
+                    } onCancel: {
+                        worker.cancel()
+                    }
                 } catch {
                     // Optional/unsupported image RPCs never affect the connection or roster.
                     decoded = nil
@@ -183,9 +196,10 @@ import BottoCore
 }
 
 #if DEBUG
-/// Metadata only; a finished decode stays active until its parent checks publication.
+/// Debug decode tracing; a finished decode stays active until its parent checks publication.
 nonisolated final class AvatarDecodeLedger: @unchecked Sendable {
     @TaskLocal static var testOwner: String?
+    @TaskLocal static var beforeDecode: (@Sendable () async -> Void)?
     static let shared = AvatarDecodeLedger()
     static let activeLimit = 256, recentLimit = 64, ownerScalarLimit = 256
 

@@ -565,6 +565,54 @@ import BottoCore
         #expect(store.avatar(for: store.bots[0]) == nil)
     }
 
+    #if DEBUG
+    @Test func retirementCancelsTheWorkerBeforeAvatarDecodingStarts() async throws {
+        let gate = AvatarDecodeGate()
+        defer { gate.release() }
+        let owner = "AppStoreAvatarTests/" + (Test.current?.name ?? "cancelled decode")
+        let avatars = AvatarDecodeLedger.$testOwner.withValue(owner) {
+            AvatarDecodeLedger.$beforeDecode.withValue({ await gate.wait() }) { BotAvatarStore() }
+        }
+        defer { avatars.cancel() }
+        let service = AvatarService(); service.holdImages = false
+        let bot = try #require(service.profiles.first)
+        avatars.refresh([bot], connectionID: UUID(), using: service)
+        let startupDeadline = ContinuousClock.now + .seconds(5)
+        while !gate.hasEntered, ContinuousClock.now < startupDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(gate.hasEntered)
+        avatars.cancel()
+        gate.release()
+        func finishedAttempt() throws -> [String: Any]? {
+            let data = Data(AvatarDecodeLedger.shared.failureSnapshot().utf8)
+            let snapshot = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return (snapshot["recent"] as? [[String: Any]])?.last { $0["testOwner"] as? String == owner }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try finishedAttempt() == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let finished = try #require(try finishedAttempt())
+        #expect(finished["workerCancelledAtEntry"] as? Bool == true)
+        #expect(finished["imageProduced"] as? Bool != true)
+        #expect(avatars.image(for: bot) == nil && !avatars.isLoading(bot))
+    }
+    @Test func releasedAvatarDecodeGateAllowsLateEntry() async throws {
+        let gate = AvatarDecodeGate()
+        gate.release()
+        var finished = false
+        let worker = Task { await gate.wait(); finished = true }
+        defer { worker.cancel(); gate.release() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !finished, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(finished)
+        await worker.value
+    }
+    #endif
+
     @Test(arguments: ["image/png", "image/jpeg", "image/webp"])
     func hermesPetAndImageAssetsKeepAspectAndTransparency(mime: String) async throws {
         let pet = mime != "image/jpeg"
@@ -761,6 +809,18 @@ import BottoCore
         #expect(service.saves == 1)
     }
 }
+
+#if DEBUG
+@MainActor private final class AvatarDecodeGate {
+    private let pause = AsyncStream<Void>.makeStream()
+    private(set) var hasEntered = false
+    func wait() async {
+        hasEntered = true
+        for await _ in pause.stream {}
+    }
+    func release() { pause.continuation.finish() }
+}
+#endif
 
 @MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
                                         diagnostics: () -> String = { "" },
