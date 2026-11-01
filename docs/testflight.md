@@ -4,7 +4,17 @@ Botto keeps contributor checks separate from official distribution. Pull
 requests, including forks, run tests and unsigned builds without Apple
 credentials. The [TestFlight workflow](../.github/workflows/testflight.yml)
 publishes a tested commit from protected `main` to an internal tester group.
+PRs run core tests, tooling tests, and an unsigned app/test build. Merging runs
+the full native suite; a failure blocks distribution. Maintainers need only
+push their PR and merge it after the fast checks pass. Fork PRs never receive
+Apple secrets or upload builds.
 It does not submit an App Store release or invite external testers.
+
+Each revision's checks run independently, so a delayed older run cannot cancel
+a newer check. Publishing skips superseded sources and ships the latest tested
+main with notes covering all changes since the last confirmed beta. An upload
+already in progress finishes; the next delivery rechecks its source and baseline
+after queueing. Rapid merges may run extra checks, without an extra release step.
 
 ## Delivery flow
 
@@ -69,7 +79,9 @@ key. A downloaded certificate alone cannot sign an app. Keep the original
 identity and profile backups outside the repository.
 
 Create a GitHub environment named `apple-release`. Allow deployments only from
-protected `main`, and require the iOS checks before merging. Keep Apple inputs
+protected `main`, and require the PR's `verify` check before merging. The full
+main checks gate distribution, so PRs need not be rebuilt after every unrelated
+main update. Keep Apple inputs
 in that environment, not in repository files or pull-request jobs. GitHub
 [environments](https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments)
 restrict access to release secrets. Run publishing on a disposable

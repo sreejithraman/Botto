@@ -1,20 +1,13 @@
 import Foundation
 import Testing
 import BottoCore
-#if os(iOS)
 import SwiftUI
 import UIKit
 import WebKit
 import Vision
-#endif
-#if RICH_CONTENT_STANDALONE
-@testable import RichContentHarness
-#else
 @testable import Botto
-#endif
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
-    #if os(iOS)
     @Test(arguments: ["working", "canonical"])
     func mountedFilePreviewReauthorizationUsesCapturedBytesWithoutRevivingOldGrant(event: String) async throws {
         let service = RichReplyTestService()
@@ -59,7 +52,6 @@ import Vision
         #expect(replacement.resolved.block.source == originalFile.block.source)
         #expect(service.downloads.count == 1, "Fresh authority can install the same captured bytes without another host fetch")
     }
-    #endif
     @Test func previewDirectiveLoadsThroughItsOwningChatAndBindsDownloadedHTML() async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file=\"report.html\"}"
@@ -412,7 +404,6 @@ import Vision
     func release() { continuation?.resume(); continuation = nil }
 }
 
-#if os(iOS)
 /// Observes the document actually mounted by the native preview, independently
 /// of the direct-loader grants and the service's captured-byte count.
 @MainActor enum MountedReplyFileDocument {
@@ -470,4 +461,3 @@ import Vision
         }
     }
 }
-#endif

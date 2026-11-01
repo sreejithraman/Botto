@@ -20,12 +20,51 @@ Explicit serial scheduling avoids suite-wide localhost fixture contention under
 heavy machine load; concurrency exercised inside individual tests stays intact.
 The runner does not select a Simulator, run native/UI tests, or perform Files
 export/readback. Use [the full check script](../scripts/check.sh) for that
-additional coverage. [Contributor CI](../scripts/check-ci.sh) runs the
-package and tooling checks plus an unsigned Simulator build and native unit
-tests. The [workflow](../.github/workflows/ios.yml) runs automatically for public
-repositories and supports manual dispatch after enabling Actions. Private
-repositories use manual dispatch; hosted execution of this configuration has
-not yet been verified.
+additional coverage.
+
+## Contributor CI and native diagnosis
+
+The [iOS workflow](../.github/workflows/ios.yml) runs independent core, tooling,
+and native jobs. Core checks use the Swift toolchain and also exercise process
+ownership on macOS. The tooling job runs the complete Python suite on Linux.
+On pull requests, the native job builds the app and all tests without running
+the Simulator suite. After a merge to `main`, it runs all `BottoTests` serially.
+The required `verify` check fails unless all three jobs succeed, including when
+a dependency fails, is cancelled, or is skipped. A passing PR build cannot
+authorize TestFlight: delivery requires the full successful iOS **push** run
+for the exact current `main` revision.
+
+Public repositories run automatically; private repositories use manual dispatch.
+The split workflow needs fresh hosted verification. Existing native readiness
+failures remain under investigation; their tests stay in the main release gate.
+
+`./scripts/check-ci.sh` remains the full local sequence: core, tooling, then
+native checks. Native-only and focused diagnosis use
+[check-native.sh](../scripts/check-native.sh):
+
+```sh
+BOTTO_TEST_DESTINATION='platform=iOS Simulator,id=YOUR-SIMULATOR-UUID' \
+  ./scripts/check-native.sh AppStoreAvatarTests
+```
+
+Omit the selector to run the full native suite. A selector may name a suite or
+an exact `Suite/testFunction(...)`; quote parentheses. The runner checks selector
+syntax before building, then uses Xcode's discovery of the built tests before
+executing a focused selection. A helper, wrong signature, or empty selection
+cannot claim a passing run. Discovered identifiers, build/test status and
+`.xcresult` survive result finalization failures where possible. Keep local runs
+on an owned device.
+
+For an isolated hosted diagnostic run of a published branch:
+
+```sh
+gh workflow run ios.yml --ref YOUR-BRANCH -f native_test=AppStoreAvatarTests
+```
+
+Focused manual runs report `diagnostic-result`, not the required `verify`, and
+cannot authorize TestFlight delivery. Check runs are independent, so a manual
+run cannot cancel the current `main` check. A focused
+pass proves only the selected cases; record the actual executed test count.
 
 The full runner disables verbose Simulator failure diagnostics by default with
 `-collect-test-diagnostics never`. Test output and the `.xcresult` under
