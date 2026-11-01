@@ -114,7 +114,8 @@ import WebKit
         try await wait("leaving the workspace retires the work reader") { controller.presentedViewController == nil }
 
     }
-    @Test func liveToolReaderSurvivesTheServiceCompletionRefresh() async throws {
+    @Test(arguments: ["complete", "next-turn", "replay"])
+    func liveToolReaderSurvivesTheServiceCompletionRefresh(scenario: String) async throws {
         let source = ToolReaderServiceFixture()
         let service = HermesBotService(transportFactory: { source }, journal: HermesSubmissionJournal(directory: nil))
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-tool-refresh.invalid")!,
@@ -130,15 +131,31 @@ import WebKit
         source.event("message.start")
         source.event("tool.start", payload: ["tool_id": .string("call-reader"), "name": .string("terminal"),
             "args": .object(["command": .string("Running the service check")])])
-        try await wait("live service work disclosure is admitted") {
-            element("Work details, 1 tool, Working", in: host.view).map { !$0.accessibilityTraits.contains(.notEnabled) } == true
+        if scenario == "replay" {
+            source.event("tool.start", payload: ["tool_id": .string("aaa"), "name": .string("lookup")])
         }
-        #expect(try #require(element("Work details, 1 tool, Working", in: host.view)).accessibilityActivate())
+        let disclosure = scenario == "replay" ? "Work details, 2 tools, Working" : "Work details, 1 tool, Working"
+        try await wait("live service work disclosure is admitted") {
+            element(disclosure, in: host.view).map { !$0.accessibilityTraits.contains(.notEnabled) } == true
+        }
+        #expect(try #require(element(disclosure, in: host.view)).accessibilityActivate())
         let controller = try #require(collectionController(host))
         try await wait("live tool reader opens") { controller.presentedViewController.map { element("Expand terminal", in: $0.view) != nil } == true }
         let reader = try #require(controller.presentedViewController)
         #expect(try #require(element("Expand terminal", in: reader.view)).accessibilityActivate())
         try await wait("live tool starts expanded") { element("Running the service check", in: reader.view) != nil }
+        if scenario == "replay" {
+            source.snapshot["running"] = .bool(true); source.snapshot["last_sequence"] = .number(3)
+            source.event("session.replay_gap")
+            let profile = try ExactID("inbox-triage")
+            try await wait("replayed concurrent calls keep the same reader and expansion despite reordered rows") {
+                source.resumes >= 2 && controller.presentedViewController === reader &&
+                    element("Collapse terminal", in: reader.view) != nil &&
+                    store.chats.screen(profile: profile)?.snapshot?.messages.first { $0.toolName == "terminal" }?.workDetailsID != nil
+            }
+            #expect(element("Expand lookup", in: reader.view) != nil)
+            return
+        }
         source.event("tool.complete", payload: ["tool_id": .string("call-reader"), "name": .string("terminal"), "result_text": .string("Checked successfully")])
         source.snapshot["messages"] = .array([
             .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call-reader"),
@@ -147,25 +164,36 @@ import WebKit
         ])
         source.snapshot["running"] = .bool(false); source.snapshot["last_sequence"] = .number(4)
         source.event("message.complete", payload: ["text": .string("Done"), "status": .string("complete"), "outcome": .string("completed")])
-        try await wait("automatic durable refresh preserves the same expanded tool reader") {
-            source.resumes >= 2 && controller.presentedViewController === reader &&
-                element("Collapse terminal", in: reader.view) != nil && element("Checked successfully", in: reader.view) != nil
+        if scenario == "next-turn" {
+            source.snapshot["execution_generation"] = .number(8)
+            source.snapshot["running"] = .bool(true); source.snapshot["last_sequence"] = .number(5)
+            source.event("message.start", generation: 8)
         }
         let profile = try ExactID("inbox-triage")
+        try await wait("automatic durable refresh preserves the same expanded tool reader") {
+            source.resumes >= 2 && controller.presentedViewController === reader &&
+                element("Collapse terminal", in: reader.view) != nil && element("Checked successfully", in: reader.view) != nil &&
+                store.chats.screen(profile: profile)?.snapshot?.messages.first { $0.role == .tool }?.id == "stored-1:row:5"
+        }
         let savedTool = try #require(store.chats.screen(profile: profile)?.snapshot?.messages.first { $0.role == .tool })
         #expect(savedTool.id == "stored-1:row:5" && savedTool.hasStableIdentity(storedID: "stored-1"))
         #expect(savedTool.workDetailsID?.hasPrefix("tool:") == true)
 
     }
 
-    @Test(arguments: ["empty-section", "leading-whitespace", "empty-error"])
+    @Test(arguments: ["empty-section", "leading-whitespace", "empty-error", "partial-error"])
     func collapsedWorkPreviewsSkipEmptySectionsAndLeadingWhitespace(payload: String) async throws {
         let text: String = switch payload {
         case "empty-section": "{\"content\":\"\",\"output\":\"Job failed\"}"
         case "empty-error": "{\"output\":\"\",\"error\":\"permission denied\",\"exit_code\":1}"
+        case "partial-error": "{\"output\":\"Processed 5 files\",\"error\":\"permission denied\",\"exit_code\":1}"
         default: String(repeating: " \n", count: 500) + "Job failed"
         }
-        let expected = payload == "empty-error" ? "Preview: { \"error\": \"permission denied\", \"exit_code\": 1 }" : "Preview: Job failed"
+        let expected = switch payload {
+        case "empty-error": "Preview: Error: permission denied · Exit code: 1"
+        case "partial-error": "Preview: Error: permission denied · Exit code: 1 · Processed 5 files"
+        default: "Preview: Job failed"
+        }
         let message = ChatMessage(id: "preview", role: .tool, text: text, toolName: "terminal")
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         let previous = scene.windows.first { $0.isKeyWindow }
@@ -586,11 +614,11 @@ import WebKit
         closed = true
         let waiting = waiter; waiter = nil; waiting?.resume(throwing: HermesServiceError.disconnected)
     }
-    func event(_ type: String, payload: [String: HermesJSON] = [:]) {
+    func event(_ type: String, payload: [String: HermesJSON] = [:], generation: Int = 7) {
         sequence += 1
         let value: HermesJSON = .object(["type": .string(type), "seq": .number(Double(sequence)), "session_id": .string("stored-1"),
-            "replay_epoch": .string("session-epoch"), "execution_generation": .number(7),
-            "admission_id": .string("reader-turn"), "payload": .object(payload)])
+            "replay_epoch": .string("session-epoch"), "execution_generation": .number(Double(generation)),
+            "admission_id": .string("reader-turn-\(generation)"), "payload": .object(payload)])
         events.append(value); push(.object(["method": .string("event"), "params": value]))
     }
     private func push(_ value: HermesJSON) {

@@ -131,7 +131,10 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     /// A local occurrence can use current service authority but cannot identify a durable capture.
     public var transientID: UUID?
     /// Read-only disclosure continuity; never a durable row or artifact identity.
-    public var workDetailsID: String?
+    public var workDetailsID: String? = nil
+    private enum CodingKeys: String, CodingKey {
+        case id, role, text, timestamp, toolName, attachments, transientID, displayKind, displayText, isSilent
+    }
     public nonisolated func hasStableIdentity(storedID: String) -> Bool {
         transientID == nil && Self.isStableID(Data(id.utf8), storedID: storedID)
     }

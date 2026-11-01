@@ -169,6 +169,63 @@ struct HermesResultProjectionTests {
 }
 
 struct HermesToolIdentityTests {
+    @Test(arguments: ["complete", "missing-replay", "reused-call", "changed-output"])
+    func completedExecutionNeedsReplayProofWhenTheNextExecutionOutrunsRefresh(proof: String) throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        prior.generation = 7
+        prior.updateTool(.object(["tool_id": .string("call"), "name": .string("terminal"), "result_text": .string("Result")]), complete: true)
+        let original = try #require(prior.conversation.messages.first?.id)
+        let row: HermesJSON = .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call"),
+            "content": .string(proof == "changed-output" ? "Another result" : "Result")])
+        var fresh = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        fresh.generation = 8
+        try fresh.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored"), "running": .bool(true)]), history: [row], authority: false)
+        func event(_ type: String, generation: Int) -> HermesJSON {
+            .object(["type": .string(type), "session_id": .string("runtime"), "replay_epoch": .string("epoch"),
+                "execution_generation": .number(Double(generation)), "payload": .object(["tool_id": .string("call")])])
+        }
+        var replay = [event("tool.complete", generation: 7), event("message.complete", generation: 7), event("message.start", generation: 8)]
+        if proof == "missing-replay" { replay = [] }
+        if proof == "reused-call" { replay.append(event("tool.start", generation: 8)) }
+        fresh.retainToolIdentities(from: prior, replay: replay)
+        #expect(fresh.conversation.messages.first?.workDetailsID == (proof == "complete" ? original : nil))
+    }
+
+    @Test(arguments: [false, true])
+    func durableDisclosureSurvivesLaterCallReuseWithoutBorrowingIt(ambiguous: Bool) throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        let row: HermesJSON = .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call"), "content": .string("First result")])
+        try prior.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored")]), history: [row], authority: false)
+        prior.conversation.messages[0].workDetailsID = "tool:first:call"
+        var later = row; later["row_id"] = .number(6); later["content"] = .string("Later result")
+        var fresh = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        try fresh.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored")]), history: [row, later], authority: false)
+        if ambiguous { fresh.conversation.unavailableMessageIDs = [Data("stored:row:5".utf8)] }
+        fresh.retainToolIdentities(from: prior)
+        #expect(fresh.conversation.messages[0].workDetailsID == (ambiguous ? nil : "tool:first:call"))
+        #expect(fresh.conversation.messages[1].workDetailsID == nil)
+    }
+
+    @Test func absentExecutionCannotConnectDifferentDurableOccurrences() throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        var row: HermesJSON = .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call"), "content": .string("First result")])
+        try prior.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored")]), history: [row], authority: false)
+        row["row_id"] = .number(6); row["content"] = .string("Different occurrence")
+        var fresh = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        try fresh.restore(.object(["session_id": .string("runtime"), "session_key": .string("stored")]), history: [row], authority: false)
+        fresh.retainToolIdentities(from: prior)
+        #expect(fresh.conversation.messages.first?.workDetailsID == nil)
+    }
+
+    @Test func disclosureIdentityDoesNotChangeDurableMessageBytes() throws {
+        let durable = ChatMessage(id: "stored:row:5", role: .tool, text: "MEDIA:/report.txt", toolName: "terminal")
+        var displayed = durable; displayed.workDetailsID = "tool:live:call"
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        #expect(try encoder.encode(displayed) == encoder.encode(durable))
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: encoder.encode(displayed))
+        #expect(decoded == durable)
+    }
+
     @Test(arguments: ["duplicate-call", "duplicate-row", "missing-call", "different-call", "generation", "epoch", "stored", "profile"])
     func ambiguousOrDifferentSourcesCannotRetainToolIdentity(change: String) throws {
         var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")

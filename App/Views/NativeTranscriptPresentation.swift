@@ -9,8 +9,9 @@ struct WorkDetailsDocument {
     static func identity(of message: ChatMessage) -> Data { Data((message.workDetailsID ?? message.id).utf8) }
 
     static func continues(_ previous: [ChatMessage], with current: [ChatMessage]) -> Bool {
-        !previous.isEmpty && current.count >= previous.count &&
-            zip(previous, current).allSatisfy { identity(of: $0) == identity(of: $1) }
+        let previousIDs = Set(previous.map(identity)), currentIDs = Set(current.map(identity))
+        return !previous.isEmpty && previousIDs.count == previous.count && currentIDs.count == current.count &&
+            previousIDs.isSubset(of: currentIDs)
     }
 
     func updated(in snapshot: Conversation?) -> Self? {
@@ -31,7 +32,7 @@ struct WorkDetailsDocument {
 }
 
 /// One foreground reader belongs to the transcript, outside reusable cell hosts.
-/// Its captured Core context remains a prerequisite for both source and execution.
+/// Rich content keeps its Core context; tool details follow their read-only chat lifetime.
 @MainActor final class NativeTranscriptPresentation: NSObject, UIAdaptivePresentationControllerDelegate {
     @MainActor @Observable final class Session {
         let id = UUID()

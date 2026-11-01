@@ -17,15 +17,18 @@ enum NativeTranscriptRowValue: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case let (.message(a, aw, ast), .message(b, bw, bst)):
-            return aw == bw && ast == bst && TranscriptContentRevision.sameMessage(a, b)
+            return aw == bw && ast == bst && sameDisplayMessage(a, b)
         case let (.workDetails(a, aa), .workDetails(b, ba)):
-            return aa == ba && a.elementsEqual(b, by: TranscriptContentRevision.sameMessage)
+            return aa == ba && a.elementsEqual(b, by: sameDisplayMessage)
         case let (.request(a, ae), .request(b, be)):
             return ae == be && TranscriptContentRevision.sameRequest(a, b)
         case let (.auxiliary(a), .auxiliary(b)): return TranscriptContentRevision.exact(a, b)
         case let (.empty(a), .empty(b)): return a == b
         default: return false
         }
+    }
+    private static func sameDisplayMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
+        TranscriptContentRevision.sameMessage(a, b) && TranscriptContentRevision.exact(a.workDetailsID, b.workDetailsID)
     }
     func canContinueForeground(with other: Self) -> Bool {
         if case let .workDetails(previous, _) = self, case let .workDetails(current, _) = other {
@@ -671,6 +674,12 @@ private struct NativeTranscriptHostedRow: View {
         // replacement, fence old scopes before installing its new policy below.
         if unchanged { actionAdmission = admitsAction }
         let incomingByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0) })
+        var incomingWorkRows: [Data: NativeTranscriptItemID] = [:]
+        for row in nextRows {
+            if case let .workDetails(messages, _) = row.value {
+                for message in messages { incomingWorkRows[WorkDetailsDocument.identity(of: message)] = row.id }
+            }
+        }
         let sameAuthority = context.map { $0.hasSameAuthority(as: next) } ?? false
         for (id, state) in requestStates {
             if incomingByID[id]?.request.map({ state.input.matches($0) }) != true || !state.isCurrent {
@@ -683,15 +692,25 @@ private struct NativeTranscriptHostedRow: View {
         // Foreground lifetime follows the exact unique row, not its reusable
         // host, environment or working-state projection.
         let messageIndex = TranscriptMessageIndex(nextSnapshot)
+        var continuedAuthorities: [NativeTranscriptItemID: NativeTranscriptRowAuthority] = [:]
         for (id, token) in rowAuthorities {
-            guard let old = lookup[id], let incoming = incomingByID[id] else { token.invalidate(); continue }
+            guard let old = lookup[id] else { token.invalidate(); continue }
+            let incoming: NativeTranscriptRow?
             let sameLifetime: Bool
-            if case .workDetails = old.value { sameLifetime = context?.hasSameReader(as: next) == true }
-            else { sameLifetime = sameAuthority }
-            guard sameLifetime, old.value.canContinueForeground(with: incoming.value),
+            if case let .workDetails(messages, _) = old.value {
+                sameLifetime = context?.hasSameReader(as: next) == true
+                incoming = messages.first.flatMap { incomingWorkRows[WorkDetailsDocument.identity(of: $0)] }.flatMap { incomingByID[$0] }
+            } else {
+                sameLifetime = sameAuthority
+                incoming = incomingByID[id]
+            }
+            guard sameLifetime, let incoming, old.value.canContinueForeground(with: incoming.value),
                   rawMessageIsCurrent(incoming, index: messageIndex, snapshot: nextSnapshot) else { token.invalidate(); continue }
+            if let other = continuedAuthorities[incoming.id] {
+                other.invalidate(); token.invalidate()
+            } else { continuedAuthorities[incoming.id] = token }
         }
-        rowAuthorities = rowAuthorities.filter { $0.value.isCurrent }
+        rowAuthorities = continuedAuthorities.filter { $0.value.isCurrent }
         foreground.reconcile(environment: next)
         guard applicationSequence == applyingSequence else { return }
         let becameCovered = self.active && !active

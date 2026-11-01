@@ -118,7 +118,7 @@ nonisolated struct TranscriptMessageIndex {
 /// No content digest or second history is retained.
 nonisolated enum TranscriptContentRevision {
     static func sameMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
-        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID && exact(a.workDetailsID, b.workDetailsID) &&
+        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID &&
         exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) &&
         exact(a.displayKind, b.displayKind) && exact(a.displayText, b.displayText) && a.attachments.count == b.attachments.count &&
         zip(a.attachments, b.attachments).allSatisfy { first, second in

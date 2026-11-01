@@ -304,6 +304,9 @@ private struct WorkDetailsItem: View {
                    let formatted = try? AttributedString(markdown: content) {
                     content = String(formatted.characters)
                 }
+                if let failure = HermesDetailPayload.failureSummary(text) {
+                    content = failure + (section?.format == .json ? "" : " · " + content)
+                }
                 return content.prefix(240).split(whereSeparator: \.isWhitespace).joined(separator: " ")
             }.value
             guard !Task.isCancelled else { return }

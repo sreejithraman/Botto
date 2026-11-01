@@ -510,23 +510,39 @@ struct HermesConversationState {
         }
     }
     /// A refresh may replace live rows with database rows for the same tool call.
-    /// Only unique host call IDs in the same chat and execution can preserve its disclosure.
-    /// The raw row ID and durable artifact provenance remain unchanged.
-    mutating func retainToolIdentities(from prior: Self) {
-        guard exact(root, prior.root), exact(epoch, prior.epoch), generation == prior.generation,
+    /// Durable rows retain their disclosure by row identity. Transient bridges need
+    /// a known execution, unique calls, and completed replay evidence when execution advances.
+    mutating func retainToolIdentities(from prior: Self, replay: [HermesJSON] = []) {
+        guard exact(root, prior.root), exact(epoch, prior.epoch),
               exact(conversation.id, prior.conversation.id),
               exact(conversation.profileID, prior.conversation.profileID),
               exact(conversation.storedID, prior.conversation.storedID) else { return }
         let previous = prior.uniqueToolRows()
         let previousMessages = Dictionary(grouping: prior.conversation.messages, by: { Data($0.id.utf8) })
+        let currentMessages = Dictionary(grouping: conversation.messages, by: { Data($0.id.utf8) })
         let current = uniqueToolRows()
         let calls = Dictionary(uniqueKeysWithValues: current.map { (Data($0.value.utf8), $0.key) })
         var occupied = Set(conversation.messages.map { Data(($0.workDetailsID ?? $0.id).utf8) })
         var aliases: [Data: String] = [:]
         for index in conversation.messages.indices where conversation.messages[index].role == .tool {
             let id = Data(conversation.messages[index].id.utf8)
-            guard let call = calls[id], let previousID = previous[call],
-                  let previousMessage = previousMessages[Data(previousID.utf8)]?.first else { continue }
+            guard currentMessages[id]?.count == 1,
+                  conversation.unavailableMessageIDs?.contains(id) != true,
+                  prior.conversation.unavailableMessageIDs?.contains(id) != true else { continue }
+            let previousMessage: ChatMessage
+            if let rows = previousMessages[id], rows.count == 1, let row = rows.first,
+               row.role == .tool, row.workDetailsID != nil,
+               row.hasStableIdentity(storedID: prior.conversation.storedID),
+               conversation.messages[index].hasStableIdentity(storedID: conversation.storedID) {
+                previousMessage = row
+            } else {
+                guard let call = calls[id], let previousID = previous[call],
+                      let row = previousMessages[Data(previousID.utf8)]?.first,
+                      row.transientID != nil,
+                      prior.permitsToolBridge(call, from: row, to: conversation.messages[index],
+                          generation: generation, replay: replay) else { continue }
+                previousMessage = row
+            }
             let retained = previousMessage.workDetailsID ?? previousMessage.id
             let currentID = Data((conversation.messages[index].workDetailsID ?? conversation.messages[index].id).utf8)
             guard currentID == Data(retained.utf8) || !occupied.contains(Data(retained.utf8)) else { continue }
@@ -534,6 +550,23 @@ struct HermesConversationState {
             occupied.remove(currentID); occupied.insert(Data(retained.utf8)); aliases[id] = retained
         }
         toolDisclosureIDs.merge(aliases) { _, retained in retained }
+    }
+
+    private func permitsToolBridge(_ call: Data, from previous: ChatMessage, to current: ChatMessage,
+                                   generation nextGeneration: Int?, replay: [HermesJSON]) -> Bool {
+        guard let generation, let nextGeneration else { return false }
+        if generation == nextGeneration { return true }
+        guard nextGeneration > generation, !conversation.isWorking, exact(previous.text, current.text) else { return false }
+        let evidence = replay.filter {
+            exact($0["session_id"].text, conversation.id) && exact($0["replay_epoch"].text, epoch)
+        }
+        let calls = evidence.filter {
+            ["tool.start", "tool.complete"].contains($0["type"].text ?? "") &&
+                ($0["payload"]["tool_call_id"].nonempty ?? $0["payload"]["tool_id"].nonempty).map { Data($0.utf8) } == call
+        }
+        return evidence.contains { $0["type"].text == "message.complete" && $0["execution_generation"].integer == generation } &&
+            calls.contains { $0["type"].text == "tool.complete" && $0["execution_generation"].integer == generation } &&
+            calls.allSatisfy { $0["execution_generation"].integer == generation }
     }
 
     private func uniqueToolRows() -> [Data: String] {

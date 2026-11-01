@@ -375,7 +375,27 @@ import BottoCore
         #expect(fixture.service.downloads == 0 && fixture.service.responses.isEmpty)
     }
 
-    @Test(arguments: ["split", "removed", "duplicate", "reordered"])
+    @Test func reorderedToolGroupRetainsItsReaderAndExpandedItems() async throws {
+        let fixture = try await TranscriptFixture()
+        defer { fixture.close() }
+        let first = ChatMessage(id: "tool-b", role: .tool, text: "First exact output", toolName: "first")
+        let second = ChatMessage(id: "tool-a", role: .tool, text: "Second exact output", toolName: "second")
+        try fixture.publish([first, second])
+        try await wait("group can open") { fixture.firstScope?.canPresent == true }
+        fixture.firstScope?.present(details: .init(title: "Work details", messages: [first, second]), report: fixture.report)
+        try await wait("sheet is presented") { fixture.covered && fixture.controller.presentedViewController?.isBeingPresented == false }
+        let sheet = try #require(fixture.controller.presentedViewController)
+        try await wait("item disclosure is rendered") { accessibilityElement("Expand first", in: sheet.view) != nil }
+        #expect(try #require(accessibilityElement("Expand first", in: sheet.view)).accessibilityActivate())
+        try await wait("first item expanded") { accessibilityElement("Collapse first", in: sheet.view) != nil }
+        try fixture.publish([second, first])
+        try await wait("reordered group keeps expanded item in the same reader") {
+            fixture.controller.presentedViewController === sheet && accessibilityElement("Collapse first", in: sheet.view) != nil
+        }
+        #expect(fixture.reports.map(\.1) == [true])
+    }
+
+    @Test(arguments: ["split", "removed", "duplicate"])
     func workDetailsRetainsGrowingGroupButRetiresChangedIdentityOrBoundaries(change: String) async throws {
         let fixture = try await TranscriptFixture()
         defer { fixture.close() }
@@ -401,7 +421,7 @@ import BottoCore
         case "split": [revised, hidden, second, third]
         case "removed": [revised, third]
         case "duplicate": [revised, second, third, revised]
-        default: [revised, third, second]
+        default: [revised, second, third, revised]
         }
         try fixture.publish(replacement)
         try await wait("changed group identity or boundary retires the reader") { fixture.controller.presentedViewController == nil }

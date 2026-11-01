@@ -2,6 +2,16 @@ import Foundation
 import Testing
 @testable import BottoCore
 
+@Test(arguments: [
+    (#"{"output":"Processed 5 files","error":"permission denied","exit_code":1}"#, "Error: permission denied · Exit code: 1"),
+    (#"{"result":"{\"output\":\"Partial output\",\"exit_code\":2}"}"#, "Exit code: 2"),
+    (#"{"output":"Success","error":null,"exit_code":0}"#, nil),
+    (#"{"output":"Success","error":"   ","exit_code":0}"#, nil)
+] as [(String, String?)])
+func collapsedDetailsIdentifyFailureAlongsideOutput(_ example: (String, String?)) {
+    #expect(HermesDetailPayload.failureSummary(example.0) == example.1)
+}
+
 @Test func hermesDetailsDecodeToolContentWithoutLosingMetadata() {
     let raw = ###"{"content":"## Native daily worker\n\nFiles updated.","success":true}"###
     let sections = HermesDetailPayload.sections(raw)

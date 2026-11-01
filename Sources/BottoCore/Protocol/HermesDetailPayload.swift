@@ -17,6 +17,34 @@ nonisolated public enum HermesDetailPayload {
         return render(json, title: nil, depth: 0)
     }
 
+    public static func failureSummary(_ text: String) -> String? {
+        guard text.utf8.count <= 256 * 1024, let json = validatedJSON(text) else { return nil }
+        let failures = failures(in: json, depth: 0)
+        return failures.isEmpty ? nil : failures.joined(separator: " · ")
+    }
+
+    private static func failures(in json: String, depth: Int) -> [String] {
+        guard depth < 4 else { return [] }
+        if json.first == "[" {
+            return split(String(json.dropFirst().dropLast()), separator: 44).flatMap { failures(in: $0, depth: depth + 1) }
+        }
+        guard json.first == "{" else { return [] }
+        return split(String(json.dropFirst().dropLast()), separator: 44).flatMap { field -> [String] in
+            let pair = split(field, separator: 58)
+            guard pair.count == 2, let key = decodeString(pair[0]) else { return [] }
+            let value = pair[1]
+            if key == "error", !["null", "false", "\"\"", "{}", "[]"].contains(value) {
+                let error = (decodeString(value) ?? value).trimmingCharacters(in: .whitespacesAndNewlines)
+                return error.isEmpty ? [] : ["Error: " + error.prefix(160)]
+            }
+            if key == "exit_code", let code = Double(decodeString(value) ?? value), code != 0 {
+                return ["Exit code: " + (decodeString(value) ?? value)]
+            }
+            guard ["content", "text", "output", "result"].contains(key) else { return [] }
+            return failures(in: decodeString(value).flatMap(validatedJSON) ?? value, depth: depth + 1)
+        }
+    }
+
     private static func render(_ json: String, title: String?, depth: Int) -> [Section] {
         guard depth < 4, json.first == "{" else {
             return [Section(title: title, text: pretty(json), format: .json)]
