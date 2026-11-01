@@ -32,7 +32,7 @@ fi
 selections=("-only-testing:$selection")
 if [ "$library_acceptance" = true ]; then
   selections=("-only-testing:BottoUITests/InboxRetentionUITests"
-    "-only-testing:BottoUITests/ArtifactExportUITests/testSaveToFilesAndReopenSavedOriginal")
+    "-only-testing:BottoUITests/ArtifactExportUITests/testLibrarySaveToFilesAndReopenSavedOriginal")
 fi
 
 destination=${BOTTO_TEST_DESTINATION:-}
