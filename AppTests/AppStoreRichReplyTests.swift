@@ -1,18 +1,11 @@
 import Foundation
 import Testing
 import BottoCore
-#if os(iOS)
 import SwiftUI
 import UIKit
-#endif
-#if RICH_CONTENT_STANDALONE
-@testable import RichContentHarness
-#else
 @testable import Botto
-#endif
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
-    #if os(iOS)
     @Test(arguments: ["working", "canonical"])
     func mountedFilePreviewReloadsWhenRevocationAndRestorationArriveBeforeViewUpdate(event: String) async throws {
         let service = RichReplyTestService()
@@ -45,7 +38,6 @@ import UIKit
         while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
         #expect(service.downloads.count == 2, "A revoked document must receive a fresh authorized load")
     }
-    #endif
     @Test func previewDirectiveLoadsThroughItsOwningChatAndBindsDownloadedHTML() async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file=\"report.html\"}"

@@ -3,31 +3,22 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check-ci.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "check-native.sh"
 DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None):
+    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
         repo = base / "repo"
-        (repo / "scripts/tests").mkdir(parents=True)
-        # Empty discovery exits with status 5 on newer Python versions.
-        (repo / "scripts/tests/test_prerequisite.py").write_text(
-            "import unittest\n\n"
-            "class PrerequisiteTests(unittest.TestCase):\n"
-            "    def test_tooling_prerequisite(self):\n"
-            "        pass\n"
-        )
-        shutil.copy2(SCRIPT, repo / "scripts/check-ci.sh")
-        core = repo / "scripts/check-core.sh"
-        core.write_text("#!/bin/bash\nexit 0\n")
-        core.chmod(0o755)
+        (repo / "scripts").mkdir(parents=True)
+        shutil.copy2(SCRIPT, repo / "scripts/check-native.sh")
         tools = base / "bin"
         tools.mkdir()
         uuid = tools / "uuidgen"
@@ -40,12 +31,20 @@ from pathlib import Path
 args = sys.argv[1:]
 action = args[0]
 derived = Path(args[args.index("-derivedDataPath") + 1])
-result = Path(args[args.index("-resultBundlePath") + 1])
+enumerating = "-enumerate-tests" in args
+result = None if enumerating else Path(args[args.index("-resultBundlePath") + 1])
 record = Path(os.environ["CI_COMMAND_RECORD"])
 commands = json.loads(record.read_text()) if record.exists() else []
-commands.append({"action": action, "derived": str(derived), "result": str(result),
+commands.append({"action": "enumerate" if enumerating else action, "derived": str(derived), "result": str(result),
+                 "selection": [arg for arg in args if arg.startswith("-only-testing:")],
+                 "parallel": args[args.index("-parallel-testing-enabled") + 1],
                  "destination": args[args.index("-destination") + 1]})
 record.write_text(json.dumps(commands))
+if enumerating:
+    assert (derived / "build-data").is_file()
+    Path(args[args.index("-test-enumeration-output-path") + 1]).write_text(
+        "BottoTests/FixtureTests/example()\\nBottoTests/OtherTests/unrelated()\\n")
+    sys.exit(0)
 if action == "test-without-building":
     if not (derived / "build-data").is_file():
         sys.exit(98)
@@ -59,6 +58,13 @@ print("native output")
 sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else os.environ["CI_NATIVE_STATUS"]))
 ''')
         xcode.chmod(0o755)
+        xcrun = tools / "xcrun"
+        xcrun.write_text(f'''#!{sys.executable}
+import json, os, sys
+assert sys.argv[1:5] == ["xcresulttool", "get", "test-results", "summary"]
+print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTests": 0, "skippedTests": 0}}))
+''')
+        xcrun.chmod(0o755)
         if finalization_failure:
             failure = tools / finalization_failure
             failure.write_text("#!/bin/sh\nexit 73\n")
@@ -71,8 +77,9 @@ sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else
                            RUNNER_TEMP=str(parent), BOTTO_TEST_DESTINATION=f"platform=iOS Simulator,id={DEVICE}",
                            GITHUB_OUTPUT=str(base / "github-output"),
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
+                           CI_PASSED_TESTS=str(passed_tests),
                            CI_PRODUCES_RESULT="1" if produces_result else "0")
-        result = subprocess.run(["bash", str(repo / "scripts/check-ci.sh")], cwd=repo,
+        result = subprocess.run(["bash", str(repo / "scripts/check-native.sh"), suite], cwd=repo,
                                 env=environment, capture_output=True, text=True, timeout=10)
         return repo, parent, record, result
 
@@ -86,6 +93,8 @@ sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else
                 self.assertEqual([command["action"] for command in commands], ["build-for-testing", "test-without-building"])
                 self.assertEqual(commands[0]["derived"], commands[1]["derived"])
                 self.assertEqual({command["destination"] for command in commands}, {f"platform=iOS Simulator,id={DEVICE}"})
+                self.assertTrue(all(command["selection"] == ["-only-testing:BottoTests"] for command in commands))
+                self.assertTrue(all(command["parallel"] == "NO" for command in commands))
                 for command in commands:
                     for key in ("derived", "result"):
                         path = Path(command[key])
@@ -140,6 +149,19 @@ sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else
                 self.assertEqual(retained.read_text(), "build-for-testing proof")
                 self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
+    def test_pull_request_build_mode_does_not_execute_native_tests(self):
+        for build_status in (0, 66):
+            with self.subTest(build_status=build_status):
+                repo, _, record, result = self.run_native(
+                    0, build_status=build_status, suite="--build-only", passed_tests=0)
+                self.assertEqual(result.returncode, build_status, result.stderr)
+                commands = json.loads(record.read_text())
+                self.assertEqual([command["action"] for command in commands], ["build-for-testing"])
+                retained = repo / ".artifacts/CIResults-Build-fixture-run.xcresult/retained-proof"
+                self.assertEqual(retained.read_text(), "build-for-testing proof")
+                if not build_status:
+                    self.assertIn("Native tests were built but not executed", result.stdout)
+
     def test_parent_inside_the_package_is_rejected(self):
         _, parent, record, result = self.run_native(0, parent_inside_package=True)
         self.assertNotEqual(result.returncode, 0)
@@ -147,6 +169,53 @@ sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else
         self.assertFalse(record.exists())
         self.assertEqual([path.name for path in parent.iterdir()], ["unrelated-data"])
         self.assertEqual((parent / "unrelated-data").read_text(), "keep")
+
+    def test_focused_run_selects_only_the_named_suite(self):
+        _, _, record, result = self.run_native(0, suite="FixtureTests")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(command["selection"] == ["-only-testing:BottoTests/FixtureTests"]
+                            for command in json.loads(record.read_text())))
+
+    def test_focused_discovery_artifact_failure_keeps_the_native_verdict_and_result(self):
+        for status in (0, 65):
+            with self.subTest(status=status):
+                _, _, record, result = self.run_native(status, suite="FixtureTests", finalization_failure="cp")
+                self.assertEqual(result.returncode, status or 73)
+                last = json.loads(record.read_text())[-1]
+                self.assertEqual((Path(last["result"]) / "retained-proof").read_text(), "test-without-building proof")
+                self.assertIn("native_result_fallback=" + last["result"],
+                              (record.parent / "github-output").read_text())
+
+    def test_focused_run_can_select_an_exact_test(self):
+        _, _, record, result = self.run_native(0, suite="FixtureTests/example()")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(command["selection"] == ["-only-testing:BottoTests/FixtureTests/example()"]
+                            for command in json.loads(record.read_text())))
+
+    def test_invalid_selector_syntax_stops_before_xcode(self):
+        for suite in ("FixtureTests; touch other-data", "../FixtureTests"):
+            with self.subTest(suite=suite):
+                _, _, record, result = self.run_native(0, suite=suite)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(record.exists())
+
+    def test_framework_discovery_rejects_helpers_wrong_labels_and_another_suites_method(self):
+        for selector in ("MissingTests", "FixtureTests/helper()", "FixtureTests/example(wrong:)",
+                         "FixtureTests/unrelated()"):
+            with self.subTest(selector=selector):
+                repo, _, record, result = self.run_native(0, suite=selector)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([c["action"] for c in json.loads(record.read_text())],
+                                 ["build-for-testing", "enumerate"])
+                self.assertEqual((repo / ".artifacts/CIResults-Build-fixture-run.xcresult/retained-proof").read_text(),
+                                 "build-for-testing proof")
+
+    def test_empty_success_cannot_claim_native_coverage_and_keeps_its_result(self):
+        repo, parent, _, result = self.run_native(0, passed_tests=0)
+        self.assertNotEqual(result.returncode, 0)
+        retained = repo / ".artifacts/CIResults-fixture-run.xcresult/retained-proof"
+        self.assertEqual(retained.read_text(), "test-without-building proof")
+        self.assertEqual([path.name for path in parent.iterdir()], ["unrelated-data"])
 
 
 if __name__ == "__main__":

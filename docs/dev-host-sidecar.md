@@ -105,7 +105,10 @@ python3 -B scripts/dev-host/sidecar_host.py stop
 ```
 
 The script checks the saved supervisor's command, signals only that supervisor,
-and lets it drain its own backend process group and provider. It does not use
+and lets it drain its own backend process group and provider. Exit observation
+keeps the leader unreaped until the final group signal, including normal backend
+exit and startup failure. Unconfirmed delivery is reported on stderr before the
+bounded reap. It does not use
 `hermes serve --stop`, match processes by name, or touch the current authority
 host. Runtime data and the pinned source remain for inspection. Its owner may
 delete `/tmp/botto-runtime-sidecar` and `/tmp/botto-sidecar-source` after both sidecar

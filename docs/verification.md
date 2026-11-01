@@ -4,7 +4,44 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
-## Automated checks
+## Test audit (1 November 2026)
+
+The audit removed unsupported standalone macOS rich-content harness branches,
+three screenshot-only XCTest generators, one immutable-value assertion, and an
+unused publisher stub. Current UIKit rich-content test bodies and assertions
+remain intact. Fractional-color checks now share one independently pinned
+fixture table instead of repeating the red cases.
+
+The fixed-preset avatar containment matrix retains every shape, size, scale,
+expression, and pose while dropping its duplicate light/dark pass. Body and eye
+colors for that preset are appearance-independent; dedicated appearance and
+contrast tests remain. Source-derived renders fall from 20,400 to 10,200.
+No changed-matrix runtime improvement has been measured yet.
+
+All 375 core tests, the MainActor compatibility build, and 184 tooling tests
+pass locally, including 12 native-runner fixture tests. The audit repaired
+Git signing/hook interference in note fixtures and post-reap group signaling in
+the two development hosts. Cleanup checks include no-signal doubles and a real
+disposable process group whose leader exits before its descendant. Exit
+observation retains the unreaped leader through group retirement on macOS;
+signal-denial warnings still permit the final bounded reap. This does not
+establish a new live-Hermes acceptance result or force OS PID reuse.
+
+The revised CI runs core, tooling, and unsigned app/test builds on PRs. Main
+pushes also run the full serial native suite before TestFlight. Independent
+jobs feed the required `verify` result. Focused manual diagnostics have a
+different check name and cannot authorize TestFlight delivery. A diagnostic-only
+revision passed 33 avatar test methods on a hosted runner. That focused result
+does not cover this complete audit patch or explain the earlier failures.
+Another diagnostic passed 77 methods across the original six-suite prefix.
+Neither diagnostic includes the complete audit patch. The complete workflow
+and changed native tests still need hosted verification. Earlier avatar decode
+and native navigation readiness failures remain unexplained; their tests
+stay required. Local native runtime acceptance is blocked by CoreSimulator
+startup failure and shared host load. There is no current whole-suite native
+pass or claim that all possible flakes are eliminated.
+
+## Recorded automated checks (30 October 2026)
 
 - BottoCore: 371 package tests and the MainActor-default compatibility build passed.
 - Development tooling: 41 Python tests passed, including export exclusions,

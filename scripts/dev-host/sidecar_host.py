@@ -2,7 +2,6 @@
 """Real pinned Hermes 0.21.5 standalone sidecar, isolated from the authority host."""
 
 import argparse
-from contextlib import suppress
 import hashlib
 from http.server import ThreadingHTTPServer
 import json
@@ -18,6 +17,7 @@ import time
 import urllib.request
 
 from mock_provider import Handler, MODEL
+from process_groups import child_exited, stop_group, wait_for_exit
 from sidecar_dependencies import REQUIREMENTS
 
 HERE = Path(__file__).resolve().parent
@@ -137,7 +137,7 @@ def run():
         (ROOT / "process.json").write_text(json.dumps(record, indent=2) + "\n")
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            if child.poll() is not None:
+            if child_exited(child):
                 raise RuntimeError("Sidecar exited; see backend.log")
             try:
                 status = health()
@@ -150,23 +150,20 @@ def run():
             time.sleep(.25)
         else:
             raise RuntimeError("Sidecar readiness timeout; see backend.log")
-        return child.wait()
+        wait_for_exit(child)
     except KeyboardInterrupt:
         return 0
     finally:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
-        if child:
-            with suppress(ProcessLookupError):
-                os.killpg(child.pid, signal.SIGTERM)
-            with suppress(subprocess.TimeoutExpired):
-                child.wait(timeout=15)
-            with suppress(ProcessLookupError):
-                os.killpg(child.pid, signal.SIGKILL)
-            child.wait()
-        peer.shutdown()
-        (ROOT / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
-        (ROOT / "ready.json").unlink(missing_ok=True)
+        try:
+            if child:
+                stop_group(child)
+        finally:
+            peer.shutdown()
+            (ROOT / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
+            (ROOT / "ready.json").unlink(missing_ok=True)
+    return child.returncode
 
 
 def main():

@@ -141,7 +141,10 @@ python3 scripts/dev-host/host.py stop
 ```
 
 The manager checks the saved supervisor's command before signaling it. The
-supervisor drains its gateway process group and stops its provider. It never
+supervisor observes gateway exit without reaping its leader, drains that process
+group, then reaps the child and stops its provider. This includes startup failure
+and normal backend exit with a surviving descendant. Unconfirmed signal delivery
+is reported on stderr; it does not skip the final bounded reap. It never
 uses `hermes gateway stop`, kills a process by name, or targets an existing user
 Hermes service. Runtime data remains available for inspection. After both
 owned processes have exited, its owner may delete the disposable runtime

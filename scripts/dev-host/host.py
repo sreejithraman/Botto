@@ -2,7 +2,6 @@
 """Prepare and run a disposable pinned Hermes authority gateway. No user state."""
 
 import argparse
-from contextlib import suppress
 from http.server import ThreadingHTTPServer
 import json
 import os
@@ -17,6 +16,7 @@ import time
 import urllib.request
 
 from mock_provider import Handler, MODEL
+from process_groups import child_exited, stop_group, wait_for_exit
 
 HERE = Path(__file__).resolve().parent
 SHA = "4a0eaf7989b6804319ddb94fa5d96c5a716080a1"
@@ -119,15 +119,6 @@ def status(port):
         return json.load(response)
 
 
-def stop_group(process):
-    with suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
-    with suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=15)
-    with suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-
-
 def serve(root, port):
     # Never replace a host found by name or steal an occupied port.
     with socket.socket() as probe:
@@ -156,7 +147,7 @@ def serve(root, port):
         (root / "process.json").write_text(json.dumps(record, indent=2) + "\n")
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            if child.poll() is not None:
+            if child_exited(child):
                 raise RuntimeError("Gateway exited; see " + str(root / "gateway.log"))
             try:
                 health = status(port)
@@ -169,18 +160,20 @@ def serve(root, port):
             time.sleep(.25)
         else:
             raise RuntimeError("Gateway readiness timeout; see gateway.log")
-        return child.wait()
+        wait_for_exit(child)
     except KeyboardInterrupt:
         return 0
     finally:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
-        if child:
-            stop_group(child)
-            child.wait()
-        peer.shutdown()
-        (root / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
-        (root / "ready.json").unlink(missing_ok=True)
+        try:
+            if child:
+                stop_group(child)
+        finally:
+            peer.shutdown()
+            (root / "mock-stats.json").write_text(json.dumps(peer.stats) + "\n")
+            (root / "ready.json").unlink(missing_ok=True)
+    return child.returncode
 
 
 def main():

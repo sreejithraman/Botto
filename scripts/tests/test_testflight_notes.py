@@ -23,7 +23,8 @@ class TestFlightNotesTests(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(
-            ["git", "-C", str(self.repo), *args], stderr=subprocess.PIPE, text=True
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+             "-C", str(self.repo), *args], stderr=subprocess.PIPE, text=True
         ).strip()
 
     def commit(self, path, message):

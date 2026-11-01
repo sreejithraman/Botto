@@ -67,11 +67,14 @@ also reported separately from fix acceptance.
   explicitly when needed; the script's existence does not establish that the
   complete current workflow passed.
 - [Contributor CI](../../../scripts/check-ci.sh) runs package, MainActor,
-  tooling, and unsigned Simulator/native unit-test checks. The prepared
+  tooling, and unsigned app/test builds on PRs. Main pushes also execute the
+  full serial native suite before TestFlight. Its independent jobs
+  feed one required `verify` result; focused manual diagnostics have a separate
+  result and do not establish full-suite or release acceptance. The
   [workflow](../../../.github/workflows/ios.yml) runs automatically for public
   repositories and supports manual dispatch once Actions is enabled. Private
-  repositories use manual dispatch; hosted execution of this configuration
-  has not yet been verified. Use local checks meanwhile.
+  repositories use manual dispatch. The revised split workflow still requires
+  hosted verification; prior native readiness failures remain recorded.
 - Choose and record an owned Simulator or physical device before native checks.
   Keep builds, automated suites, and interactive work serial when they share a
   device or app container. Use Xcode or a supported device driver for interaction,

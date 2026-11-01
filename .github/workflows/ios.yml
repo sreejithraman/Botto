@@ -5,20 +5,28 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      native_test:
+        description: Native suite or suite/test for diagnostics (blank runs all tests)
+        type: string
+        required: false
+        default: ''
+
+run-name: ${{ inputs.native_test != '' && format('Native diagnostics - {0}', inputs.native_test) || 'iOS checks' }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-${{ github.workflow }}-${{ github.ref }}
+  group: ios-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ inputs.native_test != '' && 'diagnostics' || 'full' }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  core:
     # Public repositories run automatically; private repositories support manual dispatch.
     if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
@@ -30,14 +38,49 @@ jobs:
           xcodebuild -version
           swift --version
           python3 --version
+      - name: Core and MainActor compatibility checks
+        run: ./scripts/check-core.sh
+      - name: macOS process ownership checks
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_dev*py' -v
+
+  tooling:
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Python tooling tests
+        run: |
+          python3 --version
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+
+  native:
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Runner resources before checks
         continue-on-error: true
         run: |
           sysctl hw.ncpu hw.memsize vm.swapusage
           vm_stat
-      - name: Core, tooling, and native tests
+      - name: Build app and tests on PRs; run native tests on main
         id: checks
-        run: ./scripts/check-ci.sh
+        env:
+          NATIVE_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.native_test || '' }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            ./scripts/check-native.sh --build-only
+          else
+            ./scripts/check-native.sh "$NATIVE_TEST"
+          fi
       - name: Runner resources after checks
         if: always()
         continue-on-error: true
@@ -51,7 +94,24 @@ jobs:
           name: ios-test-results-${{ github.run_attempt }}
           path: |
             .artifacts/CIResults-*.xcresult
+            .artifacts/CISelectedTests-*.txt
             ${{ steps.checks.outputs.native_result_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+  verify:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.native_test != '' && 'diagnostic-result' || 'verify' }}
+    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
+    needs: [core, tooling, native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every test job to succeed
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+        run: |
+          printf 'Core: %s; tooling: %s; native: %s\n' "$CORE_RESULT" "$TOOLING_RESULT" "$NATIVE_RESULT"
+          [[ "$CORE_RESULT" == success && "$TOOLING_RESULT" == success && "$NATIVE_RESULT" == success ]]
