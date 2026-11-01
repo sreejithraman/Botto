@@ -2377,14 +2377,36 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: attachment, botID: service.first.profile.text))
         defer { store.finishArtifact(destination) }
         let barrier = StoreTestBarrier()
+        defer { barrier.release() }
         service.downloadBarrier = barrier
-        let first = Task { try await store.library.download(item) }
-        await barrier.waitUntilEntered()
-        let second = Task { try await store.downloadArtifact(destination) }
-        let thumbnail = Task { await store.library.thumbnail(for: item) { _ in Data("thumbnail".utf8) } }
-        for _ in 0..<20 { await Task.yield() }
+        var firstFinished = false, secondFinished = false, thumbnailFinished = false
+        let first = Task {
+            defer { firstFinished = true }
+            return try await store.library.download(item)
+        }
+        defer { first.cancel() }
+        try #require(await barrier.waitUntilEntered(timeout: .seconds(10)))
+        let registrations = store.library.indexingMetrics.galleryConsumersRegistered
+        let second = Task {
+            defer { secondFinished = true }
+            return try await store.downloadArtifact(destination)
+        }
+        let thumbnail = Task {
+            defer { thumbnailFinished = true }
+            return await store.library.thumbnail(for: item) { _ in Data("thumbnail".utf8) }
+        }
+        defer { second.cancel(); thumbnail.cancel() }
+        var deadline = ContinuousClock.now + .seconds(10)
+        while store.library.indexingMetrics.galleryConsumersRegistered == registrations,
+              ContinuousClock.now < deadline { await Task.yield() }
+        try #require(store.library.indexingMetrics.galleryConsumersRegistered > registrations)
         first.cancel()
         barrier.release()
+        deadline = .now + .seconds(10)
+        while !(firstFinished && secondFinished && thumbnailFinished),
+              ContinuousClock.now < deadline { await Task.yield() }
+        try #require(firstFinished && secondFinished && thumbnailFinished,
+            "Shared readers must finish after release; downloads=\(service.downloadCount)")
         _ = try? await first.value
         #expect(try await second.value.data == Data("main".utf8))
         #expect(await thumbnail.value == Data("thumbnail".utf8))
