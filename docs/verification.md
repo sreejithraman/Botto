@@ -4,6 +4,55 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Offline cache withdrawal follow-up (1 November 2026)
+
+The locked-initial-index/no-chat-book regression fails on `436becc`: after a
+real roster omits a bot, a new offline library can restore its saved metadata
+without another Library entry. The repair retains scoped roster restrictions in
+the existing recovery journal. SQLite enumeration cannot retire them because an
+unreadable old book may reappear. Checked SQLite replacements admit only their
+own chat; book seeds never inherit those receipts. Later omissions revoke the
+profile's checked rows. Quota overflow records the narrowest durable withholding
+marker that fits, while original captures remain separate.
+
+The macOS harness compiles the production cache, library and chat book owners,
+with copied native text/Search declarations and existing test fixtures. Its
+62 selected definitions (118 expanded cases) pass, covering the four original
+restart cases, unavailable/reappearing books, a checked replacement with an
+unchanged or changed tip, withdrawn siblings, delayed/paused/acquisition-pending
+writers, scoped quota fallback, queued cleanup, capture rollback, original bytes,
+and existing cancellation/publication regressions. A delayed peer acknowledgment
+and failed-roster retries (including empty and reentered rosters) also pass.
+The new recovery regressions failed before repair. Cached-evidence
+Library retry now saves only pending observed evidence. Eight restore/seed
+orderings verify immediate pending exclusions, same-roster admission fences,
+fresh-read preservation and unaffected peers. Seeds remain unreconciled after a
+failed initial restore. Later reseeds preserve admitted fresh rows and their
+dirty writes. A successful retry preserves an eligible queued book request;
+deferred seed writes remain pending until reconciliation. These eight additional
+cases also verify cold persistence and original bytes. Row acknowledgments clear
+only their own guards; failed
+roster admission retains its pending intersection and warning until Library
+retry or a real observation saves it. The original restart, unavailable-book,
+quota and changed-tip cases each failed before their repair.
+
+A repeated removal-recovery assertion exposed a refresh returning while a
+successor persistence task still wrote metadata. The writer wait now drains
+successor tasks and post-scan persistence without retrying failed storage in a
+loop. The original assertion passed 30 focused attempts after the drain change.
+The unchanged-main control passed 20 attempts; that is not evidence that the
+intermittent failure was pre-existing. Logs, failure traces and frozen source
+inputs remain under `.artifacts/cache-fix/` in the owning checkout.
+
+All 417 core tests and the MainActor compatibility build pass after integrating
+main `5d70927`. The unsigned arm64/x86_64 generic Simulator app and both test bundles
+compile. Local verification compiled the new public AppStore regressions for
+missing/unreadable LocalHistory, the actual AppStore Library retry, and
+later-readable protected history without executing them (five cases). Owner
+checks use independent cache instances in one macOS process; they do not establish
+an iOS process restart, full Library recipe, export, physical-device or release
+acceptance.
+
 ## Credential and startup follow-up (1 November 2026)
 
 Source at `332c0a5` confirms that ordinary setup-test launches can load a saved
