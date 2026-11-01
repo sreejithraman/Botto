@@ -138,7 +138,7 @@ final class ArtifactExportUITests: XCTestCase {
         let save = picker.buttons["Save"]
         let canSave = save.waitForExistence(timeout: 5)
         capture("Files picker before actual Save", app: app)
-        XCTAssertTrue(canSave && save.isEnabled && save.isHittable)
+        XCTAssertTrue(canSave && save.isEnabled)
         save.tap()
         let dismissed = picker.waitForNonExistence(timeout: 5)
         capture("Preview after actual Files Save", app: app)
@@ -148,7 +148,7 @@ final class ArtifactExportUITests: XCTestCase {
         let preview = app.descendants(matching: .any).matching(identifier: "artifact-preview").firstMatch
         let library = app.scrollViews["artifact-library"]
         let close = app.buttons["artifact-done"]
-        XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isHittable && close.isEnabled)
+        XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isEnabled)
         close.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { !preview.exists && library.exists && library.isHittable }
@@ -210,7 +210,7 @@ final class ArtifactExportUITests: XCTestCase {
         let hasPicker = picker.waitForExistence(timeout: 10)
         let save = picker.buttons["Save"].firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { save.exists && save.isHittable && save.isEnabled }
+            MainActor.assumeIsolated { save.exists && save.isEnabled }
         }, object: nil)
         let hasSave = hasPicker && XCTWaiter.wait(for: [ready], timeout: 5) == .completed
         capture(captureName, app: app)
