@@ -14,6 +14,11 @@ if [ "$selector" = --build-only ]; then
   selector=
 fi
 selection=BottoTests
+library_diagnostic=false
+if [ "$selector" = LibraryNativeFailures ]; then
+  library_diagnostic=true
+  selector=
+fi
 if [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
 import re
@@ -53,8 +58,17 @@ native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
 result_id=$(uuidgen)
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
+selection_arguments=("-only-testing:$selection")
+if [ "$library_diagnostic" = true ]; then
+  selection_arguments=(
+    -only-testing:BottoTests/AppStoreRichReplyTests
+    -only-testing:BottoTests/NativeTranscriptIdentityTests
+    -only-testing:BottoTests/ReplyFileBodyLayoutTests
+    -only-testing:BottoTests/WorkspaceLibraryTests
+    -only-testing:BottoTests/ArtifactCacheTests)
+fi
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
-  "-only-testing:$selection"
+  "${selection_arguments[@]}"
   -destination "$destination"
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
@@ -76,6 +90,22 @@ if not matches:
     sys.exit("The requested native test was not discovered by Xcode; no tests executed.")
 print("Xcode discovered %d matching test identifiers." % len(matches))
 PYTHON
+  fi
+fi
+if [ "$native_status" -eq 0 ] && [ "$library_diagnostic" = true ]; then
+  diagnostic_device=$(python3 - "$destination" <<'PYTHON'
+import sys
+import uuid
+fields = dict(part.split("=", 1) for part in sys.argv[1].split(","))
+if fields.get("platform") != "iOS Simulator":
+    sys.exit("Diagnostic requires an exact iOS Simulator destination.")
+print(uuid.UUID(fields["id"]))
+PYTHON
+  ) || native_status=$?
+  if [ "$native_status" -eq 0 ]; then
+    printf 'Waiting for hosted Simulator boot and data migration: %s\n' "$diagnostic_device"
+    xcrun simctl bootstatus "$diagnostic_device" -b || native_status=$?
+    printf 'Simulator boot readiness status: %s\n' "$native_status"
   fi
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
