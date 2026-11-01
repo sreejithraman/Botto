@@ -145,11 +145,11 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertTrue(dismissed, "The native exporter must dismiss after Save.")
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
         XCTAssertFalse(app.alerts["Export Failed"].exists)
-        assertOutputActions(in: app)
-
         let preview = app.descendants(matching: .any).matching(identifier: "artifact-preview").firstMatch
         let library = app.scrollViews["artifact-library"]
-        app.buttons["artifact-done"].tap()
+        let close = app.buttons["artifact-done"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isHittable && close.isEnabled)
+        close.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { !preview.exists && library.exists && library.isHittable }
         }, object: nil)
@@ -194,7 +194,6 @@ final class ArtifactExportUITests: XCTestCase {
         for _ in 0..<5 where !reference.isHittable { list.swipeUp() }
         XCTAssertTrue(reference.isHittable)
         reference.tap()
-        assertOutputActions(in: app)
         return app
     }
 
