@@ -113,6 +113,7 @@ struct WorkDetailsRow: View {
     let identifier: String
     let messages: [ChatMessage]
     let canOpen: Bool
+    let isActive: Bool
     let isCurrent: @MainActor () -> Bool
     private let displayRevision: [NativeTranscriptRowValue]
     @Environment(\.nativeTranscriptRow) private var nativeRow
@@ -128,11 +129,11 @@ struct WorkDetailsRow: View {
     }
 
     init(title: String, systemImage: String, count: Int? = nil, accessibilityLabel: String? = nil,
-         identifier: String, messages: [ChatMessage], canOpen: Bool = true,
+         identifier: String, messages: [ChatMessage], canOpen: Bool = true, isActive: Bool = false,
          isCurrent: @escaping @MainActor () -> Bool = { true }) {
         self.title = title; self.systemImage = systemImage; self.count = count
         self.accessibilityLabel = accessibilityLabel; self.identifier = identifier
-        self.messages = messages; self.canOpen = canOpen; self.isCurrent = isCurrent
+        self.messages = messages; self.canOpen = canOpen; self.isActive = isActive; self.isCurrent = isCurrent
         displayRevision = messages.map { .message($0, working: false) }
     }
 
@@ -153,9 +154,14 @@ struct WorkDetailsRow: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Label(title, systemImage: systemImage)
-                    .lineLimit(2).multilineTextAlignment(.leading)
+                Label {
+                    Text(title).lineLimit(2).multilineTextAlignment(.leading)
+                } icon: {
+                    if isActive { ProgressView().controlSize(.small) }
+                    else { Image(systemName: systemImage) }
+                }
                 Spacer(minLength: 0)
+                if isActive { Text("Working").font(.caption) }
                 if let count { Text("\(count)").monospacedDigit() }
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                     .foregroundStyle(BottoTheme.ink)
@@ -169,14 +175,19 @@ struct WorkDetailsRow: View {
         .buttonStyle(.plain)
         .disabled(!canPresent)
         .sheet(item: $standalone, onDismiss: closeStandalone) { session in
-            WorkDetailsSheet(document: session.document,
+            WorkDetailsSheet(document: .init(title: session.document.title, messages: messages),
                 isCurrent: { standalone?.id == session.id && session.admitsRead() && scenePhase == .active },
                 close: closeStandalone)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .hapticSheet(enabled: standalone?.id == session.id && session.admitsRead() && scenePhase == .active)
         }
-        .onChange(of: displayRevision) { _, _ in closeStandalone() }
+        .onChange(of: displayRevision) { _, _ in
+            guard let standalone else { return }
+            if !standalone.document.messages.allSatisfy({ $0.role == .tool }) ||
+                !messages.allSatisfy({ $0.role == .tool }) ||
+                !WorkDetailsDocument.continues(standalone.document.messages, with: messages) { closeStandalone() }
+        }
         .onChange(of: isCurrent()) { _, current in if !current { closeStandalone() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { closeStandalone() } }
         .onDisappear { closeStandalone() }
@@ -192,26 +203,39 @@ struct WorkDetailsSheet: View {
     let document: WorkDetailsDocument
     let isCurrent: @MainActor () -> Bool
     let close: () -> Void
+    @State private var expanded: Set<Data> = []
+
+    private var toolIDs: Set<Data> {
+        Set(document.messages.filter { $0.role == .tool }.map { Data($0.id.utf8) })
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(document.messages.enumerated()), id: \.offset) { index, message in
-                        let entryTitle = message.toolName ?? message.notificationPresentation?.title ?? message.botSender?.label
-                        VStack(alignment: .leading, spacing: 12) {
-                            if document.messages.count > 1 || entryTitle.map({ $0 != document.title }) == true {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    if document.messages.count > 1 {
-                                        Text("\(index + 1)").monospacedDigit().foregroundStyle(.secondary)
-                                    }
-                                    Text(entryTitle ?? "Work details").fontWeight(.semibold)
-                                }.font(.subheadline)
+                        if message.role == .tool {
+                            let id = Data(message.id.utf8)
+                            WorkDetailsItem(message: message, number: index + 1,
+                                isExpanded: Binding(get: { expanded.contains(id) }, set: { value in
+                                    if value { expanded.insert(id) } else { expanded.remove(id) }
+                                }), isCurrent: isCurrent)
+                        } else {
+                            let title = message.toolName ?? message.notificationPresentation?.title ?? message.botSender?.label
+                            VStack(alignment: .leading, spacing: 12) {
+                                if document.messages.count > 1 || title.map({ $0 != document.title }) == true {
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        if document.messages.count > 1 {
+                                            Text("\(index + 1)").monospacedDigit().foregroundStyle(.secondary)
+                                        }
+                                        Text(title ?? "Work details").fontWeight(.semibold)
+                                    }.font(.subheadline)
+                                }
+                                RawMessagePayload(text: message.text, isCurrent: isCurrent,
+                                    copyIdentifier: "work-details-copy-" + message.id)
                             }
-                            RawMessagePayload(text: message.text, isCurrent: isCurrent,
-                                copyIdentifier: "work-details-copy-" + message.id)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         if index + 1 < document.messages.count { Divider() }
                     }
                 }
@@ -220,10 +244,71 @@ struct WorkDetailsSheet: View {
             .background(BottoTheme.paper)
             .navigationTitle(document.title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if !toolIDs.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        let allExpanded = toolIDs.isSubset(of: expanded)
+                        Button(allExpanded ? "Collapse all" : "Expand all") {
+                            expanded = allExpanded ? [] : toolIDs
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done", action: close) }
+            }
         }
         .tint(BottoTheme.action)
         .accessibilityAction(.escape) { close() }
         .onChange(of: isCurrent()) { _, current in if !current { close() } }
+    }
+}
+
+private struct WorkDetailsItem: View {
+    let message: ChatMessage
+    let number: Int
+    @Binding var isExpanded: Bool
+    let isCurrent: @MainActor () -> Bool
+    @State private var preview = ""
+    private var title: String { message.toolName ?? "Work details" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { isExpanded.toggle() } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("\(number)").monospacedDigit().foregroundStyle(.secondary)
+                    Text(title).fontWeight(.semibold).multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .font(.subheadline).frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(title)")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            if isExpanded {
+                RawMessagePayload(text: message.text, isCurrent: isCurrent,
+                    copyIdentifier: "work-details-copy-" + message.id)
+            } else if !preview.isEmpty {
+                Text(verbatim: preview).font(.callout).foregroundStyle(.secondary)
+                    .lineLimit(3).accessibilityLabel("Preview: \(preview)")
+            }
+        }
+        .task(id: Data(message.text.utf8)) {
+            let text = message.text
+            let result = await Task.detached(priority: .userInitiated) {
+                let sections = HermesDetailPayload.sections(text)
+                let section = sections.first { $0.format != .json && $0.text.contains(where: { !$0.isWhitespace }) }
+                    ?? sections.first { $0.text.contains(where: { !$0.isWhitespace }) }
+                var content = String((section?.text ?? text).drop(while: \.isWhitespace).prefix(1024))
+                if section?.format == .markdown,
+                   let formatted = try? AttributedString(markdown: content) {
+                    content = String(formatted.characters)
+                }
+                return content.prefix(240).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            }.value
+            guard !Task.isCancelled else { return }
+            preview = result
+        }
     }
 }
 

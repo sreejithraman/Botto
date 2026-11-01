@@ -2,7 +2,7 @@ import Testing
 import SwiftUI
 import UIKit
 import WebKit
-import BottoCore
+@testable import BottoCore
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptIdentityTests {
@@ -32,33 +32,196 @@ import BottoCore
         let disclosure = try #require(element("Work details, 2 tools", in: host.view))
         #expect(disclosure.accessibilityActivate())
         let controller = try #require(collectionController(host))
+        try await wait("one reader opens with collapsed tool summaries") {
+            guard let sheet = controller.presentedViewController else { return false }
+            return element("Expand terminal", in: sheet.view) != nil && element("Expand cronjob_manage", in: sheet.view) != nil
+        }
+        let details = try #require(controller.presentedViewController)
+        details.sheetPresentationController?.animateChanges {
+            details.sheetPresentationController?.selectedDetentIdentifier = .large
+        }
+        #expect(try #require(element("Expand all", in: details.view)).accessibilityActivate())
         try await wait("one reader shows both tool names and outputs") {
             guard let sheet = controller.presentedViewController else { return false }
-            return element("terminal", in: sheet.view) != nil && element("cronjob_manage", in: sheet.view) != nil &&
-                element("FIRST-TOOL-OUTPUT", in: sheet.view) != nil && element("SECOND-TOOL-OUTPUT", in: sheet.view) != nil
+            return element("FIRST-TOOL-OUTPUT", in: sheet.view) != nil && element("SECOND-TOOL-OUTPUT", in: sheet.view) != nil
         }
         var updated = messages
         updated[2].text = "UPDATED-SECOND-TOOL-OUTPUT"
         updated.append(.init(id: "tool-three", role: .tool, text: "THIRD-TOOL-OUTPUT", toolName: "read_file"))
+        let originalReader = try #require(controller.presentedViewController)
         service.snapshots[session.root]?.messages = updated
         service.onEvent?(.conversation(try service.publication(session)))
-        try await wait("changed group retires the old reader and restores the same row") {
-            controller.presentedViewController == nil && controller.collection.numberOfItems(inSection: 0) == 3 &&
-                element("Work details, 3 tools", in: host.view) != nil
+        try await wait("growing group keeps the same reader open") {
+            controller.presentedViewController === originalReader &&
+                element("UPDATED-SECOND-TOOL-OUTPUT", in: originalReader.view) != nil
         }
-        #expect(try #require(element("Work details, 3 tools", in: host.view)).accessibilityActivate())
-        try await wait("replacement reader is presented") { controller.presentedViewController != nil }
         let reader = try #require(controller.presentedViewController)
         reader.sheetPresentationController?.animateChanges {
             reader.sheetPresentationController?.selectedDetentIdentifier = .large
         }
-        try await wait("reopened group shows current results") {
+        try await wait("new work arrives collapsed without closing expanded work") {
+            element("Expand read_file", in: reader.view) != nil && element("Collapse cronjob_manage", in: reader.view) != nil
+        }
+        #expect(try #require(element("Expand read_file", in: reader.view)).accessibilityActivate())
+        try await wait("open group shows current results") {
             guard let sheet = controller.presentedViewController else { return false }
             return element("UPDATED-SECOND-TOOL-OUTPUT", in: sheet.view) != nil && element("THIRD-TOOL-OUTPUT", in: sheet.view) != nil &&
                 element("SECOND-TOOL-OUTPUT", in: sheet.view) == nil
         }
         #expect(store.chats.screen(profile: service.profile)?.snapshot?.messages == updated)
+        #expect(try #require(element("Collapse all", in: reader.view)).accessibilityActivate())
+        try await wait("all work collapses while summaries remain readable") {
+            element("Expand terminal", in: reader.view) != nil && element("Expand cronjob_manage", in: reader.view) != nil &&
+                element("UPDATED-SECOND-TOOL-OUTPUT", in: reader.view) == nil &&
+                element("Preview: UPDATED-SECOND-TOOL-OUTPUT", in: reader.view) != nil
+        }
+        #expect(try #require(element("Expand cronjob_manage", in: reader.view)).accessibilityActivate())
+        try await wait("expanded updated work exposes its copy action") { element("Copy original", in: reader.view) != nil }
+        UIPasteboard.general.string = "before-updated-tool-copy"
+        #expect(try #require(element("Copy original", in: reader.view)).accessibilityActivate())
+        try await wait("copy preserves the exact updated tool output") {
+            UIPasteboard.general.string.map { Data($0.utf8) == Data(updated[2].text.utf8) } == true
+        }
+        #expect(try #require(element("Done", in: reader.view)).accessibilityActivate())
+        try await wait("Done closes the reader") { controller.presentedViewController == nil }
+        try await wait("updated work can reopen") { element("Work details, 3 tools", in: host.view) != nil }
+        #expect(try #require(element("Work details, 3 tools", in: host.view)).accessibilityActivate())
+        try await wait("a fresh reader opens after updates") { controller.presentedViewController != nil }
+        store.forgetConnection()
+        try await wait("leaving the workspace retires the work reader") { controller.presentedViewController == nil }
+
     }
+    @Test func liveToolReaderSurvivesTheServiceCompletionRefresh() async throws {
+        let source = ToolReaderServiceFixture()
+        let service = HermesBotService(transportFactory: { source }, journal: HermesSubmissionJournal(directory: nil))
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-tool-refresh.invalid")!,
+            username: "alice", password: "fixture-password", installID: "fixture-install")
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        let connected = await store.connect(configuration)
+        try #require(connected, "\(store.connectionError ?? "No connection error")"); await store.open(try #require(store.bots.first))
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        source.event("message.start")
+        source.event("tool.start", payload: ["tool_id": .string("call-reader"), "name": .string("terminal"),
+            "args": .object(["command": .string("Running the service check")])])
+        try await wait("live service work disclosure is admitted") {
+            element("Work details, 1 tool, Working", in: host.view).map { !$0.accessibilityTraits.contains(.notEnabled) } == true
+        }
+        #expect(try #require(element("Work details, 1 tool, Working", in: host.view)).accessibilityActivate())
+        let controller = try #require(collectionController(host))
+        try await wait("live tool reader opens") { controller.presentedViewController.map { element("Expand terminal", in: $0.view) != nil } == true }
+        let reader = try #require(controller.presentedViewController)
+        #expect(try #require(element("Expand terminal", in: reader.view)).accessibilityActivate())
+        try await wait("live tool starts expanded") { element("Running the service check", in: reader.view) != nil }
+        source.event("tool.complete", payload: ["tool_id": .string("call-reader"), "name": .string("terminal"), "result_text": .string("Checked successfully")])
+        source.snapshot["messages"] = .array([
+            .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call-reader"),
+                "tool_name": .string("terminal"), "content": .string("Checked successfully")]),
+            .object(["row_id": .number(6), "role": .string("assistant"), "content": .string("Done")])
+        ])
+        source.snapshot["running"] = .bool(false); source.snapshot["last_sequence"] = .number(4)
+        source.event("message.complete", payload: ["text": .string("Done"), "status": .string("complete"), "outcome": .string("completed")])
+        try await wait("automatic durable refresh preserves the same expanded tool reader") {
+            source.resumes >= 2 && controller.presentedViewController === reader &&
+                element("Collapse terminal", in: reader.view) != nil && element("Checked successfully", in: reader.view) != nil
+        }
+    }
+
+    @Test(arguments: ["empty-section", "leading-whitespace", "empty-error"])
+    func collapsedWorkPreviewsSkipEmptySectionsAndLeadingWhitespace(payload: String) async throws {
+        let text: String = switch payload {
+        case "empty-section": "{\"content\":\"\",\"output\":\"Job failed\"}"
+        case "empty-error": "{\"output\":\"\",\"error\":\"permission denied\",\"exit_code\":1}"
+        default: String(repeating: " \n", count: 500) + "Job failed"
+        }
+        let expected = payload == "empty-error" ? "Preview: { \"error\": \"permission denied\", \"exit_code\": 1 }" : "Preview: Job failed"
+        let message = ChatMessage(id: "preview", role: .tool, text: text, toolName: "terminal")
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: WorkDetailsSheet(document: .init(title: "Work details", messages: [message]),
+            isCurrent: { true }, close: {}).environment(\.scenePhase, .active))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        try await wait("collapsed work retains meaningful output") {
+            element("Expand terminal", in: host.view) != nil && element(expected, in: host.view) != nil
+        }
+    }
+
+    @Test func groupedBackgroundUpdatesKeepSourceLabels() async throws {
+        let service = try WorkspaceTestService(), session = service.summaries[0].identity
+        service.snapshots[session.root]?.queuedMessages = [
+            .init(id: "process", text: "Process payload", submissionID: "[\"completion\",\"process-id\",1]"),
+            .init(id: "agents", text: "Agent payload", submissionID: "[\"async_delegation\",\"batch-id\",\"\"]")
+        ]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-grouped-updates.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: QueuedMessagesView(workspace: store.chats,
+            screen: store.chats.screen(profile: service.profile), inputAvailable: true, canAttemptSave: true,
+            requireConnection: { true }).environment(\.scenePhase, .active))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
+        defer {
+            host.dismiss(animated: false); window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
+            store.forgetConnection(); LocalHistory.remove(for: configuration.id)
+        }
+        try await wait("queued background group opens its shared details sheet") { element("2 queued background events", in: host.view) != nil }
+        #expect(try #require(element("2 queued background events", in: host.view)).accessibilityActivate())
+        try await wait("grouped updates preserve numbered source headings and payloads") {
+            guard let sheet = host.presentedViewController else { return false }
+            return element("Background process finished", in: sheet.view) != nil && element("Background agents finished", in: sheet.view) != nil &&
+                element("1", in: sheet.view) != nil && element("2", in: sheet.view) != nil &&
+                element("Process payload", in: sheet.view) != nil && element("Agent payload", in: sheet.view) != nil
+        }
+    }
+
+    @Test func workIndicatorTracksWorkingToolsReplyingAndWaiting() async throws {
+        let service = try WorkspaceTestService(), session = service.summaries[0].identity
+        service.snapshots[session.root]?.messages = [.init(id: "question", role: .user, text: "Check the service")]
+        service.snapshots[session.root]?.isWorking = true
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-work-indicator.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let name = try #require(store.bots.first).name
+        try await wait("work starts with working feedback") { element("\(name) is working", in: host.view) != nil }
+        #expect(element("\(name) is replying", in: host.view) == nil)
+        let lineage = UUID()
+        func publish(_ phase: ConversationWorkPhase?) throws {
+            let publication = try service.publication(session)
+            service.onEvent?(.conversation(.init(identity: session, snapshot: publication.snapshot, access: publication.access,
+                activity: .init(lineage: lineage, phase: phase, workStartedAt: .now, phaseStartedAt: .now))))
+        }
+        service.snapshots[session.root]?.messages.append(.init(id: "result", role: .tool, text: "Service is healthy", toolName: "terminal"))
+        try publish(.tools)
+        try await wait("current tool row shows active work") { element("Work details, 1 tool, Working", in: host.view) != nil }
+        #expect(element("\(name) is replying", in: host.view) == nil)
+        service.snapshots[session.root]?.messages.append(.init(id: "answer", role: .assistant, text: "The service"))
+        try publish(.replying)
+        try await wait("reply text has typing feedback and settled tool row") {
+            element("\(name) is replying", in: host.view) != nil && element("Work details, 1 tool", in: host.view) != nil
+        }
+        try publish(.thinking)
+        try await wait("thinking stops typing feedback") { element("\(name) is replying", in: host.view) == nil && element("\(name) is working", in: host.view) != nil }
+        service.snapshots[session.root]?.pendingRequests = [.init(id: "approval", kind: .approval, title: "Continue?")]
+        try publish(.working)
+        try await wait("waiting for the user has no working or typing feedback") {
+            element("\(name) is replying", in: host.view) == nil && element("\(name) is working", in: host.view) == nil
+        }
+        service.snapshots[session.root]?.pendingRequests = []
+        service.snapshots[session.root]?.isWorking = false
+        try publish(nil)
+        try await wait("completion clears activity feedback") { element("\(name) is replying", in: host.view) == nil && element("\(name) is working", in: host.view) == nil }
+    }
+
     @Test func workDetailsGroupingPreservesMessageBoundariesAndDuplicateQuarantine() throws {
         let first = ChatMessage(id: "first", role: .tool, text: "One")
         let second = ChatMessage(id: "second", role: .tool, text: "Two")
@@ -311,5 +474,85 @@ import BottoCore
         let request = PendingRequest(id: "request", kind: .question, title: "é")
         let changed = PendingRequest(id: "request", kind: .question, title: "e\u{301}")
         #expect(NativeTranscriptRowValue.request(request, enabled: true) != .request(changed, enabled: true))
+    }
+}
+
+@MainActor private final class ToolReaderServiceFixture: HermesTransport, HermesSocket {
+    var snapshot: HermesJSON = .object([
+        "session_id": .string("stored-1"), "stored_session_id": .string("stored-1"), "messages": .array([]),
+        "running": .bool(false), "replay_epoch": .string("session-epoch"), "last_sequence": .number(0),
+        "subscription_id": .string("subscription"), "execution_generation": .number(7), "pending": .array([]), "prompts": .array([]),
+        "info": .object(["desktop_protocol": .string("hermes-gateway-v1"), "profile_name": .string("inbox-triage"),
+            "profile_id": .string("/profiles/inbox-triage"), "source": .string("gui")])
+    ])
+    private(set) var resumes = 0
+    private var sequence = 0
+    private var events: [HermesJSON] = []
+    private var queue: [Data] = []
+    private var waiter: CheckedContinuation<Data, Error>?
+    private var closed = false
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let result: HermesJSON
+        switch request.url?.path {
+        case "/api/status":
+            result = .object(["version": .string("0.21.5"), "install_id": .string("fixture-install"),
+                "auth_required": .bool(true), "auth_providers": .array([.string("basic")])])
+        case "/api/auth/me": result = .object(["provider": .string("basic"), "user_id": .string("alice")])
+        case "/api/auth/ws-ticket": result = .object(["ticket": .string("fixture-ticket")])
+        case "/api/sessions": result = .object(["sessions": .array([]), "total": .number(0), "limit": .number(100), "offset": .number(0)])
+        case "/api/sessions/stored-1/messages":
+            result = .object(["session_id": .string("stored-1"), "profile": .string("inbox-triage"), "messages": snapshot["messages"]])
+        default: result = .object(["ok": .bool(true)])
+        }
+        return (try result.data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+    func socket(for request: URLRequest) throws -> any HermesSocket {
+        push(.object(["method": .string("event"), "params": .object(["type": .string("gateway.ready"),
+            "payload": .object(["replay_epoch": .string("gateway-epoch"), "session_authority": .bool(true)])])]))
+        return self
+    }
+    func invalidate() {}
+    func receive() async throws -> Data {
+        if !queue.isEmpty { return queue.removeFirst() }
+        if closed { throw HermesServiceError.disconnected }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func send(_ data: Data) async throws {
+        let frame = try HermesJSON.decode(data)
+        let result: HermesJSON
+        switch frame["method"].text {
+        case "client.capabilities", "gateway.ping": result = .object(["ok": .bool(true)])
+        case "runtime.describe": result = .object(["capabilities": .array([.string("durable-admission-v1"), .string("event-replay-v1")]),
+            "session_create": .object(["sources": .array([.string("gui")])])])
+        case "profiles.list": result = .object(["install_id": .string("fixture-install"),
+            "profiles": .array([.object(["name": .string("inbox-triage"), "display_name": .string("Inbox triage")])])])
+        case "session.active_list": result = .object(["sessions": .array([])])
+        case "session.list": result = .object(["sessions": .array([.object(["id": .string("stored-1"), "resolved_id": .string("stored-1")])])])
+        case "session.resume": resumes += 1; result = snapshot
+        case "session.events.since": result = .object(["events": .array(events), "latest_seq": .number(Double(sequence)),
+            "replay_epoch": .string("session-epoch"), "truncated": .bool(false), "snapshot_required": .bool(false)])
+        default:
+            push(.object(["id": frame["id"], "error": .object(["code": .number(-32601), "message": .string("Unsupported fixture method")])]))
+            return
+        }
+        push(.object(["id": frame["id"], "result": result]))
+    }
+    func close() {
+        closed = true
+        let waiting = waiter; waiter = nil; waiting?.resume(throwing: HermesServiceError.disconnected)
+    }
+    func event(_ type: String, payload: [String: HermesJSON] = [:]) {
+        sequence += 1
+        let value: HermesJSON = .object(["type": .string(type), "seq": .number(Double(sequence)), "session_id": .string("stored-1"),
+            "replay_epoch": .string("session-epoch"), "execution_generation": .number(7),
+            "admission_id": .string("reader-turn"), "payload": .object(payload)])
+        events.append(value); push(.object(["method": .string("event"), "params": value]))
+    }
+    private func push(_ value: HermesJSON) {
+        var frame = value; frame["jsonrpc"] = .string("2.0")
+        guard let data = try? frame.data else { return }
+        if let waiting = waiter { waiter = nil; waiting.resume(returning: data) }
+        else { queue.append(data) }
     }
 }

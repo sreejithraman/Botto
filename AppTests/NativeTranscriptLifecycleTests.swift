@@ -375,7 +375,8 @@ import BottoCore
         #expect(fixture.service.downloads == 0 && fixture.service.responses.isEmpty)
     }
 
-    @Test func workDetailsRequiresExactCurrentContiguousGroupButAllowsDiagnosticReader() async throws {
+    @Test(arguments: ["split", "removed", "duplicate", "reordered"])
+    func workDetailsRetainsGrowingGroupButRetiresChangedIdentityOrBoundaries(change: String) async throws {
         let fixture = try await TranscriptFixture()
         defer { fixture.close() }
         let first = ChatMessage(id: "tool-one", role: .tool, text: "{\"answer\":1}", toolName: "first")
@@ -391,11 +392,25 @@ import BottoCore
         try await wait("diagnostic reader accepts every exact tool group member") { fixture.covered && fixture.controller.presentedViewController?.isBeingPresented == false }
         let sheet = try #require(fixture.controller.presentedViewController)
         #expect(sheet.sheetPresentationController?.detents.map(\.identifier) == [.medium, .large])
-        // Same messages separated by an invisible raw row are no longer the same group.
+        var revised = first; revised.text = "Updated tool result"
+        let third = ChatMessage(id: "tool-three", role: .tool, text: "New work", toolName: "third")
+        try fixture.publish([revised, second, third])
+        #expect(fixture.controller.presentedViewController === sheet && fixture.reports.map(\.1) == [true])
         let hidden = ChatMessage(id: "hidden-separator", role: .system, text: "hidden", isSilent: true)
-        try fixture.publish([first, hidden, second])
-        try await wait("raw group split retires the reader") { fixture.controller.presentedViewController == nil }
+        let replacement: [ChatMessage] = switch change {
+        case "split": [revised, hidden, second, third]
+        case "removed": [revised, third]
+        case "duplicate": [revised, second, third, revised]
+        default: [revised, third, second]
+        }
+        try fixture.publish(replacement)
+        try await wait("changed group identity or boundary retires the reader") { fixture.controller.presentedViewController == nil }
         #expect(fixture.reports.map(\.1) == [true, false])
+        try fixture.publish([first, second])
+        try await wait("disclosure can reopen after work changes") { fixture.firstScope?.canPresent == true }
+        fixture.firstScope?.present(details: .init(title: "Work details", messages: [first, second]), report: fixture.report)
+        try await wait("fresh work reader opens") { fixture.controller.presentedViewController != nil }
+        #expect(fixture.reports.map(\.1) == [true, false, true])
     }
 
     @Test func detailsCoverageReservationRejectsCompetingReaderAndSynchronousRetirement() async throws {

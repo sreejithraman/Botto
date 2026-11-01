@@ -103,3 +103,63 @@ struct HermesResultProjectionTests {
     }
 
 }
+
+struct HermesToolIdentityTests {
+    @Test(arguments: ["duplicate-call", "duplicate-row", "missing-call", "different-call", "generation", "epoch", "stored", "profile"])
+    func ambiguousOrDifferentSourcesCannotRetainToolIdentity(change: String) throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        prior.generation = 7
+        prior.updateTool(.object(["tool_id": .string("call"), "name": .string("terminal")]), complete: false)
+        var row: HermesJSON = .object(["row_id": .number(5), "role": .string("tool"), "tool_call_id": .string("call"), "content": .string("Result")])
+        if change == "missing-call" { row["tool_call_id"] = .null }
+        if change == "different-call" { row["tool_call_id"] = .string("another") }
+        var history = [row]
+        if change == "duplicate-call" { var duplicate = row; duplicate["row_id"] = .number(6); history.append(duplicate) }
+        if change == "duplicate-row" { history.append(.object(["row_id": .number(5), "role": .string("assistant"), "content": .string("Duplicate")])) }
+        let stored = change == "stored" ? "another" : "stored"
+        var fresh = HermesConversationState(profile: change == "profile" ? "another" : "bot", root: "root", stored: stored,
+            runtime: "runtime", epoch: change == "epoch" ? "another" : "epoch")
+        fresh.generation = change == "generation" ? 8 : 7
+        try fresh.restore(.object(["session_id": .string("runtime"), "session_key": .string(stored)]), history: history, authority: false)
+        fresh.retainToolIdentities(from: prior)
+        #expect(fresh.conversation.messages.first?.id == stored + ":row:5")
+    }
+
+    @Test func aNewTurnCannotReuseARetiredToolAlias() throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        prior.generation = 7
+        let start: HermesJSON = .object(["tool_id": .string("call"), "name": .string("terminal")])
+        prior.updateTool(start, complete: false)
+        let original = try #require(prior.conversation.messages.first?.id)
+        var fresh = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        fresh.generation = 7
+        fresh.updateTool(start, complete: false)
+        let nextAdmission = fresh.turnID
+        fresh.retainToolIdentities(from: prior)
+        fresh.reduce(.object(["type": .string("message.start"), "execution_generation": .number(8),
+            "admission_id": .string(nextAdmission), "payload": .object([:])]), authority: true)
+        var next = start; next["args"] = .object(["command": .string("Another turn's work")])
+        fresh.updateTool(next, complete: false)
+        #expect(fresh.conversation.messages.count == 2)
+        #expect(fresh.conversation.messages.first?.id == original)
+        #expect(fresh.conversation.messages.last?.id != original)
+        #expect(fresh.conversation.messages.last?.text == "Another turn's work")
+    }
+
+    @Test func aRunningRefreshRetainsTheToolThroughItsLaterCompletion() throws {
+        var prior = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        prior.generation = 7
+        let start: HermesJSON = .object(["tool_id": .string("call"), "name": .string("terminal")])
+        prior.updateTool(start, complete: false)
+        let original = try #require(prior.conversation.messages.first?.id)
+        var fresh = HermesConversationState(profile: "bot", root: "root", stored: "stored", runtime: "runtime", epoch: "epoch")
+        fresh.generation = 7
+        fresh.updateTool(start, complete: false)
+        fresh.retainToolIdentities(from: prior)
+        var completed = start; completed["result_text"] = .string("Finished output")
+        fresh.updateTool(completed, complete: true)
+        #expect(fresh.conversation.messages.count == 1)
+        #expect(fresh.conversation.messages.first?.id == original)
+        #expect(fresh.conversation.messages.first?.text == "Finished output")
+    }
+}

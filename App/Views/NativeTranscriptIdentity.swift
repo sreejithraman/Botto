@@ -56,11 +56,12 @@ struct NativeTranscriptMessagePlan {
 
 struct WorkDetailsView: View {
     let messages: [ChatMessage]
+    var isActive = false
 
     var body: some View {
         WorkDetailsRow(title: "Work details", systemImage: "wrench.and.screwdriver", count: messages.count,
-            accessibilityLabel: "Work details, \(messages.count) \(messages.count == 1 ? "tool" : "tools")",
-            identifier: "work-details-" + (messages.first?.id ?? ""), messages: messages)
+            accessibilityLabel: "Work details, \(messages.count) \(messages.count == 1 ? "tool" : "tools")" + (isActive ? ", Working" : ""),
+            identifier: "work-details-" + (messages.first?.id ?? ""), messages: messages, isActive: isActive)
     }
 }
 
@@ -121,5 +122,17 @@ struct NativeTranscriptAmbiguousRequest: View {
             ForEach(Array(request.choices.enumerated()), id: \.offset) { _, choice in Text(verbatim: choice.label) }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+/// Replying requires a live reply phase; a running turn alone only proves work.
+enum TranscriptWorkActivity {
+    case idle, working, typing
+
+    init(snapshot: Conversation?, phase: ConversationWorkPhase?) {
+        guard snapshot?.isWorking == true, snapshot?.pendingRequests.isEmpty == true else {
+            self = .idle; return
+        }
+        self = phase == .replying ? .typing : .working
     }
 }
