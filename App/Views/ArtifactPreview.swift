@@ -63,9 +63,11 @@ struct ArtifactPreview: View {
                 Button("Share", systemImage: "square.and.arrow.up") {
                     if isActive && canPresentOutput() { session.beginOutput(.share) }
                 }.accessibilityIdentifier("artifact-share")
-                Button("Reload from Bot", systemImage: "arrow.clockwise") {
-                    if isActive && canPresentOutput() { session.reload() }
-                }.disabled(session.isLoading)
+                if session.canReload {
+                    Button("Reload from Bot", systemImage: "arrow.clockwise") {
+                        if isActive && canPresentOutput() { session.reload() }
+                    }.disabled(session.isLoading)
+                }
                 if let onBrowseBots {
                     Button("Bots", systemImage: "sidebar.left", action: onBrowseBots)
                 }

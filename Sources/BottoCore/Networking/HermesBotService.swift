@@ -537,7 +537,8 @@ import Foundation
         }
         throw HermesServiceError.profileUnavailable
     }
-    func emitConversation(readEvidence: ConversationReadEvidence? = nil) {
+    func emitConversation(readEvidence: ConversationReadEvidence? = nil, historyReadStartedAt: ContinuousClock.Instant? = nil,
+                          observedSource: SessionIdentity? = nil) {
         guard !reconciling, attached else { return }
         projectStoppedOutcome()
         guard let state, let identity = selectedTarget else { return }
@@ -545,10 +546,12 @@ import Foundation
         do {
             if publication == nil || accessContextChanged(context) {
                 publication = OpenedConversation(identity: identity, snapshot: state.conversation, access: try issuer.issue(context),
-                    readEvidence: readEvidence, activity: state.motion.activity)
+                    readEvidence: readEvidence, activity: state.motion.activity, historyReadStartedAt: historyReadStartedAt,
+                    observedSource: observedSource)
             } else if let old = publication {
                 publication = OpenedConversation(identity: identity, snapshot: state.conversation, access: old.access,
-                    readEvidence: readEvidence, activity: state.motion.activity)
+                    readEvidence: readEvidence, activity: state.motion.activity, historyReadStartedAt: historyReadStartedAt,
+                    observedSource: observedSource)
             }
             if let publication { onEvent?(.conversation(publication)) }
             self.state?.motion.reaction = nil

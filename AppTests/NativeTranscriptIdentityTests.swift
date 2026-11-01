@@ -6,6 +6,29 @@ import BottoCore
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptIdentityTests {
+    @Test func rawAmbiguityRevokesActionsEvenWhenOnlyOneVisibleRowSurvivesProjection() async throws {
+        let service = try WorkspaceTestService(), source = service.summaries[0].identity
+        let message = ChatMessage(id: source.stored.text + ":row:7", role: .assistant, text: "::preview{file='report.html'}")
+        service.snapshots[source.root]?.messages = [message]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://raw-ambiguity.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let block = try #require(ReplyContent(message: message).blocks.first)
+        let context = store.richReplyContext(for: source.profile.text, messageID: message.id)
+        try #require(context.permits(block))
+        let attachment = try #require(block.filePreview?.attachment)
+        let destination = try #require(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message))
+        defer { store.finishArtifact(destination) }
+        service.snapshots[source.root]?.unavailableMessageIDs = [Data(message.id.utf8)]
+        service.onEvent?(.conversation(try service.publication(source)))
+        #expect(!context.permits(block))
+        #expect(!store.isAuthorizedArtifactPresentation(destination))
+        #expect(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message) == nil)
+        let snapshot = try #require(store.conversation(for: source.profile.text))
+        #expect(NativeTranscriptMessagePlan(snapshot.messages, unavailableMessageIDs: snapshot.unavailableMessageIDs ?? []).entries.first?.isAmbiguous == true)
+    }
+
     @Test func consecutiveToolResultsShareOneNativeRowWithoutChangingStoredHistory() async throws {
         let service = try WorkspaceTestService(), session = service.summaries[0].identity
         let messages: [ChatMessage] = [

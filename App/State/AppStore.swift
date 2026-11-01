@@ -59,6 +59,7 @@ import BottoCore
             guard let destination else { return }
             self.destination = nil
             if let intent = destination.intent { destination.workspace.finishArtifact(intent) }
+            destination.library.reconcileOriginalConsumers()
         }
     }
 
@@ -241,9 +242,14 @@ import BottoCore
             exactAccount: configuration.map(Self.richReplyAccount) ?? [], incarnation: UUID())
         chats = ConversationWorkspace(scope: scope, book: history.book, service: service,
             onDirty: { [weak self] in self?.reconcileArtifactPresentation(); self?.scheduleSave() })
-        chats.onAcceptedTranscript = { [weak self, weak library] identity, snapshot, title in
+        chats.onAcceptedTranscript = { [weak self, weak library] publication, previous, title in
             guard let self, let library, library === self.library else { return }
-            library.accept(identity: identity, snapshot: snapshot, title: title)
+            let evidence: WorkspaceLibrary.TranscriptEvidence = publication.historyReadStartedAt.map {
+                .read(startedAt: $0, observedSource: publication.observedSource)
+            }
+                ?? .incremental(previous: previous)
+            library.accept(identity: publication.identity, snapshot: publication.snapshot, title: title, evidence: evidence)
+            library.reconcileOriginalConsumers()
         }
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
@@ -584,6 +590,13 @@ import BottoCore
         avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: Set(cachedBots.map(\.id)))
     }
 
+    func refreshLibraryIfNeeded() async {
+        let library = library
+        library.seed(book: chats.persisted(), bots: cachedBots)
+        library.setOnline(isConnected)
+        await library.refreshIfNeeded(bots: cachedBots)
+    }
+
     func refreshLibrary(force: Bool = false) async {
         let library = library
         library.seed(book: chats.persisted(), bots: cachedBots)
@@ -835,10 +848,14 @@ import BottoCore
     }
     private func reconcileArtifactPresentation() {
         let key = currentArtifactPresentationKey()
-        if key != artifactPresentationKey { artifactPresentationEpoch = UUID(); artifactPresentationKey = key }
+        if key != artifactPresentationKey {
+            artifactPresentationEpoch = UUID(); artifactPresentationKey = key
+            library.reconcileOriginalConsumers()
+        }
     }
     private func retireArtifactPresentation() {
         artifactPresentationEpoch = UUID(); artifactPresentationKey = currentArtifactPresentationKey()
+        library.reconcileOriginalConsumers()
     }
     func canStartArtifactRead(_ destination: ArtifactDestination) -> Bool {
         isAuthorizedArtifactPresentation(destination)
@@ -884,11 +901,13 @@ import BottoCore
     }
     func finishArtifact(_ destination: ArtifactDestination) {
         if let intent = destination.intent { destination.workspace.finishArtifact(intent) }
+        destination.library.reconcileOriginalConsumers()
     }
     private func retireArtifactDownloads() {
         reconcileArtifactPresentation()
         richReplies?.retire(); richReplies = nil
         artifactGeneration = UUID()
+        library.reconcileOriginalConsumers()
     }
 
     func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotProfile? {
@@ -945,6 +964,7 @@ import BottoCore
         let oldID = configuration?.id
         pendingPushNotification = nil; notificationRouting = nil
         if let oldID { artifactCache.discard(configurationID: oldID) }
+        else { artifactCache.prune(reachableConfigurationIDs: []) }
         Task { [weak self, artifactCache] in
             do { try await artifactCache.drainMaintenance() }
             catch { self?.notice = "Saved setup was removed, but artifact cleanup couldn’t finish. Botto will retry when it opens again." }
@@ -996,9 +1016,12 @@ import BottoCore
         case .activityBatch(let updates):
             chats.applyActivity(updates)
         case .conversationDirectoryChanged(let profile):
+            library.invalidateRevalidation()
             chats.invalidateActivityDirectory(profile)
             Task { await refresh() }
-        case .botsChanged: Task { await refresh() }
+        case .botsChanged:
+            library.invalidateRevalidation()
+            Task { await refresh() }
         case .configuration(let updated):
             rotatedConfigurations[updated.id] = updated
             if updated.id == connectingConfiguration?.id, updated.serverURL == connectingConfiguration?.serverURL {
@@ -1108,18 +1131,22 @@ extension AppStore {
     func isCurrentRichReplyDestination(_ destination: RichReplyDestination) -> Bool {
         chats.isCurrent(destination.owner) && richReplyDestination(for: String(decoding: destination.profile, as: UTF8.self)) == destination
     }
+    func richReplyIsWorking(destination: RichReplyDestination) -> Bool? {
+        guard isCurrentRichReplyDestination(destination) else { return nil }
+        return conversation(for: String(decoding: destination.profile, as: UTF8.self))?.isWorking
+    }
     func richReplyBlocks(messageID: Data, destination: RichReplyDestination) -> [ExactReplyBlock]? {
         guard isCurrentRichReplyDestination(destination),
               let chat = conversation(for: String(decoding: destination.profile, as: UTF8.self)),
               let message = chat.messages.first(where: { Data($0.id.utf8) == messageID }),
-              message.role == .assistant else { return nil }
+              message.role == .assistant, TranscriptMessageIndex(chat).matches(message) else { return nil }
         let streaming = chat.isWorking && chat.messages.last.map { Data($0.id.utf8) } == messageID
         return ReplyContent(message: message, isStreaming: streaming,
                             filePreviewsAreSettled: !chat.isWorking).blocks
             .filter { $0.isComplete && ($0.previewFormat != nil || $0.filePreview != nil) }.map(ExactReplyBlock.init)
     }
     func downloadReplyFile(_ block: ReplyContent.Block, messageID: Data,
-                           destination: RichReplyDestination) async throws -> ReplyFileDownload {
+                           destination: RichReplyDestination, force: Bool = false) async throws -> ReplyFileDownload {
         guard let reference = block.filePreview,
               richReplyBlocks(messageID: messageID, destination: destination)?.contains(ExactReplyBlock(block)) == true,
               let message = conversation(for: String(decoding: destination.profile, as: UTF8.self))?.messages.first(where: { Data($0.id.utf8) == messageID }),
@@ -1127,7 +1154,7 @@ extension AppStore {
                   botID: String(decoding: destination.profile, as: UTF8.self), producingMessage: message) else {
             throw HermesServiceError.staleConversation
         }
-        let artifact = try await downloadArtifact(file)
+        let artifact = try await downloadArtifact(file, force: force)
         return ReplyFileDownload(artifact: artifact, destination: file)
     }
     func richReplyContext(for botID: String, messageID: String) -> RichReplyContext {

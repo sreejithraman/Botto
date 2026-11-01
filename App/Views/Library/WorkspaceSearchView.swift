@@ -10,6 +10,7 @@ struct WorkspaceSearchView: View {
     let onArtifact: (LibraryArtifact) -> Void
     let onMessage: (SearchMessageTarget) -> Void
     @State private var thumbnails = LibraryThumbnails()
+    @Environment(\.scenePhase) private var scenePhase
 
     private var term: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -76,6 +77,10 @@ struct WorkspaceSearchView: View {
             .refreshable { await store.refreshLibrary(force: true) }
         }
         .searchable(text: $query, prompt: "Bots, chats, and artifacts")
+        .background {
+            LibraryPreviewThumbnailHost(renderer: thumbnails.previews, isActive: scenePhase == .active)
+                .frame(width: 400, height: 284).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+        }
     }
 
     private func searchSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -184,14 +189,14 @@ private struct SearchArtifactCover: View {
     let item: LibraryArtifact
     let library: WorkspaceLibrary
     let thumbnails: LibraryThumbnails
-    @State private var image: UIImage?
+    @State private var cover: (content: LibraryThumbnails.Content, image: UIImage)?
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 72
 
     var body: some View {
         ZStack {
             BottoTheme.surface
-            if let image {
-                Image(uiImage: image).resizable().scaledToFit().padding(6)
+            if let cover, cover.content.representsSameSource(as: request.content) {
+                Image(uiImage: cover.image).resizable().scaledToFit().padding(6)
             } else {
                 Image(systemName: item.artifact.kind.librarySymbol)
                     .font(.title2).foregroundStyle(BottoTheme.action)
@@ -199,13 +204,17 @@ private struct SearchArtifactCover: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 14)).accessibilityHidden(true)
-        .task(id: LibraryThumbnails.request(for: item, library: library)) {
-            image = nil
-            guard item.artifact.kind == .image else { return }
-            let value = await thumbnails.image(for: item, library: library)
-            guard !Task.isCancelled, library.isCurrent(item) else { return }
-            image = value
+        .task(id: request) {
+            guard LibraryThumbnails.supports(item) else { return }
+            let content = request.content
+            let image = await thumbnails.image(for: item, library: library)
+            guard !Task.isCancelled, library.isCurrent(item), let image else { return }
+            cover = (content, image)
         }
+    }
+
+    private var request: LibraryThumbnails.Request {
+        LibraryThumbnails.request(for: item, library: library, rendererRevision: thumbnails.previews.mountRevision)
     }
 }
 

@@ -112,6 +112,14 @@ public struct ChatAttachment: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
+    public nonisolated static func isStableID(_ id: Data, storedID: String) -> Bool {
+        guard !id.starts(with: Data((storedID + ":index:").utf8)) else { return false }
+        let row = Data((storedID + ":row:").utf8)
+        guard id.starts(with: row) else { return true }
+        let suffix = id.dropFirst(row.count)
+        guard let number = Int(String(decoding: suffix, as: UTF8.self)), number >= 0 else { return false }
+        return Data(String(number).utf8) == suffix
+    }
     public enum Role: String, Codable, Sendable { case user, assistant, tool, system }
     public var id: String
     public var role: Role
@@ -185,6 +193,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var storedID: String
     public var profileID: String
     public var messages: [ChatMessage]
+    public var unavailableMessageIDs: Set<Data>?
     public var pendingRequests: [PendingRequest]
     public var queuedMessages: [QueuedMessage]
     public var isWorking: Bool
@@ -197,7 +206,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, storedID, profileID, messages, pendingRequests, queuedMessages, isWorking, lastSequence
+        case id, storedID, profileID, messages, unavailableMessageIDs, pendingRequests, queuedMessages, isWorking, lastSequence
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -205,6 +214,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
         storedID = try values.decode(String.self, forKey: .storedID)
         profileID = try values.decode(String.self, forKey: .profileID)
         messages = try values.decode([ChatMessage].self, forKey: .messages)
+        unavailableMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .unavailableMessageIDs)
         pendingRequests = try values.decode([PendingRequest].self, forKey: .pendingRequests)
         queuedMessages = try values.decodeIfPresent([QueuedMessage].self, forKey: .queuedMessages) ?? []
         isWorking = try values.decode(Bool.self, forKey: .isWorking)

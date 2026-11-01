@@ -22,6 +22,7 @@ import BottoCore
     var file: ArtifactPreviewFile? { isCurrent ? completedFile : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
     var isLoading: Bool { isCurrent && model.isLoading }
+    var canReload: Bool { isCurrent && item.artifact.attachment != nil }
     var title: String { item.artifact.title }
     var previewBlock: ReplyContent.Block? { isCurrent ? item.artifact.block : nil }
     var output: ArtifactOutput? { isCurrent ? pendingOutput : nil }
@@ -31,7 +32,10 @@ import BottoCore
 
     func retry() { load(force: false) }
 
-    func reload() { load(force: true) }
+    func reload() {
+        guard canReload else { return }
+        load(force: true)
+    }
 
     private func load(force: Bool) {
         guard isCurrent, loadTask == nil, (force || completedFile == nil), !isPresentingOutput else { return }

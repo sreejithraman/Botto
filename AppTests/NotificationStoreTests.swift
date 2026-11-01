@@ -723,4 +723,32 @@ import BottoCore
         #expect(vault.saved.pairings.isEmpty && vault.saved.removals.count == 1)
         #expect(store.notice != nil)
     }
+
+    @Test func forgettingUnreadableSetupPurgesCapturesWithoutKnowingItsConfigurationID() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = try WorkspaceTestService(), source = try #require(service.summaries.first?.identity)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let key = ArtifactOriginalKey(identity: source, messageID: Data("private".utf8), path: Data("/private.txt".utf8), sourceRevision: Data("revision".utf8))
+        let cache = ArtifactCache(root: root), saved = cache.session(scope: scope)
+        try await saved.upsert(.init(identity: source, botName: "Bot", title: "Private",
+            messages: [.init(id: "private", role: .assistant, text: "MEDIA:/private.txt")], updatedAt: nil,
+            coverage: .complete, summary: nil, headFingerprint: nil))
+        try await saved.retainOriginal(.init(data: Data("private capture".utf8), filename: "private.txt", mimeType: "text/plain"), for: key)
+        var unreadable = true
+        let store = AppStore(service: service, persistence: .init(load: {
+            if unreadable { throw HermesServiceError.invalidResponse }
+            return nil
+        }, save: { _ in }, remove: { unreadable = false }), artifactCache: cache)
+        #expect(store.savedSetupLoadFailed && store.configuration == nil)
+        #expect(try await saved.original(for: key)?.artifact.data == Data("private capture".utf8))
+        store.forgetConnection()
+        try await cache.drainMaintenance()
+        await cache.close()
+        let reopenedCache = ArtifactCache(root: root), reopened = reopenedCache.session(scope: scope)
+        #expect(!unreadable && !store.savedSetupLoadFailed)
+        #expect(try await reopened.loadChats().isEmpty)
+        #expect(try await reopened.original(for: key) == nil)
+        await reopenedCache.close()
+    }
 }

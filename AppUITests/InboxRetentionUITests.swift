@@ -1,6 +1,90 @@
 import XCTest
+import Vision
 
 final class InboxRetentionUITests: XCTestCase {
+    @MainActor func testHTMLArtifactCoversRenderWithoutOpeningTheReader() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--reduce-motion"]
+        app.launch()
+        XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Artifacts"].tap()
+        let gallery = app.scrollViews["artifact-library"]
+        XCTAssertTrue(gallery.waitForExistence(timeout: 10))
+        let png = app.buttons["library-artifact-chart.png"]
+        for _ in 0..<8 {
+            if png.exists && png.isHittable { break }
+            gallery.swipeUp()
+        }
+        XCTAssertTrue(png.waitForExistence(timeout: 5))
+        let imageReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { self.hasRenderedChartColors(png) }
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [imageReady], timeout: 15), .completed,
+                       "The PNG must display its colored chart before any reader is opened.")
+        for (title, renderedText) in [("HTML preview", "Launch dashboard"), ("inline-visual-test.html", "File preview")] {
+            let card = app.buttons["library-artifact-\(title)"]
+            for _ in 0..<8 {
+                if card.exists && card.isHittable { break }
+                gallery.swipeUp()
+            }
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated {
+                    RenderedTranscriptText.line(renderedText, in: card, viewport: card.frame, app: app) != nil
+                }
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 30), .completed,
+                           "The gallery must show a rendered HTML cover before the reader is opened.")
+            XCTAssertFalse(app.buttons["artifact-done"].exists)
+            let image = XCTAttachment(screenshot: app.screenshot())
+            image.name = "Automatic gallery cover for \(title)"; image.lifetime = .keepAlways; add(image)
+        }
+    }
+
+    @MainActor func testReopeningArtifactsKeepsItsRenderedCovers() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--reduce-motion", "-botto.appearance", "dark"]
+        app.launch()
+        XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Artifacts"].tap()
+        let png = app.buttons["library-artifact-chart.png"]
+        XCTAssertTrue(png.waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { self.hasRenderedChartColors(png) }
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+        let position = png.frame
+        for _ in 0..<3 {
+            app.tabBars.buttons["Bots"].tap()
+            app.tabBars.buttons["Artifacts"].tap()
+            XCTAssertTrue(png.exists && png.isHittable)
+            XCTAssertTrue(hasRenderedChartColors(png))
+            XCTAssertEqual(png.frame.minY, position.minY, accuracy: 1)
+            XCTAssertFalse(app.otherElements["library-status"].exists)
+        }
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Three gallery reopens keep cached covers and card position"
+        screenshot.lifetime = .keepAlways; add(screenshot)
+    }
+
+    @MainActor private func hasRenderedChartColors(_ card: XCUIElement) -> Bool {
+        guard card.exists, card.isHittable, let image = card.screenshot().image.cgImage,
+              let context = CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else { return false }
+        var blue = 0, green = 0
+        for offset in stride(from: 0, to: image.width * image.height * 4, by: 4) {
+            if pixels[offset] < 120 && pixels[offset + 2] > 180 { blue += 1 }
+            if pixels[offset] < 80 && pixels[offset + 1] > 160 && pixels[offset + 2] < 140 { green += 1 }
+        }
+        return blue > 100 && green > 100
+    }
+
     @MainActor func testSearchJumpsToAnOlderMatchInsideATallMessage() {
         assertSearchRevealsOlderMatch(keepingDraft: true)
     }
@@ -13,7 +97,7 @@ final class InboxRetentionUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--reduce-motion", "--search-navigation-proof"]
-        if !keepingDraft { app.launchArguments += ["-botto.appearance", "dark"] }
+        app.launchArguments += ["-botto.appearance", keepingDraft ? "light" : "dark"]
         app.launch()
         XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
         let composer = app.descendants(matching: .any)["chat-composer"]
@@ -55,12 +139,49 @@ final class InboxRetentionUITests: XCTestCase {
         screenshot.name = "Older Search match visible inside a tall native message"
         screenshot.lifetime = .keepAlways; add(screenshot)
 
+        assertTranscriptDoesNotShowThroughControls(in: app, composer: composer)
+
         let latest = app.buttons["Latest messages"]
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
         latest.tap()
         XCTAssertTrue(tail.waitForExistence(timeout: 5))
         XCTAssertTrue(tail.isHittable)
         XCTAssertEqual(composer.value as? String ?? "", draft)
+    }
+
+    @MainActor private func assertTranscriptDoesNotShowThroughControls(in app: XCUIApplication, composer: XCUIElement) {
+        let profile = app.buttons["bot-profile-button"]
+        XCTAssertTrue(profile.exists)
+        guard let image = app.screenshot().image.cgImage else {
+            return XCTFail("The chat controls must have a rendered screenshot.")
+        }
+        let scale = CGFloat(image.height) / app.frame.height
+        let statusBottom = max(0, app.navigationBars.firstMatch.frame.minY - app.frame.minY) * scale
+        let composerTop = max(0, composer.frame.minY - app.frame.minY) * scale
+        let regions = [
+            ("status bar", CGRect(x: 0, y: 0, width: CGFloat(image.width), height: statusBottom)),
+            ("composer", CGRect(x: 0, y: composerTop, width: CGFloat(image.width),
+                                height: CGFloat(image.height) - composerTop))
+        ]
+        let transcriptPhrases = ["practical", "discussion", "project", "history entry", "ordinary update", "to review"]
+        for (name, region) in regions {
+            guard let crop = image.cropping(to: region) else {
+                XCTFail("The \(name) must occupy a visible region.")
+                continue
+            }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            do {
+                try VNImageRequestHandler(cgImage: crop).perform([request])
+                let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                    .joined(separator: " ").lowercased()
+                XCTAssertFalse(transcriptPhrases.contains(where: text.contains),
+                               "Transcript text must not show through the \(name); rendered text: \(text)")
+            } catch {
+                XCTFail("Cannot inspect the rendered \(name): \(error)")
+            }
+        }
     }
 
     @MainActor func testSearchPresentsReadableMessagesAndArtifactPreviews() {

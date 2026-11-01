@@ -91,16 +91,19 @@ nonisolated struct TranscriptScrollPolicy {
 
 nonisolated struct TranscriptMessageIndex {
     private let messages: [Data: ChatMessage]
+    let unavailableIDs: Set<Data>
 
     init(_ snapshot: Conversation?) {
         var messages: [Data: ChatMessage] = [:]
-        var ambiguous: Set<Data> = []
+        var ambiguous = snapshot?.unavailableMessageIDs ?? []
         for message in snapshot?.messages ?? [] {
             let id = Data(message.id.utf8)
+            if !ChatMessage.isStableID(id, storedID: snapshot?.storedID ?? "") { ambiguous.insert(id) }
             if messages.updateValue(message, forKey: id) != nil { ambiguous.insert(id) }
         }
         for id in ambiguous { messages[id] = nil }
         self.messages = messages
+        unavailableIDs = ambiguous
     }
 
     func matches(_ expected: ChatMessage) -> Bool {
@@ -130,11 +133,12 @@ nonisolated enum TranscriptContentRevision {
         case (nil, nil): true
         case let (a?, b?):
             a.messages.elementsEqual(b.messages, by: sameMessage) && a.pendingRequests.elementsEqual(b.pendingRequests, by: sameRequest)
+                && (a.unavailableMessageIDs ?? []) == (b.unavailableMessageIDs ?? [])
         default: false
         }
     }
     static func uniqueMessage(_ expected: ChatMessage, in snapshot: Conversation?) -> Bool {
-        guard let snapshot else { return false }
+        guard let snapshot, snapshot.unavailableMessageIDs?.contains(Data(expected.id.utf8)) != true else { return false }
         var found = false
         for message in snapshot.messages where exact(message.id, expected.id) {
             guard !found, message.isVisible, sameMessage(message, expected) else { return false }

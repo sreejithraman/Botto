@@ -7,9 +7,9 @@ import BottoCore
 @Suite(.serialized) @MainActor struct SearchMatchTextTests {
     @Test func searchUsesTheSameVisibleTextThatExactNavigationCanReveal() throws {
         let messages = [
-            ChatMessage(id: "stored:row:phrase", role: .assistant, text: "A **Café** update"),
-            ChatMessage(id: "stored:row:word", role: .assistant, text: "A nee**dle** in prose"),
-            ChatMessage(id: "stored:row:link", role: .assistant, text: "Read the [Café](https://example.test/hidden-destination) update")
+            ChatMessage(id: "stored:fixture:phrase", role: .assistant, text: "A **Café** update"),
+            ChatMessage(id: "stored:fixture:word", role: .assistant, text: "A nee**dle** in prose"),
+            ChatMessage(id: "stored:fixture:link", role: .assistant, text: "Read the [Café](https://example.test/hidden-destination) update")
         ]
         let chat = try searchableChat(messages)
         let snapshot = Conversation(id: chat.identity.root.text, storedID: chat.identity.stored.text,
@@ -27,8 +27,8 @@ import BottoCore
 
     @Test func literalUserAndBotSenderTextKeepsItsVisibleMarkdownCharacters() throws {
         let literal = "Keep **Café** literal and [notes](https://literal.example/visible-url)"
-        let user = ChatMessage(id: "stored:row:user", role: .user, text: literal)
-        let sender = ChatMessage(id: "stored:row:sender", role: .user,
+        let user = ChatMessage(id: "stored:fixture:user", role: .user, text: literal)
+        let sender = ChatMessage(id: "stored:fixture:sender", role: .user,
             text: "Message from 🤖 Gustavo (@hermes): " + literal,
             displayKind: "internal_notification")
         #expect(sender.botSender != nil)
@@ -48,7 +48,7 @@ import BottoCore
     @Test(arguments: [1, 50])
     func sourceOnlyPreviewHitsCannotHideReachableMessagesOrCreateOverflow(visibleCount: Int) throws {
         let visible = (0..<visibleCount).map {
-            ChatMessage(id: "stored:row:visible-\($0)", role: .assistant, text: "The Needle is visible in reply \($0).")
+            ChatMessage(id: "stored:fixture:visible-\($0)", role: .assistant, text: "The Needle is visible in reply \($0).")
         }
         let sourceOnly = (0..<60).map { index in
             let source: String
@@ -58,18 +58,18 @@ import BottoCore
             case 2: source = "```mermaid\ngraph TD\nNeedle-->Hidden\n```"
             default: source = "::preview{file=\"/Needle-\(index).html\"}"
             }
-            return ChatMessage(id: "stored:row:source-\(index)", role: .assistant, text: "Here is the example.\n\n" + source)
+            return ChatMessage(id: "stored:fixture:source-\(index)", role: .assistant, text: "Here is the example.\n\n" + source)
         }
         let chat = try searchableChat(visible + sourceOnly)
         let results = LibrarySearchResults(query: "needle", bots: [], chats: [chat], artifacts: [])
         #expect(results.messages.count == visibleCount)
         #expect(!results.hasMoreMessages)
-        #expect(results.messages.allSatisfy { $0.message.id.hasPrefix("stored:row:visible-") })
+        #expect(results.messages.allSatisfy { $0.message.id.hasPrefix("stored:fixture:visible-") })
         #expect(sourceOnly.allSatisfy { !NativeSearchMatch.contains(query: "needle", in: $0) })
     }
 
     @Test func searchDoesNotJoinTextAcrossAnIsolatedPreview() throws {
-        let message = ChatMessage(id: "stored:row:separate", role: .assistant,
+        let message = ChatMessage(id: "stored:fixture:separate", role: .assistant,
             text: "Copper\n\n```html\n<p>Independent preview</p>\n```\n\nlantern")
         let chat = try searchableChat([message])
         #expect(LibrarySearchResults(query: "copper lantern", bots: [], chats: [chat], artifacts: []).messages.isEmpty)
@@ -89,14 +89,14 @@ import BottoCore
     }
 
     @Test func ambiguousMessageOccurrencesDoNotShareASearchResultIdentity() throws {
-        let messages = [ChatMessage(id: "stored:row:duplicate", role: .assistant, text: "Needle first occurrence"),
-                        ChatMessage(id: "stored:row:duplicate", role: .assistant, text: "Needle conflicting occurrence")]
+        let messages = [ChatMessage(id: "stored:fixture:duplicate", role: .assistant, text: "Needle first occurrence"),
+                        ChatMessage(id: "stored:fixture:duplicate", role: .assistant, text: "Needle conflicting occurrence")]
         let chat = try searchableChat(messages)
         #expect(LibrarySearchResults(query: "needle", bots: [], chats: [chat], artifacts: []).messages.isEmpty)
     }
 
     @Test func visibleTextProjectionCanBeDerivedOffMainActor() async {
-        let message = ChatMessage(id: "stored:row:detached", role: .assistant, text: "A **Café** update")
+        let message = ChatMessage(id: "stored:fixture:detached", role: .assistant, text: "A **Café** update")
         let text = await Task.detached(priority: .utility) { NativeMessageText.segments(for: message) }.value
         #expect(text == ["A Café update"])
     }
@@ -104,7 +104,7 @@ import BottoCore
     private func searchableChat(_ messages: [ChatMessage]) throws -> LibraryChat {
         let identity = SessionIdentity(profile: try ExactID("bot"), root: try ExactID("root"), stored: try ExactID("stored"), aliases: [])
         return LibraryChat(workspace: UUID(), identity: identity, botName: "Bot", title: "Main", messages: messages,
-            updatedAt: nil, discoveredArtifacts: [], sourceRevisions: [:])
+            updatedAt: nil, discoveredArtifacts: [], sourceRevisions: [:], searchableText: LibraryChat.searchIndex(messages))
     }
 
     @Test func occurrenceChecksOnlyTheTextTheNativeMessageRenders() {
@@ -118,8 +118,8 @@ import BottoCore
         #expect(!NativeSearchMatch.contains(query: "", in: assistant))
         #expect(!NativeSearchMatch.contains(query: "details", in: ChatMessage(id: "tool", role: .tool, text: "details")))
         #expect(NativeSearchMatch.contains(query: "details", in: ChatMessage(id: "error:1", role: .system, text: "details")))
-        let projected = ChatMessage(id: "stored:row:1", role: .assistant, text: "Older visible reply")
-        let attached = ChatMessage(id: "stored:row:1", role: .assistant, text: "Provider scaffolding")
+        let projected = ChatMessage(id: "stored:fixture:1", role: .assistant, text: "Older visible reply")
+        let attached = ChatMessage(id: "stored:fixture:1", role: .assistant, text: "Provider scaffolding")
         #expect(NativeSearchMatch.contains(query: "visible", in: projected))
         #expect(!NativeSearchMatch.contains(query: "visible", in: attached))
     }

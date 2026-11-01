@@ -10,6 +10,7 @@ struct ArtifactsView: View {
     @State private var kind: DiscoveredArtifact.Kind?
     @State private var includesReferences = false
     @State private var thumbnails = LibraryThumbnails()
+    @Environment(\.scenePhase) private var scenePhase
 
     private var items: [LibraryArtifact] {
         library.artifacts.filter {
@@ -51,6 +52,10 @@ struct ArtifactsView: View {
             .navigationTitle("Artifacts")
             .bottoNavigationChrome()
             .refreshable { await store.refreshLibrary(force: true) }
+        }
+        .background {
+            LibraryPreviewThumbnailHost(renderer: thumbnails.previews, isActive: scenePhase == .active)
+                .frame(width: 400, height: 284).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
         }
     }
 
@@ -104,14 +109,14 @@ private struct LibraryArtifactCard: View {
     let item: LibraryArtifact
     let library: WorkspaceLibrary
     let thumbnails: LibraryThumbnails
-    @State private var thumbnail: UIImage?
+    @State private var cover: (content: LibraryThumbnails.Content, image: UIImage)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 18).fill(BottoTheme.surface)
-                if let thumbnail {
-                    Image(uiImage: thumbnail).resizable().scaledToFit().padding(12)
+                if let cover, cover.content.representsSameSource(as: request.content) {
+                    Image(uiImage: cover.image).resizable().scaledToFit().padding(12)
                 } else {
                     VStack(spacing: 12) {
                         Image(systemName: item.artifact.kind.librarySymbol)
@@ -134,13 +139,17 @@ private struct LibraryArtifactCard: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .task(id: LibraryThumbnails.request(for: item, library: library)) {
-            thumbnail = nil
-            guard item.artifact.kind == .image else { return }
+        .task(id: request) {
+            guard LibraryThumbnails.supports(item) else { return }
+            let content = request.content
             let image = await thumbnails.image(for: item, library: library)
-            guard !Task.isCancelled, library.isCurrent(item) else { return }
-            thumbnail = image
+            guard !Task.isCancelled, library.isCurrent(item), let image else { return }
+            cover = (content, image)
         }
+    }
+
+    private var request: LibraryThumbnails.Request {
+        LibraryThumbnails.request(for: item, library: library, rendererRevision: thumbnails.previews.mountRevision)
     }
 
     private var fileType: String {
@@ -160,34 +169,67 @@ private struct LibraryArtifactCard: View {
 /// Optional covers use one bounded download at a time and retain only small
 /// decoded images. A failed cover never blocks opening the original file.
 @MainActor final class LibraryThumbnails {
-    struct Request: Hashable, Sendable {
+    struct Content: Hashable, Sendable {
         let artifact: LibraryArtifact.ID
         let sourceRevision: Data?
-        let captureRevision: UUID
+        let captureRevision: UUID?
+        func representsSameSource(as other: Self) -> Bool {
+            artifact == other.artifact && sourceRevision == other.sourceRevision
+        }
     }
-    static func request(for item: LibraryArtifact, library: WorkspaceLibrary) -> Request {
-        Request(artifact: item.id, sourceRevision: item.chat.sourceRevisions[Data(item.artifact.messageID.utf8)],
-            captureRevision: library.captureRevision)
+    struct Request: Hashable, Sendable {
+        let content: Content
+        let availabilityRevision: UUID
+        let rendererRevision: UUID?
     }
-    private var images: [(request: Request, image: UIImage)] = []
+    static func request(for item: LibraryArtifact, library: WorkspaceLibrary, rendererRevision: UUID? = nil) -> Request {
+        Request(content: Content(artifact: item.id,
+            sourceRevision: item.chat.sourceRevisions[Data(item.artifact.messageID.utf8)], captureRevision: library.captureRevision(for: item)),
+            availabilityRevision: library.thumbnailAvailabilityRevision, rendererRevision: isHTML(item) ? rendererRevision : nil)
+    }
+    static func supports(_ item: LibraryArtifact) -> Bool { item.artifact.kind == .image || isHTML(item) }
+    private static func isHTML(_ item: LibraryArtifact) -> Bool {
+        guard item.artifact.category == .output else { return false }
+        if let block = item.artifact.block { return block.previewFormat == .html }
+        guard let attachment = item.artifact.attachment else { return false }
+        let ext = (attachment.path as NSString).pathExtension.lowercased()
+        let mime = attachment.mimeType.split(separator: ";", maxSplits: 1).first?.lowercased()
+        return ["html", "htm", "xhtml"].contains(ext) || mime == "text/html" || mime == "application/xhtml+xml"
+    }
+    let previews = LibraryPreviewThumbnailRenderer()
+    private var images: [(content: Content, image: UIImage)] = []
     private var tail: Task<Void, Never>?
 
     func image(for item: LibraryArtifact, library: WorkspaceLibrary) async -> UIImage? {
-        let request = Self.request(for: item, library: library)
-        if let image = images.first(where: { $0.request == request })?.image { return image }
+        guard Self.supports(item), library.isCurrent(item), !Task.isCancelled else { return nil }
+        let content = Self.request(for: item, library: library).content
+        if let image = images.first(where: { $0.content == content })?.image { return image }
         let previous = tail
         let task = Task<UIImage?, Never> {
             await previous?.value
-            guard !Task.isCancelled, library.isCurrent(item),
-                  let data = await library.thumbnail(for: item, render: Self.thumbnailData) else { return nil }
-            return await Task.detached(priority: .utility) { UIImage(data: data) }.value
+            guard !Task.isCancelled, library.isCurrent(item) else { return nil }
+            let html = Self.isHTML(item)
+            guard let data = await library.thumbnail(for: item, decoderVersion: html ? 2 : 1, render: { [previews] data in
+                if html {
+                    let block: ReplyContent.Block?
+                    if let inline = item.artifact.block { block = inline }
+                    else {
+                        let file = DownloadedArtifact(data: data, filename: "cover.html", mimeType: "text/html")
+                        block = ReplyContent(assistantText: "::preview{file=\"/cover.html\"}").blocks.first?.resolvingFile(file)
+                    }
+                    guard let block else { return nil }
+                    return await previews.render(block)?.pngData()
+                }
+                return await Task.detached(priority: .utility) { Self.thumbnailData(data) }.value
+            }) else { return nil }
+            return UIImage(data: data)
         }
         tail = Task { _ = await task.value }
         let image = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-        guard !Task.isCancelled, library.isCurrent(item), Self.request(for: item, library: library) == request,
+        guard !Task.isCancelled, library.isCurrent(item), Self.request(for: item, library: library).content == content,
               let image else { return nil }
-        images.removeAll { $0.request == request }
-        images.append((request, image))
+        images.removeAll { $0.content == content }
+        images.append((content, image))
         if images.count > 16 { images.removeFirst(images.count - 16) }
         return image
     }
@@ -218,8 +260,10 @@ struct LibraryStatus: View {
         if let warning = library.warning {
             VStack(alignment: .leading, spacing: 8) {
                 Text(warning).font(.footnote).foregroundStyle(.secondary)
-                Button("Try Again") { Task { await refresh() } }
-                    .font(.footnote.weight(.medium)).disabled(library.isLoading)
+                if let action = library.statusAction {
+                    Button(action == .retry ? "Try Again" : "Check Older History") { Task { await refresh() } }
+                        .font(.footnote.weight(.medium)).disabled(library.isLoading)
+                }
             }
             .accessibilityIdentifier("library-status")
         }

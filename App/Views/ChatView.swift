@@ -176,15 +176,23 @@ struct ChatView: View {
                 .ignoresSafeArea(.container, edges: .top)
                 .accessibilityHidden(overviewCovered)
             if toolbarVisible {
-                VStack(spacing: 0) {
-                    BottoTheme.paper.frame(height: headerOverlap)
-                    LinearGradient(colors: [BottoTheme.paper, BottoTheme.paper.opacity(0)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 24)
-                    Spacer(minLength: 0)
+                // iOS 26 needs a backing to obscure transcript text in the status area.
+                if #unavailable(iOS 27) {
+                    GeometryReader { geometry in
+                        Rectangle().fill(.regularMaterial)
+                            .frame(height: geometry.safeAreaInsets.top + headerOverlap + 24)
+                            .mask {
+                                VStack(spacing: 0) {
+                                    Color.black
+                                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                                        .frame(height: 24)
+                                }
+                            }
+                            .offset(y: -geometry.safeAreaInsets.top)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                 }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
             }
             overviewPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -220,6 +228,7 @@ struct ChatView: View {
                              }, editingHandle: editing, connectionRequested: $connectionRequested)
             }
             .padding(.top, 8)
+            .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
             .opacity(showsOverview ? 0 : 1)
             .animation(.easeOut(duration: reduceMotion ? 0.10 : 0.16), value: showsOverview)
             .allowsHitTesting(!overviewCovered)
@@ -227,6 +236,7 @@ struct ChatView: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: { composerHeight = $0 }
         }
         .background(BottoTheme.paper)
+        .toolbarColorScheme(colorScheme, for: .navigationBar)
         .overlay(alignment: .top) {
             if toolbarVisible {
                 NativeTranscriptHeader(preview: transcriptPreview, onActivate: screen == nil ? nil : {
@@ -573,7 +583,8 @@ private struct ChatTranscript: View {
         #endif
     }
     private var messagePlan: NativeTranscriptMessagePlan {
-        NativeTranscriptMessagePlan(chat?.messages ?? [], queuedMessages: chat?.queuedMessages ?? [])
+        NativeTranscriptMessagePlan(chat?.messages ?? [], queuedMessages: chat?.queuedMessages ?? [],
+            unavailableMessageIDs: TranscriptMessageIndex(chat).unavailableIDs)
     }
     private var visibleMessages: [ChatMessage] { messagePlan.entries.map(\.message) }
     private var lastVisibleMessageID: String? { messagePlan.entries.last?.message.id }
@@ -785,10 +796,11 @@ private struct ChatTranscript: View {
                         if reduceMotion { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) }
                         else { withAnimation(.easeOut(duration: 0.2)) { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) } }
                     } label: {
-                        Label("Latest messages", systemImage: "arrow.down").font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 16).frame(minHeight: 44)
-                            .background(BottoTheme.action, in: Capsule()).foregroundStyle(BottoTheme.onAction)
+                        Image(systemName: "arrow.down").font(.subheadline.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(BottoTheme.action, in: Circle()).foregroundStyle(BottoTheme.onAction)
                     }
+                    .accessibilityLabel("Latest messages")
                     .buttonStyle(.plain).padding(.bottom, 8)
                 }
             }

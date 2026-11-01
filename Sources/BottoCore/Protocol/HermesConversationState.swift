@@ -65,6 +65,8 @@ struct HermesConversationState {
             self.profileIdentity = profileIdentity
             conversation.lastSequence = sequence
         }
+        let unavailable = Self.unavailableMessageIDs(history, stored: conversation.storedID)
+        conversation.unavailableMessageIDs = unavailable.isEmpty ? nil : unavailable
         conversation.messages = Self.messages(history, stored: conversation.storedID)
         conversation.isWorking = snapshot["running"].flag == true
         motion.restore(working: conversation.isWorking, generation: generation,
@@ -501,14 +503,24 @@ struct HermesConversationState {
     }
     func rowKey(_ id: Int) -> String { conversation.storedID + ":row:" + String(id) }
 
+    static func unavailableMessageIDs(_ rows: [HermesJSON], stored: String) -> Set<Data> {
+        var seen = Set<Data>(), duplicates = Set<Data>()
+        for (offset, row) in rows.enumerated() {
+            guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer else {
+                duplicates.insert(Data((stored + ":index:" + String(offset)).utf8)); continue
+            }
+            let key = Data((stored + ":row:" + String(id)).utf8)
+            if id < 0 || !seen.insert(key).inserted { duplicates.insert(key) }
+        }
+        return duplicates
+    }
+
     static func messages(_ rows: [HermesJSON], stored: String) -> [ChatMessage] {
-        var seen = Set<String>()
         return rows.enumerated().compactMap { offset, row in
             guard row["display_kind"].text != "hidden", row["display_metadata"]["model_only"].flag != true,
                   let roleName = row["role"].text, let role = ChatMessage.Role(rawValue: roleName) else { return nil }
             let id = (row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer).map { stored + ":row:" + String($0) }
                 ?? stored + ":index:" + String(offset)
-            guard seen.insert(id).inserted else { return nil }
             let images = role == .user ? historyImages(row["content"], messageID: id) : (attachments: [], parts: Set<Int>())
             let text = row["text"].text ?? (role == .tool ? toolResultText(row["content"]) ?? "" : contentText(row["content"], omitting: images.parts))
             if text.isEmpty, images.attachments.isEmpty, row["tool_calls"].list != nil { return nil }

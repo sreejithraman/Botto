@@ -8,10 +8,16 @@ public struct ConversationHistoryPage: Sendable {
     /// False when content is known to be missing. Older pages can still exist
     /// when this is true; callers must also follow nextOffset.
     public let isComplete: Bool
+    /// Message IDs before visible filtering, including omitted rows.
+    public let sourceIDs: Set<Data>?
+    public let unavailableMessageIDs: Set<Data>
 
-    public init(messages: [ChatMessage], nextOffset: Int?, isComplete: Bool) {
+    public init(messages: [ChatMessage], nextOffset: Int?, isComplete: Bool, sourceIDs: Set<Data>? = nil,
+                unavailableMessageIDs: Set<Data> = []) {
         self.messages = messages
         self.nextOffset = nextOffset
         self.isComplete = isComplete
+        self.sourceIDs = sourceIDs
+        self.unavailableMessageIDs = unavailableMessageIDs
     }
 }

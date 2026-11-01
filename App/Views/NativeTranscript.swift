@@ -148,6 +148,8 @@ struct NativeTranscriptHeader<Content: View>: UIViewControllerRepresentable {
 final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     private let preview: NativeTranscriptPreview
     private var scrollEdge: (any UIInteraction)?
+    private weak var barContentOwner: UIViewController?
+    private weak var barScrollView: UIScrollView?
     var onActivate: (@MainActor () -> Void)?
     private let navigationTarget = UIButton(type: .custom)
     private var retired = false
@@ -181,11 +183,13 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        updateScrollView()
         updateNavigationTarget()
     }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         navigationTarget.removeFromSuperview()
+        releaseBarScrollView()
     }
     private func updateNavigationTarget() {
         // The bar receives touches above the content. Mirror only the header's actual overlap.
@@ -207,12 +211,34 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
         retired = true
         onActivate = nil
         navigationTarget.removeFromSuperview()
+        releaseBarScrollView()
+        if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
+            interaction.scrollView = nil
+        }
     }
     func updateScrollView() {
         if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
-            let scrollView = preview.viewportView as? UIScrollView
+            let scrollView = retired ? nil : preview.viewportView as? UIScrollView
             if interaction.scrollView !== scrollView { interaction.scrollView = scrollView }
+            guard !retired, let scrollView, let owner = navigationController?.topViewController,
+                  view.window != nil, view.isDescendant(of: owner.view), scrollView.isDescendant(of: owner.view) else {
+                releaseBarScrollView()
+                return
+            }
+            if barContentOwner !== owner || barScrollView !== scrollView {
+                releaseBarScrollView()
+                owner.setContentScrollView(scrollView, for: .top)
+                barContentOwner = owner; barScrollView = scrollView
+            }
         }
+    }
+
+    private func releaseBarScrollView() {
+        if let owner = barContentOwner, let scrollView = barScrollView,
+           owner.contentScrollView(for: .top) === scrollView {
+            owner.setContentScrollView(nil, for: .top)
+        }
+        barContentOwner = nil; barScrollView = nil
     }
 }
 
@@ -227,7 +253,11 @@ final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
     }
     private weak var controller: NativeTranscriptController?
     private weak var header: NativeTranscriptHeaderController?
-    func bindHeader(_ header: NativeTranscriptHeaderController) { self.header = header; refreshHeader() }
+    func bindHeader(_ header: NativeTranscriptHeaderController) {
+        if self.header !== header { self.header?.retire() }
+        self.header = header
+        refreshHeader()
+    }
     func refreshHeader() { header?.updateScrollView() }
     var viewportView: UIView? { controller?.collection }
     func viewportView(for id: String) -> UIView? {
@@ -547,6 +577,7 @@ private struct NativeTranscriptHostedRow: View {
         self.latestBottom = latestBottom
         NSLayoutConstraint.activate([latest.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             latestBottom,
+            latest.widthAnchor.constraint(equalTo: latest.heightAnchor),
             latest.widthAnchor.constraint(greaterThanOrEqualToConstant: 44), latest.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)])
         registerForTraitChanges([UITraitAccessibilityContrast.self]) { (controller: NativeTranscriptController, _: UITraitCollection) in
             if let context = controller.context { controller.updateLatestAppearance(context) }
@@ -1111,20 +1142,16 @@ private struct NativeTranscriptHostedRow: View {
         collection.scrollToItem(at: index, at: .bottom, animated: false)
     }
     private func updateLatestAppearance(_ context: NativeTranscriptContext) {
-        let compact = context.dynamicType.isAccessibilitySize
         let traits = traitCollection.modifyingTraits {
             $0.userInterfaceStyle = context.colorScheme == .dark ? .dark : .light
         }
         var button = UIButton.Configuration.filled()
-        button.title = compact ? nil : "Latest messages"
         button.image = UIImage(systemName: "arrow.down")
         button.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
-        button.imagePadding = compact ? 0 : 8
         button.cornerStyle = .capsule
         button.baseBackgroundColor = UIColor(resource: .accent).resolvedColor(with: traits)
         button.baseForegroundColor = UIColor(resource: .bottoOnAction).resolvedColor(with: traits)
-        button.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: compact ? 10 : 16,
-                                                       bottom: 10, trailing: compact ? 10 : 16)
+        button.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
         latest.configuration = button
     }
 

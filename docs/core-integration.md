@@ -68,13 +68,29 @@ Explicit refresh rebuilds history. Accepted workspace transcripts feed a
 coalesced local projection after successful installation, without library reads
 or changes to unread evidence.
 
-Admission binds each retained transcript to its artifact projection and producer
-digests. Local accepted versions fence older directory/history responses; an
-index revision also rejects detached projections prepared before another
-admission. Partial reads discover the final merged, bounded messages. Cold
+Canonical admission synchronously withdraws ambiguous IDs, changed producers,
+and retired tips within the retained budgets. It keeps only projections still
+bound to unchanged rows and revokes affected capture consumers before returning.
+Coalesced discovery enriches current canonical rows; it never reinstalls a queued
+snapshot. Local accepted versions fence older directory/history responses; an
+per-chat projection version rejects detached work when that chat's canonical
+rows or working tail change, including shared-budget eviction. Unrelated chat
+updates do not restart it. Gallery capture publication waits asynchronously for
+that version's path provenance; a pending commit rolls back before retrying,
+without holding the cache actor. Valid historical readers retain their own admission.
+Each gallery reader also awaits its own current provenance before returning;
+a ready historical peer cannot release that reader. Canonical records start with
+an explicit empty or retained Search projection. Only the detached projector
+parses their text.
+Every history page applies known ambiguity before projection or the next read.
+Partial reads discover the final merged, bounded messages. Cold
 history seeds coalesce off MainActor and complete before restore/scan readiness.
 Known working tails survive inert reseeding; refresh can add older rows without
 replacing those tails or certifying complete coverage.
+Complete directory absence is a bounded, hidden cache row. Inert history seeds
+cannot undo it; a current directory observation or proven service read can.
+Failed history checks invalidate reusable summary/head certificates and persist
+partial coverage until a current check succeeds.
 
 `ArtifactCache` owns a separate disposable SQLite index and captured files on a
 private actor. Its per-mount session includes the saved connection UUID and
@@ -88,7 +104,24 @@ thumbnails add the original digest and decoder parameters. Original and
 thumbnail budgets are 256 MiB and 32 MiB; encoded metadata and its physical
 database footprint have a 40 MiB allowance. Individual originals stay within
 25 MiB. Missing or corrupt blobs miss; locked or unknown databases remain intact.
-This does not change the saved chat-history schema or writer.
+The saved-history writer and version remain unchanged. Conversations add a
+backward-compatible optional ambiguity field.
+
+Before attempting changed metadata rows, the cache atomically records their
+scoped invalidation hashes outside SQLite. A successful replacement clears its
+entry. After a failed database write, seed and restore withhold that chat's old
+index and completeness certificate until current history is checked and saved;
+other chats and captured original bytes remain available. Recovery keeps
+hidden, row-free source hints and quarantined old row IDs, so a fresh
+successor can retire the old tip without exposing its content or letting a
+partial directory update restore it.
+It reserves at most 256 KiB within the metadata allowance and compacts overflow to
+configuration quarantine and treats unreadable or future recovery records as
+untrusted. It cannot promise restart recovery when the filesystem itself cannot
+record the invalidation; that failure remains explicit. It does not change
+selected-chat history or grant network access.
+Configuration quarantine lasts until that cache is discarded or pruned.
+Unknown recovery formats remain untouched and unavailable.
 
 Transcript cards carry their exact producing message into capture lookup;
 whole-chat path deduplication is reserved for the gallery. Decoded covers use
@@ -272,7 +305,7 @@ The runtime's owner is responsible for teardown.
 - Stop and clarification routing have simulated boundary tests. A fixture reconnect does not establish gateway process-restart recovery. Background/iOS interaction, real model providers, authority restart/unknown-admission recovery and long compacted histories still need broader interoperability testing.
 - A truncated authority replay ring can omit unfinished text that has not reached durable history. Botto restores the available durable rows and current prompts; later stream events or completion restore the remaining text. It cannot reconstruct bytes the host no longer supplies.
 - The submission journal retains up to 500 identities without prompt text or credentials. It is not an offline outbox or a user-facing receipt inspector. Unknown admissions exposed by the host remain visible and require Desktop resolution.
-- Unknown and credential requests are unsupported cards. The Domain interface has no secret-entry, model/provider catalog or multi-select response type. Those features need deliberate interface additions before exposing them in the UI. Artifact downloads use captured live access and the authenticated bounded transport; see [rich replies and files](rich-content.md).
+- Unknown and credential requests are unsupported cards. The Domain interface has no secret-entry, model/provider catalog or multi-select response type. Those features need deliberate interface additions before exposing them in the UI. In-chat artifact downloads use captured live access and the authenticated bounded transport; see [rich replies and files](rich-content.md).
 - Authority does not include true one-shot server request envelopes in its snapshot. During automatic recovery, Botto retains previously seen envelopes as unsupported reminders and consumes replayed/live cancellations. They cannot authorize an answer from cached state. A process relaunch cannot recover request parameters the host does not publish; use Desktop for those requests.
 
 ## Existing profile edits
@@ -304,12 +337,35 @@ actor and reused until the retained message revision changes. A newer accepted
 row replaces that occurrence’s content even when it removes a suffix; partial
 or inert history cannot restore deleted accepted content.
 
+Core read publications carry a runtime-only monotonic start instant captured
+before resume/history. Source evidence is included when the preceding service
+observation still matches the published tip. Incremental publications omit both.
+A read can replace newer library knowledge
+only when it began after that observation; switching stored tips also requires
+matching service-observed source evidence. Incremental rows can advance a matching
+prior canonical row within the currently observed tip. Inherited rows cannot clear
+newer removal, ambiguity, or tip retirement. These runtime facts are not persisted
+host revisions or mutation authority. Missing provenance remains conservative. Positional
+or invalid raw IDs remain visible in chat but cannot identify actions, Search
+jumps, or durable captures; legacy saved IDs follow the same rule.
+
 Saved chat history and the artifact index persist independently. Inert reseeding
-never replaces an indexed row with the same ID. At cold restore, conflicting
-same-ID content has no verifiable revision order: Library omits that row from
-results until an accepted transcript or a new history read supplies it. The
-bounded cache retains the disputed IDs across relaunch, without complete-summary
-certification. Unrelated rows and their captured files remain available offline.
+preserves raw ambiguity evidence and never replaces an indexed same-ID revision.
+A complete history read also retains bounded IDs of removed rows, so later
+partial reads and saved history cannot restore them. Accepted rows or complete
+history can restore those IDs; known removals do not invalidate complete coverage.
+At cold restore, conflicting same-ID content or a seed-only row absent from an
+independently saved complete index has no verifiable revision order: Library
+quarantines that row until fresh accepted or complete evidence resolves it.
+Legacy records without removal metadata carry no known removals. Seeds remain
+partial, and missing evidence cannot clear a known quarantine. Observed tip
+changes keep a bounded retired-stored-ID set, including through a failed history
+read and cold restore from an older chat book. A fresh service-proven source can
+restore a retired tip. Current network source proof outranks older persisted tip
+retirement during startup; an inherited snapshot does not. Message exclusions and
+retired stored IDs share the retained count and byte limits. Unrelated rows and
+captures remain available. Derived gallery provenance changes reconcile capture
+consumers in the same actor turn as canonical changes.
 
 The scene owns a short-lived focus receipt with the actual attached message
 revision. The native controller reveals a measured glyph range and retains its
@@ -319,3 +375,10 @@ already exposed transcript cancels a pending reveal; initial inactive mounting
 can still receive its first reveal. Dragging, Latest, owner replacement or
 navigation retires the receipt. Its display
 attributes grant no action authority.
+
+Metadata recovery guards serialize independently of SQLite. Each changed row
+gets a runtime-only local write token before the SQL writer check; checked replacement clears
+only that token. Deletion and quota eviction retain bounded scoped guards. Cold
+book seeds remain unavailable to Search, gallery and capture admission until the
+saved index has reconciled their removal, ambiguity and retired-tip evidence.
+A failed initial SQLite open can still record guards in the writable ledger.

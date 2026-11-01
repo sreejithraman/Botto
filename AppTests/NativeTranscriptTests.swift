@@ -66,7 +66,7 @@ import WebKit
     }
     private func searchFocusFixture(initiallyActive: Bool) async throws -> SearchFocusFixture {
         let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        let message = ChatMessage(id: "main-tip:row:search-coverage", role: .assistant, text: "Delayed native search needle")
+        let message = ChatMessage(id: "main-tip:row:9", role: .assistant, text: "Delayed native search needle")
         service.snapshots[session.root] = .init(id: session.root.text, storedID: session.stored.text,
             profileID: session.profile.text, messages: [message] + (0..<20).map {
                 .init(id: "tail-\($0)", role: .assistant, text: "Later message \($0)")

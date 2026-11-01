@@ -203,3 +203,246 @@ TestFlight installation and physical haptic feel remain untested. Integration
 and a new Internal TestFlight build are necessary for installed testers to get
 the menu; see [developer tools](developer-tools.md). The broader native-suite
 limits recorded above still apply.
+
+## Artifact covers and history status — 31 October 2026
+
+The gallery recovery and HTML-cover change was checked against Botto HEAD
+`653b89dc`. Four independent required reviews returned no material findings for
+the combined 12-path snapshot
+`b299588a4528b900ac156b5773f3d00022362b98bf8ba96247318cbcd055c576`.
+The two optional external reviews hit provider quotas and supplied no review.
+
+- Baseline regressions reproduced the false history notice after a complete
+  single-page scan and missing cover retries after reconnect or reader capture.
+- The final native run passed 101 declared test methods across five suites.
+  It covers truthful paginated-history status, image recovery, bounded HTML
+  rendering, cancellation, inactivity, detachment, timeout cleanup, and reopening
+  a persisted HTML cover offline without a mounted renderer.
+- Two public UI workflows passed on the iPhone 17e Simulator running iOS 26.5:
+  automatic gallery covers and library navigation with a retained draft.
+  A strengthened cover rerun also passed. It checks actual PNG pixels and OCR
+  from both inline and file HTML covers before opening any reader. Manual dark
+  appearance checks confirmed the gallery covers and an HTML Search-result cover.
+- A signed Debug build installed in place on sreePhone Pro and launched with
+  normal arguments. Installed-app and running-process readbacks matched the new
+  bundle URL and PID. The local signing override matches the previous phone
+  install's identifiers and Keychain groups; APNs remains unavailable in this
+  development build. No tracked signing settings changed.
+
+Evidence, exact source and bundle hashes, result bundles, screenshots, and
+original review reports are retained under `.artifacts/gallery-covers-20261031/`.
+Physical-device evidence proves installation and launch. It does not prove the
+user's particular Hermes file downloads or private phone UI. Wide iPad,
+landscape, VoiceOver, and complete library-recipe acceptance were not exercised.
+
+## Cache-first library continuity — 31 October 2026
+
+Artifacts and Search now ask the mounted library whether revalidation is needed.
+Automatic checks share a 60-second monotonic freshness window; reconnect,
+changed roster identity/name, and server directory notifications invalidate it.
+Explicit refresh bypasses the window. ADR 0007 records this policy alongside
+the existing cache-first presentation decision.
+
+- The same three-open Store fixture made three directory requests and six
+  history reads before the fix, and zero additional requests of either kind
+  afterward. This measures request counts, not end-to-end phone performance.
+- A restored-index regression reproduced cards changing order when weak
+  directory metadata erased known dates. It now preserves card order while
+  history is gated and after the check finishes.
+- A Store/status-view regression reproduced removal of the history notice
+  during local seeding and background checks. The notice, action, and rendered
+  height now remain stable; the action stays disabled during work.
+- Controlled cancellation/replacement and gated restoration tests reproduced
+  missed revalidation after a new revision or roster arrived. The final tests
+  require the current follow-up before automatic freshness is accepted.
+- The final integrated run passed 141 declared native methods in six suites
+  and three public UI workflows on the iPhone 17e Simulator, iOS 26.5: automatic
+  PNG/inline-HTML/file-HTML covers, three dark-appearance gallery reopens with
+  retained covers and card position, and exact older-message Search opening.
+- Four required independent reviews returned no material findings for final
+  snapshot `44e5680a4a61f23628dce58a481db65425a1edf10a87ab606fd4ca5fb39fd877`.
+  Earlier findings and original review receipts remain in the evidence archive.
+  Optional external coverage remains unavailable under the recorded quotas.
+
+The signed build installed in place on sreePhone Pro with the existing local
+development signing override. Automatic launch was blocked by the phone lock;
+no current physical launch or private phone UI acceptance is claimed.
+Logs, result bundles, source/bundle hashes, review originals and demo captures
+are retained under `.artifacts/gallery-continuity-20261031/`.
+The user's exact live-server recording timing, wide iPad, landscape, VoiceOver,
+physical APNs, and whole-product acceptance remain unverified.
+
+## Native chat-header soft edge candidate — 31 October 2026
+
+The candidate connects the transcript to the navigation content owner and uses
+the existing native soft edge on iOS 27. It retains the prior material through iOS 26:
+a current native-only iOS 26.5 run reproduced transcript text behind the status bar.
+Header replacement now retires the predecessor before registering its successor.
+
+- Final four-file snapshot
+  `1cbe93c8f7274e831e7769e6ad5b759bf1c4f43f3572c833dc1998095add1b7a`
+  builds. Both final iOS 26.5 Search workflows pass: dark (23.954s) and light with an
+  active keyboard/draft (100.882s), including status/composer OCR and Latest return.
+- A dark iOS 27.0 prototype passed its Search workflow in 27.716s. Its synthetic capture
+  shows the requested strong status blur clearing toward crisp floating controls.
+  That prototype includes temporary diagnostics removed from final source; it
+  does not prove final-source iOS 27 acceptance or physical iOS 27.2 rendering.
+- The successor/late-retirement/reappearance native test passed in 1.926s before a
+  test-fixture mounting repair. The final corrected fixture still needs a run.
+- Final iOS 27 light/profile/overview and paired/full-screen return checks are blocked
+  by device-support communication and destination-enumeration failures. Stopped
+  prelaunch attempts count as neither product failures nor passes. Physical,
+  large-text, Reduce Transparency, VoiceOver and pre-iOS 26 runtime remain untested.
+
+The user is away and chose Showroom instead of phone verification. The shown
+dark capture is explicitly provisional. No final phone installation, launch, or
+full header acceptance is claimed. Narrow bases, frozen sources, research, test
+logs, captures and independent review originals are retained under
+`.artifacts/chat-header-soft-20261031/`.
+
+## Shorter status-area blur — 31 October 2026
+
+The iOS 27 candidate now uses a bounded system material at its own window's
+top safe inset, followed by a 20-point fade. It hides the longer native top
+edge and keeps the existing profile and control geometry. The through-26
+backing remains unchanged. The native-only and content-local candidates passed
+checks but failed the parent's visual comparison; their passes are historical.
+
+Final narrow snapshot
+`b3eea3ab12a2ce65e236505eb2a86f6472bf3433fe14814a34cb3f166ec6a517`
+builds and has no supported findings in its independent primary review. Its
+dark Search workflow passed in 27.769s on iPhone 17 Pro, iOS 27.0 Simulator,
+including rendered status/composer legibility and Latest return. The actual
+dark capture shows the shorter region and is available in a Showroom comparison.
+Device support stalled during the light/keyboard workflow; that run was stopped
+and no final light acceptance is claimed. Physical, paired iPad, landscape and
+accessibility settings remain unverified. No new phone installation is claimed.
+Evidence and frozen turn-start bases remain in `.artifacts/blur-status-20261031/`.
+
+## Native blur restored after visual rejection — 31 October 2026
+
+The user rejected the shorter fixed-material backdrop as too strong. The three
+chat view/native view/native test files are restored to the exact earlier
+native soft-edge candidate bytes. The custom backdrop and mask are removed,
+and the native top effect is enabled again. No 20-point extent is claimed for
+the system effect. This supersedes the prior shorter-backdrop visual judgment.
+
+The restored candidate builds and has no findings in its narrow independent
+Primary review. Device support is unavailable, so no fresh runtime, light-mode,
+paired-pane or phone acceptance is claimed. Showroom reuses an explicitly
+labeled earlier native capture. Exact before/restored hashes and review
+originals remain under `.artifacts/blur-native-restored-20261031/`.
+
+
+### Header reference match exploration — 31 October 2026
+
+The local iOS 27 Simulator candidate retains the native soft scroll edge and floats the controls above a short color contrast fade. The comparison uses the same public-domain photo in the original and matched treatments; it uses a different photo from the supplied visual reference. Candidate source, patch, unsigned app, screenshot manifests and raw logs are in `.artifacts/header-reference-match-20261031/`. The five app/demo/UI-test files were restored to their captured starting bytes; the candidate is not the normal app or a phone install.
+
+On the owned iPhone 17 Pro Simulator `88D78CC2-A89F-4689-8159-F0D41E996EBB`, iOS 27.0 with SDK 27.1, `matched-r2-green.xcresult` records the photo comparison passing in 33.902s and the dark older-Search/Latest workflow passing in 22.959s. The light workflow preserves its draft value and reveals the matching glyphs, then fails the new keyboard-presence assertion in 30.914s. Later assertions in that method were not reached. Using the existing compact-column navigation Binding for the candidate Back button did not resolve this keyboard gap. The earlier `matched-ui.xcresult` passed three methods without that keyboard assertion and before the photo width repair; it does not supersede the stricter failure.
+
+The candidate remains a visual exploration. Production navigation integration, keyboard continuity, iPad/file pairing, orientation and accessibility material adaptations remain unverified. No commit, publication or merge was performed.
+
+
+## 2026-11-01 combined-library review repairs (native acceptance pending)
+
+The combined Botto import review found duplicate-ID admission, stale partial
+history, rejected metadata replacement, missing preview evidence, independently
+evicted originals, overlapping Reload, and inline Reload capability gaps. Source
+repairs and focused regressions cover those paths. Partial history preserves
+indexed same-ID content; complete reads and accepted transcript updates can
+replace it. Duplicate occurrences remain unavailable until unambiguous accepted
+or complete evidence. A rejected saved replacement removes its older disk row
+and reports a save failure. Captured-cover lookup retains a separately bounded
+occurrence-to-digest mapping. Forced reads follow earlier reads; inline source
+keeps export without offering a host-file reload.
+
+The directory-preview package regression passes both missing and explicitly
+empty preview cases, including JSON round trips and legacy decoding. New native
+regressions have not executed: the coordinating release thread holds local
+Simulator work while the shared host is unhealthy. Earlier native and UI results
+above do not certify these repairs or the complete prospective PR head. Fresh
+independent review, focused hosted library/search/header acceptance, and the full
+main native release gate remain required before distribution.
+
+
+The second combined review also repaired confirmed Forget after unreadable setup,
+canonical capture serialization across alias discovery, cross-page overlap and
+hidden-row evidence, forced capture-save failure, and metadata self-eviction.
+Original bytes and their digest mapping now publish in one SQLite transaction.
+Quota enforcement reports a missing replacement instead of certifying it saved.
+A live-work-to-idle transition refreshes each mounted file directive once while
+authority recovery and ordinary reopen reuse captured bytes. Gallery and Search
+keep same-source covers visible while an occurrence-specific replacement loads.
+Focused native regressions cover these paths; they remain unexecuted locally.
+The raw hidden-row history test failed before its adapter fix and passes after it.
+Latest main `13a1845` is integrated with the feature WIP preserved; its CI, signing
+and native-renderer cleanup remain intact. Current integrated checks and final
+review are recorded with the preparation packet; fresh hosted acceptance remains
+required.
+
+
+### Combined library PR R10 preparation — 2026-11-01
+
+R9's four full static reviews found four source gaps: pre-discovery gallery
+capture admission, reuse of a failed forced-history certificate, unrelated-chat
+projection invalidation, and saved-history restoration after complete directory
+absence. The repair adds per-chat projection versions, cancellable asynchronous
+capture publication readiness with transactional retry, bounded hidden absence
+rows, and failed-check certificate invalidation. The capture recipe now arranges
+a qualifying TTL event before expecting another directory check.
+
+The first R10 generic unsigned arm64 Debug build-for-testing passed for the app
+and both test bundles in 29.814 seconds, with all 68 source hashes unchanged.
+Subsequent cancellation handling, native regression fixtures, and this record
+require the final compiler receipt in the outside-checkout R10 packet. Core 404
+methods/10 suites, MainActor compatibility, and 188 tooling checks reuse unchanged
+source evidence. None of these results executes the new native assertions.
+Exact-published-pin library, public UI, export, and full-main acceptance remain
+with the coordinating root; prior Apple builds do not certify these features.
+
+
+### Combined library PR R12 preparation — 2026-11-01
+
+The full R11 reviews found three source gaps and one fixture gap: failed index
+writes could restore old rows/certificates, a ready historical peer could release
+a gallery waiter before its own provenance, first admission implicitly parsed
+Search text, and the second-reader fixture lacked a registration handshake.
+The repairs add scoped recovery invalidations, independent cancellable gallery
+completion, explicit Search projections, and an observed registration handshake.
+Native lock/reopen, peer-success/cache-failure, scope and recovery-quota cases
+are compiled acceptance candidates; no current native execution is claimed.
+
+An owned macOS pure-data harness extracted the exact LibraryChat and
+NativeMessageText bodies. For identical 25,000-message / 9,375,000-byte input,
+the old constructor's median was 14.336 seconds across three runs. The actual
+updated default-empty constructor took under 0.1 milliseconds per run. The
+unchanged detached Search helper still took about 14.4–14.7 seconds and produced
+identical content in the original comparison. This measures the isolated
+constructor's removed synchronous parsing, not full admission or iPhone frames.
+The source bindings and raw results live in the outside-checkout R12 packet.
+
+Compiler-r12 and compiler-r12-final retain exit65 diagnostics for a throwing
+condition and continuation inference, corrected before the next full review.
+The final generic receipt will bind the complete repaired source. Core404,
+MainActor and188tooling evidence reuse unchanged source; all hosted native/UI,
+export, integration and final beta proof remain with the coordinating root.
+
+R13 source repair follows four accepted R12 static findings: changes arriving
+during blocked SQL, guards blocked by initial acquisition, pre-reconciliation
+seed exposure, and negative evidence lost through successful eviction. Added
+gated two-chat, pre-acquisition lock, earlier-seed/later-projection, successful
+eviction and older-write/newer-guard assertions. These native assertions are
+unexecuted locally. The first repaired variant compiled in 48.178s with all 68
+before/after hashes unchanged. Runtime-only guard coalescing and the final
+sequential seed handshake follow that variant; their final compiler receipt and
+fresh full review evidence accompany the R13 packet. Root owns hosted native,
+public UI/export and full-main acceptance.
+
+R14 source repair follows R13 Ponytail's static rollback finding. Capture
+transactions track newly created eviction guards. Confirmed SQL rollback removes
+only their unchanged local tokens; preexisting or newer guards remain. A
+speculative eviction rejects guard overflow before adding configuration
+quarantine. Added revoked/pending, prior/newer guard, quota rejection, and
+independent offline gallery/Search/capture-reuse assertions. These native
+assertions remain unexecuted locally; final compiler and fresh review receipts
+bind the next packet. Root retains hosted native/public UI/export acceptance.

@@ -74,7 +74,7 @@ presentation. Scrolling through a long reply can recycle native rows without
 losing their matching images or measured height. New source, width, appearance,
 or motion settings require matching pixels; reopening a chat or changing its
 workspace starts a fresh presentation. Memory pressure and capacity eviction can
-also require rendering again. HTML documents are not cached or pre-rendered.
+also require rendering again. Live HTML chat documents are not cached or pre-rendered.
 
 The cache accounts for up to 16 MiB of decoded images and capture reservations,
 with at most 12 charged objects and two pending static renders. Each image is
@@ -113,6 +113,11 @@ existing file the bot deliberately shared; the label does not prove authorship.
 
 Tap an artifact to preview, Save, or Share without switching the selected chat.
 The reader identifies its bot and chat; **Open chat** goes to that exact chat.
+Image and HTML output cards load covers without opening the reader. HTML covers
+use the same isolated renderer, freeze a small image, then stop the document.
+Only the image is cached; the cover keeps no running JavaScript. Cached covers
+remain available offline. Failed cover reads retry after reconnect, refresh, or
+a successful original-file read without clearing covers already on screen.
 The separate **Search** tab finds bots, chat titles, message text, and artifacts
 in available history. Search and library reads never mark a chat read. Partial
 or unavailable history has a visible warning; pull to refresh retries reads.
@@ -122,10 +127,20 @@ separate history scan. An offline relaunch shows retained content; it does not
 claim a complete host library. Live updates omit unsettled assistant tails
 from the disk index until completion. Device storage pressure can evict captures.
 
-Ordinary browsing checks the chat directory and reuses complete history when
+Opening Artifacts or Search reuses the mounted list. Automatic directory checks
+share a 60-second freshness window; connection recovery, roster changes, and
+server directory notifications invalidate it. Leaving a tab keeps its background
+check alive while the saved connection remains mounted. Accepted chat updates
+continue to update the list directly. Unknown directory dates preserve known
+cached ordering dates. Explicit refresh bypasses the freshness window.
+Existing history notices stay in place during local indexing and background
+checks; their actions remain visible but disabled until the check finishes.
+
+A directory check reuses complete history when
 its tip, message count, timestamp, and exact preview are unchanged. Summaries
-missing that evidence require a newest-page check; reused older history carries
-a freshness warning. Pull to refresh checks history again. Partial history
+missing that evidence require a newest-page check; reused older pages carry
+a freshness notice and **Check Older History** action. A complete single-page
+check needs no notice. Pull to refresh checks history again. Partial history
 remains partial and cannot certify an unchanged complete result.
 
 Previewing a captured file reuses its original bytes, including offline.

@@ -149,7 +149,8 @@ import BottoCore
         let end = max(0, chat.messages.count - offset)
         let start = max(0, end - 100)
         return ConversationHistoryPage(messages: Array(chat.messages[start..<end]),
-            nextOffset: start > 0 ? offset + 100 : nil, isComplete: true)
+            nextOffset: start > 0 ? offset + 100 : nil, isComplete: true,
+            sourceIDs: Set(chat.messages[start..<end].map { Data($0.id.utf8) }))
     }
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -184,6 +185,7 @@ import BottoCore
     }
 
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
+        let readStartedAt = ContinuousClock.now
         let epoch = connection
         let request = UUID()
         opening = request
@@ -215,7 +217,8 @@ import BottoCore
             startAutomationFixture(identity)
         }
         #endif
-        return OpenedConversation(identity: identity, snapshot: chat, access: access, readEvidence: evidence, activity: activity)
+        return OpenedConversation(identity: identity, snapshot: chat, access: access, readEvidence: evidence, activity: activity,
+            historyReadStartedAt: readStartedAt, observedSource: identity)
     }
 
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,

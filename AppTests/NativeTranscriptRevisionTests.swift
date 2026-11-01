@@ -162,12 +162,16 @@ import BottoCore
             guard let transcript = revisionController(fixture.host),
                   let header = header(in: fixture.host),
                   let edge = header.view.interactions.compactMap({ $0 as? UIScrollEdgeElementContainerInteraction }).first else { return false }
-            return edge.scrollView === transcript.collection
+            return edge.scrollView === transcript.collection &&
+                header.navigationController?.topViewController?.contentScrollView(for: .top) === transcript.collection
         }
         let transcript = try #require(revisionController(fixture.host))
         let floatingHeader = try #require(header(in: fixture.host))
         let edge = try #require(floatingHeader.view.interactions.compactMap { $0 as? UIScrollEdgeElementContainerInteraction }.first)
-        let bar = try #require(floatingHeader.navigationController?.navigationBar)
+        let navigation = try #require(floatingHeader.navigationController)
+        let bar = navigation.navigationBar
+        let contentOwner = try #require(navigation.topViewController)
+        #expect(contentOwner.contentScrollView(for: .top) === transcript.collection)
         var nativeTarget: UIButton?
         try await revisionWait("the real floating header routes its native-bar overlap") {
             let overlap = floatingHeader.view.convert(floatingHeader.view.bounds, to: bar).intersection(bar.bounds)
@@ -177,13 +181,39 @@ import BottoCore
         }
         let target = try #require(nativeTarget)
         #expect(!target.isAccessibilityElement)
-        floatingHeader.retire()
+        let parent = try #require(floatingHeader.parent)
+        let preview = try #require(transcript.previewReceiver)
+        let container = try #require(floatingHeader.view.superview)
+        let successor = NativeTranscriptHeaderController(rootView: floatingHeader.rootView, preview: preview)
+        parent.addChild(successor)
+        successor.view.frame = floatingHeader.view.frame
+        container.addSubview(successor.view)
+        successor.didMove(toParent: parent)
+        defer {
+            successor.retire(); successor.willMove(toParent: nil)
+            successor.view.removeFromSuperview(); successor.removeFromParent()
+        }
+        successor.updateScrollView()
         #expect(target.superview == nil)
         #expect(floatingHeader.onActivate == nil)
-        floatingHeader.view.setNeedsLayout(); floatingHeader.view.layoutIfNeeded()
-        #expect(target.superview == nil)
-        transcript.retire()
         #expect(edge.scrollView == nil)
+        #expect(contentOwner.contentScrollView(for: .top) === transcript.collection)
+        floatingHeader.retire()
+        floatingHeader.view.setNeedsLayout(); floatingHeader.view.layoutIfNeeded()
+        #expect(target.superview == nil && edge.scrollView == nil)
+        #expect(contentOwner.contentScrollView(for: .top) === transcript.collection,
+                "A late retirement must not clear the successor's binding to the same transcript.")
+        successor.beginAppearanceTransition(false, animated: false); successor.endAppearanceTransition()
+        #expect(contentOwner.contentScrollView(for: .top) == nil)
+        successor.beginAppearanceTransition(true, animated: false); successor.endAppearanceTransition()
+        #expect(contentOwner.contentScrollView(for: .top) === transcript.collection)
+        let replacement = UIScrollView()
+        contentOwner.setContentScrollView(replacement, for: .top)
+        successor.retire()
+        #expect(contentOwner.contentScrollView(for: .top) === replacement,
+                "Retiring a header must preserve another scroll view's newer association.")
+        contentOwner.setContentScrollView(nil, for: .top)
+        transcript.retire()
     }
 
     @Test func viewportCaptureCoalescesAndRetiresWithItsActualNativeOwner() async throws {

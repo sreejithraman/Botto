@@ -15,3 +15,21 @@ of a mutable host path or grant network access. Explicit reload uses current
 service authority, while new source occurrences receive separate capture keys.
 Confirmed Forget removes that connection's captures without changing the
 failure boundary for credential removal.
+
+Failed index writes withhold the affected saved index on restart. A bounded
+invalidation record lives outside SQLite so a database lock cannot preserve an
+old completeness claim. It keeps original captures and unrelated chats intact;
+successful checked replacements clear only their matching write invalidation.
+The ledger has a separate lock from SQLite. Canonical changes synchronously
+record a bounded atomic guard before joining a pending SQL writer. This adds a
+small filesystem write to admission; it avoids losing changes behind a blocked
+database. Write tokens remain runtime-only and carry no host revision or access authority.
+Repeated dirty versions reuse the durable identity guard without another file
+write.
+Committed eviction and deletion retain guards so an older chat book cannot
+resurrect rows. Capture rollback removes only guards created by that transaction,
+after confirmed SQL rollback, while preserving prior or newer canonical guards.
+Speculative eviction rejects guard overflow before quarantining unrelated data.
+Cold book seeds stay hidden until saved index reconciliation completes. Overflow
+quarantines the configuration until its cache is discarded. Unreadable recovery
+state fails closed, with a visible save or recovery warning.

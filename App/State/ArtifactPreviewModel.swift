@@ -8,6 +8,7 @@ import BottoCore
     var errorMessage: String? { get }
     var isCurrent: Bool { get }
     var isLoading: Bool { get }
+    var canReload: Bool { get }
     var title: String { get }
     var previewBlock: ReplyContent.Block? { get }
     var output: ArtifactOutput? { get }
@@ -29,6 +30,7 @@ struct ArtifactOutput: Identifiable {
 
 extension ArtifactReadingSession {
     var previewBlock: ReplyContent.Block? { nil }
+    var canReload: Bool { isCurrent }
     func endOutput(id: UUID) { endOutput(id: id, error: nil) }
 }
 

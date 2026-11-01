@@ -15,6 +15,7 @@ extension HermesBotService {
         try checkSelection(owner, connection: connectionOwner)
         let identity: SessionIdentity
         var canonicalSummary: SessionSummary?
+        var canonicalSource: SessionIdentity?
         switch target {
         case .canonical(let profile, let expectedRoot):
             selectedCanonical = true
@@ -24,8 +25,10 @@ extension HermesBotService {
             let summary = try sessionSummary(row, profile: profile, canonical: true)
             identity = summary.identity
             if row["profile"].text.map({ exact($0, profile.text) }) != false,
-               row["profile_name"].text.map({ exact($0, profile.text) }) != false,
-               let count = summary.messageCount, count >= 0 { canonicalSummary = summary }
+               row["profile_name"].text.map({ exact($0, profile.text) }) != false {
+                canonicalSource = summary.identity
+                if let count = summary.messageCount, count >= 0 { canonicalSummary = summary }
+            }
             if let expectedRoot, expectedRoot != identity.root,
                !identity.aliases.contains(expectedRoot) { throw HermesServiceError.wrongConversation }
         case .stored(let stored):
@@ -34,7 +37,7 @@ extension HermesBotService {
         }
         try checkSelection(owner, connection: connectionOwner)
         selectedTarget = identity
-        return try await attach(identity: identity, owner: owner, canonicalSummary: canonicalSummary,
+        return try await attach(identity: identity, owner: owner, canonicalSummary: canonicalSummary, sourceBeforeRead: canonicalSource,
                                 activityPredecessor: old)
     }
 
@@ -55,12 +58,16 @@ extension HermesBotService {
 
     func attach(identity suppliedIdentity: SessionIdentity, owner: Int,
                 canonicalSummary: SessionSummary? = nil,
+                sourceBeforeRead: SessionIdentity? = nil,
                 activityPredecessor: HermesConversationState? = nil) async throws -> OpenedConversation {
         let socket = try readyGateway(), connectionOwner = connectionGeneration
         let priorActivity = activityPredecessor ?? state
         // Capture before the first resume/history/replay request. Later catalog replies
         // may invalidate the tip, but cannot supply this read's observation retroactively.
         let summaryBeforeRead = readSummary(for: suppliedIdentity) ?? canonicalSummary
+        let observedSource = sourceBeforeRead ?? catalogs[suppliedIdentity.profile]?.summaries
+            .first(where: { sameInventoryTip($0.identity, suppliedIdentity) })?.identity ?? summaryBeforeRead?.identity
+        let historyReadStartedAt = ContinuousClock.now
         var identity = suppliedIdentity
         let profile = identity.profile.text, root = identity.root.text
         var stored = identity.stored.text
@@ -185,7 +192,8 @@ extension HermesBotService {
            !catalogTipChanged(for: identity) {
             evidence = ConversationReadEvidence(summaryObservedBeforeRead: summaryBeforeRead)
         } else { evidence = nil }
-        reconciling = false; emitConversation(readEvidence: evidence)
+        let sourceProof = observedSource.flatMap { sameInventoryTip($0, identity) && !catalogTipChanged(for: identity) ? $0 : nil }
+        reconciling = false; emitConversation(readEvidence: evidence, historyReadStartedAt: historyReadStartedAt, observedSource: sourceProof)
         guard let publication else { throw HermesServiceError.disconnected }
         completed = true
         return publication
@@ -210,7 +218,9 @@ extension HermesBotService {
         // Sidecar resume flattens structured image parts. Read its raw REST rows
         // after the replay/snapshot fence, while incoming events remain held.
         if adapter == .authority, snapshot["messages_omitted"].flag != true, let messages = snapshot["messages"].list,
-           !messages.contains(where: { $0["archived_truncated"].flag == true }) { return (messages, true) }
+           !messages.contains(where: { $0["archived_truncated"].flag == true }) {
+            return (messages, HermesConversationState.unavailableMessageIDs(messages, stored: stored).isEmpty)
+        }
         guard let http, Self.safeSegment(stored) else { throw HermesServiceError.incompatible }
         var rows: [HermesJSON] = [], offset = 0, seen = Set<Int>(), complete = true
         while true {
@@ -250,10 +260,11 @@ extension HermesBotService {
             }
             if !batch.isEmpty { freshEmpty.remove(identity) }
             let unique = batch.filter { row in
-                guard let id = row["row_id"].integer ?? row["id"].integer else { return true }
+                guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer else { return true }
                 return seen.insert(id).inserted
             }
-            rows.insert(contentsOf: unique, at: 0)
+            if unique.count != batch.count { complete = false }
+            rows.insert(contentsOf: batch, at: 0)
             if batch.count < 100 { return (rows, complete) }
             guard !unique.isEmpty, offset < 100_000 else { throw HermesServiceError.incompatible }
             offset += batch.count

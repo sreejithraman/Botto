@@ -32,8 +32,10 @@ extension HermesBotService {
         var ids = Set<Int>()
         for row in rows {
             guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer,
-                  id >= 0, ids.insert(id).inserted else { throw HermesServiceError.incompatible }
+                  id >= 0 else { throw HermesServiceError.incompatible }
+            ids.insert(id)
         }
+        let unavailable = HermesConversationState.unavailableMessageIDs(rows, stored: identity.stored.text)
         let projected = rows.map { raw -> HermesJSON in
             guard raw["display_content"] != .null else { return raw }
             var display = raw
@@ -43,12 +45,14 @@ extension HermesBotService {
         }
         let hasMore = rows.count == 100
         let nextOffset = hasMore && offset < 100_000 ? offset + 100 : nil
-        let complete = page["messages_omitted"].flag != true
+        let complete = unavailable.isEmpty && page["messages_omitted"].flag != true
             && !rows.contains { $0["archived_truncated"].flag == true }
             && (adapter == .authority || identity.root == identity.stored)
             && !(hasMore && nextOffset == nil)
         return ConversationHistoryPage(messages: HermesConversationState.messages(projected, stored: identity.stored.text),
-                                       nextOffset: nextOffset, isComplete: complete)
+            nextOffset: nextOffset, isComplete: complete,
+            sourceIDs: Set(ids.map { Data((identity.stored.text + ":row:" + String($0)).utf8) }),
+            unavailableMessageIDs: unavailable)
     }
 
     public func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {

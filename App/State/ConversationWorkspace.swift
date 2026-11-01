@@ -238,7 +238,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let service: any BotService
-    @ObservationIgnored var onAcceptedTranscript: (@MainActor (SessionIdentity, Conversation, String) -> Void)?
+    @ObservationIgnored var onAcceptedTranscript: (@MainActor (OpenedConversation, Conversation?, String) -> Void)?
     @ObservationIgnored private let onDirty: @MainActor () -> Void
     @ObservationIgnored var onPresentationChange: (@MainActor () -> Void)?
     @ObservationIgnored var onVisibleChatChange: (@MainActor (SessionIdentity?) -> Void)?
@@ -838,9 +838,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             if (staging[actual] ?? []).contains(where: { $0.source.stored != opened.identity.stored }) { invalidateStaging(actual) }
             retiredRecoveryAccesses.remove(opened.access)
+            let previousSnapshot = live?.snapshot
             live = opened; locallySelected = nil; readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
             mutateBook { $0.cache(opened.snapshot, for: actual, readEvidence: opened.readEvidence) }; updateActivity(opened, id: actual); rebuildRequests(); onDirty()
-            onAcceptedTranscript?(opened.identity, opened.snapshot, record.title)
+            onAcceptedTranscript?(opened, previousSnapshot, record.title)
             return opened.identity
         } catch {
             guard !retired, recovery == connection, presentation == epoch,
@@ -1127,11 +1128,12 @@ private struct ReadObservationKey: Hashable, Sendable {
             // even for identical content. Only the selected visual lifetime survives.
             retireActionOwnership()
             retiredRecoveryAccesses.remove(opened.access)
+            let previousSnapshot = live?.snapshot
             live = opened; readAuthorityBlocked = false
             availability[owner.chat] = true; errors[owner.chat] = nil
             mutateBook { $0.cache(opened.snapshot, for: owner.chat, readEvidence: opened.readEvidence) }
             updateActivity(opened, id: owner.chat); rebuildRequests(); onDirty()
-            onAcceptedTranscript?(opened.identity, opened.snapshot, book.record(owner.chat)?.title ?? "Chat")
+            onAcceptedTranscript?(opened, previousSnapshot, book.record(owner.chat)?.title ?? "Chat")
             // No displayed() call here: only the fresh, visible view may acknowledge.
         } catch {
             guard foregroundRead?.id == attempt, selectedViewLifetime == lifetime, isCurrent(owner) else { return }
@@ -1566,7 +1568,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             isCanonical: canonical, persistence: .unknown)) }
         mutateBook { $0.cache(publication.snapshot, for: id, readEvidence: publication.readEvidence) }
         updateActivity(publication, id: id, previous: previous); rebuildRequests(); onDirty()
-        onAcceptedTranscript?(publication.identity, publication.snapshot, record.title)
+        onAcceptedTranscript?(publication, previous?.snapshot, record.title)
     }
     /// Lightweight inventory activity never changes selection, transcripts, seen or grants.
     func applyActivity(profile: ExactID, observations: [SessionIdentity: ObservedActivity]) {

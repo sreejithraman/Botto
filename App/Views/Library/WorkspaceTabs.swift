@@ -63,7 +63,7 @@ struct WorkspaceTabs: View {
             } message: { Text(navigationError ?? "") }
             .task(id: refreshKey) {
                 guard selected != .bots else { return }
-                await store.refreshLibrary()
+                await store.refreshLibraryIfNeeded()
             }
             .onChange(of: ObjectIdentifier(store.library)) { _, _ in
                 cancelOpening(); closeReader(); query = ""; selected = .bots
@@ -83,10 +83,12 @@ struct WorkspaceTabs: View {
     private struct RefreshKey: Equatable {
         let library: ObjectIdentifier
         let connected: Bool
-        let needsLibrary: Bool
+        let destination: Destination
+        let revalidation: UUID
     }
     private var refreshKey: RefreshKey {
-        .init(library: ObjectIdentifier(store.library), connected: store.isConnected, needsLibrary: selected != .bots)
+        .init(library: ObjectIdentifier(store.library), connected: store.isConnected,
+              destination: selected, revalidation: store.library.revalidationRevision)
     }
 
     @ViewBuilder private var searchableTabs: some View {

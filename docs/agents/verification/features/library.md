@@ -96,8 +96,11 @@ Workflow `library.search`:
 Workflow `library.captures`:
 
 1. `.a1` With a run-owned service, index two chats with complete versioned
-   summaries. Return through Bots and Artifacts without changing history.
-   Expect a directory check and zero repeated history reads. Open the same
+   summaries. Return immediately through Bots and Artifacts without changing
+   history or invalidating the library. Expect zero directory or history calls.
+   Invalidate the library, or enter again after the 60-second window; expect a
+   directory check and zero repeated history reads. Expiry alone starts no read.
+   Open the same
    original twice: expect identical bytes and one download. Open its thumbnail
    and in-chat reader concurrently; cancel one reader and expect the others
    to finish from that same download.
