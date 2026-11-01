@@ -5,23 +5,40 @@ import BottoCore
 struct WorkDetailsDocument {
     let title: String
     let messages: [ChatMessage]
+
+    static func identity(of message: ChatMessage) -> Data { Data((message.workDetailsID ?? message.id).utf8) }
+
+    static func continues(_ previous: [ChatMessage], with current: [ChatMessage]) -> Bool {
+        let previousIDs = Set(previous.map(identity)), currentIDs = Set(current.map(identity))
+        return !previous.isEmpty && previousIDs.count == previous.count && currentIDs.count == current.count &&
+            previousIDs.isSubset(of: currentIDs)
+    }
+
+    func updated(in snapshot: Conversation?) -> Self? {
+        for row in NativeTranscriptMessagePlan(snapshot?.messages ?? [], unavailableMessageIDs: snapshot?.unavailableMessageIDs ?? []).displayRows {
+            guard case let .workDetails(current) = row,
+                  Self.continues(messages, with: current) else { continue }
+            return .init(title: title, messages: current)
+        }
+        return nil
+    }
 }
 
-/// Semantic row lifetime. A cell lease can end while this unique, unchanged
-/// message remains current. This record retains no cell, renderer or document.
+/// Semantic row lifetime. A cell lease can end while its unique message or
+/// growing tool group remains current. This record retains no cell, renderer or document.
 @MainActor @Observable final class NativeTranscriptRowAuthority {
     private(set) var isCurrent = true
     func invalidate() { isCurrent = false }
 }
 
 /// One foreground reader belongs to the transcript, outside reusable cell hosts.
-/// Its captured Core context remains a prerequisite for both source and execution.
+/// Rich content keeps its Core context; tool details follow their read-only chat lifetime.
 @MainActor final class NativeTranscriptPresentation: NSObject, UIAdaptivePresentationControllerDelegate {
     @MainActor @Observable final class Session {
         let id = UUID()
         enum Content {
             case rich(ReplyContent.Block, RichReplyContext)
-            case details(WorkDetailsDocument, @MainActor () -> Bool)
+            case details(@MainActor () -> WorkDetailsDocument?)
         }
         let content: Content
         let authority: NativeTranscriptRowAuthority
@@ -33,7 +50,7 @@ struct WorkDetailsDocument {
             guard isOpen, authority.isCurrent else { return false }
             switch content {
             case let .rich(block, context): return context.permits(block)
-            case let .details(_, current): return environment.scenePhase == .active && current()
+            case let .details(document): return environment.scenePhase == .active && document() != nil
             }
         }
         init(block: ReplyContent.Block, context: RichReplyContext, authority: NativeTranscriptRowAuthority,
@@ -42,10 +59,10 @@ struct WorkDetailsDocument {
             self.content = .rich(block, context); self.authority = authority
             self.mode = mode; self.environment = environment; self.report = report
         }
-        init(details: WorkDetailsDocument, authority: NativeTranscriptRowAuthority,
-             environment: NativeTranscriptContext, isCurrent: @escaping @MainActor () -> Bool,
+        init(details: @escaping @MainActor () -> WorkDetailsDocument?, authority: NativeTranscriptRowAuthority,
+             environment: NativeTranscriptContext,
              report: @escaping @MainActor (UUID, Bool) -> Void) {
-            self.content = .details(details, isCurrent); self.authority = authority
+            self.content = .details(details); self.authority = authority
             self.mode = .source; self.environment = environment; self.report = report
         }
     }
@@ -62,13 +79,13 @@ struct WorkDetailsDocument {
                               environment: environment, report: report)
         present(current, from: owner)
     }
-    func openDetails(_ document: WorkDetailsDocument, authority: NativeTranscriptRowAuthority,
-                     environment: NativeTranscriptContext, isCurrent: @escaping @MainActor () -> Bool,
+    func openDetails(_ document: @escaping @MainActor () -> WorkDetailsDocument?, authority: NativeTranscriptRowAuthority,
+                     environment: NativeTranscriptContext,
                      report: @escaping @MainActor (UUID, Bool) -> Void, from owner: UIViewController) {
         guard session == nil, owner.presentedViewController == nil, owner.viewIfLoaded?.window != nil,
-              authority.isCurrent, environment.scenePhase == .active, isCurrent() else { return }
+              authority.isCurrent, environment.scenePhase == .active, document() != nil else { return }
         let current = Session(details: document, authority: authority, environment: environment,
-                              isCurrent: isCurrent, report: report)
+                              report: report)
         present(current, from: owner)
     }
     private func present(_ current: Session, from owner: UIViewController) {
@@ -114,8 +131,10 @@ struct WorkDetailsDocument {
                         RichReplyPresentationContent(block: block, context: context,
                             selection: Binding(get: { session.mode }, set: { if session.isCurrent { session.mode = $0 } }),
                             isCurrent: { session.isCurrent }, close: close)
-                    case let .details(document, _):
-                        WorkDetailsSheet(document: document, isCurrent: { session.isCurrent }, close: close)
+                    case let .details(document):
+                        if let document = document() {
+                            WorkDetailsSheet(document: document, isCurrent: { session.isCurrent }, close: close)
+                        }
                     }
                 }
             }

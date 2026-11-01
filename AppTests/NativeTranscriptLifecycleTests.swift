@@ -375,7 +375,28 @@ import BottoCore
         #expect(fixture.service.downloads == 0 && fixture.service.responses.isEmpty)
     }
 
-    @Test func workDetailsRequiresExactCurrentContiguousGroupButAllowsDiagnosticReader() async throws {
+    @Test func reorderedToolGroupRetainsItsReaderAndExpandedItems() async throws {
+        let fixture = try await TranscriptFixture()
+        defer { fixture.close() }
+        let first = ChatMessage(id: "tool-b", role: .tool, text: "First exact output", toolName: "first")
+        let second = ChatMessage(id: "tool-a", role: .tool, text: "Second exact output", toolName: "second")
+        try fixture.publish([first, second])
+        try await wait("group can open") { fixture.firstScope?.canPresent == true }
+        fixture.firstScope?.present(details: .init(title: "Work details", messages: [first, second]), report: fixture.report)
+        try await wait("sheet is presented") { fixture.covered && fixture.controller.presentedViewController?.isBeingPresented == false }
+        let sheet = try #require(fixture.controller.presentedViewController)
+        try await wait("item disclosure is rendered") { accessibilityElement("Expand first", in: sheet.view) != nil }
+        #expect(try #require(accessibilityElement("Expand first", in: sheet.view)).accessibilityActivate())
+        try await wait("first item expanded") { accessibilityElement("Collapse first", in: sheet.view) != nil }
+        try fixture.publish([second, first])
+        try await wait("reordered group keeps expanded item in the same reader") {
+            fixture.controller.presentedViewController === sheet && accessibilityElement("Collapse first", in: sheet.view) != nil
+        }
+        #expect(fixture.reports.map(\.1) == [true])
+    }
+
+    @Test(arguments: ["split", "removed", "duplicate"])
+    func workDetailsRetainsGrowingGroupButRetiresChangedIdentityOrBoundaries(change: String) async throws {
         let fixture = try await TranscriptFixture()
         defer { fixture.close() }
         let first = ChatMessage(id: "tool-one", role: .tool, text: "{\"answer\":1}", toolName: "first")
@@ -391,11 +412,25 @@ import BottoCore
         try await wait("diagnostic reader accepts every exact tool group member") { fixture.covered && fixture.controller.presentedViewController?.isBeingPresented == false }
         let sheet = try #require(fixture.controller.presentedViewController)
         #expect(sheet.sheetPresentationController?.detents.map(\.identifier) == [.medium, .large])
-        // Same messages separated by an invisible raw row are no longer the same group.
+        var revised = first; revised.text = "Updated tool result"
+        let third = ChatMessage(id: "tool-three", role: .tool, text: "New work", toolName: "third")
+        try fixture.publish([revised, second, third])
+        #expect(fixture.controller.presentedViewController === sheet && fixture.reports.map(\.1) == [true])
         let hidden = ChatMessage(id: "hidden-separator", role: .system, text: "hidden", isSilent: true)
-        try fixture.publish([first, hidden, second])
-        try await wait("raw group split retires the reader") { fixture.controller.presentedViewController == nil }
+        let replacement: [ChatMessage] = switch change {
+        case "split": [revised, hidden, second, third]
+        case "removed": [revised, third]
+        case "duplicate": [revised, second, third, revised]
+        default: [revised, second, third, revised]
+        }
+        try fixture.publish(replacement)
+        try await wait("changed group identity or boundary retires the reader") { fixture.controller.presentedViewController == nil }
         #expect(fixture.reports.map(\.1) == [true, false])
+        try fixture.publish([first, second])
+        try await wait("disclosure can reopen after work changes") { fixture.firstScope?.canPresent == true }
+        fixture.firstScope?.present(details: .init(title: "Work details", messages: [first, second]), report: fixture.report)
+        try await wait("fresh work reader opens") { fixture.controller.presentedViewController != nil }
+        #expect(fixture.reports.map(\.1) == [true, false, true])
     }
 
     @Test func detailsCoverageReservationRejectsCompetingReaderAndSynchronousRetirement() async throws {

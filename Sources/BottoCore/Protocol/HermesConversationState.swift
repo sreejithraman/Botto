@@ -22,6 +22,12 @@ struct HermesConversationState {
     var serverRequestIDs: Set<String> = []
     var streamingID: String?
     var turnID = UUID().uuidString
+    private struct ToolRowIdentity {
+        var messageID: String
+        let callID: Data?
+    }
+    private var toolRows: [ToolRowIdentity] = []
+    private var toolDisclosureIDs: [Data: String] = [:]
     var optimistic: [String] = []
     struct StartingSubmission {
         let id: String
@@ -68,6 +74,11 @@ struct HermesConversationState {
         let unavailable = Self.unavailableMessageIDs(history, stored: conversation.storedID)
         conversation.unavailableMessageIDs = unavailable.isEmpty ? nil : unavailable
         conversation.messages = Self.messages(history, stored: conversation.storedID)
+        toolDisclosureIDs = [:]
+        toolRows = history.enumerated().map { offset, row in
+            ToolRowIdentity(messageID: Self.historyMessageID(row, offset: offset, stored: conversation.storedID),
+                callID: row["role"].text == "tool" ? row["tool_call_id"].nonempty.map { Data($0.utf8) } : nil)
+        }
         conversation.isWorking = snapshot["running"].flag == true
         motion.restore(working: conversation.isWorking, generation: generation,
                        replying: !authority && snapshot["inflight"]["assistant"].nonempty != nil)
@@ -173,6 +184,7 @@ struct HermesConversationState {
         if let value = event["execution_generation"].integer { generation = value }
         switch event["type"].text {
         case "message.start":
+            toolDisclosureIDs = [:]
             activeAdmission = event["admission_id"].nonempty
             let displayKind = payload["display_kind"].text
             startingSubmission = nil
@@ -497,17 +509,100 @@ struct HermesConversationState {
             captureReplacementBoundary(id)
         }
     }
+    /// A refresh may replace live rows with database rows for the same tool call.
+    /// Durable rows retain their disclosure by row identity. Transient bridges need
+    /// a known execution, unique calls, and completed replay evidence when execution advances.
+    mutating func retainToolIdentities(from prior: Self, replay: [HermesJSON] = []) {
+        guard exact(root, prior.root), exact(epoch, prior.epoch),
+              exact(conversation.id, prior.conversation.id),
+              exact(conversation.profileID, prior.conversation.profileID),
+              exact(conversation.storedID, prior.conversation.storedID) else { return }
+        let previous = prior.uniqueToolRows()
+        let previousMessages = Dictionary(grouping: prior.conversation.messages, by: { Data($0.id.utf8) })
+        let currentMessages = Dictionary(grouping: conversation.messages, by: { Data($0.id.utf8) })
+        let current = uniqueToolRows()
+        let calls = Dictionary(uniqueKeysWithValues: current.map { (Data($0.value.utf8), $0.key) })
+        var occupied = Set(conversation.messages.map { Data(($0.workDetailsID ?? $0.id).utf8) })
+        var aliases: [Data: String] = [:]
+        for index in conversation.messages.indices where conversation.messages[index].role == .tool {
+            let id = Data(conversation.messages[index].id.utf8)
+            guard currentMessages[id]?.count == 1,
+                  conversation.unavailableMessageIDs?.contains(id) != true,
+                  prior.conversation.unavailableMessageIDs?.contains(id) != true else { continue }
+            let previousMessage: ChatMessage
+            if let rows = previousMessages[id], rows.count == 1, let row = rows.first,
+               row.role == .tool, row.workDetailsID != nil,
+               row.hasStableIdentity(storedID: prior.conversation.storedID),
+               conversation.messages[index].hasStableIdentity(storedID: conversation.storedID) {
+                previousMessage = row
+            } else {
+                guard let call = calls[id], let previousID = previous[call],
+                      let row = previousMessages[Data(previousID.utf8)]?.first,
+                      row.transientID != nil,
+                      prior.permitsToolBridge(call, from: row, to: conversation.messages[index],
+                          generation: generation, replay: replay) else { continue }
+                previousMessage = row
+            }
+            let retained = previousMessage.workDetailsID ?? previousMessage.id
+            let currentID = Data((conversation.messages[index].workDetailsID ?? conversation.messages[index].id).utf8)
+            guard currentID == Data(retained.utf8) || !occupied.contains(Data(retained.utf8)) else { continue }
+            conversation.messages[index].workDetailsID = retained
+            occupied.remove(currentID); occupied.insert(Data(retained.utf8)); aliases[id] = retained
+        }
+        toolDisclosureIDs.merge(aliases) { _, retained in retained }
+    }
+
+    private func permitsToolBridge(_ call: Data, from previous: ChatMessage, to current: ChatMessage,
+                                   generation nextGeneration: Int?, replay: [HermesJSON]) -> Bool {
+        guard let generation, let nextGeneration else { return false }
+        if generation == nextGeneration { return true }
+        guard nextGeneration > generation, !conversation.isWorking, exact(previous.text, current.text) else { return false }
+        let evidence = replay.filter {
+            exact($0["session_id"].text, conversation.id) && exact($0["replay_epoch"].text, epoch)
+        }
+        let calls = evidence.filter {
+            ["tool.start", "tool.complete"].contains($0["type"].text ?? "") &&
+                ($0["payload"]["tool_call_id"].nonempty ?? $0["payload"]["tool_id"].nonempty).map { Data($0.utf8) } == call
+        }
+        return evidence.contains { $0["type"].text == "message.complete" && $0["execution_generation"].integer == generation } &&
+            calls.contains { $0["type"].text == "tool.complete" && $0["execution_generation"].integer == generation } &&
+            calls.allSatisfy { $0["execution_generation"].integer == generation }
+    }
+
+    private func uniqueToolRows() -> [Data: String] {
+        let rows = Dictionary(grouping: toolRows, by: { Data($0.messageID.utf8) })
+        let calls = Dictionary(grouping: toolRows.filter { $0.callID != nil }, by: { $0.callID! })
+        let visible = Dictionary(grouping: conversation.messages, by: { Data($0.id.utf8) })
+        return calls.compactMapValues { candidates -> String? in
+            guard candidates.count == 1, let row = candidates.first,
+                  rows[Data(row.messageID.utf8)]?.count == 1,
+                  let messages = visible[Data(row.messageID.utf8)], messages.count == 1,
+                  messages.first?.role == .tool else { return nil }
+            return row.messageID
+        }
+    }
+
     mutating func updateTool(_ payload: HermesJSON, complete: Bool) {
         let id = "tool:" + turnID + ":" + (payload["tool_id"].text ?? String(conversation.lastSequence))
-        let name = payload["name"].text ?? "Tool"
+        let name = payload["name"].nonempty ?? payload["tool_name"].nonempty ?? "Tool"
         let result = payload["result_text"].text ?? payload.fields?["result"].flatMap(Self.toolResultText)
         let text = complete ? (result ?? payload["summary"].text ?? "Finished") : (payload["args"]["command"].text ?? "Running…")
         let occurrence = conversation.messages.first { $0.id == id }?.transientID ?? UUID()
-        let row = ChatMessage(id: id, role: .tool, text: text, toolName: name, transientID: occurrence)
+        let row = ChatMessage(id: id, role: .tool, text: text, toolName: name, transientID: occurrence,
+            workDetailsID: toolDisclosureIDs[Data(id.utf8)])
+        let identity = ToolRowIdentity(messageID: id,
+            callID: (payload["tool_call_id"].nonempty ?? payload["tool_id"].nonempty).map { Data($0.utf8) })
+        if let index = toolRows.firstIndex(where: { exact($0.messageID, id) }) { toolRows[index] = identity }
+        else { toolRows.append(identity) }
         if let index = conversation.messages.firstIndex(where: { $0.id == id }) { conversation.messages[index] = row }
         else { conversation.messages.append(row); captureReplacementBoundary(id) }
     }
     func rowKey(_ id: Int) -> String { conversation.storedID + ":row:" + String(id) }
+
+    private static func historyMessageID(_ row: HermesJSON, offset: Int, stored: String) -> String {
+        (row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer).map { stored + ":row:" + String($0) }
+            ?? stored + ":index:" + String(offset)
+    }
 
     static func unavailableMessageIDs(_ rows: [HermesJSON], stored: String) -> Set<Data> {
         var seen = Set<Data>(), duplicates = Set<Data>()
@@ -525,8 +620,7 @@ struct HermesConversationState {
         return rows.enumerated().compactMap { offset, row in
             guard row["display_kind"].text != "hidden", row["display_metadata"]["model_only"].flag != true,
                   let roleName = row["role"].text, let role = ChatMessage.Role(rawValue: roleName) else { return nil }
-            let id = (row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer).map { stored + ":row:" + String($0) }
-                ?? stored + ":index:" + String(offset)
+            let id = historyMessageID(row, offset: offset, stored: stored)
             let images = role == .user ? historyImages(row["content"], messageID: id) : (attachments: [], parts: Set<Int>())
             let text = row["text"].text ?? (role == .tool ? toolResultText(row["content"]) ?? "" : contentText(row["content"], omitting: images.parts))
             if text.isEmpty, images.attachments.isEmpty, row["tool_calls"].list != nil { return nil }
@@ -535,7 +629,7 @@ struct HermesConversationState {
                 row["status"].text.map({ !["complete", "completed", "success"].contains($0) }) == true ||
                 row["display_metadata"]["error"] != .null || row["display_metadata"]["error_surface"] != .null
             return ChatMessage(id: id, role: role, text: text, timestamp: row["timestamp"].date,
-                               toolName: row["name"].text, attachments: images.attachments,
+                               toolName: row["tool_name"].nonempty ?? row["name"].text, attachments: images.attachments,
                                displayKind: failed && role == .assistant ? "failed_turn" : row["display_kind"].text,
                                isSilent: role == .assistant && !failed && HermesMessagePresentation.isSilence(text),
                                displayText: row["display_metadata"]["display_text"].text)

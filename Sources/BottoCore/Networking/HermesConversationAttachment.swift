@@ -175,6 +175,7 @@ extension HermesBotService {
            exact(prior.conversation.profileID, fresh.conversation.profileID),
            exact(prior.conversation.storedID, fresh.conversation.storedID), exact(prior.epoch, fresh.epoch) {
             fresh.motion.retainClock(from: prior.motion)
+            fresh.retainToolIdentities(from: prior, replay: replayComplete ? events : [])
         }
         state = fresh
         attaching = false; attached = true; reconciling = true

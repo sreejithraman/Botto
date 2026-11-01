@@ -4,12 +4,12 @@ import BottoCore
 
 /// Exact byte identity avoids Swift String's canonical-equivalence coalescing.
 enum NativeTranscriptItemID: Hashable {
-    case date, message(Data), workDetails(Data), request(UUID), empty, terminal, identityNotice, typing
+    case date, message(Data), workDetails(Data), request(UUID), empty, terminal, identityNotice, typing, working
     case ambiguousMessage(Int), ambiguousRequest(Int)
 }
 enum NativeTranscriptRowValue: Equatable {
     case message(ChatMessage, working: Bool, streaming: Bool = false)
-    case workDetails([ChatMessage])
+    case workDetails([ChatMessage], active: Bool = false)
     case request(PendingRequest, enabled: Bool)
     case empty(NativeTranscriptEmptyDisplay)
     case auxiliary(String)
@@ -17,9 +17,9 @@ enum NativeTranscriptRowValue: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case let (.message(a, aw, ast), .message(b, bw, bst)):
-            return aw == bw && ast == bst && TranscriptContentRevision.sameMessage(a, b)
-        case let (.workDetails(a), .workDetails(b)):
-            return a.elementsEqual(b, by: TranscriptContentRevision.sameMessage)
+            return aw == bw && ast == bst && sameDisplayMessage(a, b)
+        case let (.workDetails(a, aa), .workDetails(b, ba)):
+            return aa == ba && a.elementsEqual(b, by: sameDisplayMessage)
         case let (.request(a, ae), .request(b, be)):
             return ae == be && TranscriptContentRevision.sameRequest(a, b)
         case let (.auxiliary(a), .auxiliary(b)): return TranscriptContentRevision.exact(a, b)
@@ -27,7 +27,13 @@ enum NativeTranscriptRowValue: Equatable {
         default: return false
         }
     }
-    func hasSameForegroundContent(as other: Self) -> Bool {
+    private static func sameDisplayMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
+        TranscriptContentRevision.sameMessage(a, b) && TranscriptContentRevision.exact(a.workDetailsID, b.workDetailsID)
+    }
+    func canContinueForeground(with other: Self) -> Bool {
+        if case let .workDetails(previous, _) = self, case let .workDetails(current, _) = other {
+            return WorkDetailsDocument.continues(previous, with: current)
+        }
         if case let .message(a, _, _) = self, case let .message(b, _, _) = other {
             return Self.message(a, working: false) == Self.message(b, working: false)
         }
@@ -67,6 +73,12 @@ struct NativeTranscriptContext: Equatable {
     var scenePhase: ScenePhase = .active
     var reduceMotion = false
     var actionRevision: UUID? = nil
+    var readerLifetime: UUID? = nil
+    func hasSameReader(as other: Self) -> Bool {
+        guard let readerLifetime else { return hasSameAuthority(as: other) }
+        return workspace == other.workspace && profile == other.profile && chat == other.chat &&
+            reviewingConnection == other.reviewingConnection && readerLifetime == other.readerLifetime
+    }
     func hasSameAuthority(as other: Self) -> Bool {
         workspace == other.workspace && profile == other.profile && chat == other.chat &&
             owner == other.owner && generation == other.generation && reviewingConnection == other.reviewingConnection
@@ -86,6 +98,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let rows: [NativeTranscriptRow]
     let active: Bool
     let currentTaskSnapshot: @MainActor () -> Conversation?
+    let currentReaderSnapshot: (@MainActor () -> Conversation?)?
     var admitsAction: @MainActor () -> Bool = { true }
     var preview: NativeTranscriptPreview? = nil
     var topContentInset: CGFloat = 0
@@ -97,12 +110,13 @@ struct NativeTranscript: UIViewControllerRepresentable {
 
     init(context: NativeTranscriptContext, snapshot: Conversation?, rows: [NativeTranscriptRow], active: Bool,
          currentTaskSnapshot: @escaping @MainActor () -> Conversation?,
+         currentReaderSnapshot: (@MainActor () -> Conversation?)? = nil,
          admitsAction: @escaping @MainActor () -> Bool = { true },
          preview: NativeTranscriptPreview? = nil, topContentInset: CGFloat = 0, bottomContentInset: CGFloat = 0,
          searchFocus: SearchMessageFocus? = nil,
          reportSearchFocus: @escaping @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }) {
         self.context = context; self.snapshot = snapshot; self.rows = rows; self.active = active
-        self.currentTaskSnapshot = currentTaskSnapshot; self.admitsAction = admitsAction
+        self.currentTaskSnapshot = currentTaskSnapshot; self.currentReaderSnapshot = currentReaderSnapshot; self.admitsAction = admitsAction
         self.preview = preview; self.topContentInset = topContentInset; self.bottomContentInset = bottomContentInset
         self.searchFocus = searchFocus; self.reportSearchFocus = reportSearchFocus
         displayRevision = rows.map(\.value)
@@ -113,7 +127,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
         if let preview { preview.bind(controller) }
         else { controller.previewReceiver?.unbind(controller) }
         controller.updateContentInsets(top: topContentInset, bottom: bottomContentInset)
-        controller.apply(self.context, snapshot: snapshot, rows: rows, active: active, currentTaskSnapshot: currentTaskSnapshot, admitsAction: admitsAction,
+        controller.apply(self.context, snapshot: snapshot, rows: rows, active: active, currentTaskSnapshot: currentTaskSnapshot, currentReaderSnapshot: currentReaderSnapshot, admitsAction: admitsAction,
                          searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
         preview?.refreshHeader()
         preview?.requestCapture(from: controller)
@@ -474,6 +488,7 @@ private struct NativeTranscriptHostedRow: View {
     private var context: NativeTranscriptContext?
     private var snapshot: Conversation?
     private var currentTaskSnapshot: @MainActor () -> Conversation? = { nil }
+    private var currentReaderSnapshot: @MainActor () -> Conversation? = { nil }
     private var rows: [NativeTranscriptRow] = []
     private var lookup: [NativeTranscriptItemID: NativeTranscriptRow] = [:]
     // Dimensions only; no cell/host/renderer/document survives recycling here.
@@ -586,6 +601,7 @@ private struct NativeTranscriptHostedRow: View {
 
     func apply(_ next: NativeTranscriptContext, snapshot nextSnapshot: Conversation?, rows nextRows: [NativeTranscriptRow], active: Bool,
                currentTaskSnapshot: @escaping @MainActor () -> Conversation?,
+               currentReaderSnapshot: (@MainActor () -> Conversation?)? = nil,
                admitsAction: @escaping @MainActor () -> Bool = { true },
                searchFocus nextFocus: SearchMessageFocus? = nil,
                reportSearchFocus: @escaping @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }) {
@@ -604,6 +620,7 @@ private struct NativeTranscriptHostedRow: View {
         applicationSequence &+= 1
         let applyingSequence = applicationSequence
         self.currentTaskSnapshot = currentTaskSnapshot
+        self.currentReaderSnapshot = currentReaderSnapshot ?? currentTaskSnapshot
         let focusChanged = displayedSearchID != nextFocus?.id
         displayedSearchID = nextFocus?.id
         self.reportSearchFocus = reportSearchFocus
@@ -657,6 +674,12 @@ private struct NativeTranscriptHostedRow: View {
         // replacement, fence old scopes before installing its new policy below.
         if unchanged { actionAdmission = admitsAction }
         let incomingByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0) })
+        var incomingWorkRows: [Data: NativeTranscriptItemID] = [:]
+        for row in nextRows {
+            if case let .workDetails(messages, _) = row.value {
+                for message in messages { incomingWorkRows[WorkDetailsDocument.identity(of: message)] = row.id }
+            }
+        }
         let sameAuthority = context.map { $0.hasSameAuthority(as: next) } ?? false
         for (id, state) in requestStates {
             if incomingByID[id]?.request.map({ state.input.matches($0) }) != true || !state.isCurrent {
@@ -669,12 +692,25 @@ private struct NativeTranscriptHostedRow: View {
         // Foreground lifetime follows the exact unique row, not its reusable
         // host, environment or working-state projection.
         let messageIndex = TranscriptMessageIndex(nextSnapshot)
+        var continuedAuthorities: [NativeTranscriptItemID: NativeTranscriptRowAuthority] = [:]
         for (id, token) in rowAuthorities {
-            guard sameAuthority, let old = lookup[id], let incoming = incomingByID[id],
-                  old.value.hasSameForegroundContent(as: incoming.value),
+            guard let old = lookup[id] else { token.invalidate(); continue }
+            let incoming: NativeTranscriptRow?
+            let sameLifetime: Bool
+            if case let .workDetails(messages, _) = old.value {
+                sameLifetime = context?.hasSameReader(as: next) == true
+                incoming = messages.first.flatMap { incomingWorkRows[WorkDetailsDocument.identity(of: $0)] }.flatMap { incomingByID[$0] }
+            } else {
+                sameLifetime = sameAuthority
+                incoming = incomingByID[id]
+            }
+            guard sameLifetime, let incoming, old.value.canContinueForeground(with: incoming.value),
                   rawMessageIsCurrent(incoming, index: messageIndex, snapshot: nextSnapshot) else { token.invalidate(); continue }
+            if let other = continuedAuthorities[incoming.id] {
+                other.invalidate(); token.invalidate()
+            } else { continuedAuthorities[incoming.id] = token }
         }
-        rowAuthorities = rowAuthorities.filter { $0.value.isCurrent }
+        rowAuthorities = continuedAuthorities.filter { $0.value.isCurrent }
         foreground.reconcile(environment: next)
         guard applicationSequence == applyingSequence else { return }
         let becameCovered = self.active && !active
@@ -722,8 +758,8 @@ private struct NativeTranscriptHostedRow: View {
         }
     }
     private func rawMessageIsCurrent(_ row: NativeTranscriptRow, index: TranscriptMessageIndex, snapshot: Conversation?) -> Bool {
-        if case let .workDetails(messages) = row.value {
-            return messages.first.map { row.id == .workDetails(Data($0.id.utf8)) } == true && messages.allSatisfy(index.matches) && currentWorkDetailsGroup(messages, in: snapshot)
+        if case let .workDetails(messages, _) = row.value {
+            return messages.first.map { row.id == .workDetails(WorkDetailsDocument.identity(of: $0)) } == true && messages.allSatisfy(index.matches) && currentWorkDetailsGroup(messages, in: snapshot)
         }
         if case let .message(message, _, _) = row.value {
             return row.id == .message(Data(message.id.utf8)) && index.matches(message)
@@ -732,9 +768,9 @@ private struct NativeTranscriptHostedRow: View {
         return true
     }
     private func rawMessageIsCurrent(_ row: NativeTranscriptRow, in snapshot: Conversation?) -> Bool {
-        if case let .workDetails(messages) = row.value {
+        if case let .workDetails(messages, _) = row.value {
             let index = TranscriptMessageIndex(snapshot)
-            return messages.first.map { row.id == .workDetails(Data($0.id.utf8)) } == true &&
+            return messages.first.map { row.id == .workDetails(WorkDetailsDocument.identity(of: $0)) } == true &&
                 messages.allSatisfy(index.matches) && currentWorkDetailsGroup(messages, in: snapshot)
         }
         if case let .message(message, _, _) = row.value {
@@ -754,7 +790,7 @@ private struct NativeTranscriptHostedRow: View {
     }
     private func document(_ document: WorkDetailsDocument, matches row: NativeTranscriptRow) -> Bool {
         switch row.value {
-        case let .workDetails(messages):
+        case let .workDetails(messages, _):
             return messages.elementsEqual(document.messages, by: TranscriptContentRevision.sameMessage)
         case let .message(message, _, _):
             return document.messages.count == 1 && TranscriptContentRevision.sameMessage(message, document.messages[0])
@@ -813,10 +849,11 @@ private struct NativeTranscriptHostedRow: View {
                   let authority, authority.isCurrent, let context = self.context,
                   let current = self.lookup[row.id], self.document(document, matches: current),
                   self.rowActionsAreCurrent(current, in: self.currentTaskSnapshot()) else { return }
-            self.foreground.openDetails(document, authority: authority, environment: context, isCurrent: { [weak self, weak authority] in
-                guard let self, authority?.isCurrent == true else { return false }
-                return self.rowActionsAreCurrent(current, in: self.currentTaskSnapshot())
-            }, report: report, from: self)
+            self.foreground.openDetails({ [weak self, weak authority] in
+                guard let self, authority?.isCurrent == true else { return nil }
+                if case .workDetails = current.value { return document.updated(in: self.currentReaderSnapshot()) }
+                return self.rowActionsAreCurrent(current, in: self.currentTaskSnapshot()) ? document : nil
+            }, authority: authority, environment: context, report: report, from: self)
         }
         let history = measurements[row.id] ?? ReplyBodyMeasurements(); measurements[row.id] = history
         cell.contentConfiguration = UIHostingConfiguration {
@@ -838,7 +875,7 @@ private struct NativeTranscriptHostedRow: View {
         if let collection { InteractionFrameTrace.unbindAccessibilitySink(collection) }
         #endif
         applicationSequence &+= 1
-        actionAdmission = { false }; currentTaskSnapshot = { nil }; snapshot = nil
+        actionAdmission = { false }; currentTaskSnapshot = { nil }; currentReaderSnapshot = { nil }; snapshot = nil
         revision &+= 1; active = false; committed = false
         scopes.allObjects.forEach { $0.invalidate() }; scopes.removeAllObjects()
         rowAuthorities.values.forEach { $0.invalidate() }; rowAuthorities.removeAll()

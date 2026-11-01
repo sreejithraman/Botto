@@ -207,12 +207,14 @@ final class MultipleChatUITests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data().write(to: directory.appendingPathComponent("reply.hold"))
         let app = launch(gateDirectory: directory)
+        app.buttons["Keep draft"].tap()
+        XCTAssertTrue(app.buttons["Keep draft"].waitForNonExistence(timeout: 5))
         editor(app).tap(); editor(app).typeText("Start a reply")
         app.buttons["Send message"].tap()
-        let indicator = app.descendants(matching: .any)["chat-typing-indicator"]
+        let indicator = app.descendants(matching: .any)["chat-working-indicator"]
         XCTAssertTrue(indicator.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Stop response"].exists)
-        XCTAssertFalse(app.staticTexts["Milo is working"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["chat-typing-indicator"].exists)
         editor(app).tap(); editor(app).typeText("Make it shorter")
         app.buttons["Steer message"].tap()
         XCTAssertTrue(revealTranscriptText("Make it shorter", app: app, timeout: 5))
@@ -221,7 +223,7 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Stop response"].exists)
         XCTAssertTrue(indicator.exists)
         let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Typing bubble and composer stop"; capture.lifetime = .keepAlways; add(capture)
+        capture.name = "Working indicator and composer stop"; capture.lifetime = .keepAlways; add(capture)
         app.buttons["Stop response"].tap()
         XCTAssertTrue(indicator.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Send message"].exists)

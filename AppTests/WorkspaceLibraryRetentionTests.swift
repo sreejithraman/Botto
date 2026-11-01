@@ -6,6 +6,37 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct WorkspaceLibraryRetentionTests {
+    @Test func disclosureChangesRetainArtifactKeysReadersAndOfflineCaptures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RetainedLibraryService(), source = service.source("main")
+        let durable = ChatMessage(id: "main:row:5", role: .tool, text: "MEDIA:/report.txt", toolName: "terminal")
+        var displayed = durable; displayed.workDetailsID = "tool:live:call"
+        service.summaries = [service.summary(source, at: 10)]
+        service.pages[source] = [0: .init(messages: [displayed], nextOffset: nil, isComplete: true)]
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let item = try #require(library.artifacts.first), attachment = try #require(item.artifact.attachment)
+        let displayedKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [displayed]))
+        let durableKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [durable]))
+        #expect(displayedKey == durableKey)
+        #expect(TranscriptContentRevision.sameMessage(displayed, durable))
+        #expect(NativeTranscriptRowValue.workDetails([displayed]) != .workDetails([durable]))
+        #expect(try await library.download(item).data == service.downloadedBytes)
+        service.pages[source] = [0: .init(messages: [durable], nextOffset: nil, isComplete: true)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(library.isCurrent(item))
+        library.setOnline(false)
+        #expect(try await library.original(for: durableKey) { throw HermesServiceError.disconnected }.data == service.downloadedBytes)
+        #expect(service.downloadCount == 1)
+        library.retire(); await cache.close()
+        let reopened = ArtifactCache(root: root)
+        #expect(try await reopened.session(scope: scope).original(for: durableKey)?.artifact.data == service.downloadedBytes)
+        await reopened.close()
+    }
+
     @Test func sharedBudgetTrimmingSchedulesTheSurvivingChatBeforeCapturePublication() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

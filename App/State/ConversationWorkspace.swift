@@ -169,6 +169,7 @@ struct ChatScreen {
     let queuedEdit: QueuedMessageEdit?
     let canReplaceQueuedEdit: Bool
     let canSaveQueuedEdit: Bool
+    let workPhase: ConversationWorkPhase?
     var selectedChatID: ChatID { owner.chat }
     var epoch: UUID { owner.epoch }
 }
@@ -492,7 +493,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             directoryComplete: complete[profile] ?? false,
             queuedEdit: queuedEditing.edit(id),
             canReplaceQueuedEdit: source.map { queuedEditing.canReplace(id, source: $0, messages: snapshot?.queuedMessages ?? []) } == true,
-            canSaveQueuedEdit: canSaveEdit)
+            canSaveQueuedEdit: canSaveEdit,
+            workPhase: selected == id && isCurrent(rendered) ? live?.activity?.phase : nil)
     }
     private func readOnlyExplanation(_ record: ChatRecord) -> String? {
         if record.isUnverified { return "Recovered history is read-only because Hermes hasn’t verified its original chat. Your draft and messages are preserved." }

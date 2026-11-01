@@ -417,7 +417,7 @@ import BottoCore
         let message = ChatMessage(id: "same", role: .assistant, text: "```html\n<p>Done</p>\n```")
         let streaming = NativeTranscriptRowValue.message(message, working: true, streaming: true)
         let formerTail = NativeTranscriptRowValue.message(message, working: true, streaming: false)
-        #expect(streaming != formerTail && streaming.hasSameForegroundContent(as: formerTail))
+        #expect(streaming != formerTail && streaming.canContinueForeground(with: formerTail))
         var profile = BotProfile(id: "same", name: "é", appearance: .init(shape: .circle, color: "#ef4444"))
         let original = NativeTranscriptEmptyDisplay(profile: profile, image: nil, opening: false, connected: true)
         profile.name = "e\u{301}"

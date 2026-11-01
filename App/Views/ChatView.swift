@@ -594,8 +594,10 @@ private struct ChatTranscript: View {
             profile: Data(bot.id.utf8), chat: screen?.selectedChatID, owner: screen?.owner,
             generation: store.artifactGeneration, reviewingConnection: store.showsConnection,
             dynamicType: dynamicType, colorScheme: colorScheme, direction: direction,
-            scenePhase: scenePhase, reduceMotion: reduceMotion, actionRevision: actionRevision),
+            scenePhase: scenePhase, reduceMotion: reduceMotion, actionRevision: actionRevision,
+            readerLifetime: screen?.selectedViewLifetime),
             snapshot: chat, rows: nativeRows, active: isExposed, currentTaskSnapshot: taskSnapshot(),
+            currentReaderSnapshot: readerSnapshot(),
             admitsAction: admitsAction, preview: preview, topContentInset: topContentInset,
             bottomContentInset: bottomContentInset,
             searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
@@ -616,15 +618,41 @@ private struct ChatTranscript: View {
         }
     }
 
+    // Tool output is read-only. Live access and file-download generations can
+    // refresh during the same chat without ending this reader's lifetime.
+    private func readerSnapshot() -> @MainActor () -> Conversation? {
+        let store = store, workspace = workspace, profile = try? ExactID(bot.id)
+        let lifetime = screen?.selectedViewLifetime, chatID = screen?.selectedChatID
+        let reviewing = store.showsConnection
+        return {
+            guard store.chats === workspace,
+                  reviewing == store.showsConnection, let profile, let lifetime,
+                  let current = workspace.screen(profile: profile), current.selectedViewLifetime == lifetime,
+                  current.selectedChatID == chatID else { return nil }
+            return current.snapshot
+        }
+    }
+
     private func hosted<V: View>(_ content: V) -> AnyView {
         AnyView(content.environment(\.scenePhase, scenePhase)
             .environment(\.colorScheme, colorScheme).environment(\.dynamicTypeSize, dynamicType)
             .environment(\.layoutDirection, direction).environment(\.reportChatModal, reportModal))
     }
 
+    private var workActivity: TranscriptWorkActivity {
+        .init(snapshot: chat, phase: screen?.workPhase)
+    }
+
+    private func activeWorkDetailsID(in rows: [NativeTranscriptMessagePlan.DisplayRow]) -> NativeTranscriptItemID? {
+        guard workActivity == .working, case .workDetails? = rows.last else { return nil }
+        return rows.last?.id
+    }
+
     private var nativeRows: [NativeTranscriptRow] {
         var rows: [NativeTranscriptRow] = []
         let messages = messagePlan
+        let displayRows = messages.displayRows
+        let activeWorkDetailsID = activeWorkDetailsID(in: displayRows)
         let lastMessageID = messages.entries.last?.id
         let requests = NativeTranscriptRequestPlan(screen?.requests ?? [])
         if messages.hasAmbiguity || requests.hasAmbiguity {
@@ -648,10 +676,11 @@ private struct ChatTranscript: View {
                 hosted(ReplyBodyLayoutOwner(message: message, acceptsWrites: { scope.isCurrent && writer() },
                     content: { renderedMessage(message, in: chat, streaming: streaming, actionScope: ObjectIdentifier(scope), isCurrent: { scope.canPresent }) }, providedHistory: history))
             }
-            for displayRow in messages.displayRows {
+            for displayRow in displayRows {
                 if case let .workDetails(tools) = displayRow {
-                    rows.append(.init(id: displayRow.id, value: .workDetails(tools)) { _, _ in
-                        hosted(WorkDetailsView(messages: tools))
+                    let active = displayRow.id == activeWorkDetailsID
+                    rows.append(.init(id: displayRow.id, value: .workDetails(tools, active: active)) { _, _ in
+                        hosted(WorkDetailsView(messages: tools, isActive: active))
                     })
                     continue
                 }
@@ -698,7 +727,12 @@ private struct ChatTranscript: View {
                 })
             }
         }
-        if chat?.isWorking == true {
+        if workActivity == .working && activeWorkDetailsID == nil {
+            rows.append(.init(id: .working, value: .auxiliary(bot.name)) { _, _ in
+                hosted(WorkingIndicator(botName: bot.name))
+            })
+        }
+        if workActivity == .typing {
             rows.append(.init(id: .typing, value: .auxiliary(bot.name)) { _, _ in
                 hosted(TypingIndicator(botName: bot.name))
             })
@@ -817,16 +851,18 @@ private struct ChatTranscript: View {
     }
 
     @ViewBuilder private var transcriptRows: some View {
+        let displayRows = messagePlan.displayRows
+        let activeWorkDetailsID = activeWorkDetailsID(in: displayRows)
         if let chat, !visibleMessages.isEmpty {
             if let firstDate = visibleMessages.first?.timestamp {
                 Text(firstDate, format: .dateTime.month(.abbreviated).day())
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, 12)
             }
-            ForEach(messagePlan.displayRows) { row in
+            ForEach(displayRows) { row in
                 switch row {
                 case .workDetails(let tools):
-                    WorkDetailsView(messages: tools)
+                    WorkDetailsView(messages: tools, isActive: row.id == activeWorkDetailsID)
                 case .message(let entry):
                     if entry.isAmbiguous {
                         NativeTranscriptAmbiguousMessage(message: entry.message)
@@ -852,17 +888,13 @@ private struct ChatTranscript: View {
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
             requestRows
         }
-        if visibleMessages.isEmpty && chat?.isWorking == true { TypingIndicator(botName: bot.name) }
+        if workActivity == .working && activeWorkDetailsID == nil { WorkingIndicator(botName: bot.name) }
+        if workActivity == .typing { TypingIndicator(botName: bot.name) }
         Color.clear.frame(height: 1).id(Anchor.latest).accessibilityHidden(true)
     }
 
     @ViewBuilder private func messageLayout(_ message: ChatMessage, in chat: Conversation) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            renderedMessage(message, in: chat, streaming: chat.isWorking && lastVisibleMessageID.map { TranscriptContentRevision.exact($0, message.id) } == true)
-            if chat.isWorking && lastVisibleMessageID.map({ TranscriptContentRevision.exact($0, message.id) }) == true {
-                TypingIndicator(botName: bot.name)
-            }
-        }
+        renderedMessage(message, in: chat, streaming: chat.isWorking && lastVisibleMessageID.map { TranscriptContentRevision.exact($0, message.id) } == true)
     }
 
     @ViewBuilder private var requestRows: some View {
@@ -1001,6 +1033,21 @@ private struct TranscriptMessageBody: View, Equatable {
         MessageView(message: message, isStreaming: isStreaming,
                     filePreviewsAreSettled: filePreviewsAreSettled,
                     senderProfile: senderProfile, senderImage: senderImage, onOpenAttachment: onOpenAttachment)
+    }
+}
+
+private struct WorkingIndicator: View {
+    let botName: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Working…").font(.subheadline).foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(botName) is working")
+        .accessibilityIdentifier("chat-working-indicator")
     }
 }
 
