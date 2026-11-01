@@ -4,6 +4,7 @@ import BottoCore
 struct ConnectionView: View {
     @Bindable var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var address: String
     @State private var reviewedURL: URL?
     @State private var setupRevision = 0
@@ -214,15 +215,23 @@ struct ConnectionView: View {
                 try Task.checkCancellation()
                 guard attemptID == owner else { return }
                 if store.isDemo { store.leaveDemo() }
-                let connected = await store.connect(candidate)
+                var failure: (any Error)?
+                let connected = await store.connect(candidate, onConnected: {
+                    guard attemptID == owner, !Task.isCancelled, scenePhase == .active else { return }
+                    BottoHaptics.shared.play(.celebration)
+                }, onFailure: { failure = $0 })
                 guard !Task.isCancelled, attemptID == owner else { return }
                 if connected { dismiss() }
-                else { error = store.connectionError ?? "Couldn’t connect. Check your server and try again." }
+                else {
+                    error = store.connectionError ?? "Couldn’t connect. Check your server and try again."
+                    if let failure, scenePhase == .active { BottoHaptics.shared.play(.failure(failure)) }
+                }
             } catch is CancellationError {
                 return
             } catch {
                 guard !Task.isCancelled, attemptID == owner else { return }
                 self.error = error.localizedDescription
+                if scenePhase == .active { BottoHaptics.shared.play(.failure(error)) }
             }
         }
     }

@@ -141,6 +141,13 @@ struct ChatSelection {
     let isOpening: Bool
 }
 
+struct ChatHapticFeedback: Equatable {
+    let id: UUID
+    let event: HapticEvent
+    let chat: ChatID
+    let viewLifetime: UUID
+}
+
 struct ChatScreen {
     let owner: PresentationOwner
     let title: String
@@ -236,6 +243,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     @ObservationIgnored var onPresentationChange: (@MainActor () -> Void)?
     @ObservationIgnored var onVisibleChatChange: (@MainActor (SessionIdentity?) -> Void)?
     @ObservationIgnored var onUserNavigation: (@MainActor () -> Void)?
+    @ObservationIgnored var onHapticFeedback: (@MainActor (ChatHapticFeedback) -> Void)?
     private var selected: ChatID?
     private var locallySelected: ChatID?
     private var presentation = UUID()
@@ -257,6 +265,16 @@ private struct ReadObservationKey: Hashable, Sendable {
     @ObservationIgnored private var navigationRequest: UUID?
     private var selectedViewLifetime = UUID()
     private var transcriptVisible = false
+    @ObservationIgnored private var lastFeedbackReaction: UUID?
+    @ObservationIgnored private var lastFeedbackSignal: UUID?
+    private struct StopFeedback {
+        let owner: PresentationOwner
+        let viewLifetime: UUID
+        let operation: UUID
+        var acknowledged = false
+        var signal: UUID?
+    }
+    @ObservationIgnored private var stopFeedback: StopFeedback?
     private var readHint: ReadObservationKey?
     private var attemptedReads: Set<ReadObservationKey> = []
     private var readAuthorityBlocked = false
@@ -1180,6 +1198,7 @@ private struct ReadObservationKey: Hashable, Sendable {
               Set((staging[intent.owner.chat] ?? []).map(\.id)) == intent.stagedIDs,
               (staging[intent.owner.chat] ?? []).allSatisfy(\.valid) else { return }
         dispatched.insert(intent.operation); sends[intent.owner.chat] = intent.operation
+        let feedbackLifetime = selectedViewLifetime
         errors[intent.owner.chat] = nil
         defer { if sends[intent.owner.chat] == intent.operation { sends[intent.owner.chat] = nil } }
         do {
@@ -1192,9 +1211,15 @@ private struct ReadObservationKey: Hashable, Sendable {
             staging[intent.owner.chat]?.removeAll { intent.stagedIDs.contains($0.id) }
             if case .needsLocalRepair = receipt.journal {
                 errors[intent.owner.chat] = "Hermes accepted this message, but its local receipt needs repair. Don’t resend it."
+                emitFeedback(.warning, owner: intent.owner, lifetime: feedbackLifetime)
+            } else {
+                emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
             }
             onDirty()
-        } catch { if !retired { errors[intent.owner.chat] = error.localizedDescription } }
+        } catch {
+            if !retired { errors[intent.owner.chat] = error.localizedDescription }
+            emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
+        }
     }
     private func sameSource(_ lhs: SessionIdentity, _ rhs: SessionIdentity) -> Bool {
         lhs.profile == rhs.profile && lhs.root == rhs.root && lhs.stored == rhs.stored
@@ -1260,9 +1285,21 @@ private struct ReadObservationKey: Hashable, Sendable {
         defer { withExtendedLifetime(intent.reservation) { finishOperation(intent.operation) } }
         guard !Task.isCancelled, canAct(intent.owner), stops[intent.owner.chat] == intent.operation, let access = intent.owner.access else { return }
         dispatched.insert(intent.operation); stops[intent.owner.chat] = intent.operation
+        let feedbackLifetime = selectedViewLifetime
+        let source = live?.identity
+        stopFeedback = .init(owner: intent.owner, viewLifetime: feedbackLifetime, operation: intent.operation)
         defer { if stops[intent.owner.chat] == intent.operation { stops[intent.owner.chat] = nil } }
-        do { _ = try await service.stop(access: access, operationID: intent.operation) }
-        catch { if !retired { errors[intent.owner.chat] = error.localizedDescription } }
+        do {
+            let receipt = try await service.stop(access: access, operationID: intent.operation)
+            guard receipt.operationID == intent.operation, let source, sameSource(receipt.source, source),
+                  stopFeedback?.operation == intent.operation else { return }
+            stopFeedback?.acknowledged = true
+            finishStopFeedback()
+        } catch {
+            if stopFeedback?.operation == intent.operation { stopFeedback = nil }
+            if !retired { errors[intent.owner.chat] = error.localizedDescription }
+            emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
+        }
     }
     private func reconcileRequestSource(_ id: ChatID) {
         guard !retired, let record = book.record(id), !record.isUnverified,
@@ -1327,13 +1364,20 @@ private struct ReadObservationKey: Hashable, Sendable {
               let access = intent.owner.access else { return }
         errors[intent.owner.chat] = nil
         dispatched.insert(intent.operation); answers[intent.owner.chat, default: [:]][intent.request.id] = intent.operation
+        let feedbackLifetime = selectedViewLifetime
+        let source = live?.identity
         defer {
             if answers[intent.owner.chat]?[intent.request.id] == intent.operation { answers[intent.owner.chat]?[intent.request.id] = nil }
         }
-        do { _ = try await service.respond(to: intent.request, response: response, access: access, operationID: intent.operation) }
+        do {
+            let receipt = try await service.respond(to: intent.request, response: response, access: access, operationID: intent.operation)
+            guard receipt.operationID == intent.operation, let source, sameSource(receipt.source, source) else { return }
+            emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
+        }
         catch {
             guard !retired else { return }
             errors[intent.owner.chat] = error.localizedDescription
+            emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
             // Core consumed this operation before its local validation. A later deliberate
             // correction needs a fresh attempt, while this old intent stays tombstoned.
             if let rejection = error as? HermesServiceError,
@@ -1363,10 +1407,15 @@ private struct ReadObservationKey: Hashable, Sendable {
               uploadReservations[intent.owner.chat] == nil, let access = intent.owner.access else { return }
         guard let source = live?.identity else { return }
         let id = intent.owner.chat, current = staging[intent.owner.chat] ?? []
+        let feedbackLifetime = selectedViewLifetime
         let used = current.reduce(0) { $0 + $1.bytes }
         let reserved = AttachmentLimits.reservationBytes(dataCount: data.count, filename: filename, mimeType: mimeType)
         guard !data.isEmpty, data.count <= AttachmentLimits.fileBytes, current.count < AttachmentLimits.count,
-              reserved <= AttachmentLimits.totalBytes - used else { errors[id] = AttachmentLimits.message; return }
+              reserved <= AttachmentLimits.totalBytes - used else {
+            errors[id] = AttachmentLimits.message
+            emitFeedback(.error, owner: intent.owner, lifetime: feedbackLifetime)
+            return
+        }
         uploadReservations[id] = intent.id
         defer { if uploadReservations[id] == intent.id { uploadReservations[id] = nil } }
         do {
@@ -1374,10 +1423,16 @@ private struct ReadObservationKey: Hashable, Sendable {
             guard canAct(intent.owner), uploadReservations[id] == intent.id, !Task.isCancelled else { return }
             let bytes = attachment.byteCount ?? reserved
             guard bytes > 0, bytes <= AttachmentLimits.fileBytes, bytes <= AttachmentLimits.totalBytes - used else {
-                errors[id] = AttachmentLimits.message; return
+                errors[id] = AttachmentLimits.message
+                emitFeedback(.error, owner: intent.owner, lifetime: feedbackLifetime)
+                return
             }
             staging[id, default: []].append(.init(id: UUID(), attachment: attachment, bytes: bytes, source: source, valid: true))
-        } catch { if isCurrent(intent.owner), !Task.isCancelled { errors[id] = error.localizedDescription } }
+            emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
+        } catch {
+            if isCurrent(intent.owner), !Task.isCancelled { errors[id] = error.localizedDescription }
+            emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
+        }
     }
     func removeAttachment(_ attachment: ChatAttachment, owner: PresentationOwner) {
         guard isCurrent(owner), let index = staging[owner.chat]?.firstIndex(where: { $0.attachment == attachment }) else { return }
@@ -1402,11 +1457,63 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard canAct(intent.owner), !task.isCancelled else { throw HermesServiceError.staleConversation }
         return artifact
     }
-    private func updateActivity(_ opened: OpenedConversation, id: ChatID) {
+    private func updateActivity(_ opened: OpenedConversation, id: ChatID, previous: OpenedConversation? = nil) {
         let snapshot = opened.snapshot
         avatarActivity.accept(opened)
         recordActivity(.known(!snapshot.pendingRequests.isEmpty ? .waiting : snapshot.isWorking ? .working : .idle, now()), for: id)
         refreshAvatarProfile(opened.identity.profile)
+        updateFeedback(opened, previous: previous, id: id)
+    }
+
+    private func emitFeedback(_ event: HapticEvent, owner: PresentationOwner, lifetime: UUID, id: UUID = UUID()) {
+        guard !retired, online, transcriptVisible, owner.workspace == scope, owner.recovery == recovery,
+              selected == owner.chat, selectedViewLifetime == lifetime, !Task.isCancelled else { return }
+        onHapticFeedback?(.init(id: id, event: event, chat: owner.chat, viewLifetime: lifetime))
+    }
+
+    private func emitFailure(_ error: any Error, owner: PresentationOwner, lifetime: UUID) {
+        guard !(error is CancellationError) else { return }
+        emitFeedback(.failure(error), owner: owner, lifetime: lifetime)
+    }
+
+    private func finishStopFeedback() {
+        guard let pending = stopFeedback, pending.acknowledged, let signal = pending.signal else { return }
+        stopFeedback = nil
+        emitFeedback(.stopped, owner: pending.owner, lifetime: pending.viewLifetime, id: signal)
+    }
+
+    private func updateFeedback(_ opened: OpenedConversation, previous: OpenedConversation?, id: ChatID) {
+        let activity = opened.activity
+        let reaction = activity?.reaction, signal = activity?.signal
+        let newReaction = reaction != nil && reaction?.id != lastFeedbackReaction
+        let newSignal = signal != nil && signal?.id != lastFeedbackSignal
+        if let reaction { lastFeedbackReaction = reaction.id }
+        if let signal { lastFeedbackSignal = signal.id }
+        guard let previous, let activity, previous.activity?.lineage == activity.lineage else { return }
+        let owner = owner(id), lifetime = selectedViewLifetime
+        if let reaction, newReaction {
+            stopFeedback = nil
+            emitFeedback(reaction.kind == .succeeded ? .replyFinished : .error,
+                         owner: owner, lifetime: lifetime, id: reaction.id)
+        }
+        guard let signal, newSignal else { return }
+        switch signal.kind {
+        case .turnStarted:
+            stopFeedback = nil
+        case .replyText:
+            emitFeedback(.streaming, owner: owner, lifetime: lifetime, id: signal.id)
+        case .request:
+            let fresh = opened.snapshot.pendingRequests.contains { request in
+                request.kind != .unsupported && !previous.snapshot.pendingRequests.contains {
+                    $0.hasSameWireRevision(as: request)
+                }
+            }
+            if fresh { emitFeedback(.attention, owner: owner, lifetime: lifetime, id: signal.id) }
+        case .stopped:
+            guard transcriptVisible else { stopFeedback = nil; return }
+            stopFeedback?.signal = signal.id
+            finishStopFeedback()
+        }
     }
     private func recordActivity(_ observation: ObservedActivity, for id: ChatID) {
         mutateActivity { $0[id] = observation }
@@ -1458,7 +1565,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         _ = mutateBook { $0.merge(.init(identity: publication.identity, title: record.title,
             isCanonical: canonical, persistence: .unknown)) }
         mutateBook { $0.cache(publication.snapshot, for: id, readEvidence: publication.readEvidence) }
-        updateActivity(publication, id: id); rebuildRequests(); onDirty()
+        updateActivity(publication, id: id, previous: previous); rebuildRequests(); onDirty()
         onAcceptedTranscript?(publication.identity, publication.snapshot, record.title)
     }
     /// Lightweight inventory activity never changes selection, transcripts, seen or grants.
@@ -1552,6 +1659,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     private func retirePresentation(preservingNavigation request: UUID?) {
         if request == nil || navigationRequest != request { navigationRequest = nil }
         selectedViewLifetime = UUID(); transcriptVisible = false; readHint = nil; attemptedReads = []
+        stopFeedback = nil
         onVisibleChatChange?(nil)
         if let read = foregroundRead {
             retiringForegroundReads.insert(read.id)

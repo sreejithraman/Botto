@@ -1,15 +1,16 @@
 # Avatar playground
 
-Drawn avatars use Playful motion in production. The Debug
+Drawn avatars use Playful motion in production. The Debug/Internal
 playground retains comparison styles and local activity controls for iteration.
 All samples and live avatars use `App/Design/BotAvatarMotion.swift`; sample controls
 live in `App/Demo/BotMotionPrototype.swift`.
 
 ## Open it
 
-In Debug, open **Settings → Developer menu → Avatar playground**. Done returns
+In Debug or Internal, open **Settings → Developer menu → Avatar playground**. Done returns
 to the menu.
-The menu and playground are excluded from Release.
+The menu and playground are excluded from public Release builds. See
+[developer tools](developer-tools.md) for the Internal scheme and TestFlight setup.
 
 For a standalone session without a connection, launch the Botto scheme with
 `--developer-menu`. `--bot-motion-lab` remains a direct playground entry.

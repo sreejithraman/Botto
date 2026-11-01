@@ -48,6 +48,7 @@ struct HermesSetupSection: View {
             promptPreview
                 .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large])
                 .presentationDragIndicator(.visible)
+                .hapticSheet(enabled: showsPreview)
         }
     }
 
@@ -55,6 +56,7 @@ struct HermesSetupSection: View {
         Button {
             UIPasteboard.general.string = HermesSetupPrompt.text
             hasCopiedPrompt = true
+            BottoHaptics.shared.play(.accepted)
             UIAccessibility.post(notification: .announcement, argument: copyConfirmation)
         } label: {
             actionLabel("Copy prompt", systemImage: "doc.on.doc")

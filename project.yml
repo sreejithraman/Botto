@@ -1,4 +1,8 @@
 name: Botto
+configs:
+  Debug: debug
+  Internal: release
+  Release: release
 options:
   bundleIdPrefix: com.sree
   deploymentTarget:
@@ -25,6 +29,10 @@ settings:
     Debug:
       BOTTO_APNS_ENVIRONMENT: development
       BOTTO_PUSH_ENVIRONMENT: sandbox
+    Internal:
+      BOTTO_APNS_ENVIRONMENT: production
+      BOTTO_PUSH_ENVIRONMENT: production
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) BOTTO_INTERNAL_TOOLS"
     Release:
       BOTTO_APNS_ENVIRONMENT: production
       BOTTO_PUSH_ENVIRONMENT: production
@@ -49,6 +57,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER)"
         CODE_SIGN_ENTITLEMENTS: App/Push/Botto.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -76,6 +85,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/NotificationService/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/NotificationService/BottoNotifications.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)"
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
   BottoTests:
@@ -96,13 +106,17 @@ targets:
     sources:
       - path: AppUITests
       - path: App/Pairing/HermesSetupPrompt.swift
+    info:
+      path: AppUITests/Info.plist
+      properties:
+        BottoBuildConfiguration: "$(CONFIGURATION)"
     dependencies:
       - target: Botto
       - package: BottoCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).uitests"
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
 schemes:
   Botto:
     build:
@@ -113,3 +127,21 @@ schemes:
     test:
       targets: [BottoTests, BottoUITests]
       gatherCoverageData: true
+  Botto Internal:
+    build:
+      targets:
+        Botto: all
+        BottoUITests: [test]
+    run:
+      config: Internal
+    test:
+      config: Internal
+      targets:
+        - name: BottoUITests
+          selectedTests: [DeveloperToolsUITests]
+    profile:
+      config: Internal
+    analyze:
+      config: Internal
+    archive:
+      config: Internal

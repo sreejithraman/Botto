@@ -46,6 +46,7 @@ struct BotAvatarPicker: View {
                             Button {
                                 var changed = edit; changed.shape = shape
                                 selection = .edit(changed)
+                                if !selected { BottoHaptics.shared.play(.avatarSelection) }
                             } label: {
                                 VStack(spacing: 6) {
                                     BotAvatar(profile: BotProfile(id: profileID, name: "", appearance: BotAppearance(shape: shape, color: face.color)),
@@ -77,7 +78,9 @@ struct BotAvatarPicker: View {
                     }
                     LazyVGrid(columns: columns, spacing: 12) {
                         Button {
+                            let changed = colorOverride != nil
                             chooseColor(.automatic)
+                            if changed { BottoHaptics.shared.play(.selection) }
                         } label: {
                             VStack(spacing: 6) {
                                 Circle()
@@ -101,6 +104,7 @@ struct BotAvatarPicker: View {
                             let selected = colorOverride.flatMap(BotAvatarColor.matching)?.id == color.id
                             Button {
                                 chooseColor(.value(color.value))
+                                if !selected { BottoHaptics.shared.play(.selection) }
                             } label: {
                                 VStack(spacing: 6) {
                                     Circle().fill(color.swatch).frame(width: 30, height: 30)

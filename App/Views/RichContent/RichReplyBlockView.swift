@@ -55,6 +55,7 @@ struct RichReplyBlockView: View {
                 selection: Binding(get: { presentation ?? selected }, set: { presentation = $0 }),
                 isCurrent: { isCurrent }, close: { presentation = nil })
             .presentationDragIndicator(.visible)
+            .hapticSheet(enabled: presentation != nil && isCurrent)
         }
     }
 
@@ -153,8 +154,9 @@ struct RichReplyPresentationContent: View {
     }
 
     private func showSource() {
-        guard isCurrent(), context.permits(block) else { return }
+        guard selection != .source, isCurrent(), context.permits(block) else { return }
         selection = .source
+        BottoHaptics.shared.play(.selection)
     }
 }
 

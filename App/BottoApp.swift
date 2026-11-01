@@ -37,8 +37,19 @@ private struct DeveloperLaunchView: View {
 }
 #endif
 
+/// Choose storage before AppStore initializes and loads its saved setup.
+@MainActor func makeWorkspaceStore(arguments: [String] = ProcessInfo.processInfo.arguments,
+                                  persistence: ConnectionPersistence? = nil) -> AppStore {
+    #if targetEnvironment(simulator)
+    if arguments.contains("--isolated-ui-test") {
+        return AppStore(persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+    }
+    #endif
+    return AppStore(persistence: persistence)
+}
+
 private struct BottoWorkspace: View {
-    @State private var store = AppStore()
+    @State private var store = makeWorkspaceStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {

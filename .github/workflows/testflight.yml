@@ -1,0 +1,169 @@
+name: TestFlight
+
+on:
+  workflow_run:
+    workflows: [iOS]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  candidate:
+    if: >-
+      github.repository == 'sreejithraman/Botto' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.policy.outputs.publish }}
+      source_sha: ${{ steps.policy.outputs.source_sha }}
+      build_number: ${{ steps.policy.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select tested main revision
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOTTO_TESTFLIGHT_AUTOMATIC: ${{ vars.BOTTO_TESTFLIGHT_AUTOMATIC }}
+        run: python3 scripts/testflight-policy.py
+
+  publish:
+    name: Publish ${{ needs.candidate.outputs.source_sha }}
+    concurrency:
+      group: testflight-main
+      queue: max
+      cancel-in-progress: false
+    needs: candidate
+    if: needs.candidate.outputs.publish == 'true'
+    environment: apple-release
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.candidate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck tested revision and undelivered changes after queueing
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOTTO_TESTFLIGHT_AUTOMATIC: ${{ vars.BOTTO_TESTFLIGHT_AUTOMATIC }}
+        run: python3 scripts/testflight-policy.py --after-queue
+      - name: Install verified App Store Connect CLI
+        if: steps.current.outputs.publish == 'true'
+        run: |
+          case "$(uname -m)" in
+            arm64) arch=arm64; checksum=99bcbf5a7bba3aac59e8d9e36a06bcb8dc15cd7a92db8ecacb42da464dce44c3 ;;
+            x86_64) arch=amd64; checksum=e6c7ff486fff6e52bede69d6a197221c8b765d03c070775d2ae1c38a9a7924f8 ;;
+            *) echo "Unsupported runner architecture" >&2; exit 1 ;;
+          esac
+          install_dir="$RUNNER_TEMP/botto-asc"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/rorkai/App-Store-Connect-CLI/releases/download/5.16.0/asc_5.16.0_macOS_$arch" \
+            --output "$install_dir/asc"
+          echo "$checksum  $install_dir/asc" | shasum -a 256 --check
+          chmod 755 "$install_dir/asc"
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Confirm current main before publication
+        if: steps.current.outputs.publish == 'true'
+        id: ready
+        env:
+          SOURCE_SHA: ${{ needs.candidate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          current_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ "$current_main" == "$SOURCE_SHA" && "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_RUN_ATTEMPT" -gt 1 ]]; then
+            echo "This stale rerun did not reconcile the prior Apple upload. Inspect the original build, then start a new current-main run after its iOS checks pass." >&2
+            exit 1
+          else
+            echo "A newer main revision superseded this candidate."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore original prepared notes on retry
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ needs.candidate.outputs.build_number }}
+        run: |
+          if ! gh run download "$GITHUB_RUN_ID" --name "testflight-notes-$BUILD_NUMBER" --dir ".artifacts/testflight/$BUILD_NUMBER"; then
+            echo "Original prepared notes could not be restored. The publisher can reuse existing matching Apple notes, but will stop before creating missing notes or uploading."
+          fi
+          mkdir -p ".artifacts/testflight/$BUILD_NUMBER"
+          for ((prior=GITHUB_RUN_ATTEMPT-1; prior>=1 && prior>=GITHUB_RUN_ATTEMPT-20; prior--)); do
+            restore_dir="$RUNNER_TEMP/botto-release-recovery/$prior"
+            if gh run download "$GITHUB_RUN_ID" --name "testflight-$BUILD_NUMBER-$prior" --dir "$restore_dir" && [[ -f "$restore_dir/receipt.json" ]]; then
+              cp "$restore_dir/receipt.json" ".artifacts/testflight/$BUILD_NUMBER/receipt.json"
+              break
+            fi
+          done
+      - name: Prepare source-bound notes before upload
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt == '1'
+        env:
+          BUILD_NUMBER: ${{ needs.candidate.outputs.build_number }}
+          SOURCE_SHA: ${{ needs.candidate.outputs.source_sha }}
+          NOTES_BASE_SHA: ${{ steps.current.outputs.notes_base_sha }}
+        run: >-
+          python3 scripts/testflight.py --prepare-notes
+          --build-number "$BUILD_NUMBER"
+          --source-sha "$SOURCE_SHA"
+          --notes-base-sha "$NOTES_BASE_SHA"
+          --output-dir ".artifacts/testflight/$BUILD_NUMBER"
+      - name: Save immutable prepared notes before upload
+        if: steps.ready.outputs.publish == 'true' && github.run_attempt == '1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: testflight-notes-${{ needs.candidate.outputs.build_number }}
+          path: .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/prepared-notes.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Sign, upload, and distribute internally
+        if: steps.ready.outputs.publish == 'true'
+        env:
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          BOTTO_TEAM_ID: ${{ vars.BOTTO_TEAM_ID }}
+          BOTTO_APP_ID: ${{ vars.BOTTO_APP_ID }}
+          BOTTO_INTERNAL_GROUP_ID: ${{ vars.BOTTO_INTERNAL_GROUP_ID }}
+          BOTTO_SIGNING_IDENTITY_BASE64: ${{ secrets.BOTTO_SIGNING_IDENTITY_BASE64 }}
+          BOTTO_SIGNING_PASSWORD: ${{ secrets.BOTTO_SIGNING_PASSWORD }}
+          BOTTO_APP_PROFILE_BASE64: ${{ secrets.BOTTO_APP_PROFILE_BASE64 }}
+          BOTTO_NOTIFICATIONS_PROFILE_BASE64: ${{ secrets.BOTTO_NOTIFICATIONS_PROFILE_BASE64 }}
+          BUILD_NUMBER: ${{ needs.candidate.outputs.build_number }}
+          SOURCE_SHA: ${{ needs.candidate.outputs.source_sha }}
+        run: >-
+          python3 scripts/testflight.py
+          --build-number "$BUILD_NUMBER"
+          --source-sha "$SOURCE_SHA"
+          --output-dir ".artifacts/testflight/$BUILD_NUMBER"
+      - name: Save release artifacts
+        if: always() && steps.ready.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: testflight-${{ needs.candidate.outputs.build_number }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/Botto.ipa
+            .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/failure.json
+            .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/receipt.json
+            .artifacts/testflight/${{ needs.candidate.outputs.build_number }}/what-to-test.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14

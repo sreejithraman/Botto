@@ -44,6 +44,7 @@ import Foundation
     var attaching = false
     var attached = false
     var held: [HermesJSON] = []
+    var pendingStopObservation: HermesStopObservation?
     var holdOverflow = false
     var active = true
     var savingAvatars = Set<String>()
@@ -116,7 +117,9 @@ import Foundation
                 let socket = HermesGateway(http: http, timing: timing)
                 gateway = socket
                 socket.onFrame = { [weak self] frame in
-                    guard let self, self.connectionGeneration == owner else { return }; self.receive(frame)
+                    guard let self, self.connectionGeneration == owner else { return }
+                    self.observeStop(frame)
+                    self.receive(frame)
                 }
                 socket.onDisconnect = { [weak self] error in
                     guard let self, self.connectionGeneration == owner else { return }; self.lost(error)
@@ -375,7 +378,7 @@ import Foundation
         if frame["id"].text != nil, frame["method"].text != nil {
             guard exact(frame["params"]["session_id"].text, current.conversation.id),
                   frame["params"]["profile_name"].text.map({ exact($0, current.conversation.profileID) }) != false else { return }
-            retireAccess(); state?.serverRequest(frame); emitConversation(); onEvent?(.botsChanged); return
+            retireAccess(); state?.serverRequest(frame, live: !reconciling); emitConversation(); onEvent?(.botsChanged); return
         }
         if frame["type"].text == "session.reclaimed",
            exact(frame["payload"]["session_id"].text, current.conversation.id) { scheduleRefresh(); return }
@@ -449,6 +452,7 @@ import Foundation
     }
 
     func resetGateway() {
+        pendingStopObservation = nil
         state?.motion.canRetain = false
         retireAccess(); runtimeOwners = [:]
         for read in catalogReads.values { read.task.cancel() }
@@ -534,7 +538,9 @@ import Foundation
         throw HermesServiceError.profileUnavailable
     }
     func emitConversation(readEvidence: ConversationReadEvidence? = nil) {
-        guard !reconciling, attached, let state, let identity = selectedTarget else { return }
+        guard !reconciling, attached else { return }
+        projectStoppedOutcome()
+        guard let state, let identity = selectedTarget else { return }
         let context = AccessContext(identity: identity, state: state, selection: selectionGeneration, connection: connectionGeneration)
         do {
             if publication == nil || accessContextChanged(context) {
@@ -546,6 +552,7 @@ import Foundation
             }
             if let publication { onEvent?(.conversation(publication)) }
             self.state?.motion.reaction = nil
+            self.state?.motion.signal = nil
         } catch { retireAccess() }
     }
     static func retryable(_ error: HermesServiceError) -> Bool {

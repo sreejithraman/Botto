@@ -1,4 +1,4 @@
-#if DEBUG
+#if DEBUG || BOTTO_INTERNAL_TOOLS
 import SwiftUI
 
 struct DeveloperMenuView: View {
@@ -14,6 +14,12 @@ struct DeveloperMenuView: View {
                     Label("Avatar playground", systemImage: "face.smiling")
                 }
                 .accessibilityIdentifier("developer.avatarPlayground")
+                Button {
+                    presentedTool = .hapticsPlayground
+                } label: {
+                    Label("Haptics playground", systemImage: "waveform.path")
+                }
+                .accessibilityIdentifier("developer.hapticsPlayground")
             }
         }
         .scrollContentBackground(.hidden)
@@ -33,6 +39,8 @@ struct DeveloperMenuView: View {
             switch tool {
             case .avatarPlayground:
                 AvatarPlaygroundPresentation()
+            case .hapticsPlayground:
+                HapticsPlayground()
             }
         }
     }
@@ -40,6 +48,7 @@ struct DeveloperMenuView: View {
 
 private enum DeveloperTool: Hashable, Identifiable {
     case avatarPlayground
+    case hapticsPlayground
 
     var id: Self { self }
 }

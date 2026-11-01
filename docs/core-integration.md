@@ -176,6 +176,18 @@ it. The app workspace retains an accepted reaction's original time through that
 refresh, independently of rotated mutation access. No new network subscription
 or background multi-chat phase observation is introduced.
 
+`ConversationActivity.signal` identifies a newly admitted live turn start, answer
+text chunk, request arrival, or explicit stopped outcome. Snapshot and replay
+reconstruction never create these signals. Publication consumes each signal;
+its identity lets the foreground reader suppress duplicates and hidden results.
+The service retains operation-scoped Stop evidence from newly received socket
+events across its automatic refresh. It checks the captured session, connection,
+selection, execution generation, and known admission, then requires canonical
+idle state covering that event's sequence. Fetched replay cannot supply this
+evidence. The workspace combines the stopped signal with the matching Stop receipt
+and consumes hidden results before requesting feedback. Reply completion uses the existing verified
+turn reaction and says nothing about answer quality. See [haptics](haptics.md).
+
 ## Multiple conversations
 
 `conversations(profile:)` reads Main and ordinary chats. `createConversation`
