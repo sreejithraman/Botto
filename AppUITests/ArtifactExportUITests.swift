@@ -121,43 +121,20 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
     }
 
-    @MainActor func testSaveToFilesAndReopenSavedOriginal() throws {
-        try saveToFilesAndReopenSavedOriginal(fromLibrary: false)
-    }
-
     @MainActor func testLibrarySaveToFilesAndReopenSavedOriginal() throws {
-        try saveToFilesAndReopenSavedOriginal(fromLibrary: true)
-    }
-
-    @MainActor private func saveToFilesAndReopenSavedOriginal(fromLibrary: Bool) throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("The durable export fixture writes only to an owned CI simulator.")
         #else
-        // The check script supplies a proof UUID for independent readback;
-        // other runs generate their own unique filename.
-        let requestedID = ProcessInfo.processInfo.environment["BOTTO_ARTIFACT_EXPORT_PROOF_ID"] ?? UUID().uuidString
-        let proofID = UUID(uuidString: requestedID)
-        XCTAssertNotNil(proofID, "BOTTO_ARTIFACT_EXPORT_PROOF_ID must be a fresh UUID for this CI run.")
-        let stem = "botto-artifact-export-proof-\(try XCTUnwrap(proofID).uuidString.lowercased())"
-        let filename = stem + ".txt"
-        let identity = XCTAttachment(string: filename)
-        identity.name = "Artifact export proof filename"
+        try requireExportPreflight()
+        let stem = "notes"
+        let identity = XCTAttachment(string: "notes.txt")
+        identity.name = "Artifact export default filename"
         identity.lifetime = .keepAlways
         add(identity)
 
-        let app = fromLibrary ? openLibraryReference("notes.txt") : openArtifact("notes.txt")
+        let app = openLibraryReference("notes.txt")
         tapOutput("artifact-save", label: "Save to Files", in: app)
-        let picker = readyFilesPicker(in: app, captureName: "Files picker before unique filename", requiresFilename: true)
-        let filenameField = app.textFields["DOCPicker.filenameTextField"]
-        let originalName = try XCTUnwrap(filenameField.value as? String)
-        XCTAssertFalse(originalName.isEmpty)
-        // Tap the current field's trailing edge to put the insertion point after
-        // its short default name. Do not depend on changing edit-menu labels.
-        filenameField.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-        filenameField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: originalName.count) + stem)
-        capture("Files picker with unique export filename", app: app)
-        XCTAssertEqual(filenameField.value as? String, stem)
-
+        let picker = readyFilesPicker(in: app, captureName: "Files picker before default-name Save")
         let save = picker.buttons["Save"]
         let canSave = save.waitForExistence(timeout: 5)
         capture("Files picker before actual Save", app: app)
@@ -170,15 +147,36 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.alerts["Export Failed"].exists)
         assertOutputActions(in: app)
 
+        let preview = app.descendants(matching: .any).matching(identifier: "artifact-preview").firstMatch
+        let library = app.scrollViews["artifact-library"]
         app.buttons["artifact-done"].tap()
-        let destination = fromLibrary ? "artifact-library" : "chat-transcript"
-        let closed = app.descendants(matching: .any).matching(identifier: destination).firstMatch.waitForExistence(timeout: 5)
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { !preview.exists && library.exists && library.isHittable }
+        }, object: nil)
+        let dismissedReader = XCTWaiter.wait(for: [closed], timeout: 5)
         capture("Closed preview after Files Save", app: app)
-        XCTAssertTrue(closed)
+        XCTAssertEqual(dismissedReader, .completed, "Close must dismiss the reader and restore the usable library.")
         app.terminate()
         reopenSavedOriginalInFiles(stem: stem)
-        // Retain this run's file for independent byte readback.
+        // The runner proves absence before Save and reads these provider bytes afterward.
         #endif
+    }
+
+    @MainActor private func requireExportPreflight() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let actualDevice = UUID(uuidString: environment["SIMULATOR_UDID"] ?? ""),
+              let encoded = environment["BOTTO_ARTIFACT_EXPORT_ABSENCE"],
+              let record = try? JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any],
+              record["record_kind"] as? String == "botto-artifact-export-absence-v1",
+              record["status"] as? String == "absent", record["saved_filename"] as? String == "notes.txt",
+              let expectedDevice = record["device_udid"] as? String,
+              UUID(uuidString: expectedDevice) == actualDevice,
+              let started = record["not_before"] as? Double,
+              let checked = record["checked_unix_seconds"] as? Double,
+              started.isFinite, checked.isFinite, started > 0, checked >= started,
+              checked <= Date().timeIntervalSince1970 else {
+            throw XCTSkip("Run through check.sh with verified absence for this exact owned Simulator.")
+        }
     }
 
     @MainActor private func openLibraryReference(_ filename: String) -> XCUIApplication {
@@ -207,23 +205,17 @@ final class ArtifactExportUITests: XCTestCase {
         )).firstMatch
     }
 
-    @MainActor private func readyFilesPicker(in app: XCUIApplication, captureName: String,
-                                            requiresFilename: Bool = false) -> XCUIElement {
+    @MainActor private func readyFilesPicker(in app: XCUIApplication, captureName: String) -> XCUIElement {
         let picker = filesPicker(in: app)
-        let field = app.textFields["DOCPicker.filenameTextField"]
-        // The local provider starts after the exporter appears. Wait for its
-        // actual root and Save action. Cancellation does not require a filename
-        // editor; the durable rename/save test independently requires that field.
+        // Provider readiness does not require a system filename editor.
         let hasPicker = picker.waitForExistence(timeout: 10)
         let save = picker.buttons["Save"].firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { save.exists && save.isHittable && save.isEnabled }
         }, object: nil)
         let hasSave = hasPicker && XCTWaiter.wait(for: [ready], timeout: 5) == .completed
-        let hasField = !requiresFilename || (hasPicker && field.waitForExistence(timeout: 20))
         capture(captureName, app: app)
-        XCTAssertTrue(hasPicker && hasSave && hasField,
-                      "Require the actual local Files root and usable Save; durable renaming also requires its filename editor.")
+        XCTAssertTrue(hasPicker && hasSave, "Require the actual local Files root and usable Save.")
         return picker
     }
 
@@ -285,24 +277,25 @@ final class ArtifactExportUITests: XCTestCase {
         capture("Files local provider before reopening saved original", app: files)
         XCTAssertTrue(hasLocalFiles)
         // Files presents documents as collection cells, with extension display
-        // controlled by the system. Match this run's complete stem in that cell.
-        let savedFile = localFiles.collectionViews.cells.containing(NSPredicate(
-            format: "label CONTAINS %@", stem)).firstMatch
+        // controlled by the system. Reject an ambiguous match before opening.
+        let matches = localFiles.collectionViews.cells.containing(NSPredicate(
+            format: "label IN %@", [stem, stem + ".txt"]))
+        let savedFile = matches.firstMatch
         let visibleFile = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { savedFile.exists && savedFile.isHittable }
+            MainActor.assumeIsolated { matches.count == 1 && savedFile.exists && savedFile.isHittable }
         }, object: nil)
         let found = XCTWaiter.wait(for: [visibleFile], timeout: 15)
-        capture("Unique saved original in Files local provider", app: files)
+        capture("Saved notes.txt in Files local provider", app: files)
         XCTAssertEqual(found, .completed, "Files must expose this run's exact saved output for opening.")
         savedFile.tap()
-        let title = files.navigationBars.matching(NSPredicate(format: "identifier CONTAINS %@", stem)).firstMatch
+        let title = files.navigationBars.matching(NSPredicate(format: "identifier IN %@", [stem, stem + ".txt"])).firstMatch
         let expected = "Canvas demo\n\nDraft, review, then publish. All sample files stay on this device.\n"
         let text = files.textViews.matching(NSPredicate(format: "value == %@", expected)).firstMatch
         let loaded = text.waitForExistence(timeout: 15)
         capture("Saved original reopened through Files", app: files)
         XCTAssertTrue(loaded, "Files must render the entire exact text, including both newlines and the final newline.")
         XCTAssertEqual(text.value as? String, expected)
-        XCTAssertTrue(title.exists, "The reopened preview must identify this run's unique filename.")
+        XCTAssertTrue(title.exists, "The reopened preview must identify the original notes.txt filename.")
     }
 
     @MainActor func testImagePreviewAndShareConnectionReplacement() {

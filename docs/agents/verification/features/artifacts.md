@@ -135,18 +135,24 @@ Source: [ArtifactPreview](../../../../App/Views/ArtifactPreview.swift),
 [AppStore](../../../../App/State/AppStore.swift).
 [ArtifactPreviewTests](../../../../AppTests/ArtifactPreviewTests.swift) support
 private-byte lifetime/sanitization and owner cancellation/late completion.
-[ArtifactExportUITests](../../../../AppUITests/ArtifactExportUITests.swift) now
-cover Save cancellation, reopening, and a uniquely named completed Save followed
-by an independent Files-app reopen. Broader file/provider cases require
-separate verification.
+[ArtifactExportUITests](../../../../AppUITests/ArtifactExportUITests.swift) assert
+chat Save cancellation, reopening, and retirement. One library Save exercises
+the shared exporter with its original `notes.txt` name, followed by an independent
+Files-app reopen. Broader file/provider cases require separate verification.
 [Provider readback](../../../../scripts/verify-artifact-export.py), invoked by
 `scripts/check.sh`, reads the saved original from the exact simulator's local
-Files provider and compares the independent 80-byte fixture and SHA-256. Retain
-both UI and `.artifacts/artifact-export-receipt.json`; neither replaces the other.
+Files provider and compares the independent 80-byte fixture and SHA-256. The
+runner first records that `notes.txt` is absent; it then requires a fresh saved
+file from that same Simulator and run. A preexisting file stops the check without
+deleting it. Set `BOTTO_TEST_DESTINATION` to a clean owned Simulator. The
+completed-Save method skips direct invocations without that device's preflight.
+Each run prints a new `.artifacts/artifact-export.*/` directory containing
+`absence.json` and `result.json`. Retain those receipts and the UI result; none
+replaces the others.
 
 Files pickers differ by OS version and provider. Use the actual native
-dismissal path when no Cancel button exists. Wait for the provider root and
-filename field before editing. When verifying completed export, reopen the
+dismissal path when no Cancel button exists. Wait for the provider root and a
+usable Save action; saving the original name needs no filename editor. Reopen the
 exact item in its provider directory; Recents search can hide a saved item.
 Dismiss any existing Quick Look document before entering the chosen directory.
 
