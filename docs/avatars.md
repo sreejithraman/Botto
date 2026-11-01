@@ -143,7 +143,7 @@ layout moves with the face. Energy use has not been measured.
 
 ## Developer playground
 
-Debug builds expose **Settings → Developer menu → Avatar playground**. The tool
+Debug and Internal builds expose **Settings → Developer menu → Avatar playground**. The tool
 shows all ten activities, all ten shape families, three representative bots,
 header/inbox sizes, a size slider, Replay and Reduce Motion controls. The isolated
 demo exercises the same production presentation and renderer without connecting
@@ -152,7 +152,8 @@ fixture also exercises a real chunk-driven Replying phase.
 
 Launch Debug with `--developer-menu` to open the menu without setup, or
 `--bot-motion-lab` to open the playground directly. Developer destinations are
-kept in `DeveloperMenuView` and excluded from Release. See the
+kept in `DeveloperMenuView` and excluded from public Release builds. See
+[developer tools](developer-tools.md) for Internal/TestFlight build selection and the
 [playground guide](bot-motion-prototype.md) for comparison controls and evidence.
 
 Botto's classic geometry, eye expressions, image rules, and motion adapt pinned

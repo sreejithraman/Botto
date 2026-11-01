@@ -3,6 +3,7 @@ import Foundation
 extension HermesBotService {
     public func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         try Task.checkCancellation()
+        pendingStopObservation = nil
         let socket = try readyGateway(), connectionOwner = connectionGeneration
         selectionGeneration += 1
         let owner = selectionGeneration

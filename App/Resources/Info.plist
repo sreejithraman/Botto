@@ -9,6 +9,7 @@
     <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key><true/>
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>BottoPushKeychainGroup</key><string>$(BOTTO_PUSH_KEYCHAIN_GROUP)</string>
     <key>BottoPushEnvironment</key><string>$(BOTTO_PUSH_ENVIRONMENT)</string>
     <key>BottoPushPluginSource</key><string>$(BOTTO_PUSH_PLUGIN_SOURCE)</string>

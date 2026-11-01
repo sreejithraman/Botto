@@ -5,6 +5,7 @@ struct BotProfileEditor: View {
     let store: AppStore
     let destination: AppStore.AvatarDestination
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @ScaledMetric(relativeTo: .body) private var descriptionHeight: CGFloat = 110
     @State private var name: String
     @State private var description: String
@@ -18,6 +19,7 @@ struct BotProfileEditor: View {
     @State private var reloading = false
     @State private var retired = false
     @State private var reloadedDestination: AppStore.AvatarDestination?
+    @State private var isVisible = false
 
     init(store: AppStore, destination: AppStore.AvatarDestination) {
         self.store = store
@@ -123,7 +125,8 @@ struct BotProfileEditor: View {
         }
         .interactiveDismissDisabled(saving)
         .tint(BottoTheme.action)
-        .onDisappear { retire() }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; retire() }
         .onChange(of: store.connectionGeneration) { _, _ in
             interruptNetworkOperation()
         }
@@ -152,12 +155,14 @@ struct BotProfileEditor: View {
             do {
                 try await store.saveProfile(edit, avatar: avatar, to: destination)
                 guard owns(owner, connection: connection) else { return }
+                if canPlayFeedback { BottoHaptics.shared.play(.celebration) }
                 saving = false; task = nil; dismiss()
             } catch {
                 guard owns(owner, connection: connection) else { return }
                 saving = false; task = nil; self.error = error.localizedDescription
                 // A read is required before another deliberate save, even after a partial write.
                 needsReload = true
+                playFailure(error)
             }
         }
     }
@@ -177,6 +182,7 @@ struct BotProfileEditor: View {
             } catch {
                 guard owns(owner, connection: connection) else { return }
                 self.error = error.localizedDescription
+                playFailure(error)
             }
             reloading = false; task = nil
         }
@@ -190,10 +196,20 @@ struct BotProfileEditor: View {
         if saving {
             error = HermesServiceError.uncertainProfile.localizedDescription
             needsReload = true
+            playFailure(HermesServiceError.uncertainProfile)
         }
         if saving || reloading { retire() }
     }
     private func retire() {
         presentation = UUID(); task?.cancel(); task = nil; saving = false; reloading = false
+    }
+
+    private var canPlayFeedback: Bool {
+        isVisible && scenePhase == .active && !store.showsConnection && target.isCurrent(in: store)
+    }
+
+    private func playFailure(_ error: any Error) {
+        guard !(error is CancellationError), canPlayFeedback else { return }
+        BottoHaptics.shared.play(.failure(error))
     }
 }

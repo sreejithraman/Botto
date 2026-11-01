@@ -66,6 +66,7 @@
 		676F0E1F11AFE81AF8B9D915 /* ConversationReadPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC8E9FA109B94A8F2C060D56 /* ConversationReadPersistenceTests.swift */; };
 		6778716E6E397F6B5FF30326 /* BotAvatarMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88D326386B3298BB4EFAA3A /* BotAvatarMotion.swift */; };
 		6BF683BBB1DEA553B778C307 /* DiagramSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76255593E8DDA9DD1B93F2E1 /* DiagramSnapshot.swift */; };
+		6CAE36F0993341034D61E455 /* HapticsPlayground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E2BC2323583FA13E3C8682 /* HapticsPlayground.swift */; };
 		6D838E7C6D9E174E5363D416 /* WorkspaceUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870CFB815324D657477AE77D /* WorkspaceUITestSupport.swift */; };
 		6E883974B649D13444A65120 /* RichChatUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DA26201A101B7E2F44CA8B1 /* RichChatUITests.swift */; };
 		70B2DB46E150F8AE48CE3D77 /* BottoCore in Frameworks */ = {isa = PBXBuildFile; productRef = B72BCD60D960AE230C09FC3A /* BottoCore */; };
@@ -101,10 +102,13 @@
 		8ED4B98DFFACFDA838C35C53 /* TranscriptScrollPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC0960053535AD532BBE39B /* TranscriptScrollPolicyTests.swift */; };
 		93FE4925A6DF3A44967E357B /* AssistantReplyBody.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CCC961C949E3BCB290814A0 /* AssistantReplyBody.swift */; };
 		945D1754184001135916C175 /* ArtifactPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 883FD4DEEBCC502E2607DC0A /* ArtifactPreviewTests.swift */; };
+		956D70174C56FD0337F02420 /* DeveloperToolsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120E8A7E81DEC7CF5EC20111 /* DeveloperToolsUITests.swift */; };
 		95F8527CE82D9AD21BF928F3 /* ConnectionPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59D330AC68DE688417178001 /* ConnectionPersistence.swift */; };
 		99DB5F7965D64E8CB215D814 /* ConversationWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E9353697726C3A50B02F546 /* ConversationWorkspace.swift */; };
+		99FC8A341B83D1932DAE3D57 /* BottoHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99AC7E71ABB9E52526792FF5 /* BottoHaptics.swift */; };
 		9D0CC6D2357F6842A4C7AFA4 /* NativeTranscriptPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92EDB2B22BE5A509555B84FB /* NativeTranscriptPresentation.swift */; };
 		9D968EEBE63EA6122B79B1C7 /* BotAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B559AE5E11FAD0EF9673015B /* BotAvatar.swift */; };
+		9DBF6F415796D82D2318E17D /* HapticPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB32CB61D2D9D19678F8BD8A /* HapticPresentationTests.swift */; };
 		9E63682082B2ACE018202374 /* ConversationWorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C215F7B423044756B5C96622 /* ConversationWorkspaceTests.swift */; };
 		9EA636739F865F899CE5018B /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40956889F9BD831406ABBC3 /* RootView.swift */; };
 		9F0A72F741F53A2B1C116160 /* ArtifactExportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B609193B3554342F787961B3 /* ArtifactExportUITests.swift */; };
@@ -128,12 +132,15 @@
 		B70695B4C45BF65071B64A16 /* NativeTranscriptContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93BCC9F54F87C70999A83A97 /* NativeTranscriptContentTests.swift */; };
 		B891D80C8A68B7E385D28B4E /* pele-provenance.json in Resources */ = {isa = PBXBuildFile; fileRef = E42E3411D31C0B482AE94E8F /* pele-provenance.json */; };
 		BCA1743E2EA2FDC26C378F3A /* NativeTranscriptExposure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6CEB0C0A8AD2D528E9DD59 /* NativeTranscriptExposure.swift */; };
+		BD429CB41841A709F500D2EE /* HapticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80E1523EFCEA4C2D9CF2E615 /* HapticsTests.swift */; };
 		BE303BFE57100C0CA76DC145 /* AppStoreAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA40102D97218D2C99A9F413 /* AppStoreAvatarTests.swift */; };
+		BF0AA0C16DE383E43394C081 /* HapticOutcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266E76FCA348861575B29530 /* HapticOutcome.swift */; };
 		C0BAC0F09A806AA8088F2A5E /* NativeTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06CCF6EAA18B0B5458C361C /* NativeTranscript.swift */; };
 		C111AB240A778219B3695382 /* ConversationReadEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 532E9B49FEE35D91DF5D5FD2 /* ConversationReadEvidenceTests.swift */; };
 		C125CA372AC800C5F3B28A75 /* ArtifactPreviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494DC1F3139E0BD947ACEBC5 /* ArtifactPreviewModel.swift */; };
 		C345D5C67B22CED64299BD0B /* WorkspaceLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B45A8302EC5C9FE500C492C /* WorkspaceLayout.swift */; };
 		C5A5B06F3D5ADA7F89337F9E /* ChatOverviewTransition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D734356F9FBC197168020E6 /* ChatOverviewTransition.swift */; };
+		C8DCEB3CD4B74D4687F5ABD0 /* WorkspaceLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 417EAFFEB7327B235723370E /* WorkspaceLaunchTests.swift */; };
 		CA63B0C1CE575051A895C414 /* NativeComposerEditorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007B67D6AF01D8B10CDBC52A /* NativeComposerEditorTests.swift */; };
 		CC3C08E1AC74F9E40F3682BB /* SettingsNoticeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15F0B90E1ABD2B7F9E7229CA /* SettingsNoticeTests.swift */; };
 		CE00D6E7223A4B1CF7C3997E /* ConversationAnswerRetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5685CA9BF318EFBDA327335 /* ConversationAnswerRetryTests.swift */; };
@@ -148,10 +155,12 @@
 		DAF1676054ACD78B2A468226 /* NativeTranscriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 264D84CBDEDA0164DD2D3F3A /* NativeTranscriptTests.swift */; };
 		DBBBC310DC702689DB19F041 /* ConversationDirectoryPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2CB6F5CDBACF0A0D15C29CB /* ConversationDirectoryPreviewTests.swift */; };
 		DF0E748BC12DA2D438BF7C3B /* LoopbackSignInReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 479EA50A43193C6B73553FF0 /* LoopbackSignInReceiver.swift */; };
+		E03302F75EF023292C55907F /* ConversationHapticTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D82C28F910821BD83A75A87 /* ConversationHapticTests.swift */; };
 		E065F1C3FDE24EA201C41927 /* TranscriptMeasurements.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6261CD06251FF8B719DC72D2 /* TranscriptMeasurements.swift */; };
 		E1D5E5F907105850C9A85253 /* ConversationPerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE863C6357F32AE16DDFBEA7 /* ConversationPerformanceUITests.swift */; };
 		E2AC48AE58622E08D49E1287 /* ConversationRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF3248870A254D73C37A554E /* ConversationRecoveryTests.swift */; };
 		E76E30E21DE8FEB3D906EB22 /* DiagramImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F741E4EE6E1AB25429227C5 /* DiagramImageView.swift */; };
+		E7835E8C2668B58AFB5E8A44 /* HapticPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C46AD168574DE076DBA42CA4 /* HapticPresentation.swift */; };
 		E8F4CA0E9E4E0A4389D8FB69 /* BottoThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BEF176098C4DE2A11A916D5 /* BottoThemeTests.swift */; };
 		E8FA9DB1A1CD931A0C2E1E92 /* MultipleChatUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DEB7723F080163E54A7CC91 /* MultipleChatUITests.swift */; };
 		E9CDB142F09C87AAD7FB9179 /* DemoBotService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F4C02C7FE8D15368769EE5 /* DemoBotService.swift */; };
@@ -218,6 +227,7 @@
 		00C48F80E646575DD06B01C0 /* AppStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreTests.swift; sourceTree = "<group>"; };
 		017802F2470B30B03543F714 /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		02061861C14FC8B1F922EFE7 /* AppBotAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBotAvatar.swift; sourceTree = "<group>"; };
+		02E2BC2323583FA13E3C8682 /* HapticsPlayground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticsPlayground.swift; sourceTree = "<group>"; };
 		02FC412F88F24DF3A7EA42C7 /* WorkspaceNativeDetailObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNativeDetailObservation.swift; sourceTree = "<group>"; };
 		03AE068C855E1B83A4C2FEB9 /* NativeTranscriptRichReflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptRichReflowTests.swift; sourceTree = "<group>"; };
 		05F1D75DB41CA62C418CAED2 /* AdaptiveWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveWorkspace.swift; sourceTree = "<group>"; };
@@ -232,6 +242,7 @@
 		0FD9E7E156A6B1BD82A290D8 /* ReplyFileBodyOwnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyFileBodyOwnerTests.swift; sourceTree = "<group>"; };
 		1113C996968B358B0ED70BCF /* BrowserSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserSignIn.swift; sourceTree = "<group>"; };
 		11654F56AA63A3AE0D07F837 /* BotAvatarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarStore.swift; sourceTree = "<group>"; };
+		120E8A7E81DEC7CF5EC20111 /* DeveloperToolsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperToolsUITests.swift; sourceTree = "<group>"; };
 		1272DC399CAB7B0B9A213A09 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		15F0B90E1ABD2B7F9E7229CA /* SettingsNoticeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNoticeTests.swift; sourceTree = "<group>"; };
 		162047411A429BB88BA61507 /* ArtifactPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreview.swift; sourceTree = "<group>"; };
@@ -247,6 +258,7 @@
 		20EE0AD5C22B59B796B55336 /* BottoGreeting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottoGreeting.swift; sourceTree = "<group>"; };
 		234770B3364D61B6D00A7704 /* WorkspaceNativeDetailObservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNativeDetailObservationTests.swift; sourceTree = "<group>"; };
 		264D84CBDEDA0164DD2D3F3A /* NativeTranscriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptTests.swift; sourceTree = "<group>"; };
+		266E76FCA348861575B29530 /* HapticOutcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticOutcome.swift; sourceTree = "<group>"; };
 		289814912E23949719A451CC /* DemoAvatarActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoAvatarActivityTests.swift; sourceTree = "<group>"; };
 		28B1EAAAB78402A39681CA8C /* DemoConversationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoConversationTests.swift; sourceTree = "<group>"; };
 		28CD01D10ABA15A9888095E9 /* BotAvatarPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarPresentationTests.swift; sourceTree = "<group>"; };
@@ -259,6 +271,7 @@
 		3E27B8518EC12A4DF57560C5 /* ConversationUnreadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationUnreadTests.swift; sourceTree = "<group>"; };
 		3E51085B11676DA2C9A92DDF /* NativeAccessibilityRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccessibilityRuntime.swift; sourceTree = "<group>"; };
 		3E8068C1BBAFAA1CF06A8450 /* ChatEditingExposureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatEditingExposureTests.swift; sourceTree = "<group>"; };
+		417EAFFEB7327B235723370E /* WorkspaceLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLaunchTests.swift; sourceTree = "<group>"; };
 		41BA408E9B95CCA6289561DD /* TranscriptMeasurementFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMeasurementFixture.swift; sourceTree = "<group>"; };
 		43F4C02C7FE8D15368769EE5 /* DemoBotService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBotService.swift; sourceTree = "<group>"; };
 		46B3ED2074FD996AA09605A1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -282,6 +295,7 @@
 		5B8ADDCC8AC464A90661AC84 /* MessagePresentationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagePresentationPerformanceTests.swift; sourceTree = "<group>"; };
 		5CEFC1758581D9404FF1307F /* ScheduledHandoffUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduledHandoffUITests.swift; sourceTree = "<group>"; };
 		5CF8FCCB3746A1AA2FF33018 /* AvatarUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarUITests.swift; sourceTree = "<group>"; };
+		5D82C28F910821BD83A75A87 /* ConversationHapticTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationHapticTests.swift; sourceTree = "<group>"; };
 		5F24684D4F6D293B46B86DD2 /* BotAvatarColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarColor.swift; sourceTree = "<group>"; };
 		5F6CEB0C0A8AD2D528E9DD59 /* NativeTranscriptExposure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptExposure.swift; sourceTree = "<group>"; };
 		6261CD06251FF8B719DC72D2 /* TranscriptMeasurements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMeasurements.swift; sourceTree = "<group>"; };
@@ -300,7 +314,9 @@
 		7C791E208EABB6AF87F092FA /* BotProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotProfileView.swift; sourceTree = "<group>"; };
 		7CBCCDAC6B8672D772678DD1 /* NativeTranscriptLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptLifecycleTests.swift; sourceTree = "<group>"; };
 		7DA26201A101B7E2F44CA8B1 /* RichChatUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichChatUITests.swift; sourceTree = "<group>"; };
+		7DF3CCCFBA483591FE51CAC1 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		7E8B3B25FDDCCD83C19F7DE6 /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
+		80E1523EFCEA4C2D9CF2E615 /* HapticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticsTests.swift; sourceTree = "<group>"; };
 		81D068F0478BDA2193E5A1A3 /* ChatPickerPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPickerPresentationTests.swift; sourceTree = "<group>"; };
 		8204DE5634E908EC80D93BCE /* RichContentRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichContentRendererTests.swift; sourceTree = "<group>"; };
 		840713061441E78E74970992 /* TranscriptMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMeasurementTests.swift; sourceTree = "<group>"; };
@@ -317,6 +333,7 @@
 		93BCC9F54F87C70999A83A97 /* NativeTranscriptContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptContentTests.swift; sourceTree = "<group>"; };
 		93F608C5A791537A5F6055E3 /* BotMotionPrototype.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMotionPrototype.swift; sourceTree = "<group>"; };
 		96E3733F94057EE379E7C995 /* DeveloperMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperMenuView.swift; sourceTree = "<group>"; };
+		99AC7E71ABB9E52526792FF5 /* BottoHaptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottoHaptics.swift; sourceTree = "<group>"; };
 		9BEF176098C4DE2A11A916D5 /* BottoThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottoThemeTests.swift; sourceTree = "<group>"; };
 		9F741E4EE6E1AB25429227C5 /* DiagramImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagramImageView.swift; sourceTree = "<group>"; };
 		A4F04BBB46E0288743AADC2F /* DuoWorkspaceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuoWorkspaceUITests.swift; sourceTree = "<group>"; };
@@ -340,6 +357,7 @@
 		BE39F5E20536F0860A9FDD20 /* InboxRetentionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxRetentionUITests.swift; sourceTree = "<group>"; };
 		C064E606F4623087518DE402 /* BotFaceMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotFaceMotionTests.swift; sourceTree = "<group>"; };
 		C215F7B423044756B5C96622 /* ConversationWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceTests.swift; sourceTree = "<group>"; };
+		C46AD168574DE076DBA42CA4 /* HapticPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticPresentation.swift; sourceTree = "<group>"; };
 		C48C7068045E77067B931B19 /* ConversationForegroundLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationForegroundLifecycleTests.swift; sourceTree = "<group>"; };
 		C4BCF8A898C7050C2B11AC39 /* Hermex.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Hermex.txt; sourceTree = "<group>"; };
 		C6FB80C2306586F7A85E6F71 /* RichContentRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichContentRenderer.swift; sourceTree = "<group>"; };
@@ -370,14 +388,15 @@
 		E86FE30407E5B8448EC028AF /* PushAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushAuthorization.swift; sourceTree = "<group>"; };
 		E9F128D7454ED2821321D41B /* BottoNotifications.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = BottoNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		EA40102D97218D2C99A9F413 /* AppStoreAvatarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreAvatarTests.swift; sourceTree = "<group>"; };
+		EB32CB61D2D9D19678F8BD8A /* HapticPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticPresentationTests.swift; sourceTree = "<group>"; };
 		EB379C9D38970BD2367CC1AA /* TranscriptActiveRichMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptActiveRichMeasurementTests.swift; sourceTree = "<group>"; };
 		EB41FA3C7BA75D99F4BBE281 /* QueuedMessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueuedMessagesView.swift; sourceTree = "<group>"; };
 		EB5F02400EB5F7F334829C3D /* NativeTranscriptIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptIdentityTests.swift; sourceTree = "<group>"; };
+		EEA373B9E6B87DC6BB075C83 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EFEBD96B631B495C3094B053 /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
 		F430481366DB71FC769A028B /* PushCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushCoordinator.swift; sourceTree = "<group>"; };
 		FC8CA27183C70D86BCAAC059 /* WorkspacePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePresentationTests.swift; sourceTree = "<group>"; };
 		FC90E313F108A66FCEA3D13A /* ConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationUITests.swift; sourceTree = "<group>"; };
-		FD97ADBA45AD8504F6C28E66 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		FEFABEE5C22629545789FB5A /* ChatPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPickerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -409,6 +428,16 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		02D47ADA6A6127FCF8C069D8 /* Feedback */ = {
+			isa = PBXGroup;
+			children = (
+				99AC7E71ABB9E52526792FF5 /* BottoHaptics.swift */,
+				266E76FCA348861575B29530 /* HapticOutcome.swift */,
+				C46AD168574DE076DBA42CA4 /* HapticPresentation.swift */,
+			);
+			path = Feedback;
+			sourceTree = "<group>";
+		};
 		073937C63E2DF197A43B0DC8 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -426,9 +455,11 @@
 				5CF8FCCB3746A1AA2FF33018 /* AvatarUITests.swift */,
 				CE863C6357F32AE16DDFBEA7 /* ConversationPerformanceUITests.swift */,
 				FC90E313F108A66FCEA3D13A /* ConversationUITests.swift */,
+				120E8A7E81DEC7CF5EC20111 /* DeveloperToolsUITests.swift */,
 				394BA4356B903A0C12352607 /* DiagramScrollUITests.swift */,
 				A4F04BBB46E0288743AADC2F /* DuoWorkspaceUITests.swift */,
 				BE39F5E20536F0860A9FDD20 /* InboxRetentionUITests.swift */,
+				EEA373B9E6B87DC6BB075C83 /* Info.plist */,
 				DEE9A2F44F2479C5EA0DBF95 /* LiveChatReadUITests.swift */,
 				4DEB7723F080163E54A7CC91 /* MultipleChatUITests.swift */,
 				77519AB0D3C2CDC538D28D63 /* NewBotUITests.swift */,
@@ -501,6 +532,7 @@
 				3B30BCB7E6C2FEC7A9C8523B /* BottoApp.swift */,
 				3169C6DBDB31F898A737A354 /* Demo */,
 				4983CAEE045DC9FA1435D560 /* Design */,
+				02D47ADA6A6127FCF8C069D8 /* Feedback */,
 				42011C8C01EBA88B833EF9F8 /* NotificationService */,
 				89109D99901A17339C3B371B /* Pairing */,
 				42339142E6495DD8EC093049 /* Push */,
@@ -575,6 +607,7 @@
 				0FC9AAD918653270962BBAEE /* ChatView.swift */,
 				EFEBD96B631B495C3094B053 /* ConnectionView.swift */,
 				96E3733F94057EE379E7C995 /* DeveloperMenuView.swift */,
+				02E2BC2323583FA13E3C8682 /* HapticsPlayground.swift */,
 				DA7FCB1F55D2F1873BC74CA7 /* HermesSetupSection.swift */,
 				017802F2470B30B03543F714 /* InboxView.swift */,
 				64A4AA7C376DFE3153929E74 /* MessageView.swift */,
@@ -648,6 +681,7 @@
 				B2868766901152A06001E2A2 /* ConversationEmptyDraftTests.swift */,
 				C48C7068045E77067B931B19 /* ConversationForegroundLifecycleTests.swift */,
 				0CFB8AFC54AAEAED083E5C4F /* ConversationForegroundReadTests.swift */,
+				5D82C28F910821BD83A75A87 /* ConversationHapticTests.swift */,
 				B93E8FD3685CD5B3E124D04F /* ConversationOperationReservationTests.swift */,
 				53F067D91D2B53D8680EEAD6 /* ConversationPersistenceTests.swift */,
 				532E9B49FEE35D91DF5D5FD2 /* ConversationReadEvidenceTests.swift */,
@@ -658,6 +692,8 @@
 				C215F7B423044756B5C96622 /* ConversationWorkspaceTests.swift */,
 				289814912E23949719A451CC /* DemoAvatarActivityTests.swift */,
 				28B1EAAAB78402A39681CA8C /* DemoConversationTests.swift */,
+				EB32CB61D2D9D19678F8BD8A /* HapticPresentationTests.swift */,
+				80E1523EFCEA4C2D9CF2E615 /* HapticsTests.swift */,
 				3E51085B11676DA2C9A92DDF /* NativeAccessibilityRuntime.swift */,
 				007B67D6AF01D8B10CDBC52A /* NativeComposerEditorTests.swift */,
 				93BCC9F54F87C70999A83A97 /* NativeTranscriptContentTests.swift */,
@@ -685,6 +721,7 @@
 				41BA408E9B95CCA6289561DD /* TranscriptMeasurementFixture.swift */,
 				840713061441E78E74970992 /* TranscriptMeasurementTests.swift */,
 				ADC0960053535AD532BBE39B /* TranscriptScrollPolicyTests.swift */,
+				417EAFFEB7327B235723370E /* WorkspaceLaunchTests.swift */,
 				234770B3364D61B6D00A7704 /* WorkspaceNativeDetailObservationTests.swift */,
 				FC8CA27183C70D86BCAAC059 /* WorkspacePresentationTests.swift */,
 				0DC59E8E22A948B90781831F /* WorkspaceTestService.swift */,
@@ -695,7 +732,7 @@
 		C81927C287378F51779036E1 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				FD97ADBA45AD8504F6C28E66 /* BottoCore */,
+				7DF3CCCFBA483591FE51CAC1 /* BottoCore */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -910,6 +947,7 @@
 				A2E2D9FE7E33EBD333C911DC /* BottoApp.swift in Sources */,
 				4E37BE584635FE9C2E3081FC /* BottoBrand.swift in Sources */,
 				454271A68DDE706305B82C5C /* BottoGreeting.swift in Sources */,
+				99FC8A341B83D1932DAE3D57 /* BottoHaptics.swift in Sources */,
 				055313A439E9F478E23569AC /* BottoTheme.swift in Sources */,
 				7D625272F79BD5B0D12BB244 /* BrowserSignIn.swift in Sources */,
 				AC20712207A8FD3B257951ED /* ChatComposer.swift in Sources */,
@@ -925,6 +963,9 @@
 				43F79A7757B70D75566F0061 /* DeveloperMenuView.swift in Sources */,
 				E76E30E21DE8FEB3D906EB22 /* DiagramImageView.swift in Sources */,
 				6BF683BBB1DEA553B778C307 /* DiagramSnapshot.swift in Sources */,
+				BF0AA0C16DE383E43394C081 /* HapticOutcome.swift in Sources */,
+				E7835E8C2668B58AFB5E8A44 /* HapticPresentation.swift in Sources */,
+				6CAE36F0993341034D61E455 /* HapticsPlayground.swift in Sources */,
 				EF607233F3007BD3A7A8A33F /* HermesSetupPrompt.swift in Sources */,
 				787283FA160E77683D9E09AD /* HermesSetupSection.swift in Sources */,
 				36ECBDECF4EEAFC6329814C6 /* HistoryJSONValidation.swift in Sources */,
@@ -985,6 +1026,7 @@
 				7CE6E9C9A0B3ED1E99D4CFC2 /* ConversationEmptyDraftTests.swift in Sources */,
 				72C764C3590FB1EE7B4E9DE2 /* ConversationForegroundLifecycleTests.swift in Sources */,
 				10ABE8B2132F81C1C9EA5415 /* ConversationForegroundReadTests.swift in Sources */,
+				E03302F75EF023292C55907F /* ConversationHapticTests.swift in Sources */,
 				A4345CDA04A7CA040D23AC2D /* ConversationOperationReservationTests.swift in Sources */,
 				62484280E98E19F17651C9A1 /* ConversationPersistenceTests.swift in Sources */,
 				C111AB240A778219B3695382 /* ConversationReadEvidenceTests.swift in Sources */,
@@ -995,6 +1037,8 @@
 				9E63682082B2ACE018202374 /* ConversationWorkspaceTests.swift in Sources */,
 				7A6B4746F20C7A6ADEC34DCF /* DemoAvatarActivityTests.swift in Sources */,
 				325FB79EF4778380315803A0 /* DemoConversationTests.swift in Sources */,
+				9DBF6F415796D82D2318E17D /* HapticPresentationTests.swift in Sources */,
+				BD429CB41841A709F500D2EE /* HapticsTests.swift in Sources */,
 				F9668A6F90C71F01EC8B916D /* MessagePresentationPerformanceTests.swift in Sources */,
 				863FD91024E6FD279F345F8A /* NativeAccessibilityRuntime.swift in Sources */,
 				CA63B0C1CE575051A895C414 /* NativeComposerEditorTests.swift in Sources */,
@@ -1023,6 +1067,7 @@
 				12A7C844C28507D2DC69BE8E /* TranscriptMeasurementFixture.swift in Sources */,
 				5CE88170DAEDDC18D37FB897 /* TranscriptMeasurementTests.swift in Sources */,
 				8ED4B98DFFACFDA838C35C53 /* TranscriptScrollPolicyTests.swift in Sources */,
+				C8DCEB3CD4B74D4687F5ABD0 /* WorkspaceLaunchTests.swift in Sources */,
 				04D922EEE5813D9E016AC213 /* WorkspaceNativeDetailObservationTests.swift in Sources */,
 				8B358643FA663ABC743579C0 /* WorkspacePresentationTests.swift in Sources */,
 				B532EB7698BE50A97629C732 /* WorkspaceTestService.swift in Sources */,
@@ -1037,6 +1082,7 @@
 				7114AB1C62AC4909A55EC83D /* AvatarUITests.swift in Sources */,
 				E1D5E5F907105850C9A85253 /* ConversationPerformanceUITests.swift in Sources */,
 				44CA4B394ADA833CBF35F5F0 /* ConversationUITests.swift in Sources */,
+				956D70174C56FD0337F02420 /* DeveloperToolsUITests.swift in Sources */,
 				F66B0D92E187EB1DE46C478C /* DiagramScrollUITests.swift in Sources */,
 				55F9AA22DE7C0227EB26FCB1 /* DuoWorkspaceUITests.swift in Sources */,
 				203B92A54C8B347B7E056CA1 /* HermesSetupPrompt.swift in Sources */,
@@ -1085,7 +1131,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AppUITests/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1097,6 +1144,96 @@
 				TEST_TARGET_NAME = Botto;
 			};
 			name = Release;
+		};
+		15530EA81AC8C9DC99B43969 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				BOTTO_APNS_ENVIRONMENT = production;
+				BOTTO_APP_BUNDLE_IDENTIFIER = com.sree.botto;
+				BOTTO_PUSH_ENVIRONMENT = production;
+				BOTTO_PUSH_KEYCHAIN_GROUP = "$(AppIdentifierPrefix)$(BOTTO_APP_BUNDLE_IDENTIFIER).push";
+				BOTTO_PUSH_PLUGIN_REF = "";
+				BOTTO_PUSH_PLUGIN_SOURCE = "";
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) BOTTO_INTERNAL_TOOLS";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Internal;
+		};
+		1A66A456780230DC4E2DA7E7 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = App/NotificationService/BottoNotifications.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Internal;
 		};
 		32BFC0DBB205AD8D82969238 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1132,6 +1269,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1237,11 +1375,47 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		96E73DF4B02E732B8F7E619F /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Botto.app/Botto";
+			};
+			name = Internal;
+		};
+		C91CE35D4AF9569EDE14BFC8 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AppUITests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).uitests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Botto;
+			};
+			name = Internal;
 		};
 		CC5CEC88902C9C547EEBA76D /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1260,6 +1434,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1281,6 +1456,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1365,7 +1541,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AppUITests/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1378,6 +1555,30 @@
 			};
 			name = Debug;
 		};
+		E86734A4EBA141DFBA6D42C0 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/Push/Botto.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Internal;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1385,6 +1586,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				32BFC0DBB205AD8D82969238 /* Debug */,
+				96E73DF4B02E732B8F7E619F /* Internal */,
 				6353634C6B2F3581B4D58DAC /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1394,6 +1596,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				45DAEDDEB8E6CFAB39135A13 /* Debug */,
+				E86734A4EBA141DFBA6D42C0 /* Internal */,
 				CC5CEC88902C9C547EEBA76D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1403,6 +1606,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				7D894D5AE23D18E3D417B9C6 /* Debug */,
+				1A66A456780230DC4E2DA7E7 /* Internal */,
 				CD54AC0998CBC1D5A443B3E0 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1412,6 +1616,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				E7F8EEEE3F7AF90423AEE36F /* Debug */,
+				C91CE35D4AF9569EDE14BFC8 /* Internal */,
 				13BD24F473ABD5C2C8C02763 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -1421,6 +1626,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				E4ABAE748109F09918378368 /* Debug */,
+				15530EA81AC8C9DC99B43969 /* Internal */,
 				54F22F2633DBF0EAF3AD1E00 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;

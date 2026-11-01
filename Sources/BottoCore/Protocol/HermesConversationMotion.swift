@@ -7,13 +7,14 @@ struct HermesConversationMotion {
     var workStartedAt: Date?
     var phaseStartedAt: Date?
     var reaction: TurnReaction?
+    var signal: ConversationActivity.Signal?
     private var claim: (generation: Int?, admission: String?)?
     private var tools: Set<ExactID> = []
     private var generation: Int?
 
     var activity: ConversationActivity {
         ConversationActivity(lineage: lineage, phase: phase, workStartedAt: workStartedAt,
-                             phaseStartedAt: phaseStartedAt, reaction: reaction)
+                             phaseStartedAt: phaseStartedAt, reaction: reaction, signal: signal)
     }
 
     mutating func restore(working: Bool, generation: Int?, replying: Bool) {
@@ -48,6 +49,7 @@ struct HermesConversationMotion {
 
     mutating func reduce(_ event: HermesJSON, authority: Bool, live: Bool) {
         reaction = nil
+        signal = nil
         let type = event["type"].text, payload = event["payload"]
         let incomingGeneration = event["execution_generation"].integer
         let admission = event["admission_id"].nonempty
@@ -63,6 +65,7 @@ struct HermesConversationMotion {
             generation = incomingGeneration
             claim = live && (!authority || admission != nil) ? (incomingGeneration, admission) : nil
             tools = []; setPhase(.working)
+            if claim != nil { signal = .init(kind: .turnStarted) }
         case "thinking.delta", "reasoning.delta":
             guard phase != nil else { return }
             setPhase(tools.isEmpty ? (payload["text"].nonempty == nil ? .working : .thinking) : .tools)
@@ -79,6 +82,7 @@ struct HermesConversationMotion {
             if phase != nil { setPhase(tools.isEmpty ? .working : .tools) }
         case "message.delta":
             if phase != nil { setPhase(tools.isEmpty ? (payload["text"].nonempty == nil ? .working : .replying) : .tools) }
+            if live, claim != nil, payload["text"].nonempty != nil { signal = .init(kind: .replyText) }
         case "message.interim":
             if phase != nil { setPhase(tools.isEmpty ? .working : .tools) }
         case "message.complete":
@@ -92,7 +96,11 @@ struct HermesConversationMotion {
                 reaction = TurnReaction(kind: .succeeded, occurredAt: .now)
             } else if status == "error", outcome == nil || outcome == "failed" || outcome == "error" {
                 reaction = TurnReaction(kind: .failed, occurredAt: .now)
+            } else if HermesStopObservation.isStoppedOutcome(payload) {
+                signal = .init(kind: .stopped)
             }
+        case "approval.request", "clarify.request":
+            if live { signal = .init(kind: .request) }
         case "session.info":
             if authority, let next = payload["execution_generation"].integer ?? incomingGeneration {
                 guard generation.map({ next >= $0 }) != false else { return }

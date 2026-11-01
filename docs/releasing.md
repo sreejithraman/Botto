@@ -3,6 +3,10 @@
 The first Botto source release is **0.1.0**. Release tags use the `v` prefix,
 for example `v0.1.0`.
 
+[Internal TestFlight delivery](testflight.md) has a separate GitHub workflow,
+signing setup, and beta acceptance path. A source release does not publish an
+Apple build.
+
 ## Prepare a release
 
 1. Start from the reviewed `main` branch. Set the app and notification extension

@@ -219,9 +219,14 @@ import BottoCore
             onDirty: { [weak self] in self?.reconcileArtifactPresentation(); self?.scheduleSave() })
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
+        var chatWasVisible = false
         chats.onVisibleChatChange = { [weak self] identity in
             self?.push.updateVisibility(destination: identity.map(PushDestination.init))
+            // Repeated hidden publications must not cancel feedback in a covering sheet.
+            if chatWasVisible, identity == nil { BottoHaptics.shared.cancel() }
+            chatWasVisible = identity != nil
         }
+        chats.onHapticFeedback = { BottoHaptics.shared.play($0.event) }
         chats.observeProfiles(cachedBots)
         reconcileArtifactPresentation()
     }
@@ -412,7 +417,9 @@ import BottoCore
         if let configuration { await connect(configuration) }
     }
 
-    @discardableResult func connect(_ candidate: ConnectionConfiguration) async -> Bool {
+    @discardableResult func connect(_ candidate: ConnectionConfiguration,
+                                   onConnected: (@MainActor () -> Void)? = nil,
+                                   onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
         guard isDemo || !savedSetupLoadFailed else { return false }
         let candidate = rotatedConfigurations[candidate.id].flatMap {
@@ -496,6 +503,7 @@ import BottoCore
                 guard self.generation == owner else { return }
                 await self.push.resume()
             }
+            onConnected?()
             showsConnection = false
             if let bot = selectedBot, let profile = try? ExactID(bot.id) {
                 await chats.restoreAttachment(profile: profile)
@@ -503,6 +511,7 @@ import BottoCore
             return true
         } catch {
             guard generation == owner else { return false }
+            if !(error is CancellationError), !Task.isCancelled { onFailure?(error) }
             cancelConnection(owner: owner)
             connectionError = error.localizedDescription
             return false
@@ -769,7 +778,7 @@ import BottoCore
         artifactGeneration = UUID()
     }
 
-    func create(_ draft: BotDraft) async -> BotProfile? {
+    func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotProfile? {
         guard isConnected, !Task.isCancelled else { return nil }
         let owner = generation
         do {
@@ -779,10 +788,17 @@ import BottoCore
             guard generation == owner, !Task.isCancelled else { return nil }
             guard published, cachedBots.contains(where: { $0.id == bot.id }) else {
                 notice = "Your bot was created, but Botto couldn’t load it in the inbox. Refresh the inbox before creating another bot."
+                onFailure?(HermesServiceError.partialCreation)
                 return nil
             }
             return bot
-        } catch { if generation == owner, !Task.isCancelled { notice = error.localizedDescription }; return nil }
+        } catch {
+            if generation == owner, !Task.isCancelled {
+                notice = error.localizedDescription
+                if !(error is CancellationError) { onFailure?(error) }
+            }
+            return nil
+        }
     }
 
     func setActive(_ value: Bool) async {

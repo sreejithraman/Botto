@@ -12,13 +12,13 @@ struct BotAvatar: View {
     var fitsBody = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    #if DEBUG
+    #if DEBUG || BOTTO_INTERNAL_TOOLS
     @Environment(\.avatarMotionDisabledForTesting) private var forceStill
     @Environment(\.botMotionExperiment) private var experiment
     #endif
 
     private var still: Bool {
-        #if DEBUG
+        #if DEBUG || BOTTO_INTERNAL_TOOLS
         if forceStill { return true }
         #endif
         return reduceMotion || scenePhase != .active
@@ -36,7 +36,7 @@ struct BotAvatar: View {
                         }
                     }
             } else {
-                #if DEBUG
+                #if DEBUG || BOTTO_INTERNAL_TOOLS
                 if let experiment, experiment.style != .original, motion != .still {
                     if experiment.followsLiveActivity {
                         BotAvatarMotion(profile: profile, size: size,
@@ -128,7 +128,7 @@ struct BotAvatarMark: View {
     }
 }
 
-#if DEBUG
+#if DEBUG || BOTTO_INTERNAL_TOOLS
 private struct AvatarMotionTestKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     var avatarMotionDisabledForTesting: Bool {

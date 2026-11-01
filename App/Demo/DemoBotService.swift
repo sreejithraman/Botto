@@ -345,7 +345,8 @@ import BottoCore
             } else {
                 activity = ConversationActivity(lineage: current.lineage, phase: nil,
                     workStartedAt: nil, phaseStartedAt: nil,
-                    reaction: succeeded && current.phase != nil ? TurnReaction(kind: .succeeded, occurredAt: .now) : nil)
+                    reaction: succeeded && current.phase != nil ? TurnReaction(kind: .succeeded, occurredAt: .now) : nil,
+                    signal: !succeeded && current.phase != nil ? .init(kind: .stopped) : nil)
             }
         }
         publish(chat, source: source)
@@ -509,14 +510,16 @@ import BottoCore
         guard selected?.identity == source, let current = activity else { return }
         let now = Date.now
         activity = ConversationActivity(lineage: current.lineage, phase: .working,
-                                        workStartedAt: now, phaseStartedAt: now)
+                                        workStartedAt: now, phaseStartedAt: now, signal: .init(kind: .turnStarted))
     }
 
     private func markReplying(source: SessionIdentity, lineage: UUID?) {
         guard selected?.identity == source, let current = activity, current.lineage == lineage,
-              current.phase != nil, current.phase != .replying else { return }
+              current.phase != nil else { return }
         activity = ConversationActivity(lineage: current.lineage, phase: .replying,
-                                        workStartedAt: current.workStartedAt, phaseStartedAt: .now)
+                                        workStartedAt: current.workStartedAt,
+                                        phaseStartedAt: current.phase == .replying ? current.phaseStartedAt : .now,
+                                        signal: .init(kind: .replyText))
     }
 
     private func publish(_ chat: Conversation, source: SessionIdentity) {
@@ -544,8 +547,9 @@ import BottoCore
             // than projecting a partial remote delta.
             let evidence = summary(source.root.bytes).map(ConversationReadEvidence.init)
             let publishedActivity = activity
-            if let current = activity, current.reaction != nil {
-                activity = ConversationActivity(lineage: current.lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil)
+            if let current = activity, current.reaction != nil || current.signal != nil {
+                activity = ConversationActivity(lineage: current.lineage, phase: current.phase,
+                    workStartedAt: current.workStartedAt, phaseStartedAt: current.phaseStartedAt)
             }
             onEvent?(.conversation(OpenedConversation(identity: source, snapshot: chat, access: access,
                                                      readEvidence: evidence, activity: publishedActivity)))

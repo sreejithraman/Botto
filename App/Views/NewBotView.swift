@@ -4,6 +4,7 @@ import BottoCore
 struct NewBotView: View {
     let store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var name = ""
     @State private var avatar: BotAvatarChoice? = .automatic
     @State private var instructions = ""
@@ -12,6 +13,7 @@ struct NewBotView: View {
     @State private var creationTask: Task<Void, Never>?
     @State private var presentationID = UUID()
     @State private var error: String?
+    @State private var isVisible = false
     @FocusState private var focusedName: Bool
 
     private let starters: [(String, String, String)] = [
@@ -86,7 +88,8 @@ struct NewBotView: View {
         .tint(BottoTheme.action)
         .onChange(of: avatar) { _, _ in focusedName = false }
         .onChange(of: store.isConnected) { _, _ in connectionRequested = false }
-        .onDisappear { retireCreation() }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; retireCreation() }
         .onChange(of: store.connectionGeneration) { _, _ in retireCreation() }
     }
     private var preview: BotProfile {
@@ -107,20 +110,29 @@ struct NewBotView: View {
                 }
             }
             guard ownsCreation(presentation, connection: connection) else { return }
-            let bot = await store.create(draft)
+            var failure: (any Error)?
+            let bot = await store.create(draft, onFailure: { failure = $0 })
             guard ownsCreation(presentation, connection: connection) else { return }
             if let bot {
                 await store.open(bot)
                 guard ownsCreation(presentation, connection: connection) else { return }
+                if canPlayFeedback { BottoHaptics.shared.play(.celebration) }
                 dismiss()
             } else {
                 error = store.notice ?? "Couldn’t create your bot. Try again."
+                if let failure, !(failure is CancellationError), canPlayFeedback {
+                    BottoHaptics.shared.play(.failure(failure))
+                }
             }
         }
     }
 
     private func ownsCreation(_ presentation: UUID, connection: UUID) -> Bool {
         !Task.isCancelled && presentationID == presentation && store.connectionGeneration == connection
+    }
+
+    private var canPlayFeedback: Bool {
+        isVisible && scenePhase == .active && !store.showsConnection
     }
 
     private func retireCreation() {

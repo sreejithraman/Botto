@@ -1,4 +1,4 @@
-#if DEBUG
+#if DEBUG || BOTTO_INTERNAL_TOOLS
 import SwiftUI
 import BottoCore
 
@@ -54,8 +54,18 @@ struct BotMotionPrototype: View {
         VStack(spacing: 0) {
             Group {
                 if inApp {
-                    RootView(store: demo)
-                        .task { if !demo.isDemo { await demo.enterDemo() } }
+                    Group {
+                        if demo.configuration != nil {
+                            RootView(store: demo, onExitDemoPreview: { inApp = false })
+                        } else if let error = demo.connectionError {
+                            ContentUnavailableView("Can’t open demo", systemImage: "exclamationmark.triangle",
+                                                   description: Text(error))
+                        } else {
+                            ProgressView("Opening demo…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                    .task { if demo.configuration == nil { await demo.enterDemo() } }
                 } else {
                     gallery
                 }
