@@ -9,6 +9,11 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 build_only=false
+library_acceptance=false
+if [ "$selector" = LibraryAcceptance ]; then
+  library_acceptance=true
+  selector=
+fi
 if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
@@ -24,6 +29,11 @@ if not match:
 PYTHON
   selection="BottoTests/$selector"
 fi
+selections=("-only-testing:$selection")
+if [ "$library_acceptance" = true ]; then
+  selections=("-only-testing:BottoUITests/InboxRetentionUITests"
+    "-only-testing:BottoUITests/ArtifactExportUITests/testSaveToFilesAndReopenSavedOriginal")
+fi
 
 destination=${BOTTO_TEST_DESTINATION:-}
 if [ -z "$destination" ]; then
@@ -37,6 +47,18 @@ if not iphones:
 print(iphones[0]["udid"])
 ')
   destination="platform=iOS Simulator,id=$device_id"
+fi
+if [ "$library_acceptance" = true ]; then
+  device_id=$(python3 - "$destination" <<'PYTHON'
+import sys
+import uuid
+parts = dict(part.split("=", 1) for part in sys.argv[1].split(","))
+uuid.UUID(parts["id"])
+print(parts["id"])
+PYTHON
+)
+  artifact_proof_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  export TEST_RUNNER_BOTTO_ARTIFACT_EXPORT_PROOF_ID="$artifact_proof_id"
 fi
 
 # Xcode watches this local Swift package; native output writes must not trigger rescans.
@@ -54,7 +76,7 @@ result_id=$(uuidgen)
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
-  "-only-testing:$selection"
+  "${selections[@]}"
   -destination "$destination"
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
@@ -80,8 +102,23 @@ PYTHON
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   result_name="CIResults-$result_id.xcresult"
+  if [ "$library_acceptance" = true ]; then
+    artifact_proof_started_at=$(date +%s)
+  fi
   xcodebuild test-without-building "${native_arguments[@]}" \
     -resultBundlePath "$native_directory/$result_name" || native_status=$?
+  if [ "$library_acceptance" = true ]; then
+    export_status=0
+    python3 scripts/verify-artifact-export.py \
+      --device "$device_id" \
+      --filename "botto-artifact-export-proof-$artifact_proof_id.txt" \
+      --not-before "$artifact_proof_started_at" \
+      --receipt "$native_directory/export-receipt.json" || export_status=$?
+    printf 'Library UI exit: %s; independent export readback exit: %s\n' "$native_status" "$export_status"
+    if [ "$native_status" -eq 0 ]; then
+      native_status=$export_status
+    fi
+  fi
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   if ! xcrun xcresulttool get test-results summary --path "$native_directory/$result_name" | python3 -c '
@@ -102,6 +139,9 @@ fi
 
 finalize_native() {
   mkdir -p .artifacts || return
+  if [ -f "$native_directory/export-receipt.json" ]; then
+    cp "$native_directory/export-receipt.json" ".artifacts/CIExport-$result_id.json" || return
+  fi
   if [ -f "$native_directory/selected-tests.txt" ]; then
     cp "$native_directory/selected-tests.txt" ".artifacts/CISelectedTests-$result_id.txt" || return
   fi
