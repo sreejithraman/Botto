@@ -2,13 +2,21 @@ import XCTest
 import UIKit
 
 final class SetupUITests: XCTestCase {
+    override func setUpWithError() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("These setup checks use Simulator-only isolated connection storage.")
+        #endif
+    }
+
     @MainActor private func launch(largeText: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
+        app.launchArguments = ["--isolated-ui-test"]
         if largeText {
-            app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
         app.launch()
+        addTeardownBlock { app.terminate() }
         XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 10))
         reach(app.buttons["Connect your Hermes"], in: app)
         app.buttons["Connect your Hermes"].tap()

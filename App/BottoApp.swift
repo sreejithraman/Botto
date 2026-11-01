@@ -54,7 +54,7 @@ private struct BottoWorkspace: View {
 
     var body: some View {
         RootView(store: store)
-            .task {
+            .task { [store] in
                 PushNotificationBridge.onToken = { [weak store] token in
                     Task { await store?.push.didRegister(token: token) }
                 }
