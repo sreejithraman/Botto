@@ -406,7 +406,13 @@ import BottoCore
     }
 
     @Test func nativeCompactBackParksTheTaskAndReturnKeepsItsOwnerAndDraft() async throws {
+        #if DEBUG
+        let store = AvatarDecodeLedger.$testOwner.withValue(Test.current.map { "AdaptiveWorkspaceTests/\($0.name)" }) {
+            AppStore(service: DemoBotService(), persistence: MemoryConnectionStorage().persistence)
+        }
+        #else
         let store = AppStore(service: DemoBotService(), persistence: MemoryConnectionStorage().persistence)
+        #endif
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-back-demo.invalid")!)
         #expect(await store.connect(configuration))
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
@@ -447,7 +453,9 @@ import BottoCore
         #expect(!editor.isFirstResponder, "Native Back ends the actual editing session")
         #expect(store.chats.isCurrent(owner))
         presentation.resumeTask()
-        try await waitUntil("Return restored a settled native detail", diagnostics: diagnostics) {
+        try await waitUntil("Return restored a settled native detail", diagnostics: {
+            diagnostics() + "\n" + nativeTransitionProgress(in: window)
+        }) {
             settledDetailNavigation(in: window) != nil
         }
         Attachment.record(diagnostics(), named: "native-back-returned.txt")
@@ -474,6 +482,18 @@ import BottoCore
             return "navigation=\(type(of: navigation)) count=\(navigation.viewControllers.count) attached=\(navigation.viewIfLoaded?.window === window) transition=\(navigation.transitionCoordinator != nil) top=\(top.map { String(reflecting: type(of: $0)) } ?? "nil") topAttached=\(top?.viewIfLoaded?.window === window) topTransition=\(top?.transitionCoordinator != nil)"
         }
         return "key=\(window.isKeyWindow) hidden=\(window.isHidden) bounds=\(window.bounds) rootAppeared=\((root as? WorkspaceHostingAppearance)?.hasAppeared == true) rootTransition=\(root.transitionCoordinator != nil) selected=\(store.selectedBotID ?? "nil") browsing=\(presentation.isBrowsingBots) revision=\(presentation.revision)\n" + controllers.joined(separator: "\n")
+    }
+
+    private func nativeTransitionProgress(in window: UIWindow) -> String {
+        guard let root = window.rootViewController else { return "No root for transition progress" }
+        func state(_ coordinator: (any UIViewControllerTransitionCoordinator)?) -> String {
+            guard let coordinator else { return "none" }
+            return "duration=\(coordinator.transitionDuration) percent=\(coordinator.percentComplete) interactive=\(coordinator.isInteractive) initiallyInteractive=\(coordinator.initiallyInteractive) cancelled=\(coordinator.isCancelled)"
+        }
+        return navigationControllers(in: root).map { navigation in
+            let top = navigation.topViewController
+            return "topPresented=\(top?.isBeingPresented ?? false) topMovingToParent=\(top?.isMovingToParent ?? false) barTopMatches=\(top.map { navigation.navigationBar.topItem === $0.navigationItem } ?? false) navigationTransition={\(state(navigation.transitionCoordinator))} topTransition={\(state(top?.transitionCoordinator))}"
+        }.joined(separator: "\n")
     }
 
     private func navigationControllers(in controller: UIViewController) -> [UINavigationController] {
@@ -888,9 +908,23 @@ import BottoCore
                            sourceLocation: SourceLocation = #_sourceLocation,
                            _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !condition() && ContinuousClock.now < deadline { await Task.yield() }
+        var polls = 0, maximumGap = Duration.zero
+        var previousPoll = ContinuousClock.now
+        while !condition() && ContinuousClock.now < deadline {
+            polls += 1
+            await Task.yield()
+            let resumed = ContinuousClock.now
+            maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
+        }
         if !condition() {
-            Attachment.record("\(message)\n\(diagnostics())", named: "native-workspace-wait-failure.txt")
+            maximumGap = max(maximumGap, previousPoll.duration(to: .now))
+            #if DEBUG
+            let decoding = AvatarDecodeLedger.shared.failureSnapshot()
+            #else
+            let decoding = "Decoder metadata is excluded from Release"
+            #endif
+            Attachment.record("\(message)\npolls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())\n\(decoding)",
+                              named: "native-workspace-wait-failure.txt")
         }
         try #require(condition(), Comment(rawValue: message), sourceLocation: sourceLocation)
     }

@@ -34,6 +34,9 @@ import BottoCore
     @ObservationIgnored private var service: (any BotService)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let now: () -> Date
+    #if DEBUG
+    @ObservationIgnored private let diagnosticTestOwner = AvatarDecodeLedger.testOwner
+    #endif
 
     init(now: @escaping () -> Date = Date.init) { self.now = now }
 
@@ -51,7 +54,12 @@ import BottoCore
         let retired = flights.values
         flights = [:]; queued = []; wanted = [:]; revalidateAfterFlight = []
         service = nil; loading = []
-        for flight in retired { flight.task?.cancel() }
+        for flight in retired {
+            #if DEBUG
+            AvatarDecodeLedger.shared.retire(flight.id)
+            #endif
+            flight.task?.cancel()
+        }
     }
     func reset() { cancel(); connectionID = nil; entries = [:] }
 
@@ -63,6 +71,9 @@ import BottoCore
         entries = entries.filter { id, entry in wanted[id].map(Key.init) == entry.key }
         for (id, flight) in flights where wanted[id].map(Key.init) != flight.key {
             flights.removeValue(forKey: id); revalidateAfterFlight.remove(id)
+            #if DEBUG
+            AvatarDecodeLedger.shared.retire(flight.id)
+            #endif
             flight.task?.cancel()
         }
         queued.removeAll { wanted[$0] == nil }
@@ -93,17 +104,42 @@ import BottoCore
             guard let bot = wanted[id] else { continue }
             let attempt = UUID(), owner = generation, key = Key(bot)
             flights[id] = Flight(id: attempt, key: key)
+            #if DEBUG
+            AvatarDecodeLedger.shared.admit(attempt, generation: owner, testOwner: diagnosticTestOwner)
+            #endif
             flights[id]?.task = Task { [weak self] in
+                #if DEBUG
+                defer { AvatarDecodeLedger.shared.end(attempt) }
+                #endif
                 let decoded: Decoded?
                 do {
                     let asset = try await service.avatarAsset(for: bot)
                     guard !Task.isCancelled else { return }
                     let photo = bot.appearance?.imageKind == "photo"
+                    #if DEBUG
+                    AvatarDecodeLedger.shared.mark(.queued, attempt)
+                    decoded = await Task.detached(priority: .utility) {
+                        AvatarDecodeLedger.shared.mark(.body, attempt, cancelled: Task.isCancelled)
+                        let result = asset.flatMap { asset in
+                            AvatarDecodeLedger.shared.mark(.sync, attempt)
+                            return Self.decode(asset, photo: photo)
+                        }
+                        AvatarDecodeLedger.shared.mark(.finish, attempt, imageProduced: result?.image != nil)
+                        return result
+                    }.value
+                    #else
                     decoded = await Task.detached(priority: .utility) { asset.flatMap { Self.decode($0, photo: photo) } }.value
+                    #endif
                 } catch {
                     // Optional/unsupported image RPCs never affect the connection or roster.
                     decoded = nil
                 }
+                #if DEBUG
+                AvatarDecodeLedger.shared.checkAuthority(attempt, .init(taskCancelled: Task.isCancelled,
+                    storeAlive: self != nil, generationCurrent: self?.generation == owner,
+                    requestCurrent: self?.flights[id]?.id == attempt,
+                    keyCurrent: self?.wanted[id].map(Key.init) == key))
+                #endif
                 guard !Task.isCancelled else { return }
                 self?.complete(id, attempt: attempt, owner: owner, key: key, image: decoded?.image)
             }
@@ -114,6 +150,9 @@ import BottoCore
     private func complete(_ id: String, attempt: UUID, owner: UUID, key: Key, image: UIImage?) {
         guard generation == owner, flights[id]?.id == attempt, wanted[id].map(Key.init) == key else { return }
         entries[id] = Entry(key: key, checkedAt: now(), image: image)
+        #if DEBUG
+        AvatarDecodeLedger.shared.mark(.published, attempt)
+        #endif
         flights.removeValue(forKey: id)
         if revalidateAfterFlight.remove(id) != nil { queued.append(id) }
         startQueuedReads()
@@ -142,3 +181,110 @@ import BottoCore
         return .image(UIImage(cgImage: image))
     }
 }
+
+#if DEBUG
+/// Metadata only; a finished decode stays active until its parent checks publication.
+nonisolated final class AvatarDecodeLedger: @unchecked Sendable {
+    @TaskLocal static var testOwner: String?
+    static let shared = AvatarDecodeLedger()
+    static let activeLimit = 256, recentLimit = 64, ownerScalarLimit = 256
+
+    enum Stage: String, Encodable, Sendable {
+        case admitted = "awaitingService", queued, body, sync
+        case finish = "finishedAwaitingPublication", authority, published
+    }
+    struct Authority: Encodable, Sendable {
+        let taskCancelled, storeAlive, generationCurrent, requestCurrent, keyCurrent: Bool
+    }
+    private struct Record: Encodable, Sendable {
+        let request: UUID, generation: UUID
+        let testOwner: String
+        let ownerAvailable, ownerTruncated: Bool
+        let admittedAt: TimeInterval
+        var stage = Stage.admitted
+        var queuedAt, bodyAt, syncAt, finishedAt, authorityAt, publishedAt, retiredAt, endedAt: TimeInterval?
+        var workerCancelledAtEntry, imageProduced: Bool?
+        var authority: Authority?
+    }
+    private struct Snapshot: Encodable {
+        let capturedAt: TimeInterval
+        let activeLimit, recentLimit, ownerScalarLimit: Int
+        let droppedRequests, droppedEvents, evictedRecent: Int
+        let active, recent: [Record]
+    }
+
+    private let lock = NSLock()
+    private let origin = ProcessInfo.processInfo.systemUptime
+    private var active: [UUID: Record] = [:]
+    private var recent: [Record] = []
+    private var droppedRequests = 0, droppedEvents = 0, evictedRecent = 0
+
+    func admit(_ id: UUID, generation: UUID, testOwner: String?) {
+        let label = testOwner.map { String(String.UnicodeScalarView($0.unicodeScalars.prefix(Self.ownerScalarLimit))) } ?? "unknown"
+        let record = Record(request: id, generation: generation, testOwner: label,
+            ownerAvailable: testOwner != nil, ownerTruncated: (testOwner?.unicodeScalars.count ?? 0) > Self.ownerScalarLimit,
+            admittedAt: ProcessInfo.processInfo.systemUptime - origin)
+        lock.withLock {
+            guard active.count < Self.activeLimit else { droppedRequests += 1; return }
+            active[id] = record
+        }
+    }
+
+    func mark(_ stage: Stage, _ id: UUID, cancelled: Bool? = nil, imageProduced: Bool? = nil) {
+        update(id) { record, time in
+            record.stage = stage
+            switch stage {
+            case .admitted: break
+            case .queued: record.queuedAt = time
+            case .body: record.bodyAt = time; record.workerCancelledAtEntry = cancelled
+            case .sync: record.syncAt = time
+            case .finish: record.finishedAt = time; record.imageProduced = imageProduced
+            case .authority: record.authorityAt = time
+            case .published: record.publishedAt = time
+            }
+        }
+    }
+
+    func retire(_ id: UUID) {
+        update(id) { record, time in record.retiredAt = time }
+    }
+
+    func checkAuthority(_ id: UUID, _ authority: Authority) {
+        update(id) { record, time in
+            record.stage = .authority; record.authorityAt = time; record.authority = authority
+        }
+    }
+
+    func end(_ id: UUID) {
+        lock.withLock {
+            guard var record = active.removeValue(forKey: id) else { droppedEvents += 1; return }
+            record.endedAt = ProcessInfo.processInfo.systemUptime - origin
+            if recent.count == Self.recentLimit { recent.removeFirst(); evictedRecent += 1 }
+            recent.append(record)
+        }
+    }
+
+    private func update(_ id: UUID, _ change: (inout Record, TimeInterval) -> Void) {
+        let time = ProcessInfo.processInfo.systemUptime - origin
+        lock.withLock {
+            guard var record = active[id] else { droppedEvents += 1; return }
+            change(&record, time)
+            active[id] = record
+        }
+    }
+
+    func failureSnapshot() -> String {
+        let snapshot = lock.withLock {
+            Snapshot(capturedAt: ProcessInfo.processInfo.systemUptime - origin,
+                activeLimit: Self.activeLimit, recentLimit: Self.recentLimit, ownerScalarLimit: Self.ownerScalarLimit,
+                droppedRequests: droppedRequests, droppedEvents: droppedEvents, evictedRecent: evictedRecent,
+                active: active.values.sorted { $0.admittedAt < $1.admittedAt }, recent: recent)
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(snapshot), let text = String(data: data, encoding: .utf8) else {
+            return "Avatar decode metadata could not be encoded"
+        }
+        return text
+    }
+}
+#endif
