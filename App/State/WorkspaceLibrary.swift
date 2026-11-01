@@ -204,7 +204,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var initialSourceProofs: [LibraryChat.ID: ExactID] = [:]
     @ObservationIgnored private let cache: ArtifactCacheSession?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
-    private var inFlightUpsert: LibraryChat.ID?
+    private var inFlightUpsert: (id: LibraryChat.ID, revision: UUID)?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private var seedTask: Task<Void, Never>?
     private var pendingSeed: (book: ConversationBook, bots: [BotProfile], accepted: AcceptanceFence.Stamp, roster: UUID, request: UUID)?
@@ -480,7 +480,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func pendingMetadata() -> Set<LibraryChat.ID> {
         var savedOrWriting = persistedIDs
-        if let inFlightUpsert { savedOrWriting.insert(inFlightUpsert) }
+        if let inFlightUpsert { savedOrWriting.insert(inFlightUpsert.id) }
         return savedOrWriting.filter { records[$0] == nil }.union(dirtyChats.filter {
             records[$0] != nil && !restorationHints.contains($0) && !unreconciledSeedIDs.contains($0)
         })
@@ -498,7 +498,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         // This bounded atomic ledger write is independent of SQL and precedes
         // the existing writer guard, including changes arriving while SQL waits.
         do {
-            try cache.invalidateMetadata(pending.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
+            // SQL may have cleared this writer's guard before its acknowledgment resumes here.
+            let needsGuard = pending.filter {
+                inFlightUpsert?.id != $0 || inFlightUpsert?.revision != dirtyVersions[$0]
+            }
+            try cache.invalidateMetadata(needsGuard.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
         } catch {
             guardAdmissionFailure = UUID()
             if !restored || restorationFailed { unverifiedPersistenceChanges = true }
@@ -519,7 +523,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     }
                     dirtyChats = dirtyChats.filter { records[$0] != nil && !restorationHints.contains($0) && !unreconciledSeedIDs.contains($0) }
                     guard let id = dirtyChats.first, let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
-                    inFlightUpsert = id
+                    inFlightUpsert = (id, revision)
                     defer { inFlightUpsert = nil }
                     try await cache.upsert(row, revision: revision)
                     persistedIDs.insert(id)
@@ -1120,7 +1124,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         commit(admission, discoveries: retained)
         // Reinstalling a checked saved row is a read, not a new metadata edit.
         // Resolve it before persistence can create a speculative guard.
-        if !wasDirty, let persistedRead, let current = cachedChat(target),
+        if !wasDirty || unreconciledSeedIDs.contains(target), let persistedRead, let current = cachedChat(target),
            sameCachedChat(current, persistedRead, includingCertificate: false) {
             summaries[target] = persistedRead.summary; heads[target] = persistedRead.headFingerprint
             dirtyChats.remove(target); dirtyVersions[target] = nil

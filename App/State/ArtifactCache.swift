@@ -351,7 +351,9 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     }
     private func cleanMetadata(removing configurations: (UUID) -> Bool, clearAll: Bool, checkpoint: Checkpoint) throws {
         var ledger = try metadataLedger()
-        guard ledger.writable, let prior = checkpoint.ledger else { throw ArtifactCacheError.unavailable }
+        guard ledger.writable else { throw ArtifactCacheError.unavailable }
+        // An unreadable checkpoint cannot authorize deleting any recovered guards.
+        guard let prior = checkpoint.ledger else { return }
         ledger.value.entries = ledger.value.entries.filter {
             !configurations($0.configuration) || !prior.entries.contains($0)
                 || revisions[$0.key] != checkpoint.revisions[$0.key]
