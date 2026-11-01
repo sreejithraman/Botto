@@ -13,7 +13,15 @@ if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
 fi
+inbox_baseline=false
+if [ "$selector" = InboxStreamBaseline ]; then
+  inbox_baseline=true
+  selector=
+fi
 selection=BottoTests
+if [ "$inbox_baseline" = true ]; then
+  selection=BottoUITests/InboxRetentionUITests/testRevealedInboxShowsReplyAndReopeningKeepsDraft
+fi
 if [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
 import re
