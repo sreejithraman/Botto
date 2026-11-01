@@ -14,10 +14,14 @@ import BottoCore
     private var performanceReplyNumber = 0
     private var automationHandoff: ChatMessage?
     private let performanceFixture: Bool
+    private let performanceChunkDelay: Duration
     private let rotatesChatAccess = ProcessInfo.processInfo.arguments.contains("--rotate-chat-access-demo")
 
-    init(gateDirectory: URL? = nil, performanceFixture: Bool = ProcessInfo.processInfo.arguments.contains("--performance-demo")) {
+    init(gateDirectory: URL? = nil,
+         performanceFixture: Bool = ProcessInfo.processInfo.arguments.contains("--performance-demo"),
+         performanceChunkDelay: Duration = .milliseconds(20)) {
         self.performanceFixture = performanceFixture
+        self.performanceChunkDelay = performanceChunkDelay
         self.gateDirectory = gateDirectory ?? ProcessInfo.processInfo.environment["BOTTO_UI_TEST_BOT_GATE"]
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
@@ -743,7 +747,7 @@ import BottoCore
         InteractionFrameTrace.setStreamPublishing(true)
         defer { InteractionFrameTrace.setStreamPublishing(false) }
         for index in 0..<200 {
-            do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+            do { try await Task.sleep(for: performanceChunkDelay) } catch { return }
             guard !Task.isCancelled, connected, var current = chats[key], current.isWorking,
                   let messageIndex = current.messages.firstIndex(where: { $0.id == id }) else { return }
             current.messages[messageIndex].text += "Word \(index). "
