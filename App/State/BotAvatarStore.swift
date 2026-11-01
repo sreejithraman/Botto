@@ -23,6 +23,9 @@ import BottoCore
         let id: UUID
         let key: Key
         var task: Task<Void, Never>?
+        #if DEBUG
+        var recordCancellation: (@Sendable () -> Void)?
+        #endif
     }
     private var entries: [String: Entry] = [:]
     private var loading = Set<String>()
@@ -34,6 +37,9 @@ import BottoCore
     @ObservationIgnored private var service: (any BotService)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let now: () -> Date
+    #if DEBUG
+    @ObservationIgnored private let decodeObservation = BotAvatarDecodeObservation.current
+    #endif
 
     init(now: @escaping () -> Date = Date.init) { self.now = now }
 
@@ -51,7 +57,12 @@ import BottoCore
         let retired = flights.values
         flights = [:]; queued = []; wanted = [:]; revalidateAfterFlight = []
         service = nil; loading = []
-        for flight in retired { flight.task?.cancel() }
+        for flight in retired {
+            #if DEBUG
+            flight.recordCancellation?()
+            #endif
+            flight.task?.cancel()
+        }
     }
     func reset() { cancel(); connectionID = nil; entries = [:] }
 
@@ -63,6 +74,9 @@ import BottoCore
         entries = entries.filter { id, entry in wanted[id].map(Key.init) == entry.key }
         for (id, flight) in flights where wanted[id].map(Key.init) != flight.key {
             flights.removeValue(forKey: id); revalidateAfterFlight.remove(id)
+            #if DEBUG
+            flight.recordCancellation?()
+            #endif
             flight.task?.cancel()
         }
         queued.removeAll { wanted[$0] == nil }
@@ -93,17 +107,51 @@ import BottoCore
             guard let bot = wanted[id] else { continue }
             let attempt = UUID(), owner = generation, key = Key(bot)
             flights[id] = Flight(id: attempt, key: key)
+            #if DEBUG
+            let observation = decodeObservation
+            let request = BotAvatarDecodeObservation.Request(id: attempt, generation: owner, profileID: id, revision: bot.lookRevision)
+            flights[id]?.recordCancellation = { observation?.record(.cancelRequested(request)) }
+            let recordPublication: @MainActor @Sendable () -> Void = { [weak self] in
+                observation?.record(.publicationChecked(request, .init(taskCancelled: Task.isCancelled,
+                    storeAlive: self != nil, generationCurrent: self?.generation == owner,
+                    requestCurrent: self?.flights[id]?.id == attempt,
+                    keyCurrent: self?.wanted[id].map(Key.init) == key)))
+            }
+            #endif
             flights[id]?.task = Task { [weak self] in
                 let decoded: Decoded?
                 do {
+                    #if DEBUG
+                    observation?.record(.serviceStarted(request))
+                    #endif
                     let asset = try await service.avatarAsset(for: bot)
+                    #if DEBUG
+                    observation?.record(.assetReturned(request, present: asset != nil))
+                    if Task.isCancelled { recordPublication() }
+                    #endif
                     guard !Task.isCancelled else { return }
                     let photo = bot.appearance?.imageKind == "photo"
+                    #if DEBUG
+                    observation?.record(.requested(request))
+                    decoded = await Task.detached(priority: .utility) {
+                        observation?.record(.started(request))
+                        let result = asset.flatMap { Self.decode($0, photo: photo) }
+                        observation?.record(.finished(request, producedImage: result?.image != nil))
+                        return result
+                    }.value
+                    #else
                     decoded = await Task.detached(priority: .utility) { asset.flatMap { Self.decode($0, photo: photo) } }.value
+                    #endif
                 } catch {
+                    #if DEBUG
+                    observation?.record(.serviceFailed(request))
+                    #endif
                     // Optional/unsupported image RPCs never affect the connection or roster.
                     decoded = nil
                 }
+                #if DEBUG
+                recordPublication()
+                #endif
                 guard !Task.isCancelled else { return }
                 self?.complete(id, attempt: attempt, owner: owner, key: key, image: decoded?.image)
             }
@@ -114,6 +162,10 @@ import BottoCore
     private func complete(_ id: String, attempt: UUID, owner: UUID, key: Key, image: UIImage?) {
         guard generation == owner, flights[id]?.id == attempt, wanted[id].map(Key.init) == key else { return }
         entries[id] = Entry(key: key, checkedAt: now(), image: image)
+        #if DEBUG
+        decodeObservation?.record(.published(.init(id: attempt, generation: owner, profileID: id, revision: key.revision),
+            imagePresent: image != nil))
+        #endif
         flights.removeValue(forKey: id)
         if revalidateAfterFlight.remove(id) != nil { queued.append(id) }
         startQueuedReads()
@@ -142,3 +194,47 @@ import BottoCore
         return .image(UIImage(cgImage: image))
     }
 }
+
+#if DEBUG
+/// Read-only, scoped to test store construction, and absent from Release builds.
+nonisolated struct BotAvatarDecodeObservation: Sendable {
+    @TaskLocal static var current: Self?
+
+    struct Request: Sendable {
+        let id: UUID
+        let generation: UUID
+        let profileID: String
+        let revision: Int?
+    }
+
+    struct PublicationAuthority: Sendable {
+        let taskCancelled: Bool
+        let storeAlive: Bool
+        let generationCurrent: Bool
+        let requestCurrent: Bool
+        let keyCurrent: Bool
+    }
+
+    enum Event: Sendable {
+        case serviceStarted(Request)
+        case assetReturned(Request, present: Bool)
+        case serviceFailed(Request)
+        case requested(Request)
+        case started(Request)
+        case finished(Request, producedImage: Bool)
+        case cancelRequested(Request)
+        case publicationChecked(Request, PublicationAuthority)
+        case published(Request, imagePresent: Bool)
+
+        var request: Request {
+            switch self {
+            case .serviceStarted(let request), .assetReturned(let request, _), .serviceFailed(let request),
+                 .requested(let request), .started(let request), .finished(let request, _),
+                 .cancelRequested(let request), .publicationChecked(let request, _), .published(let request, _): request
+            }
+        }
+    }
+
+    let record: @Sendable (Event) -> Void
+}
+#endif

@@ -520,11 +520,26 @@ import BottoCore
 
     @Test func revisionCacheRemovalAndImageFailuresStayLocal() async throws {
         let service = AvatarService(); service.holdImages = false
+        #if DEBUG
+        let trace = AvatarDecodeObservationTrace()
+        let store = BotAvatarDecodeObservation.$current.withValue(trace.observation) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #if DEBUG
+        defer { Attachment.record(trace.description, named: "avatar-cache-decode-stages.txt") }
+        #endif
         func diagnostics() -> String {
             let bot = store.bots.first
+            #if DEBUG
+            let decoding = trace.description
+            #else
+            let decoding = "Decode observation is excluded from this build"
+            #endif
             return """
             capturedAt=\(Date.now.timeIntervalSince1970)
             reads=\(service.reads)
@@ -533,6 +548,7 @@ import BottoCore
             revision=\(String(describing: bot?.lookRevision))
             failImages=\(service.failImages)
             pending=\(service.pending.count)
+            \(decoding)
             """
         }
         #expect(await store.connect(connection))
@@ -578,11 +594,28 @@ import BottoCore
         }
         let service = AvatarService(); service.holdImages = false
         service.suppliedAsset = BotAvatarAsset(data: bytes, mimeType: mime)
+        #if DEBUG
+        let trace = AvatarDecodeObservationTrace()
+        let store = BotAvatarDecodeObservation.$current.withValue(trace.observation) {
+            AppStore(service: service, persistence: AvatarStorage().persistence)
+        }
+        #else
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        #endif
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #if DEBUG
+        defer { Attachment.record("mime=\(mime) fixtureBytes=\(bytes.count)\n\(trace.description)", named: "avatar-media-decode-stages.txt") }
+        #endif
         #expect(await store.connect(connection))
-        try await avatarEventually { !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(diagnostics: {
+            let state = "mime=\(mime) reads=\(service.reads) loading=\(store.isLoadingAvatar(for: store.bots[0])) image=\(store.avatar(for: store.bots[0]) != nil)"
+            #if DEBUG
+            return state + "\n" + trace.description
+            #else
+            return state
+            #endif
+        }) { !store.isLoadingAvatar(for: store.bots[0]) }
         let image = try #require(store.avatar(for: store.bots[0]))
         #expect(abs(image.size.width / image.size.height - size.width / size.height) < 0.001)
         let cgImage = try #require(image.cgImage)
@@ -762,6 +795,34 @@ import BottoCore
     }
     try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }
+
+#if DEBUG
+nonisolated private final class AvatarDecodeObservationTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let origin = ContinuousClock.now
+    private var entries: [(ContinuousClock.Instant, BotAvatarDecodeObservation.Event)] = []
+
+    var observation: BotAvatarDecodeObservation {
+        .init(record: { [self] event in lock.withLock { entries.append((.now, event)) } })
+    }
+
+    var description: String {
+        let captured = lock.withLock { entries }
+        var queued = Set<UUID>(), running = Set<UUID>()
+        let lines = captured.map { instant, event in
+            let id = event.request.id
+            switch event {
+            case .requested: queued.insert(id)
+            case .started: queued.remove(id); running.insert(id)
+            case .finished: running.remove(id)
+            default: break
+            }
+            return "elapsed=\(origin.duration(to: instant)) queued=\(queued.count) running=\(running.count) outstanding=\(queued.count + running.count) \(event)"
+        }
+        return (["decoderEvents=\(captured.count)"] + lines).joined(separator: "\n")
+    }
+}
+#endif
 
 @MainActor private final class AvatarStorage {
     var value: ConnectionConfiguration?

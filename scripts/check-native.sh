@@ -13,6 +13,10 @@ if [ "$selector" = --build-only ]; then
   build_only=true
   selector=
 fi
+# Diagnostic branch only: observe the full main workload without enumeration warmup.
+if [ "$selector" = FullNativeObservation ]; then
+  selector=
+fi
 selection=BottoTests
 if [ -n "$selector" ]; then
   python3 - "$selector" <<'PYTHON'
