@@ -800,6 +800,10 @@ import BottoCore
         let warmCache = ArtifactCache(root: root), warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: scope))
         warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
         _ = try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.first }))
+        // The later capture must evict the unrelated first chat, regardless of writer order.
+        let warmSession = warmCache.session(scope: scope)
+        let peer = try #require(try await warmSession.loadChats().first { $0.identity == service.second })
+        try await warmSession.upsert(peer)
         warm.retire(); await warmCache.close()
         var limits = ArtifactCache.Limits(); limits.chatCount = 1
         let gate = CaptureCommitGate(); defer { gate.release() }
