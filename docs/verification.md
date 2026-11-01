@@ -713,3 +713,28 @@ review confirming no new network/mutation authority, original-byte loss or
 corruption, or account-scope escape. No profile-incarnation layer or broad
 quarantine was added. The exact follow-up is saved in Hot as
 `7F24A8D9-B726-406C-9099-E7770DA89C9C`.
+## Inbox fixture separation — 1 November 2026
+
+Baseline run `41330004685` requested `pinned-bot-scout`, but its recording
+shows Scout and Iris exchanging pinned positions around the tap. Its final
+accessibility hierarchy identifies Iris in the header, picker and composer,
+with Iris's ordinary history and Word 0–37 without completion. This proves a
+slow demo stream without PR9's library. It does not prove streaming over
+Scout's 400-row history: the performance fixture streams 200 chunks for any
+bot, while only Scout receives that history.
+
+`testRevealedInboxShowsReplyAndReopeningKeepsDraft` now uses the ordinary demo
+reply. It retains completion, fresh roster preview, navigation, unselected-row
+and exact-draft assertions, and checks Scout's identity on opening and reopening.
+The dedicated first-stream and reading-position tests retain 200 chunks, the
+default 20 ms delay and their existing deadlines. They now require Scout and
+history row 399 before sending; the long-history opening check also requires
+Scout's identity within its existing budget. The native service test still
+asserts 200 distinct partial texts with zero injected delay.
+
+The changed UI workflows remain unexecuted locally. T3 could not discover a
+new owned Simulator after its prescribed refresh and retry. The streaming
+bottleneck and pinned-selection race remain unresolved under Snip Snap item
+`B14EBCD5-EA29-4987-B202-A4FA7B4D5160`; this change does not claim a performance
+repair. Source/artifact evidence is retained in
+`/tmp/botto-stream-followup-20261101/investigation.json`.

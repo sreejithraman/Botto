@@ -373,26 +373,30 @@ final class InboxRetentionUITests: XCTestCase {
     @MainActor func testRevealedInboxShowsReplyAndReopeningKeepsDraft() {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--performance-demo", "--reduce-motion"]
+        addTeardownBlock { app.terminate() }
+        app.launchArguments = ["--demo", "--reduce-motion"]
         app.launch()
         let pinnedScout = app.buttons["pinned-bot-scout"]
         XCTAssertTrue(pinnedScout.waitForExistence(timeout: 10))
         pinnedScout.tap()
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["bot-profile-button"].label, "Profile for Scout")
         composer.tap(); composer.typeText("Inventory refresh proof")
         app.buttons["Send message"].tap()
-        let reply = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
+        let reply = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@",
+            "This demo stays on your phone and doesn’t perform any work.")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 30))
         composer.tap(); composer.typeText("Keep this local draft")
         WorkspaceNavigation.browseBots(in: app)
-        WorkspaceNavigation.revealBot("bot-row-scout", in: app, maximumSwipes: 60)
+        WorkspaceNavigation.revealBot("bot-row-scout", in: app)
         let row = app.buttons["bot-row-scout"]
         XCTAssertTrue(row.isHittable)
-        XCTAssertTrue(row.label.contains("Word 0."))
+        XCTAssertTrue(row.label.contains("You’ve got the idea."))
         XCTAssertFalse(row.isSelected)
         row.tap()
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["bot-profile-button"].label, "Profile for Scout")
         XCTAssertEqual(composer.value as? String, "Keep this local draft")
     }
 }

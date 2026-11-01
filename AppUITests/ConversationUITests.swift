@@ -655,7 +655,7 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--performance-demo", "--reduce-motion"]
         app.launch()
-        let scout = app.buttons["Scout, pinned"]
+        let scout = app.buttons["pinned-bot-scout"]
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
         let start = ContinuousClock.now
         let deadline = start + .seconds(10)
@@ -666,6 +666,7 @@ final class ConversationUITests: XCTestCase {
         let transcript = app.descendants(matching: .any)["chat-transcript"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             composer.exists && composer.isEnabled && composer.isHittable &&
+                app.buttons["bot-profile-button"].label == "Profile for Scout" &&
                 finalParagraph.exists && finalParagraph.isHittable &&
                 finalParagraph.frame.maxY <= composer.frame.minY &&
                 RenderedTranscriptText.line("words arrive.", in: finalParagraph, viewport: transcript.frame, app: app) != nil
@@ -702,10 +703,16 @@ final class ConversationUITests: XCTestCase {
         }
         app.launchArguments = ["--demo", "--performance-demo", "--reduce-motion"]
         app.launch()
-        XCTAssertTrue(app.buttons["Scout, pinned"].waitForExistence(timeout: 10))
-        app.buttons["Scout, pinned"].tap()
+        let scout = app.buttons["pinned-bot-scout"]
+        XCTAssertTrue(scout.waitForExistence(timeout: 10))
+        scout.tap()
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["bot-profile-button"].label, "Profile for Scout")
+        let finalHistoryMessage = app.descendants(matching: .any)["transcript-message-performance-399"]
+        XCTAssertTrue(finalHistoryMessage.waitForExistence(timeout: 10))
+        XCTAssertTrue(finalHistoryMessage.isHittable)
+        XCTAssertTrue(composer.isEnabled)
         composer.tap()
         composer.typeText("Stream the performance fixture")
         let streamStart = ContinuousClock.now
