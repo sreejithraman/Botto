@@ -2,11 +2,7 @@ import Foundation
 import BottoCore
 import Testing
 import WebKit
-#if RICH_CONTENT_STANDALONE
-@testable import RichContentHarness
-#else
 @testable import Botto
-#endif
 
 /// Exercise admission through real, detached WebKit owners. No window or native
 /// capture is needed to observe a forbidden reservation and document creation.
@@ -230,11 +226,7 @@ struct RichReplyPressureTests {
     }
 
     private func renderer() -> RichContentRenderer {
-        #if RICH_CONTENT_STANDALONE
-        RichContentRenderer(bundle: .module)
-        #else
         RichContentRenderer()
-        #endif
     }
 
     private func wait(_ predicate: () -> Bool) async throws {
