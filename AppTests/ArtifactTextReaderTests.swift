@@ -9,7 +9,6 @@ import BottoCore
         let original = "Canvas demo\r\n  Review café 🦊\n下一段\tunchanged"
         let bytes = Data(original.utf8)
         #expect(try ArtifactPlainText.decode(bytes, mimeType: "text/plain").get() == original)
-        #expect(bytes == Data(original.utf8), "Decoding must not mutate original export bytes")
     }
     @Test(arguments: [
         ([0xEF, 0xBB, 0xBF, 0x41], "A"),

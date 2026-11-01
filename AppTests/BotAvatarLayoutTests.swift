@@ -1,7 +1,6 @@
 import SwiftUI
 import Testing
 import UIKit
-import XCTest
 import BottoCore
 @testable import Botto
 
@@ -117,20 +116,18 @@ struct BotAvatarLayoutTests {
         var failures: [String] = []
         for size: CGFloat in [24, 56, 120, 300] {
             let scale: CGFloat = size <= 56 ? 3 : 1
-            for scheme in [ColorScheme.light, .dark] {
-                for (index, pose) in poses.enumerated() {
-                    let body = try render(BotAvatarBody(shape: shape).fill(Color.botBody("#22c55e"))
-                        .rotationEffect(.degrees(pose.roll)).environment(\.colorScheme, scheme), size: size, scale: scale)
-                    for expression in BotAvatarExpression.allCases {
-                        let profile = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
-                            shape: shape, color: "#22c55e", expression: expression.rawValue
-                        ))
-                        let actual = try render(BotAvatarMark(profile: profile, size: size, pose: pose)
-                            .environment(\.colorScheme, scheme), size: size, scale: scale)
-                        let overflow = overflowPixels(actual, outside: body)
-                        if overflow > 0 || (pose.lid == 1 && actual.bytes == body.bytes) {
-                            failures.append("\(shape)/\(expression)/\(size)/\(scheme)/pose \(index): \(overflow) overflow pixels")
-                        }
+            // This opaque preset has fixed body/eye colors; contrast tests cover appearance.
+            for (index, pose) in poses.enumerated() {
+                let body = try render(BotAvatarBody(shape: shape).fill(Color.botBody("#22c55e"))
+                    .rotationEffect(.degrees(pose.roll)), size: size, scale: scale)
+                for expression in BotAvatarExpression.allCases {
+                    let profile = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
+                        shape: shape, color: "#22c55e", expression: expression.rawValue
+                    ))
+                    let actual = try render(BotAvatarMark(profile: profile, size: size, pose: pose), size: size, scale: scale)
+                    let overflow = overflowPixels(actual, outside: body)
+                    if overflow > 0 || (pose.lid == 1 && actual.bytes == body.bytes) {
+                        failures.append("\(shape)/\(expression)/\(size)/pose \(index): \(overflow) overflow pixels")
                     }
                 }
             }
@@ -392,124 +389,5 @@ struct BotAvatarLayoutTests {
             guard (0..<width).contains(x), (0..<height).contains(y) else { return 0 }
             return bytes[(y * width + x) * 4 + 3]
         }
-    }
-}
-
-/// Retains native renders for human inspection alongside the pixel assertions.
-final class BotAvatarProofTests: XCTestCase {
-    @MainActor func testCaptureActivityCueCorners() throws {
-        let activities: [BotMotionActivity] = [.thinking, .tools, .failed, .waiting, .unavailable, .offline]
-        for scheme in [ColorScheme.light, .dark] {
-            for avatarSize: CGFloat in [30, 72] {
-                let content = VStack(spacing: 14) {
-                    HStack {
-                        Text("Shape").frame(width: 90, alignment: .leading)
-                        ForEach(activities) { activity in
-                            Text(activity.rawValue).font(.caption).frame(width: 100)
-                        }
-                    }
-                    ForEach(BotAvatarShape.allCases) { shape in
-                        HStack(spacing: 8) {
-                            Text(shape.rawValue.capitalized).font(.caption).frame(width: 90, alignment: .leading)
-                            ForEach(activities) { activity in
-                                let profile = BotProfile(id: "cue-proof", name: "Cue proof",
-                                    appearance: BotAppearance(shape: shape, color: "#f97316"))
-                                BotAvatarMotion(profile: profile, size: avatarSize,
-                                    presentation: .init(activity: activity, enteredAt: .distantPast), still: true)
-                                    .frame(width: 100, height: avatarSize + 28)
-                            }
-                        }
-                    }
-                    HStack(spacing: 36) {
-                        ForEach([30.0, 56.0, 96.0], id: \.self) { size in
-                            VStack(spacing: 12) {
-                                BotAvatarMotion(profile: BotProfile(id: "small-cue", name: "Cue proof",
-                                    appearance: BotAppearance(shape: .squircle, color: "#f97316")), size: size,
-                                    presentation: .init(activity: .waiting, enteredAt: .distantPast), still: true)
-                                Text("\(Int(size)) pt").font(.caption)
-                            }
-                        }
-                    }.padding(.top, 16)
-                }
-                .padding(24).background(BottoTheme.paper).foregroundStyle(BottoTheme.ink)
-                .environment(\.colorScheme, scheme)
-                let renderer = ImageRenderer(content: content)
-                renderer.scale = 2
-                let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
-                attachment.name = "Activity cue corners - \(Int(avatarSize)) pt - \(scheme)"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-            }
-        }
-    }
-
-    @MainActor func testCaptureRedShadeComparison() throws {
-        let content = VStack(spacing: 16) {
-            ForEach([ColorScheme.light, .dark], id: \.self) { scheme in
-                HStack(spacing: 40) {
-                    ForEach(["#ef4444", "#f05252"], id: \.self) { color in
-                        VStack(spacing: 8) {
-                            BotAvatar(profile: BotProfile(id: "red-proof", name: "Red",
-                                appearance: BotAppearance(shape: .squircle, color: color)), size: 120, motion: .still)
-                            Text(color == "#ef4444" ? "Current red" : "Brighter red").font(.headline)
-                        }
-                    }
-                }
-                .padding(24).frame(width: 440).background(BottoTheme.paper)
-                .environment(\.colorScheme, scheme)
-            }
-        }
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = 2
-        let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
-        attachment.name = "Current and brighter red with dark eyes"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
-
-    @MainActor func testCaptureBottoAvatarFamiliesAndPalette() throws {
-        let kinds = ["round", "organic", "boxy", "capsule", "nub", "cloud", "droplet", "hexagon", "sun", "triangle"]
-        let content = VStack(alignment: .leading, spacing: 20) {
-            Text("Botto avatars").font(.title.bold())
-            Text("Shared shape families · Botto’s own faces and colors").font(.subheadline)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 16) {
-                ForEach(kinds, id: \.self) { kind in
-                    let profile = BotProfile(id: "avatar-proof", name: kind,
-                        appearance: BotAppearance(rawShape: "blobatar:botto-avatar:\(kind)", custom: true))
-                    VStack(spacing: 4) {
-                        BotAvatar(profile: profile, size: 96, motion: .still)
-                        Text(kind.capitalized).font(.caption)
-                    }
-                }
-            }
-            Text("Familiar preset colors").font(.headline)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 16) {
-                ForEach(BotAvatarColors.presets) { preset in
-                    let profile = BotProfile(id: "preset", name: preset.id,
-                        appearance: BotAppearance(shape: .squircle, color: preset.shared))
-                    VStack(spacing: 4) {
-                        BotAvatar(profile: profile, size: 76, motion: .still)
-                        Text(BotAvatarColor.label(for: preset.shared)).font(.caption)
-                    }
-                }
-            }
-            HStack(spacing: 18) {
-                BotAvatar(profile: BotProfile(id: "custom", name: "Custom", appearance: BotAppearance(
-                    shape: .cloud, color: "hsl(30 40% 50%)")), size: 72, motion: .still)
-                VStack(alignment: .leading) {
-                    Text("Custom colors stay exact").font(.headline)
-                    Text("This custom brown is preserved rather than mapped to a preset.").font(.caption)
-                }
-            }
-        }
-        .padding(24).frame(width: 728).background(.white).foregroundStyle(.black)
-        .environment(\.colorScheme, .light)
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = 2
-        let image = try XCTUnwrap(renderer.uiImage)
-        let attachment = XCTAttachment(image: image)
-        attachment.name = "Botto avatar families and regular palette"
-        attachment.lifetime = .keepAlways
-        add(attachment)
     }
 }

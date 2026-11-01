@@ -6,22 +6,23 @@ import BottoCore
         // Exact decimal channels of HSL(h, 68%, 58%) at the twelve 30-degree hues.
         // Numeric RGB uses 0...255; percentage RGB expresses the same channels.
         let fixtures = [
-            ("red", "220.728 75.072 75.072", "86.56% 29.44% 29.44%"),
-            ("orange", "220.728 147.9 75.072", "86.56% 58% 29.44%"),
-            ("yellow", "220.728 220.728 75.072", "86.56% 86.56% 29.44%"),
-            ("lime", "147.9 220.728 75.072", "58% 86.56% 29.44%"),
-            ("green", "75.072 220.728 75.072", "29.44% 86.56% 29.44%"),
-            ("mint", "75.072 220.728 147.9", "29.44% 86.56% 58%"),
-            ("teal", "75.072 220.728 220.728", "29.44% 86.56% 86.56%"),
-            ("blue", "75.072 147.9 220.728", "29.44% 58% 86.56%"),
-            ("indigo", "75.072 75.072 220.728", "29.44% 29.44% 86.56%"),
-            ("purple", "147.9 75.072 220.728", "58% 29.44% 86.56%"),
-            ("magenta", "220.728 75.072 220.728", "86.56% 29.44% 86.56%"),
-            ("pink", "220.728 75.072 147.9", "86.56% 29.44% 58%")
+            ("red", "220.728 75.072 75.072", "86.56% 29.44% 29.44%", "#ef4444"),
+            ("orange", "220.728 147.9 75.072", "86.56% 58% 29.44%", "#f97316"),
+            ("yellow", "220.728 220.728 75.072", "86.56% 86.56% 29.44%", "#facc15"),
+            ("lime", "147.9 220.728 75.072", "58% 86.56% 29.44%", "#84cc16"),
+            ("green", "75.072 220.728 75.072", "29.44% 86.56% 29.44%", "#22c55e"),
+            ("mint", "75.072 220.728 147.9", "29.44% 86.56% 58%", "#34d399"),
+            ("teal", "75.072 220.728 220.728", "29.44% 86.56% 86.56%", "#14b8a6"),
+            ("blue", "75.072 147.9 220.728", "29.44% 58% 86.56%", "#38bdf8"),
+            ("indigo", "75.072 75.072 220.728", "29.44% 29.44% 86.56%", "#6366f1"),
+            ("purple", "147.9 75.072 220.728", "58% 29.44% 86.56%", "#8b5cf6"),
+            ("magenta", "220.728 75.072 220.728", "86.56% 29.44% 86.56%", "#d946ef"),
+            ("pink", "220.728 75.072 147.9", "86.56% 29.44% 58%", "#ec4899")
         ]
-        for (id, numeric, percent) in fixtures {
+        for (id, numeric, percent, expectedHex) in fixtures {
             for channels in [numeric, percent] {
                 #expect(BotAvatarColors.preset(for: "rgb(\(channels))")?.id == id)
+                #expect(BotAvatarColors.presentation("rgb(\(channels))") == expectedHex)
             }
         }
     }
@@ -177,12 +178,5 @@ import BottoCore
     func tinyCustomDifferencesNeverTriggerLargePaletteReplacement(input: String) {
         #expect(BotAvatarColors.preset(for: input) == nil)
         #expect(BotAvatarColors.presentation(input) == "#dd4b4b")
-    }
-
-    @Test(arguments: ["rgb(86.56% 29.44% 29.44%)", "rgb(220.728 75.072 75.072)"])
-    func exactFractionalRGBEquivalentRecognizesHermesPreset(input: String) {
-        // HSL(0, .68, .58) has exact unrounded channels .8656, .2944, .2944.
-        #expect(BotAvatarColors.preset(for: input)?.id == "red")
-        #expect(BotAvatarColors.presentation(input) == "#ef4444")
     }
 }

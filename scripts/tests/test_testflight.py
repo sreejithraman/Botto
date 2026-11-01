@@ -166,10 +166,6 @@ if args[:2] == ["builds", "wait"]:
 if args[:2] == ["builds", "info"]: done({"data":{"attributes":{"usesNonExemptEncryption":s.get("encryption",False)}}})
 if args[:3] == ["builds", "test-notes", "list"]:
  done({"data": [] if not s.get("notes") else [{"attributes":{"whatsNew":s["notes"]}}]})
-if args[:3] == ["builds", "test-notes", "create"]:
- if s.get("race_notes"): s["notes"]=s.pop("race_notes")
- if not s.get("drop_notes_write"): s["notes"]=flag("--whats-new")
- done({})
 if args[:3] == ["api", "POST", "/v1/betaBuildLocalizations"]:
  body_file=Path(flag("--body-file"))
  assert body_file.stat().st_mode & 0o777 == 0o600

@@ -386,19 +386,11 @@ private struct RichPreviewSurface: View {
     }
 }
 
-#if os(iOS)
 private struct RichWebView: UIViewRepresentable {
     let webView: WKWebView
     func makeUIView(context: Context) -> WKWebView { webView }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
-#elseif os(macOS)
-private struct RichWebView: NSViewRepresentable {
-    let webView: WKWebView
-    func makeNSView(context: Context) -> WKWebView { webView }
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
-}
-#endif
 
 private extension ReplyContent.Format {
     var displayName: String {

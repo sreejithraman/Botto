@@ -4,16 +4,8 @@ import Testing
 import BottoCore
 import WebKit
 import SwiftUI
-#if RICH_CONTENT_STANDALONE
-import AppKit
-#else
 import UIKit
-#endif
-#if RICH_CONTENT_STANDALONE
-@testable import RichContentHarness
-#else
 @testable import Botto
-#endif
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct RichReplyCacheTests {
     @Test func retainedPresentationSurvivesOwnersButReconcilesExactBytes() async throws {
@@ -211,12 +203,7 @@ import UIKit
         let fixture = try await CacheFixture()
         defer { fixture.finish() }
         let block = try fixture.block()
-        #if RICH_CONTENT_STANDALONE
-        _ = NSApplication.shared
-        var drawings: [NSView] = []
-        #else
         var drawings: [UIView] = []
-        #endif
         var presentations: [DiagramPresentation] = []
         for index in 0..<4 {
             let layout = try #require(DiagramLayout(dark: false, reduceMotion: false, width: CGFloat(380 + index), viewportHeight: nil))
@@ -257,22 +244,6 @@ import UIKit
     /// Materialize the real representable, then retain its native drawing child
     /// independently of SwiftUI updates. Revoking a presentation can update the
     /// SwiftUI tree; it must not uncharge storage still owned by a native child.
-    #if RICH_CONTENT_STANDALONE
-    private func retainedDrawing(_ presentation: DiagramPresentation) async throws -> NSView {
-        let host = NSHostingView(rootView: DiagramPixelsView(presentation: presentation))
-        host.frame = CGRect(x: 0, y: 0, width: 128, height: 128)
-        host.layoutSubtreeIfNeeded()
-        let output = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: output)
-        func find(_ view: NSView) -> NSView? {
-            if String(reflecting: type(of: view)).contains("DrawingView"), view.bounds.width > 0 { return view }
-            return view.subviews.lazy.compactMap(find).first
-        }
-        let drawing = try #require(find(host), "The fixture must mount the actual native drawing child")
-        drawing.removeFromSuperview()
-        return drawing
-    }
-    #else
     private func retainedDrawing(_ presentation: DiagramPresentation) async throws -> UIView {
         try await wait {
             UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -309,33 +280,15 @@ import UIKit
         drawing.removeFromSuperview()
         return drawing
     }
-    #endif
 
     private func renderer() -> RichContentRenderer {
-        #if RICH_CONTENT_STANDALONE
-        RichContentRenderer(bundle: .module)
-        #else
         RichContentRenderer()
-        #endif
     }
     private func wait(_ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(21)
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
         try #require(predicate())
     }
-    #if RICH_CONTENT_STANDALONE
-    private func mount(_ renderer: RichContentRenderer) async throws -> NSWindow {
-        _ = NSApplication.shared
-        let view = try #require(renderer.webView)
-        let window = NSWindow(contentRect: CGRect(x: 90, y: 90, width: 380, height: 480),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.contentView = view
-        view.frame = CGRect(x: 0, y: 0, width: 380, height: 480)
-        window.makeKeyAndOrderFront(nil)
-        return window
-    }
-    private func close(_ window: NSWindow) { window.orderOut(nil); window.contentView = nil }
-    #else
     private func mount(_ renderer: RichContentRenderer) async throws -> UIWindow {
         try await wait { UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.contains { $0.activationState == .foregroundActive } }
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
@@ -348,7 +301,6 @@ import UIKit
         return window
     }
     private func close(_ window: UIWindow) { window.isHidden = true; window.rootViewController = nil }
-    #endif
 }
 
 /// Pressure is process-wide. Keep these suites in one native-runtime scope so a
