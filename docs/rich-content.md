@@ -150,7 +150,7 @@ active export keeps its captured copy. A new producing message or source revisio
 a separate capture. A host path alone does not identify immutable contents.
 The cache stays within its saved connection, installation, profile, and chat;
 confirmed Forget removes that connection's captures. Cached identity never
-grants network access. See [artifact capture scope](adr/0009-scoped-artifact-captures.md).
+grants network access. See [artifact capture scope](adr/0010-scoped-artifact-captures.md).
 
 Tap a file card in either a user message or a bot reply to preview its captured
 copy or download it from its originating Hermes conversation. Historical cards
