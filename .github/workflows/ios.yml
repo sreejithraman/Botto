@@ -17,10 +17,6 @@ run-name: ${{ inputs.native_test != '' && format('Native diagnostics - {0}', inp
 permissions:
   contents: read
 
-concurrency:
-  group: ios-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ inputs.native_test != '' && 'diagnostics' || 'full' }}
-  cancel-in-progress: true
-
 jobs:
   core:
     # Public repositories run automatically; private repositories support manual dispatch.

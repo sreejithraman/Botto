@@ -62,8 +62,8 @@ gh workflow run ios.yml --ref YOUR-BRANCH -f native_test=AppStoreAvatarTests
 ```
 
 Focused manual runs report `diagnostic-result`, not the required `verify`, and
-cannot authorize TestFlight delivery. Their concurrency group is separate from
-push checks, so even a full manual run cannot cancel the current `main` check. A focused
+cannot authorize TestFlight delivery. Check runs are independent, so a manual
+run cannot cancel the current `main` check. A focused
 pass proves only the selected cases; record the actual executed test count.
 
 The full runner disables verbose Simulator failure diagnostics by default with

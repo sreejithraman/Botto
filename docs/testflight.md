@@ -10,11 +10,11 @@ push their PR and merge it after the fast checks pass. Fork PRs never receive
 Apple secrets or upload builds.
 It does not submit an App Store release or invite external testers.
 
-Merges close together share one delivery: a newer main push cancels obsolete
-main checks, and only the latest tested main can start publishing. Notes cover
-all changes since the last confirmed beta. An upload already in progress is
-allowed to finish; the next delivery rechecks the latest tested source and
-delivery baseline after queueing. Manual diagnostics cannot cancel main checks.
+Each revision's checks run independently, so a delayed older run cannot cancel
+a newer check. Publishing skips superseded sources and ships the latest tested
+main with notes covering all changes since the last confirmed beta. An upload
+already in progress finishes; the next delivery rechecks its source and baseline
+after queueing. Rapid merges may run extra checks, without an extra release step.
 
 ## Delivery flow
 
