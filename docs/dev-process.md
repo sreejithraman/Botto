@@ -21,6 +21,10 @@ does not return to artifact upload while its foreground child is still running.
 the signal number; normal completion preserves the command's exit status.
 stdout and stderr stay attached to the caller.
 
+Darwin can report EPERM when only zombies remain in the group. Before reaping
+the leader, the helper checks that anchored group for running members. Live or
+unreadable membership keeps the delivery warning.
+
 The command must retain its leader until its work finishes. Descendants that
 leave the process group or change credentials are outside this ownership
 contract. SIGKILL or host loss can prevent cleanup; no later PID lookup is used

@@ -54,9 +54,10 @@ executing a focused selection. A helper, wrong signature, or empty selection
 cannot claim a passing run. Discovered identifiers, build/test status and
 `.xcresult` survive result finalization failures where possible. The hosted
 native job has a 45-minute budget for the build, Simulator startup, full suite,
-and result upload. It registers external result and discovery paths before
-starting Xcode. Its foreground process owner stops the native runner's process
-group and reaps the runner on cancellation before the always-upload step reads
+and result upload. It registers external result, discovery, and native-log paths
+before starting Xcode. The log captures build and test output even when an
+interrupted build has not created a result bundle. Its foreground process owner
+stops the native runner's process group and reaps the runner on cancellation before the always-upload step reads
 those paths. The interrupted run leaves its partial evidence in place without
 running finalization. DerivedData stays outside the upload. See
 [foreground process ownership](dev-process.md#foreground-commands-and-ci-cancellation).
@@ -72,6 +73,8 @@ Focused manual runs report `diagnostic-result`, not the required `verify`, and
 cannot authorize TestFlight delivery. Check runs are independent, so a manual
 run cannot cancel the current `main` check. A focused
 pass proves only the selected cases; record the actual executed test count.
+If Xcode lists a requested method as disabled, select its enclosing suite and
+verify that the intended cases actually execute.
 
 Both native runners disable verbose Simulator failure diagnostics by default with
 `-collect-test-diagnostics never`. Test output and the `.xcresult` under

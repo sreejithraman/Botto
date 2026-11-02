@@ -367,7 +367,7 @@ import WebKit
     }
     private func wait(_ label: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(8)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(label)")
     }
 

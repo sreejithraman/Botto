@@ -18,6 +18,39 @@ CLI = Path(__file__).resolve().parents[1] / 'dev-process.py'
 
 
 class ForegroundProcessTests(unittest.TestCase):
+    def test_group_permission_failure_stays_unconfirmed_for_live_or_unreadable_members(self):
+        spec = importlib.util.spec_from_file_location('dev_process_group_control', CLI)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for listing in ('45678 Z\n45678 S\n', '', 'unexpected output'):
+            with self.subTest(listing=listing):
+                child = mock.Mock(pid=45678, returncode=None)
+                def snapshot(*args, **kwargs):
+                    self.assertIsNone(child.returncode, 'group anchor was reaped before inspection')
+                    return subprocess.CompletedProcess(args, 0, listing, '')
+                def reap(*args, **kwargs):
+                    child.returncode = -15
+                child.wait.side_effect = reap
+                with mock.patch.object(module.os, 'killpg', side_effect=PermissionError), \
+                        mock.patch.object(module.subprocess, 'run', side_effect=snapshot):
+                    warnings = module.stop_child(child, 0)
+                self.assertEqual(len(warnings), 2)
+                self.assertTrue(all('delivery unconfirmed' in warning for warning in warnings))
+
+    def test_exited_owned_group_does_not_report_unconfirmed_delivery(self):
+        spec = importlib.util.spec_from_file_location('dev_process_zombie_control', CLI)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)
+        try:
+            warnings = module.stop_child(child, 0.1)
+            self.assertIsNotNone(child.returncode)
+            self.assertEqual(warnings, [])
+        finally:
+            if child.returncode is None:
+                child.kill()
+                child.wait(timeout=5)
+
     def test_run_streams_output_and_preserves_native_exit_status(self):
         source = 'import sys; print("native stdout"); print("native stderr", file=sys.stderr); sys.exit(int(sys.argv[1]))'
         for status in (0, 65):

@@ -11,7 +11,9 @@ import BottoCore
         defer { fixture.close() }
         let state = fixture.state, store = fixture.store, service = fixture.service
         let identity = try identity(for: state.message)
-        try await wait("initial rendered HTML and layout writer") {
+        try await wait("initial rendered HTML and layout writer", timeout: .seconds(30), diagnostics: {
+            "\(fixture.readiness) measured=\(state.access[store.artifactGeneration]?.measurement(for: identity) != nil)"
+        }) {
             state.size.height > 500 && fixture.webViews.count == 1 &&
                 state.access[store.artifactGeneration]?.measurement(for: identity) != nil
         }
@@ -66,7 +68,9 @@ import BottoCore
         #expect(refreshed.data == service.downloadData)
         service.downloadGate = nil
         state.settled = true
-        try await wait("short resolved body takes natural height") {
+        try await wait("short resolved body takes natural height", timeout: .seconds(30), diagnostics: {
+            "\(fixture.readiness) measured=\(state.access[store.artifactGeneration]?.measurement(for: identity) != nil)"
+        }) {
             fixture.webViews.count == 1 && state.size.height > 70 && state.size.height < initialHeight - 150
         }
         #expect(service.downloads == 2, "A new layout writer must not trigger another fetch of the refreshed capture")
@@ -127,10 +131,12 @@ import BottoCore
             dynamicType: .large, direction: .leftToRight, colorScheme: .light, reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
 
-    private func wait(_ label: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(8)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
-        try #require(condition(), "Timed out: \(label)")
+    private func wait(_ label: String, timeout: Duration = .seconds(8), diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let ready = condition()
+        if !ready { Attachment.record("phase=\(label)\n\(diagnostics())", named: "reply-body-readiness.txt") }
+        try #require(ready, "Timed out: \(label)")
     }
 
     private func fixture() async throws -> Fixture {
@@ -222,6 +228,13 @@ import BottoCore
                 (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(find)
             }
             return find(host.view)
+        }
+        var readiness: String {
+            let renderers = webViews.map { view in
+                let renderer = view.navigationDelegate as? RichContentRenderer
+                return "state=\(String(describing: renderer?.state)) loading=\(view.isLoading) watchdog=\(renderer?.lastWatchdogFailure ?? "<none>")"
+            }
+            return "size=\(state.size) views=\(webViews.count) downloads=\(service.downloads) attached=\(host.view.window === window) renderers=\(renderers.joined(separator: " | "))"
         }
         func close() {
             service.openGate?.release(); service.downloadGate?.release()

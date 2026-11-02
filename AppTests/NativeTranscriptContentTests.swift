@@ -110,32 +110,40 @@ import BottoCore
 
     private func requirePaintedFile(_ block: Int, phase: PaintPhase, host: UIViewController, window: UIWindow,
                                     sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        let display = NativeContentDisplayFrames()
-        defer { display.stop() }
         var trace = PaintReadinessTrace(phase: phase)
-        // Allow the renderer's fifteen-second cold startup and five-second document budget.
-        let deadline = ContinuousClock.now + .seconds(21)
+        let readinessDeadline = ContinuousClock.now + .seconds(30)
+        var observationDeadline: ContinuousClock.Instant?
         var painted = false
         defer {
             if !painted { recordPaintFailure(block, trace: trace, host: host, window: window) }
         }
-        while ContinuousClock.now < deadline {
+        while ContinuousClock.now < (observationDeadline ?? readinessDeadline) {
             trace.beginAttempt()
             guard let controller = collectionController(host) else {
                 trace.record("missing-controller")
-                await display.nextFrame(); continue
+                try await Task.sleep(for: .milliseconds(40)); continue
             }
             guard let cell = controller.collection.cellForItem(at: IndexPath(item: 2, section: 0)) as? NativeTranscriptCell else {
                 trace.record("missing-cell")
-                await display.nextFrame(); continue
+                try await Task.sleep(for: .milliseconds(40)); continue
             }
             guard let document = markers(cell).first(where: { $0.block == block && $0.role == .document && $0.scope === cell.exposure }) else {
                 trace.record("missing-current-document-marker")
-                await display.nextFrame(); continue
+                try await Task.sleep(for: .milliseconds(40)); continue
             }
-            let states = webViews(cell).map { view in
+            let target = document.convert(document.bounds, to: window)
+            let documents = webViews(cell).filter { view in
+                view.window === window && view.convert(view.bounds, to: window).intersects(target)
+            }
+            let states = documents.map { view in
                 "\(ObjectIdentifier(view)) renderer=\((view.navigationDelegate as? RichContentRenderer).map { String(describing: $0.state) } ?? "missing") loading=\(view.isLoading) attached=\(view.window === window)"
             }
+            guard let readyView = documents.first(where: { ($0.navigationDelegate as? RichContentRenderer)?.state == .ready }),
+                  let renderer = readyView.navigationDelegate as? RichContentRenderer else {
+                trace.record("waiting-for-renderer", renderers: states)
+                try await Task.sleep(for: .milliseconds(40)); continue
+            }
+            if observationDeadline == nil { observationDeadline = .now + .seconds(15) }
             trace.record("capture-started", renderers: states)
             let captureStarted = CACurrentMediaTime()
             var drawn = false
@@ -151,12 +159,18 @@ import BottoCore
                 "crop_in_window": NSCoder.string(for: visible), "image_scale": image.scale,
                 "image_size": NSCoder.string(for: image.size)]
             do {
-                let observation = try await RenderedTranscriptFile.observe(image, in: visible)
-                painted = observation.isComplete
+                let scope = cell.exposure
+                let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, isCurrent: {
+                    scope?.isCurrent == true && cell.exposure === scope && document.scope === scope && document.window === window &&
+                        renderer.webView === readyView && readyView.navigationDelegate === renderer && renderer.state == .ready &&
+                        readyView.window === window && readyView.isDescendant(of: cell)
+                })
+                painted = observation?.isComplete == true && ContinuousClock.now < (observationDeadline ?? readinessDeadline)
                 trace.lastCapture["oracle_seconds"] = CACurrentMediaTime() - captureFinished
-                trace.lastCapture["has_bars"] = observation.hasBars
-                trace.lastCapture["ocr_attempted"] = observation.hasBars
-                trace.lastCapture["recognized_text"] = observation.text
+                trace.lastCapture["observation_current"] = observation != nil
+                trace.lastCapture["has_bars"] = observation?.hasBars ?? false
+                trace.lastCapture["ocr_attempted"] = observation?.hasBars ?? false
+                trace.lastCapture["recognized_text"] = observation?.text ?? []
                 trace.record(painted ? "painted" : "oracle-incomplete", renderers: states)
             } catch {
                 let error = error as NSError
@@ -165,7 +179,7 @@ import BottoCore
                 throw error
             }
             if painted { break }
-            await display.nextFrame()
+            try await Task.sleep(for: .milliseconds(40))
         }
         try #require(painted, "\(phase.rawValue): actual visible file body must paint its known bars; WK presence and measured height alone do not pass",
                      sourceLocation: sourceLocation)
@@ -241,7 +255,7 @@ import BottoCore
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
@@ -305,23 +319,5 @@ import BottoCore
         let heading = try #require(rendered.range(of: "Heading"))
         #expect(rendered[heading].font == .title3.weight(.semibold))
         #expect(String(rendered.characters) == "Intro" + separator + "Heading\n\nBody")
-    }
-}
-
-/// Test-only display readiness, with no sleeps, product mutations or DEBUG API.
-@MainActor private final class NativeContentDisplayFrames: NSObject {
-    private var link: CADisplayLink?
-    private var waiting: CheckedContinuation<Void, Never>?
-    func nextFrame() async {
-        await withCheckedContinuation { continuation in
-            waiting = continuation
-            let link = CADisplayLink(target: self, selector: #selector(tick))
-            self.link = link; link.add(to: .main, forMode: .common)
-        }
-    }
-    @objc private func tick() { stop() }
-    func stop() {
-        link?.invalidate(); link = nil
-        let pending = waiting; waiting = nil; pending?.resume()
     }
 }

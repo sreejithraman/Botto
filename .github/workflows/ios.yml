@@ -95,8 +95,10 @@ jobs:
           path: |
             .artifacts/CIResults-*.xcresult
             .artifacts/CISelectedTests-*.txt
+            .artifacts/CINative-*.log
             ${{ steps.checks.outputs.native_result_fallback }}
             ${{ steps.checks.outputs.native_selection_fallback }}
+            ${{ steps.checks.outputs.native_log_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

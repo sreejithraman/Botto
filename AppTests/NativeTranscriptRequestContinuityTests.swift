@@ -466,7 +466,7 @@ import BottoCore
         let now = ContinuousClock.now
         maximumPollGap = max(maximumPollGap, lastPoll.duration(to: now))
         lastPoll = now; polls += 1
-        await Task.yield()
+        try await Task.sleep(for: .milliseconds(5))
     }
     let ready = condition()
     if !ready {

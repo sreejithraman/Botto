@@ -68,6 +68,21 @@ def public_record(record, **extra):
             if key not in {'capability', 'socket'}} | extra
 
 
+def group_contains_only_zombies(group_id: int) -> bool:
+    try:
+        result = subprocess.run(['ps', '-axo', 'pgid=,stat='], capture_output=True, text=True, timeout=1)
+        if result.returncode:
+            return False
+        states = []
+        for row in result.stdout.splitlines():
+            group, state = row.split()
+            if int(group) == group_id:
+                states.append(state)
+        return bool(states) and all(state.startswith('Z') for state in states)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def stop_child(child: subprocess.Popen, grace: float) -> list[str]:
     # No poll/wait/reaper may release this child's PID before the last killpg.
     # Its unreaped PID anchors the session's group even if TERM exits the leader.
@@ -79,7 +94,8 @@ def stop_child(child: subprocess.Popen, grace: float) -> list[str]:
             pass
         except PermissionError:
             # Darwin killpg returns EPERM for a group containing only zombies.
-            warnings.append(sig.name + ': EPERM (group delivery unconfirmed)')
+            if not group_contains_only_zombies(child.pid):
+                warnings.append(sig.name + ': EPERM (group delivery unconfirmed)')
         if delay:
             time.sleep(delay)
     child.wait(timeout=2)

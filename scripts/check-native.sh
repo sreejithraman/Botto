@@ -51,10 +51,23 @@ PYTHON
 )
 native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
 result_id=$(uuidgen)
+native_log="$native_directory/native-run.log"
+printf 'Native runner started: selection=%s build_only=%s\n' "$selection" "$build_only" > "$native_log"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  printf 'native_result_fallback=%s/CIResults-*.xcresult\nnative_selection_fallback=%s/selected-tests.txt\n' \
-    "$native_directory" "$native_directory" >> "$GITHUB_OUTPUT"
+  printf 'native_result_fallback=%s/CIResults-*.xcresult\nnative_selection_fallback=%s/selected-tests.txt\nnative_log_fallback=%s\n' \
+    "$native_directory" "$native_directory" "$native_log" >> "$GITHUB_OUTPUT"
 fi
+
+run_logged() {
+  local -a statuses
+  "$@" 2>&1 | tee -a "$native_log"
+  statuses=("${PIPESTATUS[@]}")
+  if [ "${statuses[0]}" -ne 0 ]; then
+    return "${statuses[0]}"
+  fi
+  return "${statuses[1]}"
+}
+
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
@@ -64,10 +77,10 @@ native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
   -collect-test-diagnostics never
   -derivedDataPath "$native_directory/DerivedData"
   CODE_SIGNING_ALLOWED=NO)
-xcodebuild build-for-testing "${native_arguments[@]}" \
+run_logged xcodebuild build-for-testing "${native_arguments[@]}" \
   -resultBundlePath "$native_directory/$result_name" || native_status=$?
 if [ "$native_status" -eq 0 ] && [ -n "$selector" ]; then
-  xcodebuild test-without-building "${native_arguments[@]}" -enumerate-tests \
+  run_logged xcodebuild test-without-building "${native_arguments[@]}" -enumerate-tests \
     -test-enumeration-style flat -test-enumeration-format text \
     -test-enumeration-output-path "$native_directory/selected-tests.txt" || native_status=$?
   if [ "$native_status" -eq 0 ]; then
@@ -85,7 +98,7 @@ PYTHON
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   result_name="CIResults-$result_id.xcresult"
-  xcodebuild test-without-building "${native_arguments[@]}" \
+  run_logged xcodebuild test-without-building "${native_arguments[@]}" \
     -resultBundlePath "$native_directory/$result_name" || native_status=$?
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
@@ -107,6 +120,7 @@ fi
 
 finalize_native() {
   mkdir -p .artifacts || return
+  cp "$native_log" ".artifacts/CINative-$result_id.log" || return
   if [ -f "$native_directory/selected-tests.txt" ]; then
     cp "$native_directory/selected-tests.txt" ".artifacts/CISelectedTests-$result_id.txt" || return
   fi
