@@ -3,7 +3,6 @@ import Observation
 import Testing
 import BottoCore
 import SwiftUI
-import Vision
 import XCTest
 @testable import Botto
 
@@ -225,10 +224,10 @@ import XCTest
             attachment.name = "Readable inbox previews - \(scheme)"
             attachment.lifetime = .keepAlways
             add(attachment)
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage)).perform([request])
-            let text = try XCTUnwrap(request.results).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            let text = try await NativeTextRecognition.recognize(try XCTUnwrap(image.cgImage),
+                usesLanguageCorrection: true, onRecognition: { isMainThread in
+                    XCTAssertFalse(isMainThread, "Vision recognition must not block the native UI thread")
+                }).joined(separator: " ")
             for expected in ["Checks your inbox", "No recent message", "The build is ready", "The report is ready", "Start a chat"] {
                 XCTAssertTrue(text.contains(expected), "Missing \(expected) in rendered rows: \(text)")
             }

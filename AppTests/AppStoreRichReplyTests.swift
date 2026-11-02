@@ -4,7 +4,6 @@ import BottoCore
 import SwiftUI
 import UIKit
 import WebKit
-import Vision
 @testable import Botto
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
@@ -119,6 +118,63 @@ import Vision
         #expect(replacement.resolved.block.source == (event == "working" ? "<button>Updated after work</button>" : originalFile.block.source))
         #expect(service.downloads.count == (event == "working" ? 2 : 1), "Settled work refreshes once; authority recovery and ordinary reopen reuse the capture")
     }
+    @Test(arguments: [false, true])
+    func mountedDocumentObservationRejectsPixelsRetiredDuringRecognition(activeResources: Bool) async throws {
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let host = UIViewController(), window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = host; window.makeKeyAndVisible()
+        let first = RichContentRenderer(), replacement = RichContentRenderer()
+        defer {
+            first.stop(); replacement.stop()
+            window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible()
+        }
+        let block = try #require(ReplyContent(assistantText: """
+        ```html
+        <p style='margin-top:50px;font-size:28px'>Mounted observation</p>
+        <button>Update preview</button><p>Ready for review</p>
+        <div style='height:30px;background:#6366f1'></div>
+        ```
+        """).blocks.first)
+        await first.load(block)
+        let original = try #require(first.webView)
+        original.frame = CGRect(x: 0, y: 100, width: 390, height: 300)
+        host.view.addSubview(original)
+        var didRetire = false
+        func replaceDocument() async throws {
+            didRetire = true
+            first.stop()
+            await replacement.load(block)
+            let current = try #require(replacement.webView)
+            current.frame = original.frame
+            host.view.addSubview(current)
+        }
+        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view) { pixels in
+            let words = try await NativeTextRecognition.recognize(pixels, languages: ["en-US"])
+            if !didRetire && words.joined(separator: " ").localizedStandardContains("Mounted observation") {
+                if activeResources {
+                    let image = UIImage(cgImage: pixels)
+                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size),
+                        isCurrent: { first.webView === original && first.state == .ready && original.window === window },
+                        observe: { image, region in
+                            let captured = try await RenderedTranscriptFile.observe(image, in: region)
+                            try #require(captured.isComplete, "The control must recognize genuine complete file pixels before retirement")
+                            try await replaceDocument()
+                            return captured
+                        })
+                    #expect(active == nil, "Retired pixels must not admit a later active-resource sample")
+                } else { try await replaceDocument() }
+            }
+            return words
+        }
+        let current = try #require(replacement.webView)
+        #expect(didRetire)
+        #expect(observed === current, "Retired pixels must not certify the mounted replacement")
+        #expect(current.window === window && original.superview == nil)
+    }
+
     @Test func failedSettledWorkRefreshKeepsTheCapturedFileUsableWithoutRevivingInlineAuthority() async throws {
         let service = RichReplyTestService()
         service.chat.messages[0].text = "::preview{file='report.html'}"
@@ -498,13 +554,20 @@ import Vision
 /// Observes the document actually mounted by the native preview, independently
 /// of the direct-loader grants and the service's captured-byte count.
 @MainActor enum MountedReplyFileDocument {
-    static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil) async throws -> WKWebView {
+    static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
+                            recognize: @MainActor (CGImage) async throws -> [String] = {
+                                try await NativeTextRecognition.recognize($0, languages: ["en-US"])
+                            }) async throws -> WKWebView {
         // Match the renderer's fifteen-second cold startup plus document budget.
         let deadline = ContinuousClock.now + .seconds(21)
         var observed: (words: String?, image: UIImage?)?
         while ContinuousClock.now < deadline {
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
-                observed = await renderedText(in: web)
+                guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else { continue }
+                observed = await renderedText(in: web, recognize: recognize)
+                guard renderer.webView === web, web.navigationDelegate === renderer, renderer.state == .ready,
+                      web.window != nil, web.window === root.window, web.isDescendant(of: root),
+                      web.bounds.width > 0, web.bounds.height > 0, ContinuousClock.now < deadline else { continue }
                 if let words = observed?.words, words.localizedStandardContains(expected) { return web }
             }
             try await Task.sleep(for: .milliseconds(40))
@@ -520,7 +583,8 @@ import Vision
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
     }
 
-    private static func renderedText(in web: WKWebView) async -> (words: String?, image: UIImage?) {
+    private static func renderedText(in web: WKWebView,
+                                     recognize: @MainActor (CGImage) async throws -> [String]) async -> (words: String?, image: UIImage?) {
         let image: UIImage? = await withCheckedContinuation { continuation in
             let pending = PendingSnapshot(continuation)
             let timeout = Task { @MainActor in
@@ -532,13 +596,8 @@ import Vision
             }
         }
         guard let pixels = image?.cgImage else { return (nil, image) }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["en-US"]
-        request.usesLanguageCorrection = false
         do {
-            try VNImageRequestHandler(cgImage: pixels).perform([request])
-            let words = request.results?.compactMap { $0.topCandidates(1).first?.string }
+            let words = try await recognize(pixels)
                 .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
             return (words, image)
         } catch { return (nil, image) }
