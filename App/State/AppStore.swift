@@ -878,13 +878,23 @@ import BottoCore
         guard isAuthorizedArtifactPresentation(destination), destination.library === library else {
             throw HermesServiceError.staleConversation
         }
+        #if DEBUG
+        let startupTrace = UUID()
+        print("[DEBUG-pdf-startup] \(startupTrace) app-key-start \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
+        #endif
         let key = await WorkspaceLibrary.originalKey(identity: destination.identity, attachment: destination.attachment,
             messages: destination.conversation.messages, producingMessage: destination.producingMessage)
+        #if DEBUG
+        print("[DEBUG-pdf-startup] \(startupTrace) app-key-ready \(ProcessInfo.processInfo.systemUptime)")
+        #endif
         guard isAuthorizedArtifactPresentation(destination) else { throw HermesServiceError.staleConversation }
         let download: @MainActor () async throws -> DownloadedArtifact = { [weak self] in
             guard let self, self.isCurrentArtifactDestination(destination), let intent = destination.intent else {
                 throw HermesServiceError.staleConversation
             }
+            #if DEBUG
+            print("[DEBUG-pdf-startup] network-enter \(ProcessInfo.processInfo.systemUptime)")
+            #endif
             let artifact = try await destination.workspace.download(intent)
             guard self.isCurrentArtifactDestination(destination) else { throw HermesServiceError.staleConversation }
             return artifact

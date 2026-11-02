@@ -1543,7 +1543,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private nonisolated static func fingerprint(_ messages: [ChatMessage]) async -> Data {
-        await Task.detached(priority: .utility) { fingerprintBytes(messages) }.value
+        let startupTrace = UUID()
+        print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-queued \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
+        let value = await Task.detached(priority: .utility) {
+            print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-body \(ProcessInfo.processInfo.systemUptime) main=\(Thread.isMainThread) priority=\(Task.currentPriority.rawValue)")
+            return fingerprintBytes(messages)
+        }.value
+        print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-ready \(ProcessInfo.processInfo.systemUptime)")
+        return value
     }
 
     private nonisolated static func headFingerprint(_ page: ConversationHistoryPage) async -> Data {
@@ -1566,13 +1573,17 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     static func originalKey(identity: SessionIdentity, attachment: ChatAttachment, messages: [ChatMessage],
                             producingMessage: ChatMessage? = nil) async -> ArtifactOriginalKey? {
+        let startupTrace = UUID()
+        print("[DEBUG-pdf-startup] \(startupTrace) discovery-queued \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
         let matches = await Task.detached(priority: .utility) {
-            (producingMessage.map { [$0] } ?? messages).filter { message in
+            print("[DEBUG-pdf-startup] \(startupTrace) discovery-body \(ProcessInfo.processInfo.systemUptime) main=\(Thread.isMainThread) priority=\(Task.currentPriority.rawValue)")
+            return (producingMessage.map { [$0] } ?? messages).filter { message in
                 ArtifactDiscovery.artifacts(in: [message]).contains {
                     $0.attachment.map { Data($0.path.utf8) == Data(attachment.path.utf8) } == true
                 }
             }
         }.value
+        print("[DEBUG-pdf-startup] \(startupTrace) discovery-ready \(ProcessInfo.processInfo.systemUptime)")
         guard matches.count == 1, let message = matches.first else { return nil }
         guard message.hasStableIdentity(storedID: identity.stored.text) else { return nil }
         return ArtifactOriginalKey(identity: identity, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
@@ -1586,8 +1597,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         try Task.checkCancellation()
         guard Self.hasStableIdentity(key.messageID, source: key.identity) else { throw HermesServiceError.staleConversation }
         guard !isRetired else { throw HermesServiceError.staleConversation }
+        let startupTrace = UUID()
+        print("[DEBUG-pdf-startup] \(startupTrace) original-enter \(ProcessInfo.processInfo.systemUptime)")
         if !force {
             if let value = originals[key] { return value }
+            print("[DEBUG-pdf-startup] \(startupTrace) cache-start \(ProcessInfo.processInfo.systemUptime)")
             if let value = try? await cache?.original(for: key) {
                 try Task.checkCancellation()
                 guard !isRetired else { throw HermesServiceError.staleConversation }
@@ -1595,6 +1609,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 return value.artifact
             }
         }
+        print("[DEBUG-pdf-startup] \(startupTrace) cache-ready \(ProcessInfo.processInfo.systemUptime)")
         guard online else { throw HermesServiceError.disconnected }
         try validateNetwork()
         let owner = generation
@@ -1622,7 +1637,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             flights[key] = existing
         } else {
             flightID = UUID()
+            print("[DEBUG-pdf-startup] \(startupTrace) flight-queued \(ProcessInfo.processInfo.systemUptime)")
             task = Task { [weak self] in
+                print("[DEBUG-pdf-startup] \(startupTrace) flight-body \(ProcessInfo.processInfo.systemUptime)")
                 defer {
                     admission.revokeAll()
                     if let self, flights[key]?.id == flightID { flights[key] = nil }

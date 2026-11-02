@@ -546,6 +546,15 @@ import BottoCore
         #expect(state.latest?.allocation(hasArtifact: true, browsingBots: false, expanded: false).chatVisible == false)
     }
 
+    @Test func repeatedRetainedPDFStartupProbe() async throws {
+        for iteration in 1...10 {
+            print("[DEBUG-pdf-startup] repetition=\(iteration) sidebar")
+            try await nativeWideSidebarFeedbackDoesNotParkTheRetainedFile()
+            print("[DEBUG-pdf-startup] repetition=\(iteration) quicklook")
+            try await oneQuickLookPDFSurvivesFullWidthReturnAndParking()
+        }
+    }
+
     @Test func nativeWideSidebarFeedbackDoesNotParkTheRetainedFile() async throws {
         let service = try WorkspaceTestService()
         service.downloadData = nativePDFBytes()
