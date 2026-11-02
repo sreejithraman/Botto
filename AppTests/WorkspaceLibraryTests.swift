@@ -18,11 +18,63 @@ import BottoCore
         return book
     }
 
-    @Test func passiveInboxDisputesGuardUnreadSavedMetadata() async throws {
+    @Test(arguments: [false, true])
+    func revisedInboxProducerGuardsUnreadSavedMetadata(revisesProducer: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let service = LibraryTestService(secondBot: true)
         service.previewEnabled = true; service.previewHasEarlierMessages = true
+        let original = ChatMessage(id: "main-file", role: .assistant, text: "Superseded private needle\nMEDIA:/private.txt")
+        let peer = ChatMessage(id: "side-file", role: .assistant, text: "Allowed peer needle\nMEDIA:/peer.txt")
+        service.messages[service.first] = [original]; service.messages[service.second] = [peer]
+        let book = savedBook(service)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = warmCache.session(scope: scope)
+        try warm.restrictMetadata(to: [service.first.profile, service.second.profile])
+        for source in [service.first, service.second] {
+            try await warm.upsert(.init(identity: source, botName: source.profile.text, title: source.root.text,
+                messages: service.messages[source]!, updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+        }
+        await warmCache.close()
+        var handle: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+        try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
+        await library.restore()
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: {})
+        defer { workspace.retireWorkspace() }
+        workspace.onAcceptedTranscript = { library.accept($0) }
+        workspace.observeProfiles(service.profiles); workspace.setOnline(true)
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(library.indexingMetrics.acceptedSnapshots == 1)
+        #expect(try await session.metadataRecovery().contains(service.first) == false)
+        let current = revisesProducer ? ChatMessage(id: original.id, role: .assistant, text: "Public replacement") : original
+        service.messages[service.first] = [current, .init(id: "fresh", role: .assistant, text: "A new positive row")]
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(library.indexingMetrics.acceptedSnapshots == 2)
+        #expect(try await session.metadataRecovery().contains(service.first) == revisesProducer)
+        library.retire(); await cache.close()
+        try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        await cold.restore()
+        let search = LibrarySearchResults(query: "Superseded private needle", bots: [], chats: cold.chats, artifacts: [])
+        #expect(search.messages.isEmpty == revisesProducer)
+        #expect(cold.artifacts.contains { $0.artifact.attachment?.path == "/private.txt" } == !revisesProducer)
+        #expect(cold.chats.contains { $0.identity == service.second && $0.messages == [peer] })
+        #expect(cold.artifacts.contains { $0.artifact.attachment?.path == "/peer.txt" })
+        cold.retire(); await coldCache.close()
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func passiveInboxDisputesGuardUnreadSavedMetadata(seedBeforeRestore: Bool, emptyWindow: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true)
+        service.previewEnabled = true; service.previewHasEarlierMessages = !emptyWindow
         let disputed = ChatMessage(id: "main-file", role: .assistant, text: "Disputed private needle\nMEDIA:/private.txt")
         let peer = ChatMessage(id: "side-file", role: .assistant, text: "Allowed peer needle\nMEDIA:/peer.txt")
         service.messages[service.first] = [disputed]; service.messages[service.second] = [peer]
@@ -46,13 +98,16 @@ import BottoCore
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
         defer { library.retire() }
+        library.observeBots(service.profiles, evidence: .cached)
+        if seedBeforeRestore { library.seed(book: book, bots: service.profiles) }
         await library.restore()
+        #expect(try await session.metadataRecovery().contains(service.first) == false)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: book, service: service, onDirty: {})
         defer { workspace.retireWorkspace() }
         workspace.onAcceptedTranscript = { library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
-        service.messages[service.first] = [.init(id: "fresh", role: .assistant, text: "A newer bounded row")]
+        service.messages[service.first] = emptyWindow ? [] : [.init(id: "fresh", role: .assistant, text: "A newer bounded row")]
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
         #expect(service.previewReadCount > 0)
         #expect(try await session.metadataRecovery().contains(service.first))

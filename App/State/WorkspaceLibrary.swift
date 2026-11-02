@@ -799,14 +799,23 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
         }
         if restoration.needsReconciliation {
+            let previousAdmission = unreconciledMetadata[id]
+            let hasPriorExclusions = previous.map {
+                !$0.unavailableMessageIDs.isEmpty || !$0.unverifiedMessageIDs.isEmpty
+                    || !$0.removedMessageIDs.isEmpty || !$0.retiredStoredIDs.isEmpty || $0.directoryAbsent
+            } ?? false
+            let revisesKnownRows = messages.contains { message in
+                known[Data(message.id.utf8)].map { !TranscriptContentRevision.sameMessage($0, message) } == true
+            }
             switch evidence {
-            // A positive background read must not strand an unread, valid disk entry behind a guard.
+            // Positive additions can defer the guard while saved SQL metadata is unreadable.
             case .window where unreconciledMetadata[id] != .requiresGuard
-                && knownUnavailable.isSubset(of: previous?.unavailableMessageIDs ?? [])
+                && knownUnavailable.isEmpty && !hasPriorExclusions && !revisesKnownRows
                 && (expected == nil || expected == source.stored):
                 unreconciledMetadata[id] = .passiveWindow
             default: unreconciledMetadata[id] = .requiresGuard
             }
+            if unreconciledMetadata[id] == .requiresGuard, previousAdmission != .requiresGuard { markDirty(id) }
         } else { unreconciledMetadata[id] = nil }
         switch evidence {
         case .window: break

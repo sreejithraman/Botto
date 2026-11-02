@@ -1051,6 +1051,42 @@ readback verified all 80 expected bytes and SHA-256
 `ab2d37c15d4277807c8d7c9ac788d680ce95645b07a1d0e61ee34005a2b41cce`
 in AppleLocalStorage. Its first readback attempt rejected a `/tmp` symlink input;
 the same absence receipt passed through its canonical `/private/tmp` path.
-The final repaired snapshot still requires broad native, chat UI and artifact
-export checks, and the pass-21 independent reviews. No passing full gate or
-release acceptance is claimed.
+The pass-21 snapshot and subsequent repairs are recorded below. No passing full
+gate or release acceptance is claimed.
+
+
+On `b76dab9`, the broad run passed all 847 Swift Testing functions in 70 suites
+and 24 XCTest cases. Both chat UI cases and four artifact UI cases passed. The
+text-preview case timed out at the Actions-dismissal accessibility predicate;
+the retained recording shows the menu closed and the document visible, but does
+not establish which predicate term failed. The immutable-main comparison passed
+that case, so this timeout is not classified as a reproduced baseline failure.
+The combined command exited 65. Save/reopen in Files passed, and independent
+provider readback again verified all 80 bytes and the digest above. Commands,
+manifests, attachments, video and receipts are retained as
+`/tmp/botto-pr-integration/final-native-chat-export*` and
+`main-text-menu-baseline*`. New native test edits began only after that native
+phase; compiled app/UI binary hashes stayed identical through its UI phase
+(`pass21-postnative-test-edit.json`).
+
+Pass 21 identified two more recovery guard cases. Two bounded inbox windows
+could revise the same known message without guarding its saved older producer.
+An unresolved exclusion already present in an inert seed could also be mistaken
+for protected evidence. Actual locked-SQL, writable-journal checks reproduced
+both cold Search/artifact leaks, with three issues each. The original unseeded
+case and an unchanged-producer control passed. A further empty-window case
+reproduced three issues when rows stayed identical: changing admission state
+alone did not schedule a guard. Promotion now marks metadata dirty as well.
+The final two functions, across six parameter cases, passed with unrelated saved
+peers still available. Evidence is retained under
+`/tmp/botto-pr-integration/seeded-window-dispute-{red,green}*`,
+`revised-window-producer-red*`, `window-guard-regressions-green*`, and
+`unchanged-dispute-guard-{red,green}*`.
+
+A fresh Core run passed 438 tests in 11 suites and the MainActor compatibility
+build, with recorded command, source hashes and unchanged-during-run audit
+(`final-core*`). Its Core dependencies remain unchanged by these App repairs.
+The repaired snapshot's four native suites (201 functions), seven affected UI
+cases and independent provider readback are running on a fresh owned Simulator
+(`final-recovery-chat-export*`). Pass-22 source review and that runtime result
+remain pending. Earlier full-gate and UI failures remain disclosed.

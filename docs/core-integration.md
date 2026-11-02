@@ -155,9 +155,10 @@ During restoration, `MetadataAdmission` distinguishes inert seeds, passive
 positive windows, and rows requiring a recovery guard. This provenance survives
 ordering-fence eviction and prevents an old book seed from replacing accepted
 rows. A positive window alone defers guarding unread saved metadata until
-reconciliation. New exclusions, producer changes and authoritative updates guard
-immediately, so a failed restore cannot leave disputed content available after
-a cold reopen.
+reconciliation. Exclusions inherited from an unreconciled seed, changed known message
+revisions, producer changes and authoritative updates require a guard. Promoting
+admission to that state marks metadata dirty even when the canonical rows stay
+identical, so the guard reaches disk before retirement.
 
 Before attempting changed metadata rows, the cache atomically records their
 scoped invalidation hashes outside SQLite. A successful replacement clears its
