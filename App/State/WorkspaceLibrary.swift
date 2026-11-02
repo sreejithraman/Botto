@@ -981,7 +981,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         continue
                     }
                     if restoration.needsReconciliation {
-                        guard records[id] == nil || unreconciledMetadataIDs.contains(id) else { continue }
+                        guard records[id] == nil || (unreconciledMetadataIDs.contains(id)
+                            && initialSourceProofs[id] != source.stored && !acceptanceFence.contains(id)) else { continue }
                         unreconciledMetadataIDs.insert(id)
                     }
                     if transcript.isWorking, let tail = transcript.messages.last, tail.role == .assistant {

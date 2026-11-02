@@ -991,3 +991,25 @@ retirement assertions intact. The separate `InboxMessagePreviewTests` suite was
 not selected. The second full-gate attempt was stopped for this
 repair before completion; its failures remain in
 `/tmp/botto-pr-integration/full-gate-fixed.log`.
+
+
+The third full-gate attempt completed with exit 65
+(`/tmp/botto-pr-integration/full-gate-retained.log`). Core checks passed
+(438 functions in 11 suites and MainActor compatibility). The native run found
+26 issues across two recovery test functions. Their positive reads now obtain
+identity evidence from the existing test service's history producer, preserving
+all assertions and parameter cases. That fixture migration exposed six remaining
+issues: during failed restoration, a stale book seed could enter a fresh accepted
+chat and survive a cold reopen. The seed guard now distinguishes an inert seed
+from an already accepted source using the existing acceptance fence and source
+proofs. The same Library recovery, retention and inbox-history suites then passed
+183 functions in three suites (`/tmp/botto-pr-integration/recovery-seed-green.log`).
+The preceding failed run remains in `coherent-fixtures-green.log`; its filename
+does not indicate success.
+
+The third gate also had six UI assertion failures before its Simulator lease was
+released externally. Later runner failures and independent export readback occurred
+after that release. The gate did not pass. Its log and summary remain; focused
+reruns rotated away its original Xcode result bundle. New comparison runs retain
+explicit result bundles. UI baseline comparison and a fresh independent export
+readback remain pending.
