@@ -16,10 +16,23 @@ nonisolated private func artifactCacheFields(_ fields: [Data]) -> Data {
 nonisolated struct ArtifactMetadataRecovery: Sendable {
     var invalidated = Set<Data>()
     var all = false
+    var allowedProfiles: Set<Data>?
+    var checkedSavedChats = Set<Data>()
+    var hasInvalidations: Bool { all || !invalidated.isEmpty || allowedProfiles != nil }
+    var needsHistoryCheck: Bool { all || !invalidated.isEmpty }
     static func key(_ identity: SessionIdentity) -> Data {
         Data(SHA256.hash(data: artifactCacheFields([identity.profile.bytes, identity.root.bytes])))
     }
-    func contains(_ identity: SessionIdentity) -> Bool { all || invalidated.contains(Self.key(identity)) }
+    func excludes(_ profile: ExactID) -> Bool {
+        allowedProfiles.map { !$0.contains(Data(SHA256.hash(data: profile.bytes))) } == true
+    }
+    func contains(_ identity: SessionIdentity) -> Bool {
+        all || invalidated.contains(Self.key(identity))
+            || (excludes(identity.profile) && !checkedSavedChats.contains(Self.key(identity)))
+    }
+    func withholdsBookSeed(_ identity: SessionIdentity) -> Bool {
+        all || invalidated.contains(Self.key(identity)) || excludes(identity.profile)
+    }
 }
 
 nonisolated struct ArtifactMetadataHint: Sendable {
@@ -159,14 +172,33 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         var key: MetadataKey { MetadataKey(configuration: configuration, namespace: namespace, chat: chat) }
     }
     fileprivate struct MetadataLedger: Codable, Sendable {
-        var version = 1
+        var version = 2
         var all = false
         var entries = Set<MetadataInvalidation>()
         var blockedConfigurations = Set<UUID>()
+        var namespaces: Set<NamespaceRecovery>?
+    }
+    fileprivate struct CheckedReplacement: Codable, Hashable, Sendable {
+        let profile: Data
+        let chat: Data
+    }
+    fileprivate enum NamespaceMode: Codable, Hashable, Sendable {
+        case restricted(profiles: Set<Data>, replacements: Set<CheckedReplacement>)
+        case blocked
+    }
+    fileprivate struct NamespaceRecovery: Codable, Hashable, Sendable {
+        let checkpointID: UUID
+        let configuration: UUID
+        let namespace: Data
+        let mode: NamespaceMode
+    }
+    fileprivate struct WriteRevision: Equatable, Sendable {
+        let id: UUID
+        let profile: Data?
     }
     struct Checkpoint: Sendable {
         fileprivate let ledger: MetadataLedger?
-        fileprivate let revisions: [MetadataKey: UUID]
+        fileprivate let revisions: [MetadataKey: WriteRevision]
         fileprivate let quarantines: [UUID: UUID]
         fileprivate let allVersion: UUID
     }
@@ -181,7 +213,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private let limits: ArtifactCache.Limits
     private let lock = NSLock()
     private var closed = false
-    private var revisions: [MetadataKey: UUID] = [:]
+    private var revisions: [MetadataKey: WriteRevision] = [:]
     private var quarantines: [UUID: UUID] = [:]
     private var allVersion = UUID()
     private let encoder = PropertyListEncoder()
@@ -216,16 +248,30 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         let url = root.appendingPathComponent(metadataLedgerName)
         guard FileManager.default.fileExists(atPath: url.path) else { return (MetadataLedger(), true) }
         guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= recoveryBudget,
-              let value = try? decoder.decode(MetadataLedger.self, from: Data(contentsOf: url)), value.version == 1,
-              value.entries.count + value.blockedConfigurations.count <= recoveryCountLimit,
-              value.entries.allSatisfy({ $0.namespace.count == 32 && $0.chat.count == 32 }) else {
+              let value = try? decoder.decode(MetadataLedger.self, from: Data(contentsOf: url)), [1, 2].contains(value.version),
+              hasCapacity(value),
+              value.entries.allSatisfy({ $0.namespace.count == 32 && $0.chat.count == 32 }),
+              (value.namespaces ?? []).allSatisfy(validNamespace),
+              Set((value.namespaces ?? []).map(\.namespace)).count == (value.namespaces?.count ?? 0) else {
             return (MetadataLedger(all: true), false)
         }
         return (value, true)
     }
+    private func validNamespace(_ value: NamespaceRecovery) -> Bool {
+        guard value.namespace.count == 32 else { return false }
+        switch value.mode {
+        case .blocked: return true
+        case .restricted(let profiles, let replacements):
+            return profiles.allSatisfy { $0.count == 32 }
+                && replacements.allSatisfy { $0.profile.count == 32 && $0.chat.count == 32 }
+                && Set(replacements.map(\.chat)).count == replacements.count
+        }
+    }
     private func saveMetadataLedger(_ value: MetadataLedger) throws {
+        var value = value
+        value.version = 2
         let url = root.appendingPathComponent(metadataLedgerName)
-        if value.entries.isEmpty, value.blockedConfigurations.isEmpty, !value.all {
+        if value.entries.isEmpty, value.blockedConfigurations.isEmpty, value.namespaces?.isEmpty != false, !value.all {
             if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         } else {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -236,42 +282,71 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         MetadataInvalidation(configuration: scope.configurationID, namespace: hash(namespace(scope)),
             chat: hash(chatKey(profile, root)))
     }
-    private func record(_ entries: [MetadataInvalidation], allowingQuarantine: Bool = true) throws {
-        guard !entries.isEmpty else { return }
+    private func hasCapacity(_ value: MetadataLedger) -> Bool {
+        var chats = Set(value.entries.map(\.key))
+        for entry in value.namespaces ?? [] {
+            if case .restricted(_, let replacements) = entry.mode {
+                for replacement in replacements {
+                    chats.insert(MetadataKey(configuration: entry.configuration, namespace: entry.namespace, chat: replacement.chat))
+                }
+            }
+        }
+        return chats.count <= recoveryCountLimit
+            && value.blockedConfigurations.count + (value.namespaces?.count ?? 0) <= recoveryCountLimit
+    }
+    private func fits(_ value: MetadataLedger) throws -> Bool {
+        try hasCapacity(value) && encoder.encode(value).count <= recoveryBudget
+    }
+    private func replacingNamespace(in ledger: inout MetadataLedger, configuration: UUID, namespace: Data, mode: NamespaceMode) {
+        var entries = (ledger.namespaces ?? []).filter { $0.namespace != namespace }
+        entries.insert(NamespaceRecovery(checkpointID: UUID(), configuration: configuration, namespace: namespace, mode: mode))
+        ledger.namespaces = entries; ledger.version = 2
+    }
+    private func writableLedger(configuration: UUID, namespace: Data) throws -> MetadataLedger {
         var ledger = try metadataLedger()
         guard ledger.writable else { throw ArtifactCacheError.unavailable }
         if ledger.value.all { allVersion = UUID(); throw ArtifactCacheError.unavailable }
-        let blocked = Set(entries.map(\.configuration)).intersection(ledger.value.blockedConfigurations)
-        if !blocked.isEmpty {
-            for configuration in blocked { quarantines[configuration] = UUID() }
+        if ledger.value.blockedConfigurations.contains(configuration) {
+            quarantines[configuration] = UUID(); throw ArtifactCacheError.unavailable
+        }
+        if ledger.value.namespaces?.contains(where: { $0.namespace == namespace && $0.mode == .blocked }) == true {
+            replacingNamespace(in: &ledger.value, configuration: configuration, namespace: namespace, mode: .blocked)
+            try saveMetadataLedger(ledger.value)
             throw ArtifactCacheError.unavailable
         }
-        let before = ledger.value.entries
-        let blockedBefore = ledger.value.blockedConfigurations
-        let allBefore = ledger.value.all
-        var indexed = Dictionary(ledger.value.entries.map { ($0.key, $0) }, uniquingKeysWith: { _, newer in newer })
-        for entry in entries { indexed[entry.key] = entry }
-        ledger.value.entries = Set(indexed.values)
-        guard ledger.value.entries != before else { return }
-        let encodedSize = try encoder.encode(ledger.value).count
-        if ledger.value.entries.count + ledger.value.blockedConfigurations.count > recoveryCountLimit || encodedSize > recoveryBudget {
+        return ledger.value
+    }
+    private func persist(_ value: MetadataLedger, configuration: UUID, namespace: Data, allowingQuarantine: Bool = true) throws {
+        var saved = value
+        let overflow = try !fits(saved)
+        if overflow {
             guard allowingQuarantine else { throw ArtifactCacheError.quota }
-            ledger.value.blockedConfigurations.formUnion(ledger.value.entries.map(\.configuration))
-            ledger.value.entries = []
-            let compactedSize = try encoder.encode(ledger.value).count
-            if ledger.value.blockedConfigurations.count > recoveryCountLimit || compactedSize > recoveryBudget {
-                ledger.value = MetadataLedger(all: true)
+            saved.entries = saved.entries.filter { $0.namespace != namespace }
+            replacingNamespace(in: &saved, configuration: configuration, namespace: namespace, mode: .blocked)
+            if try !fits(saved) {
+                saved.entries = saved.entries.filter { $0.configuration != configuration }
+                saved.namespaces = saved.namespaces?.filter { $0.configuration != configuration }
+                saved.blockedConfigurations.insert(configuration)
+                if try !fits(saved) { saved = MetadataLedger(all: true) }
             }
         }
-        try saveMetadataLedger(ledger.value)
-        let retained = Set(ledger.value.entries.map(\.key))
+        try saveMetadataLedger(saved)
+        let retained = Set(saved.entries.map(\.key))
         revisions = revisions.filter { retained.contains($0.key) }
-        for configuration in ledger.value.blockedConfigurations.subtracting(blockedBefore) { quarantines[configuration] = UUID() }
-        quarantines = quarantines.filter { ledger.value.blockedConfigurations.contains($0.key) }
-        if ledger.value.all && !allBefore { allVersion = UUID() }
-        guard !ledger.value.all, entries.allSatisfy({ !ledger.value.blockedConfigurations.contains($0.configuration) }) else {
-            throw ArtifactCacheError.quota
+        for configuration in saved.blockedConfigurations where quarantines[configuration] == nil {
+            quarantines[configuration] = UUID()
         }
+        quarantines = quarantines.filter { saved.blockedConfigurations.contains($0.key) }
+        if saved.all { allVersion = UUID() }
+        if overflow { throw ArtifactCacheError.quota }
+    }
+    private func record(_ entries: [MetadataInvalidation], allowingQuarantine: Bool = true) throws {
+        guard let target = entries.first else { return }
+        var ledger = try writableLedger(configuration: target.configuration, namespace: target.namespace)
+        let before = ledger.entries
+        ledger.entries.formUnion(entries)
+        guard ledger.entries != before else { return }
+        try persist(ledger, configuration: target.configuration, namespace: target.namespace, allowingQuarantine: allowingQuarantine)
     }
     func invalidate(_ chats: [(profile: ExactID, root: ExactID, revision: UUID)], scope: ArtifactCacheScope,
                     state: ArtifactCacheLeaseState) throws {
@@ -281,7 +356,38 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             try record(entries)
             // Repeated dirty versions share the durable identity guard. Their
             // clearing tokens remain runtime-only and need no extra file write.
-            for (entry, chat) in zip(entries, chats) { revisions[entry.key] = chat.revision }
+            for (entry, chat) in zip(entries, chats) {
+                revisions[entry.key] = WriteRevision(id: chat.revision, profile: hash(chat.profile.bytes))
+            }
+        }
+    }
+    func restrictMetadata(to profiles: Set<ExactID>, scope: ArtifactCacheScope, state: ArtifactCacheLeaseState) throws {
+        try lock.withLock {
+            guard !closed, state.isActive else { throw ArtifactCacheError.retired }
+            let scopeKey = hash(namespace(scope)), observed = Set(profiles.map { hash($0.bytes) })
+            var ledger = try writableLedger(configuration: scope.configurationID, namespace: scopeKey)
+            var allowed = observed, replacements = Set<CheckedReplacement>()
+            if let prior = ledger.namespaces?.first(where: { $0.namespace == scopeKey }),
+               case .restricted(let previous, let checked) = prior.mode {
+                allowed.formIntersection(previous)
+                replacements = checked.filter { observed.contains($0.profile) }
+            }
+            replacingNamespace(in: &ledger, configuration: scope.configurationID, namespace: scopeKey,
+                mode: .restricted(profiles: allowed, replacements: replacements))
+            try persist(ledger, configuration: scope.configurationID, namespace: scopeKey)
+            for (key, revision) in revisions where key.namespace == scopeKey {
+                if let profile = revision.profile, !observed.contains(profile) {
+                    revisions[key] = WriteRevision(id: UUID(), profile: profile)
+                }
+            }
+        }
+    }
+    func requirePendingWrite(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
+        try lock.withLock {
+            guard !closed else { throw ArtifactCacheError.unavailable }
+            let entry = invalidation(scope: scope, profile: profile, root: root)
+            let ledger = try writableLedger(configuration: entry.configuration, namespace: entry.namespace)
+            guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.retired }
         }
     }
     func begin(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
@@ -291,10 +397,10 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             // An older queued SQL write cannot replace a newer runtime guard.
             let ledger = try metadataLedger()
             if ledger.value.entries.contains(entry) {
-                if revisions[entry.key] == nil { revisions[entry.key] = revision }
+                revisions[entry.key] = WriteRevision(id: revisions[entry.key]?.id ?? revision, profile: hash(profile.bytes))
                 return
             }
-            try record([entry]); revisions[entry.key] = revision
+            try record([entry]); revisions[entry.key] = WriteRevision(id: revision, profile: hash(profile.bytes))
         }
     }
     func evict(configuration: UUID, namespace: Data, key: Data, provisional: Bool) throws -> Eviction? {
@@ -305,7 +411,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             // A speculative deletion can reject quota before changing SQL; it
             // must not quarantine a configuration that rollback will preserve.
             try record([entry], allowingQuarantine: !provisional)
-            let revision = UUID(); revisions[entry.key] = revision
+            let revision = UUID(); revisions[entry.key] = WriteRevision(id: revision, profile: nil)
             return Eviction(configuration: entry.configuration, namespace: entry.namespace, chat: entry.chat, revision: revision)
         }
     }
@@ -317,7 +423,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             var cleared = Set<MetadataKey>()
             for eviction in evictions {
                 let entry = MetadataInvalidation(configuration: eviction.configuration, namespace: eviction.namespace, chat: eviction.chat)
-                guard revisions[entry.key] == eviction.revision else { continue }
+                guard revisions[entry.key]?.id == eviction.revision else { continue }
                 if ledger.value.entries.remove(entry) != nil { cleared.insert(entry.key) }
             }
             guard !cleared.isEmpty else { return }
@@ -327,13 +433,17 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     }
     func finish(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
         try lock.withLock {
-            var ledger = try metadataLedger()
-            guard ledger.writable, !ledger.value.all, !ledger.value.blockedConfigurations.contains(scope.configurationID) else {
-                throw ArtifactCacheError.unavailable
-            }
             let entry = invalidation(scope: scope, profile: profile, root: root)
-            guard revisions[entry.key] == revision, ledger.value.entries.remove(entry) != nil else { return }
-            try saveMetadataLedger(ledger.value); revisions[entry.key] = nil
+            var ledger = try writableLedger(configuration: entry.configuration, namespace: entry.namespace)
+            guard revisions[entry.key]?.id == revision, ledger.entries.remove(entry) != nil else { return }
+            if let prior = ledger.namespaces?.first(where: { $0.namespace == entry.namespace }),
+               case .restricted(let profiles, var replacements) = prior.mode, !profiles.contains(hash(profile.bytes)) {
+                replacements.insert(CheckedReplacement(profile: hash(profile.bytes), chat: entry.chat))
+                replacingNamespace(in: &ledger, configuration: entry.configuration, namespace: entry.namespace,
+                    mode: .restricted(profiles: profiles, replacements: replacements))
+            }
+            try persist(ledger, configuration: entry.configuration, namespace: entry.namespace)
+            revisions[entry.key] = nil
         }
     }
     func withFileMaintenance(_ operation: () throws -> Void) rethrows {
@@ -342,11 +452,19 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     func recovery(scope: ArtifactCacheScope) throws -> ArtifactMetadataRecovery {
         try lock.withLock {
             guard !closed else { throw ArtifactCacheError.unavailable }
-            let ledger = try metadataLedger().value
-            let scopeKey = hash(namespace(scope))
-            return ArtifactMetadataRecovery(invalidated: Set(ledger.entries.filter {
+            let ledger = try metadataLedger().value, scopeKey = hash(namespace(scope))
+            var result = ArtifactMetadataRecovery(invalidated: Set(ledger.entries.filter {
                 $0.configuration == scope.configurationID && $0.namespace == scopeKey
             }.map(\.chat)), all: ledger.all || ledger.blockedConfigurations.contains(scope.configurationID))
+            if let entry = ledger.namespaces?.first(where: { $0.namespace == scopeKey }) {
+                switch entry.mode {
+                case .blocked: result.all = true
+                case .restricted(let profiles, let replacements):
+                    result.allowedProfiles = profiles
+                    result.checkedSavedChats = Set(replacements.map(\.chat))
+                }
+            }
+            return result
         }
     }
     private func cleanMetadata(removing configurations: (UUID) -> Bool, clearAll: Bool, checkpoint: Checkpoint) throws {
@@ -361,6 +479,9 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         ledger.value.blockedConfigurations = ledger.value.blockedConfigurations.filter {
             !configurations($0) || !prior.blockedConfigurations.contains($0)
                 || quarantines[$0] != checkpoint.quarantines[$0]
+        }
+        ledger.value.namespaces = ledger.value.namespaces?.filter {
+            !configurations($0.configuration) || prior.namespaces?.contains($0) != true
         }
         if clearAll && prior.all && allVersion == checkpoint.allVersion { ledger.value.all = false }
         try saveMetadataLedger(ledger.value)
@@ -418,11 +539,11 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private struct WeakSession { weak var value: ArtifactCacheSession?; let configurationID: UUID }
     private var sessions: [WeakSession] = []
     init(root: URL?, limits: Limits = .init(), beforeCaptureCommit: (@Sendable () -> Void)? = nil,
-         beforeMetadataWrite: (@Sendable () -> Void)? = nil) {
+         beforeMetadataWrite: (@Sendable () -> Void)? = nil, afterMetadataWrite: (@Sendable () -> Void)? = nil) {
         let resolvedRoot = root ?? FileManager.default.temporaryDirectory.appendingPathComponent("BottoArtifactEphemeral-\(UUID().uuidString)")
         journal = ArtifactMetadataJournal(root: resolvedRoot, limits: limits)
         backend = ArtifactCacheBackend(root: resolvedRoot, ephemeral: root == nil, limits: limits, journal: journal,
-            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite)
+            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite, afterMetadataWrite: afterMetadataWrite)
     }
     func session(scope: ArtifactCacheScope) -> ArtifactCacheSession {
         let session = ArtifactCacheSession(backend: backend, journal: journal, scope: scope, barrier: maintenance)
@@ -529,6 +650,8 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         try await upsert(record, revision: revision)
     }
     func upsert(_ record: CachedArtifactChat, revision: UUID) async throws {
+        guard !isRetired else { throw ArtifactCacheError.retired }
+        try journal.requirePendingWrite(scope: metadataScope, profile: record.identity.profile, root: record.identity.root, revision: revision)
         try await ready()
         try await backend.upsert(record, lease: lease, revision: revision)
         try accepted(())
@@ -541,6 +664,10 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         // Guards only withhold metadata. SQL reads/writes still await cleanup;
         // queued cleanup preserves guards recorded by a new active lease.
         try journal.invalidate(chats, scope: metadataScope, state: leaseState)
+    }
+    func restrictMetadata(to profiles: Set<ExactID>) throws {
+        guard !isRetired else { throw ArtifactCacheError.retired }
+        try journal.restrictMetadata(to: profiles, scope: metadataScope, state: leaseState)
     }
     func deleteChat(profile: ExactID, root: ExactID) async throws {
         try await ready()
@@ -582,6 +709,7 @@ fileprivate actor ArtifactCacheBackend {
     private let limits: ArtifactCache.Limits
     private let journal: ArtifactMetadataJournal
     private let beforeMetadataWrite: (@Sendable () -> Void)?
+    private let afterMetadataWrite: (@Sendable () -> Void)?
     private var database: SQLiteConnection?
     private var closed = false
     private var leases: [UUID: (scope: ArtifactCacheScope, state: ArtifactCacheLeaseState)] = [:]
@@ -591,9 +719,10 @@ fileprivate actor ArtifactCacheBackend {
     private let decoder = PropertyListDecoder()
 
     init(root: URL, ephemeral: Bool, limits: ArtifactCache.Limits, journal: ArtifactMetadataJournal,
-         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?) {
+         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?, afterMetadataWrite: (@Sendable () -> Void)?) {
         self.ephemeral = ephemeral; self.root = root; self.limits = limits; self.journal = journal
         self.beforeMetadataWrite = beforeMetadataWrite
+        self.afterMetadataWrite = afterMetadataWrite
         self.beforeCaptureCommit = beforeCaptureCommit
         encoder.outputFormat = .binary
     }
@@ -675,9 +804,11 @@ fileprivate actor ArtifactCacheBackend {
     }
     func loadChats(_ lease: UUID) throws -> [CachedArtifactChat] {
         let scope = try scope(lease)
+        guard try !metadataRecovery(scope: scope).all else { return [] }
+        let chats = try savedChats(scope: scope)
         let recovery = try metadataRecovery(scope: scope)
         guard !recovery.all else { return [] }
-        return try savedChats(scope: scope).filter { !recovery.contains($0.identity) }
+        return chats.filter { !recovery.contains($0.identity) }
     }
     private func savedChats(scope: ArtifactCacheScope) throws -> [CachedArtifactChat] {
         guard let database else { throw ArtifactCacheError.unavailable }
@@ -687,8 +818,9 @@ fileprivate actor ArtifactCacheBackend {
         }
     }
     func metadataRecoveryHints(_ lease: UUID) throws -> [ArtifactMetadataHint] {
-        let scope = try scope(lease), recovery = try metadataRecovery(scope: scope)
-        return try savedChats(scope: scope).filter { recovery.contains($0.identity) }.map {
+        let scope = try scope(lease), chats = try savedChats(scope: scope)
+        let recovery = try metadataRecovery(scope: scope)
+        return chats.filter { recovery.contains($0.identity) }.map {
             ArtifactMetadataHint(identity: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
                 unavailableMessageIDs: ($0.unavailableMessageIDs ?? []).union($0.messages.map { Data($0.id.utf8) }),
                 removedMessageIDs: $0.removedMessageIDs ?? [], retiredStoredIDs: $0.retiredStoredIDs ?? [])
@@ -696,7 +828,7 @@ fileprivate actor ArtifactCacheBackend {
     }
     func upsert(_ record: CachedArtifactChat, lease: UUID, revision: UUID) throws {
         let scope = try scope(lease)
-        try journal.begin(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
+        try journal.requirePendingWrite(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
         beforeMetadataWrite?()
         try Task.checkCancellation(); _ = try self.scope(lease)
         let payload = try encoder.encode(record)
@@ -712,6 +844,7 @@ fileprivate actor ArtifactCacheBackend {
         }
         try Task.checkCancellation(); _ = try self.scope(lease)
         try journal.finish(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
+        afterMetadataWrite?()
     }
     func deleteChat(profile: ExactID, root: ExactID, lease: UUID) throws {
         let scope = try scope(lease)

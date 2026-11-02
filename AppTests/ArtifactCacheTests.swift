@@ -5,6 +5,229 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct ArtifactCacheTests {
+    @Test func pendingRosterRestrictionsSurviveReentryAndPreserveOtherChats() async throws {
+        try await withCacheRoot { root, own in
+            let (cache, scope, key) = try fixture(root: root); _ = own(cache)
+            let session = cache.session(scope: scope)
+            let sibling = SessionIdentity(profile: key.identity.profile, root: try ExactID("sibling"), stored: try ExactID("sibling"), aliases: [])
+            let peer = SessionIdentity(profile: try ExactID("peer"), root: try ExactID("main"), stored: try ExactID("main"), aliases: [])
+            for identity in [key.identity, sibling, peer] {
+                try await session.upsert(.init(identity: identity, botName: "Bot", title: "Old", messages: [],
+                    updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            }
+            try await session.retainOriginal(bytes, for: key)
+            try session.restrictMetadata(to: [peer.profile])
+            try session.restrictMetadata(to: [peer.profile, key.identity.profile])
+            await cache.close()
+            let cold = own(ArtifactCache(root: root)).session(scope: scope)
+            #expect(try await cold.loadChats().map(\.identity) == [peer])
+            #expect(try await cold.original(for: key)?.artifact.data == bytes.data)
+            try await cold.upsert(.init(identity: key.identity, botName: "Bot", title: "Fresh", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            let rows = try await cold.loadChats()
+            #expect(rows.count == 2 && rows.contains { $0.identity == peer })
+            #expect(rows.first { $0.identity == key.identity }?.title == "Fresh")
+            #expect(try await cold.metadataRecovery().contains(sibling))
+            #expect(try await cold.metadataRecovery().withholdsBookSeed(key.identity))
+            #expect(try await !cold.metadataRecovery().contains(key.identity))
+            try cold.restrictMetadata(to: [peer.profile, key.identity.profile, try ExactID("another")])
+            #expect(try await cold.loadChats().first { $0.identity == key.identity }?.title == "Fresh")
+            try cold.restrictMetadata(to: [peer.profile])
+            try cold.restrictMetadata(to: [peer.profile, key.identity.profile])
+            #expect(try await cold.loadChats().map(\.identity) == [peer])
+        }
+    }
+
+    @Test func aDelayedOldRevisionCannotReplaceANewerCheckedSave() async throws {
+        try await withCacheRoot { root, own in
+            let (cache, scope, key) = try fixture(root: root); _ = own(cache)
+            let session = cache.session(scope: scope), oldRevision = UUID()
+            let old = CachedArtifactChat(identity: key.identity, botName: "Bot", title: "Old", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil)
+            try session.invalidateMetadata([(key.identity.profile, key.identity.root, oldRevision)])
+            try session.restrictMetadata(to: [])
+            try await session.upsert(.init(identity: key.identity, botName: "Bot", title: "Fresh", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            await #expect(throws: (any Error).self) { try await session.upsert(old, revision: oldRevision) }
+            #expect(try await session.loadChats().first?.title == "Fresh")
+            await cache.close()
+            #expect(try await own(ArtifactCache(root: root)).session(scope: scope).loadChats().first?.title == "Fresh")
+        }
+    }
+
+    @Test func aPausedMetadataWriterCannotClearARosterWithdrawal() async throws {
+        try await withCacheRoot { root, own in
+            let gate = CaptureCommitGate(); defer { gate.release() }
+            let (_, scope, key) = try fixture()
+            let cache = own(ArtifactCache(root: root, beforeMetadataWrite: { gate.pause() })), session = cache.session(scope: scope)
+            let old = CachedArtifactChat(identity: key.identity, botName: "Bot", title: "Old", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil)
+            gate.arm()
+            let writing = Task { try await session.upsert(old) }; defer { writing.cancel() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            try #require(gate.isEntered)
+            try session.restrictMetadata(to: [])
+            gate.release(); try await writing.value
+            #expect(try await session.loadChats().isEmpty)
+            #expect(try await session.metadataRecovery().contains(key.identity))
+            await cache.close()
+            let cold = own(ArtifactCache(root: root)).session(scope: scope)
+            #expect(try await cold.loadChats().isEmpty)
+            try await cold.upsert(.init(identity: key.identity, botName: "Bot", title: "Fresh", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            #expect(try await cold.loadChats().first?.title == "Fresh")
+        }
+    }
+
+    @Test func aWriterAwaitingSQLiteAcquisitionCannotClearARosterWithdrawal() async throws {
+        try await withCacheRoot { root, own in
+            let (warm, scope, key) = try fixture(root: root); _ = own(warm)
+            let row = CachedArtifactChat(identity: key.identity, botName: "Bot", title: "Old", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil)
+            try await warm.session(scope: scope).upsert(row); await warm.close()
+            var handle: OpaquePointer?
+            try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+            defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+            try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+            let cache = own(ArtifactCache(root: root)), session = cache.session(scope: scope)
+            let writing = Task { try await session.upsert(row) }; defer { writing.cancel() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            var registered = false
+            while !registered, ContinuousClock.now < deadline {
+                registered = try await session.metadataRecovery().contains(key.identity)
+                await Task.yield()
+            }
+            try #require(registered)
+            try session.restrictMetadata(to: [])
+            try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+            _ = await writing.result
+            await cache.close()
+            let cold = own(ArtifactCache(root: root)).session(scope: scope)
+            #expect(try await cold.loadChats().isEmpty)
+            #expect(try await cold.metadataRecovery().contains(key.identity))
+        }
+    }
+
+    @Test(arguments: ["discard", "prune"], [false, true])
+    func queuedCleanupPreservesANewLeaseRosterRestriction(cleanup: String, blocked: Bool) async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.metadataBytes = 4_000
+            let (cache, scope, key) = try fixture(root: root, limits: limits); _ = own(cache)
+            let old = cache.session(scope: scope)
+            if blocked {
+                let oversized = try Set((0..<100).map { try ExactID("profile-\($0)") })
+                #expect(throws: (any Error).self) { try old.restrictMetadata(to: oversized) }
+            } else { try old.restrictMetadata(to: []) }
+            if cleanup == "discard" { cache.discard(configurationID: scope.configurationID) }
+            else { cache.prune(reachableConfigurationIDs: []) }
+            #expect(throws: (any Error).self) { try old.restrictMetadata(to: []) }
+            let current = cache.session(scope: scope)
+            if blocked { #expect(throws: (any Error).self) { try current.restrictMetadata(to: [key.identity.profile]) } }
+            else { try current.restrictMetadata(to: [key.identity.profile]) }
+            try await cache.drainMaintenance()
+            #expect(try await current.metadataRecovery().contains(key.identity))
+            await cache.close()
+            let cold = own(ArtifactCache(root: root)).session(scope: scope)
+            #expect(try await cold.metadataRecovery().contains(key.identity))
+            #expect(try await cold.loadChats().isEmpty)
+            #expect(try await cold.metadataRecovery().contains(key.identity))
+        }
+    }
+
+    @Test func rosterRestrictionsUseEveryScopeComponent() async throws {
+        let (cache, scope, key) = try fixture()
+        let session = cache.session(scope: scope)
+        try session.restrictMetadata(to: [])
+        let variants = [
+            ArtifactCacheScope(configurationID: UUID(), serverURL: scope.serverURL, installationID: scope.installationID, username: scope.username, provider: scope.provider),
+            ArtifactCacheScope(configurationID: scope.configurationID, serverURL: Data("https://other.example".utf8), installationID: scope.installationID, username: scope.username, provider: scope.provider),
+            ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL, installationID: nil, username: scope.username, provider: scope.provider),
+            ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL, installationID: scope.installationID, username: Data("user".utf8), provider: scope.provider),
+            ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL, installationID: scope.installationID, username: scope.username, provider: nil)
+        ]
+        for variant in variants { #expect(try await !cache.session(scope: variant).metadataRecovery().contains(key.identity)) }
+        #expect(try await session.metadataRecovery().contains(key.identity))
+        await cache.close()
+    }
+
+    @Test(arguments: [false, true])
+    func aOneChatBudgetCanRetainAndReplaceItsOneChat(excludedProfile: Bool) async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1
+            let (cache, scope, key) = try fixture(root: root, limits: limits); _ = own(cache)
+            let session = cache.session(scope: scope)
+            try session.restrictMetadata(to: excludedProfile ? [] : [key.identity.profile])
+            for title in ["First", "Replacement"] {
+                try await session.upsert(.init(identity: key.identity, botName: "Bot", title: title, messages: [],
+                    updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+                #expect(try await session.loadChats().first?.title == title)
+            }
+            await cache.close()
+            let cold = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
+            #expect(try await cold.loadChats().first?.title == "Replacement")
+        }
+    }
+
+    @Test(arguments: ["namespace", "configuration", "all"])
+    func recoveryOverflowUsesTheNarrowestDurableMarkerThatFits(fallback: String) async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1; limits.metadataBytes = 40_000
+            let (cache, scope, key) = try fixture(root: root, limits: limits); _ = own(cache)
+            let session = cache.session(scope: scope)
+            try await session.retainOriginal(bytes, for: key)
+            let peerScope = ArtifactCacheScope(configurationID: UUID(), serverURL: scope.serverURL,
+                installationID: scope.installationID, username: scope.username, provider: scope.provider)
+            let peer = cache.session(scope: peerScope)
+            try await peer.upsert(.init(identity: key.identity, botName: "Peer", title: "Peer", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            if fallback != "namespace" {
+                for index in 0..<2 {
+                    let guardScope = ArtifactCacheScope(configurationID: fallback == "configuration" ? scope.configurationID : UUID(),
+                        serverURL: scope.serverURL, installationID: scope.installationID,
+                        username: Data("guard-\(index)".utf8), provider: scope.provider)
+                    try cache.session(scope: guardScope).restrictMetadata(to: [])
+                }
+            }
+            let observed = try Set((0..<400).map { try ExactID("observed-\($0)") })
+            #expect(throws: (any Error).self) { try session.restrictMetadata(to: observed) }
+            #expect(try await session.metadataRecovery().all)
+            #expect(try await session.original(for: key)?.artifact.data == bytes.data)
+            #expect(try Data(contentsOf: root.appendingPathComponent("metadata-recovery.plist")).count <= 10_000)
+            await cache.close()
+            let coldCache = own(ArtifactCache(root: root, limits: limits)), cold = coldCache.session(scope: scope)
+            #expect(try await cold.metadataRecovery().all)
+            #expect(try await cold.original(for: key)?.artifact.data == bytes.data)
+            let coldPeer = coldCache.session(scope: peerScope)
+            #expect(try await coldPeer.metadataRecovery().all == (fallback == "all"))
+            #expect(try await coldPeer.loadChats().first?.title == (fallback == "all" ? nil : "Peer"))
+            let sameConfiguration = ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL,
+                installationID: scope.installationID, username: Data("another-account".utf8), provider: scope.provider)
+            #expect(try await coldCache.session(scope: sameConfiguration).metadataRecovery().all == (fallback != "namespace"))
+        }
+    }
+
+    @Test func oversizedRosterCannotQuarantinePeersOrReplaceTheExistingRestriction() async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.metadataBytes = 4_000
+            let (cache, scope, key) = try fixture(root: root, limits: limits); _ = own(cache)
+            let session = cache.session(scope: scope)
+            try await session.upsert(.init(identity: key.identity, botName: "Bot", title: "Peer", messages: [],
+                updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+            try session.restrictMetadata(to: [key.identity.profile])
+            let ledger = root.appendingPathComponent("metadata-recovery.plist")
+            let oversized = try Set((0..<100).map { try ExactID("profile-\($0)") })
+            let otherScope = ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL,
+                installationID: scope.installationID, username: Data("other".utf8), provider: scope.provider)
+            let other = cache.session(scope: otherScope)
+            #expect(throws: (any Error).self) { try other.restrictMetadata(to: oversized) }
+            #expect(try Data(contentsOf: ledger).count <= 1_000)
+            #expect(try await other.metadataRecovery().all)
+            #expect(try await !session.metadataRecovery().all)
+            #expect(try await session.loadChats().map(\.identity) == [key.identity])
+        }
+    }
+
     @Test(arguments: ["discard", "prune"], [false, true])
     func queuedCleanupPreservesNewLeaseGuardsAndRetiresOldWriters(cleanup: String, existingGuard: Bool) async throws {
         try await withCacheRoot { root, own in
@@ -28,6 +251,45 @@ import BottoCore
             let cold = own(ArtifactCache(root: root)).session(scope: scope)
             #expect(try await cold.metadataRecovery().contains(key.identity))
             #expect(try await cold.original(for: key) == nil)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func captureRollbackPreservesCheckedSavedChatAdmission(newCanonicalGuard: Bool) async throws {
+        try await withCacheRoot { root, own in
+            let (_, scope, key) = try fixture()
+            let sibling = SessionIdentity(profile: key.identity.profile, root: try ExactID("second"), stored: try ExactID("second"), aliases: [])
+            let warm = own(ArtifactCache(root: root)), warmSession = warm.session(scope: scope)
+            try warmSession.restrictMetadata(to: [])
+            for source in [key.identity, sibling] {
+                try await warmSession.upsert(.init(identity: source, botName: "Bot", title: source.root.text,
+                    messages: [.init(id: "saved", role: .assistant, text: "Saved")], updatedAt: nil,
+                    coverage: .complete, summary: nil, headFingerprint: nil))
+            }
+            try await warmSession.retainOriginal(bytes, for: key); await warm.close()
+            var limits = ArtifactCache.Limits(); limits.chatCount = 2; limits.messageCount = 1
+            let gate = CaptureCommitGate(); defer { gate.release() }
+            let cache = own(ArtifactCache(root: root, limits: limits, beforeCaptureCommit: { gate.pause() })), session = cache.session(scope: scope)
+            try #require(try await session.loadChats().count == 2)
+            let next = ArtifactOriginalKey(identity: sibling, messageID: Data("new".utf8), path: Data("/new".utf8), sourceRevision: Data("r2".utf8))
+            let admission = ArtifactCaptureAdmission(), consumer = UUID(); admission.register(consumer)
+            gate.arm()
+            let saving = Task { try await session.retainOriginal(bytes, for: next, admission: admission) }
+            defer { saving.cancel(); admission.revokeAll() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            try #require(gate.isEntered)
+            #expect(try await session.metadataRecovery().contains(key.identity))
+            if newCanonicalGuard { try session.invalidateMetadata([(key.identity.profile, key.identity.root)]) }
+            admission.revokeAll(); gate.release()
+            await #expect(throws: (any Error).self) { _ = try await saving.value }
+            #expect(try await session.loadChats().contains { $0.identity == key.identity } == !newCanonicalGuard)
+            #expect(try await session.metadataRecovery().withholdsBookSeed(key.identity))
+            #expect(try await session.original(for: key)?.artifact.data == bytes.data)
+            await cache.close()
+            let cold = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
+            #expect(try await cold.loadChats().contains { $0.identity == key.identity } == !newCanonicalGuard)
+            #expect(try await cold.original(for: key)?.artifact.data == bytes.data)
         }
     }
 

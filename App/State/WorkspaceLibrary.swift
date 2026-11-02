@@ -237,6 +237,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var rosterReadFloors: [ExactID: ContinuousClock.Instant]?
     private var rosterBots: [BotProfile] = []
     private var rosterRevision = UUID()
+    private var pendingRosterRestriction: Set<ExactID>?
     enum RosterEvidence { case cached, observed }
 
     private func rosterPermits(_ profile: ExactID) -> Bool {
@@ -322,7 +323,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 if restorationFailed { try await cache.retryStorage() }
                 try await readMetadataRecovery()
                 withdrawUntrustedRestoration()
-                if metadataRecovery.all || !metadataRecovery.invalidated.isEmpty {
+                if metadataRecovery.hasInvalidations {
                     for hint in try await cache.metadataRecoveryHints() {
                         let id = key(for: hint.identity), stamp = acceptanceFence.stamp
                         await installRestorationHint(hint, admittedBy: {
@@ -332,9 +333,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     }
                 }
                 let loaded = try await cache.loadChats()
+                try await readMetadataRecovery()
                 guard !isRetired, rosterRevision == roster else { restorationFailed = true; return }
                 @MainActor func canRestore(_ row: CachedArtifactChat) -> Bool {
-                    guard !isRetired, self.rosterRevision == roster, self.rosterPermits(row.identity.profile) else { return false }
+                    guard !isRetired, self.rosterRevision == roster, self.rosterPermits(row.identity.profile),
+                          self.pendingRosterRestriction?.contains(row.identity.profile) != false else { return false }
                     let id = key(for: row.identity)
                     guard let current = records[id] else {
                         return !self.unverifiedPersistenceChanges
@@ -378,6 +381,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         directoryAbsent: row.directoryAbsent == true,
                         persistedRead: row, admittedBy: { canRestore(row) })
                 }
+                guard rosterRevision == roster else { restorationFailed = true; return }
                 unreconciledSeedIDs = []
                 restorationFailed = metadataRecovery.all || guardAdmissionFailure != guardFailure
                 if !restorationFailed { unverifiedPersistenceChanges = false }
@@ -413,7 +417,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         guard let cache else { return }
         do {
             metadataRecovery = try await cache.metadataRecovery()
-            if metadataRecovery.all || !metadataRecovery.invalidated.isEmpty {
+            if metadataRecovery.needsHistoryCheck {
                 scanNotice = .failure("Saved artifacts need a fresh history check. Pull to refresh to try again.")
             }
         } catch {
@@ -424,7 +428,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func withdrawUntrustedRestoration() {
         let unsafe = Set(records.values.filter {
-            metadataRecovery.contains($0.identity) && initialSourceProofs[$0.id] != $0.identity.stored
+            (metadataRecovery.contains($0.identity) || pendingRosterRestriction?.contains($0.identity.profile) == false)
+                && initialSourceProofs[$0.id] != $0.identity.stored
         }.map(\.id))
         guard let target = unsafe.first else { return }
         restorationHints.formUnion(unsafe)
@@ -466,7 +471,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func persist() async {
         schedulePersistence()
-        await persistenceTask?.value
+        while let task = persistenceTask { await task.value }
     }
 
     private func recordAcceptance(_ id: LibraryChat.ID) {
@@ -521,8 +526,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         if records[id] == nil { dirtyVersions[id] = nil }
                         continue
                     }
-                    dirtyChats = dirtyChats.filter { records[$0] != nil && !restorationHints.contains($0) && !unreconciledSeedIDs.contains($0) }
-                    guard let id = dirtyChats.first, let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
+                    dirtyChats = dirtyChats.filter { records[$0] != nil && !restorationHints.contains($0) }
+                    guard let id = dirtyChats.first(where: { !unreconciledSeedIDs.contains($0) }),
+                          let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
                     inFlightUpsert = (id, revision)
                     defer { inFlightUpsert = nil }
                     try await cache.upsert(row, revision: revision)
@@ -540,13 +546,29 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     func observeBots(_ bots: [BotProfile], evidence: RosterEvidence) {
+        guard !isRetired else { return }
         let names = Dictionary(bots.compactMap { bot in (try? ExactID(bot.id)).map { ($0, bot.name) } }, uniquingKeysWith: { first, _ in first })
-        if evidence == .observed {
-            let previous = rosterReadFloors
-            if previous == nil || Set(previous?.keys.map { $0 } ?? []) != Set(names.keys) {
+        let previous = rosterReadFloors
+        if evidence == .observed, previous == nil || Set(previous?.keys.map { $0 } ?? []) != Set(names.keys) {
+            rosterRevision = UUID()
+            invalidateRevalidation()
+            let profiles = Set(names.keys)
+            pendingRosterRestriction = pendingRosterRestriction.map { $0.intersection(profiles) } ?? profiles
+        }
+        if let restriction = pendingRosterRestriction {
+            do {
+                try cache?.restrictMetadata(to: restriction)
+                pendingRosterRestriction = nil
+                let previousRoster = rosterRevision
                 rosterRevision = UUID()
+                // Queued seeds have not read recovery state; active seeds retain their old fence.
+                if pendingSeed?.roster == previousRoster { pendingSeed?.roster = rosterRevision }
                 invalidateRevalidation()
+            } catch {
+                guardAdmissionFailure = UUID(); unverifiedPersistenceChanges = true
             }
+        }
+        if evidence == .observed {
             rosterBots = bots
             rosterReadFloors = names.mapValues { _ in mountedAt }
             for profile in names.keys {
@@ -678,6 +700,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     var warning: String? {
         guard !isRetired else { return nil }
+        if pendingRosterRestriction != nil { return "Artifacts are available, but changes couldn’t be saved on this device." }
         if !online { return "You’re offline. Showing previously loaded chats and artifacts." }
         if isScanning { return statusBeforeScan?.warning }
         if let scanNotice { return scanNotice.message }
@@ -690,6 +713,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     enum StatusAction { case retry, checkOlderHistory }
     var statusAction: StatusAction? {
         guard !isRetired, online else { return nil }
+        if pendingRosterRestriction != nil { return .retry }
         if isScanning { return statusBeforeScan?.action }
         if let scanNotice {
             switch scanNotice {
@@ -751,8 +775,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     guard rosterPermits(source.profile) else { continue }
                     guard acceptanceFence.permits(id, since: seed.accepted), records[id]?.directoryAbsent != true,
                           records[id] == nil || records[id]?.identity.stored == source.stored else { continue }
-                    if metadataRecovery.contains(source) {
-                        if !restored, records[id] == nil {
+                    if metadataRecovery.withholdsBookSeed(source) || pendingRosterRestriction?.contains(source.profile) == false {
+                        if !restored, records[id] == nil, metadataRecovery.contains(source) {
                             let hint = ArtifactMetadataHint(identity: source, botName: name, title: record.title, updatedAt: record.updatedAt,
                                 unavailableMessageIDs: (transcript.unavailableMessageIDs ?? []).union(transcript.messages.map { Data($0.id.utf8) }),
                                 removedMessageIDs: [], retiredStoredIDs: [])
@@ -761,7 +785,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         }
                         continue
                     }
-                    if !restored { unreconciledSeedIDs.insert(id) }
+                    if !restored || restorationFailed {
+                        guard records[id] == nil || unreconciledSeedIDs.contains(id) else { continue }
+                        unreconciledSeedIDs.insert(id)
+                    }
                     if transcript.isWorking, let tail = transcript.messages.last, tail.role == .assistant {
                         unsettledTail[id] = WorkingTail(stored: source.stored, messageID: Data(tail.id.utf8)); markDirty(id)
                     }
@@ -773,6 +800,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         retiredStoredIDs: [],
                         admittedBy: { !self.isRetired && !Task.isCancelled && self.seedVersion == seed.request
                             && self.rosterRevision == seed.roster && self.rosterPermits(source.profile)
+                            && self.pendingRosterRestriction?.contains(source.profile) != false
                             && self.records[id]?.directoryAbsent != true
                             && self.acceptanceFence.permits(id, since: seed.accepted)
                             && (self.records[id] == nil || self.records[id]?.identity.stored == source.stored) })
@@ -834,6 +862,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 indexingMetrics.forcedRefreshesJoined += 1
             }
             await scanTask.value
+            await persist()
             return
         }
         let owner = generation
@@ -865,6 +894,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         scanTask = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        guard generation == owner, scanIdentity == request else { return }
+        await persist()
         guard generation == owner, scanIdentity == request else { return }
         if task.isCancelled {
             scanNotice = .failure("Loading stopped before all history was indexed. Refresh to load the remaining results.")
