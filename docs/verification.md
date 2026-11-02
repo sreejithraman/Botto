@@ -1086,7 +1086,39 @@ peers still available. Evidence is retained under
 A fresh Core run passed 438 tests in 11 suites and the MainActor compatibility
 build, with recorded command, source hashes and unchanged-during-run audit
 (`final-core*`). Its Core dependencies remain unchanged by these App repairs.
-The repaired snapshot's four native suites (201 functions), seven affected UI
-cases and independent provider readback are running on a fresh owned Simulator
-(`final-recovery-chat-export*`). Pass-22 source review and that runtime result
-remain pending. Earlier full-gate and UI failures remain disclosed.
+On `8862cc8`, four native suites passed 201 functions. Six of seven affected UI
+cases passed; the background export case failed at the initial file card because
+its activation point was invalid. That unchanged case passed on retry. All seven
+therefore have passing results across runs, with no single combined gate pass.
+Independent provider readback passed all 80 bytes and the digest above. Evidence:
+`final-recovery-chat-export*` and `artifact-background-unchanged-retry*` under
+`/tmp/botto-pr-integration/`.
+
+Pass 22 found that indexing budgets could discard a passive producer's revision
+baseline or required exclusions before the recovery journal protected them.
+The corrected locked-SQL regression failed in all four pressure cases (row,
+chat, initial-window and exclusion limits), with 16 issues covering guards and
+cold Search/artifact leaks. The unrelated saved peer remained available.
+Admission now records guards before canonical eviction. Bounded scope hashes
+retain the resulting uncertainty until saved evidence is reconciled.
+
+A second regression exposed replay of an already-fetched saved row after a guard
+was created during restoration. Recovery now rechecks that row and merges its
+negative evidence as a hint. The first executed duplicate-hint check then found
+four live/cold Search and artifact issues; hint conversion now retains duplicate
+IDs as disputes. The broader run passed 241 of 243 functions but exposed two
+existing fence-churn cases where valid accepted rows remained hidden. Retry now
+preserves those rows behind the gate and releases them after SQL proves their
+source has no saved metadata. The focused rerun passed three functions across
+nine parameter cases.
+
+These results, including failed attempts and exact source manifests, are retained
+as `bounded-window-producer-red*`, `guarded-restore-replay-red*`,
+`guarded-hint-identity-executed-red*`, `recovery-budget-identity-green*` (failed),
+`churn-reconciliation-green*`, and `recovery-budget-final*`. The initial
+`bounded-window-guard-red` used an incomplete pressure fixture; its corrected
+successor supplies the four-case failure evidence. The first hint-identity
+attempt stopped before tests executed and supplies no runtime result. The final five-suite run passed all 243 functions. Production and test hashes
+remained unchanged during that run; only these proof and contract docs changed.
+Pass-23 source review and a final UI/provider run remain pending. Earlier
+full-gate and UI failures remain disclosed.

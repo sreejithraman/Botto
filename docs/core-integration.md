@@ -158,7 +158,15 @@ rows. A positive window alone defers guarding unread saved metadata until
 reconciliation. Exclusions inherited from an unreconciled seed, changed known message
 revisions, producer changes and authoritative updates require a guard. Promoting
 admission to that state marks metadata dirty even when the canonical rows stay
-identical, so the guard reaches disk before retirement.
+identical, so the guard reaches disk before retirement. Canonical retention records
+required guards before discarding rows or exclusions. Lost evidence also leaves
+bounded scope hashes until reconciliation; overflow withholds uncertain partial
+Library admissions across the scope. Chat history can still display its fetched
+rows. A coherent source read or saved-metadata reconciliation releases that hold.
+Restoration rechecks saved rows against guards created during its own awaits and
+merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
+Accepted rows survive retry behind the visibility gate; a successful SQL read
+can release them when it proves no saved source exists for their chat.
 
 Before attempting changed metadata rows, the cache atomically records their
 scoped invalidation hashes outside SQLite. A successful replacement clears its

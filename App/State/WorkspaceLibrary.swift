@@ -228,6 +228,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private struct Admission: Sendable {
         let candidates: [Candidate]
         let limited: Bool
+        let recoveryGuards: Set<LibraryChat.ID>
+
+        init(candidates: [Candidate], limited: Bool, recoveryGuards: Set<LibraryChat.ID> = []) {
+            self.candidates = candidates; self.limited = limited; self.recoveryGuards = recoveryGuards
+        }
     }
     private struct ProjectionState {
         let version: UUID
@@ -356,6 +361,28 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var dirtyChats: Set<LibraryChat.ID> = []
     private var dirtyVersions: [LibraryChat.ID: UUID] = [:]
     private enum MetadataAdmission: Equatable { case seed, passiveWindow, requiresGuard }
+    private enum DiscardedEvidence: Equatable {
+        case scoped(Set<Data>), all(UUID)
+
+        mutating func record(_ sources: Set<Data>) {
+            guard !sources.isEmpty else { return }
+            switch self {
+            case .all: self = .all(UUID())
+            case .scoped(let previous):
+                let next = previous.union(sources)
+                self = next.count <= 1_000 ? .scoped(next) : .all(UUID())
+            }
+        }
+        func contains(profile: ExactID, root: ExactID) -> Bool {
+            switch self {
+            case .all: true
+            case .scoped(let sources):
+                !sources.isEmpty && sources.contains(ArtifactMetadataRecovery.key(profile: profile, root: root))
+            }
+        }
+    }
+    // Scope hashes outlive canonical eviction until saved evidence is reconciled.
+    @ObservationIgnored private var discardedEvidence = DiscardedEvidence.scoped([])
     private var unreconciledMetadata: [LibraryChat.ID: MetadataAdmission] = [:]
     private struct WorkingTail: Equatable {
         let stored: ExactID
@@ -462,19 +489,38 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         do {
             if retrying { try await cache.retryStorage() }
             try await readMetadataRecovery()
+            let discardedBefore = discardedEvidence, guardsBefore = metadataRecovery.invalidated
+            var savedSources = Set<Data>()
+            var hintReceipts: [LibraryChat.ID: AcceptanceFence.Stamp] = [:]
+            @MainActor func restoreHint(_ hint: ArtifactMetadataHint) async -> Bool {
+                savedSources.insert(ArtifactMetadataRecovery.key(hint.identity))
+                guard rosterPermits(hint.identity.profile), pendingRosterRestriction?.contains(hint.identity.profile) != false else { return true }
+                let id = key(for: hint.identity), stamp = acceptanceFence.stamp
+                await installRestorationHint(hint, admittedBy: { !self.isRetired && self.rosterRevision == roster
+                    && self.acceptanceFence.permits(id, since: stamp) })
+                guard !isRetired, rosterRevision == roster, records[id] != nil,
+                      acceptanceFence.permits(id, since: stamp) else {
+                    discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)])
+                    return false
+                }
+                hintReceipts[id] = stamp
+                return true
+            }
             withdrawUntrustedRestoration()
             if metadataRecovery.hasInvalidations {
                 for hint in try await cache.metadataRecoveryHints() {
-                    let id = key(for: hint.identity), stamp = acceptanceFence.stamp
-                    await installRestorationHint(hint, admittedBy: {
-                        !self.isRetired && self.rosterRevision == roster && self.rosterPermits(hint.identity.profile)
-                            && self.acceptanceFence.permits(id, since: stamp)
-                    })
+                    guard await restoreHint(hint) else { return .needsRetry }
                 }
             }
             let loaded = try await cache.loadChats()
+            savedSources.formUnion(loaded.map { ArtifactMetadataRecovery.key($0.identity) })
             try await readMetadataRecovery()
             guard !isRetired, rosterRevision == roster else { return .needsRetry }
+            if !metadataRecovery.invalidated.isSubset(of: guardsBefore) {
+                for hint in try await cache.metadataRecoveryHints() {
+                    guard await restoreHint(hint) else { return .needsRetry }
+                }
+            }
             @MainActor func canRestore(_ row: CachedArtifactChat) -> Bool {
                 guard !isRetired, self.rosterRevision == roster, self.rosterPermits(row.identity.profile),
                       self.pendingRosterRestriction?.contains(row.identity.profile) != false else { return false }
@@ -494,6 +540,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             for row in loaded {
                 guard rosterRevision == roster else { return .needsRetry }
                 let id = key(for: row.identity)
+                if metadataRecovery.contains(row.identity) {
+                    guard await restoreHint(ArtifactMetadataHint(saved: row)) else { return .needsRetry }
+                    continue
+                }
                 persistedIDs.insert(id)
                 if !rosterPermits(row.identity.profile) || (records[id] == nil && unverifiedPersistenceChanges
                     && !acceptanceFence.permits(id, since: initialRestorationStamp)) {
@@ -516,8 +566,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     updatedAt: row.updatedAt, input: .restored(row), admittedBy: { canRestore(row) })
             }
             guard rosterRevision == roster else { return .needsRetry }
-            let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure ? .needsRetry : .reconciled
-            if outcome == .reconciled { unreconciledMetadata = [:]; unverifiedPersistenceChanges = false }
+            if !metadataRecovery.all {
+                for id in restorationHints where records[id].map({ !savedSources.contains(ArtifactMetadataRecovery.key($0.identity)) }) == true
+                    && (unreconciledMetadata[id] == .requiresGuard || unreconciledMetadata[id] == .passiveWindow) {
+                    restorationHints.remove(id); markDirty(id)
+                }
+            }
+            let staleHints = hintReceipts.filter { records[$0.key] == nil || !acceptanceFence.permits($0.key, since: $0.value) }
+            discardedEvidence.record(Set(staleHints.keys.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
+            let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
+                || discardedEvidence != discardedBefore || !staleHints.isEmpty ? .needsRetry : .reconciled
+            if outcome == .reconciled {
+                unreconciledMetadata = [:]; unverifiedPersistenceChanges = false; discardedEvidence = .scoped([])
+            }
             return outcome
         } catch {
             if !isRetired {
@@ -567,7 +628,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         for id in unsafe { unsettledTail[id] = nil; observations[id] = nil }
         let safe = records.values.map {
             Candidate(id: $0.id, source: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
-                messages: unsafe.contains($0.id) ? [] : $0.messages,
+                messages: unsafe.contains($0.id) && unreconciledMetadata[$0.id] != .requiresGuard
+                    && unreconciledMetadata[$0.id] != .passiveWindow ? [] : $0.messages,
                 coverage: unsafe.contains($0.id) ? .partial : coverage[$0.id] ?? .partial,
                 unavailableMessageIDs: $0.unavailableMessageIDs, unverifiedMessageIDs: $0.unverifiedMessageIDs,
                 removedMessageIDs: $0.removedMessageIDs,
@@ -580,9 +642,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func installRestorationHint(_ hint: ArtifactMetadataHint, admittedBy: @MainActor () -> Bool) async {
         let id = key(for: hint.identity)
         guard rosterPermits(hint.identity.profile), admittedBy() else { return }
-        if let current = records[id], !restorationHints.contains(id) {
-            guard initialSourceProofs[id] == current.identity.stored else { return }
+        let accepted = unreconciledMetadata[id] == .requiresGuard || unreconciledMetadata[id] == .passiveWindow
+        if let current = records[id], !restorationHints.contains(id) || accepted {
             let sameTip = current.identity.stored == hint.identity.stored
+            guard initialSourceProofs[id] == current.identity.stored || (accepted && sameTip) else { return }
             var retired = hint.retiredStoredIDs
             if !sameTip { retired.insert(hint.identity.stored.bytes) }
             commitCanonical(prepareAdmission(source: current.identity, botName: current.botName, title: current.title,
@@ -590,6 +653,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     ? .recoveryHint(.init(unavailable: hint.unavailableMessageIDs, unverified: hint.unverifiedMessageIDs,
                         removed: hint.removedMessageIDs, retiredStored: retired))
                     : .seed(messages: [], exclusions: .init(retiredStored: retired))), target: id)
+            if sameTip && accepted { restorationHints.remove(id) }
             return
         }
         if let current = records[id], current.identity.stored != hint.identity.stored { return }
@@ -635,6 +699,26 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         })
     }
 
+    private func invalidateMetadata(_ ids: Set<LibraryChat.ID>) -> Bool {
+        guard let cache else { return true }
+        for id in ids where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
+        indexingMetrics.pendingMetadataIdentities = dirtyVersions.count
+        do {
+            // SQL may have cleared this writer's guard before its acknowledgment resumes here.
+            let needsGuard = ids.filter {
+                inFlightUpsert?.id != $0 || inFlightUpsert?.revision != dirtyVersions[$0]
+            }
+            try cache.invalidateMetadata(needsGuard.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
+            metadataRecovery.invalidated.formUnion(needsGuard.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) })
+            return true
+        } catch {
+            guardAdmissionFailure = UUID()
+            if restoration.needsReconciliation { unverifiedPersistenceChanges = true }
+            scanNotice = .failure("Artifacts are available, but changes couldn’t be saved on this device.")
+            return false
+        }
+    }
+
     private func schedulePersistence() {
         guard let cache, !isRetired else { return }
         // Never-saved evictions need no recovery guard. Keep saved and in-flight
@@ -642,29 +726,16 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         dirtyChats = dirtyChats.filter { records[$0] != nil }
         let pending = pendingMetadata().filter { restoration.hasCompletedAttempt || acceptanceFence.contains($0) }
         dirtyVersions = dirtyVersions.filter { pending.contains($0.key) || dirtyChats.contains($0.key) }
-        for id in pending where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
-        indexingMetrics.pendingMetadataIdentities = dirtyVersions.count
-        // This bounded atomic ledger write is independent of SQL and precedes
-        // the existing writer guard, including changes arriving while SQL waits.
-        do {
-            // SQL may have cleared this writer's guard before its acknowledgment resumes here.
-            let needsGuard = pending.filter {
-                inFlightUpsert?.id != $0 || inFlightUpsert?.revision != dirtyVersions[$0]
-            }
-            try cache.invalidateMetadata(needsGuard.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
-        } catch {
-            guardAdmissionFailure = UUID()
-            if restoration.needsReconciliation { unverifiedPersistenceChanges = true }
-            scanNotice = .failure("Artifacts are available, but changes couldn’t be saved on this device.")
-            return
-        }
+        guard invalidateMetadata(pending) else { return }
         guard restoration.hasCompletedAttempt, persistenceTask == nil else { return }
         let task = Task { [weak self] in
             guard let self else { return }
             defer { persistenceTask = nil }
             do {
                 while !isRetired {
-                    if let id = persistedIDs.first(where: { records[$0] == nil }) {
+                    if let id = persistedIDs.first(where: {
+                        records[$0] == nil && !discardedEvidence.contains(profile: $0.profile, root: $0.root)
+                    }) {
                         try await cache.deleteChat(profile: id.profile, root: id.root)
                         persistedIDs.remove(id)
                         if records[id] == nil { dirtyVersions[id] = nil }
@@ -761,6 +832,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         } else {
             provesSource = false
             guard records[id]?.directoryAbsent != true, !restorationHints.contains(id), expected == nil || expected == source.stored else { return }
+        }
+        if discardedEvidence.contains(profile: source.profile, root: source.root) {
+            guard provesSource, !snapshot.hasEarlierMessages, read?.identityRead?.matches(source) == true else { return }
         }
         restorationHints.remove(id)
         indexingMetrics.acceptedSnapshots += 1
@@ -1036,7 +1110,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         persistenceTask?.cancel(); transcriptTask?.cancel(); pendingTranscripts = [:]; originals = [:]
         cancelOperations()
         acceptanceFence = AcceptanceFence(capacity: acceptanceFence.capacity); indexingMetrics.retainedAcceptanceFences = 0
-        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadata = [:]; dirtyVersions = [:]
+        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadata = [:]; dirtyVersions = [:]; discardedEvidence = .scoped([])
         reconcileProjectionWaiters()
     }
     private func cancelOperations() {
@@ -1289,7 +1363,20 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 unavailableMessageIDs: candidate.unavailableMessageIDs, unverifiedMessageIDs: candidate.unverifiedMessageIDs, removedMessageIDs: candidate.removedMessageIDs,
                 retiredStoredIDs: candidate.retiredStoredIDs, directoryAbsent: candidate.directoryAbsent)
         }
-        return Admission(candidates: retained, limited: limited)
+        let recoveryGuards: Set<LibraryChat.ID>
+        switch unreconciledMetadata[key] {
+        case .requiresGuard? where !retained.contains(where: { $0.id == key }):
+            recoveryGuards = [key]
+        case .passiveWindow?:
+            let kept = Dictionary((retained.first { $0.id == key }?.messages ?? []).map {
+                (Data($0.id.utf8), $0)
+            }, uniquingKeysWith: { first, _ in first })
+            recoveryGuards = messages.contains { message in
+                kept[Data(message.id.utf8)].map { TranscriptContentRevision.sameMessage($0, message) } != true
+            } ? [key] : []
+        default: recoveryGuards = []
+        }
+        return Admission(candidates: retained, limited: limited, recoveryGuards: recoveryGuards)
     }
 
     nonisolated static func project(_ messages: [ChatMessage], streamingMessage: ChatMessage?) async -> Projection {
@@ -1370,6 +1457,23 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func commitCanonical(_ admission: Admission, target: LibraryChat.ID,
                                  projectionOwner: ProjectionOwner = .background, persistedRead: CachedArtifactChat? = nil) {
+        if restoration.needsReconciliation {
+            let next = Dictionary(admission.candidates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var guards = admission.recoveryGuards
+            for (id, chat) in records where unreconciledMetadata[id] == .passiveWindow || unreconciledMetadata[id] == .requiresGuard {
+                guard let candidate = next[id] else { guards.insert(id); continue }
+                if candidate.retiredStoredIDs.contains(chat.identity.stored.bytes) { continue }
+                let kept = Set(candidate.messages.map { Data($0.id.utf8) }).union(candidate.unavailableMessageIDs)
+                    .union(candidate.unverifiedMessageIDs).union(candidate.removedMessageIDs)
+                if chat.messages.contains(where: { !kept.contains(Data($0.id.utf8)) }) { guards.insert(id) }
+            }
+            if !guards.isEmpty {
+                for id in guards { unreconciledMetadata[id] = .requiresGuard; markDirty(id) }
+                discardedEvidence.record(Set(guards.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
+                // Retention may remove both the rows and their ordinary persistence owner.
+                _ = invalidateMetadata(guards)
+            }
+        }
         let savedBefore = cachedChat(target), wasDirty = dirtyChats.contains(target)
         let previousVersions = projectionStates.mapValues(\.version)
         var retained: [LibraryChat.ID: Projection] = [:]

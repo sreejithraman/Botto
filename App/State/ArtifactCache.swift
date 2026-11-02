@@ -20,8 +20,9 @@ nonisolated struct ArtifactMetadataRecovery: Sendable {
     var checkedSavedChats = Set<Data>()
     var hasInvalidations: Bool { all || !invalidated.isEmpty || allowedProfiles != nil }
     var needsHistoryCheck: Bool { all || !invalidated.isEmpty }
-    static func key(_ identity: SessionIdentity) -> Data {
-        Data(SHA256.hash(data: artifactCacheFields([identity.profile.bytes, identity.root.bytes])))
+    static func key(_ identity: SessionIdentity) -> Data { key(profile: identity.profile, root: identity.root) }
+    static func key(profile: ExactID, root: ExactID) -> Data {
+        Data(SHA256.hash(data: artifactCacheFields([profile.bytes, root.bytes])))
     }
     func excludes(_ profile: ExactID) -> Bool {
         allowedProfiles.map { !$0.contains(Data(SHA256.hash(data: profile.bytes))) } == true
@@ -44,6 +45,20 @@ nonisolated struct ArtifactMetadataHint: Sendable {
     let unverifiedMessageIDs: Set<Data>
     let removedMessageIDs: Set<Data>
     let retiredStoredIDs: Set<Data>
+}
+
+extension ArtifactMetadataHint {
+    init(saved row: CachedArtifactChat) {
+        var messageIDs = Set<Data>(), unavailable = row.unavailableMessageIDs ?? []
+        for message in row.messages {
+            let id = Data(message.id.utf8)
+            if !messageIDs.insert(id).inserted { unavailable.insert(id) }
+        }
+        self.init(identity: row.identity, botName: row.botName, title: row.title, updatedAt: row.updatedAt,
+            unavailableMessageIDs: unavailable,
+            unverifiedMessageIDs: messageIDs.union(row.unverifiedMessageIDs ?? []),
+            removedMessageIDs: row.removedMessageIDs ?? [], retiredStoredIDs: row.retiredStoredIDs ?? [])
+    }
 }
 
 nonisolated final class ArtifactCaptureAdmission: @unchecked Sendable {
@@ -885,12 +900,7 @@ fileprivate actor ArtifactCacheBackend {
     func metadataRecoveryHints(_ lease: UUID) throws -> [ArtifactMetadataHint] {
         let scope = try scope(lease), chats = try savedChats(scope: scope)
         let recovery = try metadataRecovery(scope: scope)
-        return chats.filter { recovery.contains($0.identity) }.map {
-            ArtifactMetadataHint(identity: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
-                unavailableMessageIDs: $0.unavailableMessageIDs ?? [],
-                unverifiedMessageIDs: Set($0.messages.map { Data($0.id.utf8) }).union($0.unverifiedMessageIDs ?? []),
-                removedMessageIDs: $0.removedMessageIDs ?? [], retiredStoredIDs: $0.retiredStoredIDs ?? [])
-        }
+        return chats.filter { recovery.contains($0.identity) }.map { ArtifactMetadataHint(saved: $0) }
     }
     func upsert(_ record: CachedArtifactChat, lease: UUID, revision: UUID) throws {
         let scope = try scope(lease)
