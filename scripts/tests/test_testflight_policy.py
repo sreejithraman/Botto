@@ -171,6 +171,15 @@ class TestFlightPolicyTests(unittest.TestCase):
         self.assertEqual(result["source_sha"], self.sha)
         self.assertEqual(result["build_number"], 1007)
 
+    def test_source_workflow_display_name_does_not_change_release_eligibility(self):
+        for name in ("iOS checks", "Renamed iOS checks"):
+            with self.subTest(name=name):
+                event = self.event()
+                event["workflow_run"]["name"] = name
+                result = self.run_policy(event)
+                self.assertTrue(result["publish"], result["reason"])
+                self.assertEqual(result["source_sha"], self.sha)
+
     def test_automatic_delivery_stays_off_until_enabled(self):
         self.assertFalse(self.run_policy(automatic="false")["publish"])
 
@@ -189,6 +198,7 @@ class TestFlightPolicyTests(unittest.TestCase):
         for field, value in (
             ("conclusion", "failure"),
             ("event", "pull_request"),
+            ("event", "workflow_dispatch"),
             ("head_branch", "feature"),
             ("path", "other.yml"),
         ):

@@ -167,7 +167,6 @@ def select(after_queue=False):
             run.get("event") == "push"
             and run.get("head_branch") == "main"
             and run.get("conclusion") == "success"
-            and run.get("name") == "iOS"
             and run.get("path") == ".github/workflows/ios.yml"
             and run.get("head_repository", {}).get("full_name") == REPOSITORY
         ):
