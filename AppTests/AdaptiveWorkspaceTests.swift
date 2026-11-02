@@ -918,7 +918,7 @@ import BottoCore
         var previousPoll = ContinuousClock.now
         while !condition() && ContinuousClock.now < deadline {
             polls += 1
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
             let resumed = ContinuousClock.now
             maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
         }
