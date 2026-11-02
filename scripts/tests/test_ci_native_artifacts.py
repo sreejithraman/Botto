@@ -3,10 +3,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check-native.sh"
@@ -14,13 +16,14 @@ DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None, interrupt_stage=""):
+    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None, cancel_stage="", cancel_signal=signal.SIGTERM):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
         repo = base / "repo"
         (repo / "scripts").mkdir(parents=True)
         shutil.copy2(SCRIPT, repo / "scripts/check-native.sh")
+        shutil.copy2(SCRIPT.parent / "dev-process.py", repo / "scripts/dev-process.py")
         tools = base / "bin"
         tools.mkdir()
         uuid = tools / "uuidgen"
@@ -28,7 +31,7 @@ class NativeArtifactTests(unittest.TestCase):
         uuid.chmod(0o755)
         xcode = tools / "xcodebuild"
         xcode.write_text('''#!/usr/bin/env python3
-import json, os, signal, sys
+import json, os, signal, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 action = args[0]
@@ -44,8 +47,22 @@ commands.append({"action": "enumerate" if enumerating else action, "derived": st
                  "destination": args[args.index("-destination") + 1]})
 record.write_text(json.dumps(commands))
 def finish(status):
-    if os.environ["CI_INTERRUPT_STAGE"] == ("enumerate" if enumerating else action):
-        os.kill(os.getppid(), signal.SIGTERM)
+    if os.environ["CI_CANCEL_STAGE"] == ("enumerate" if enumerating else action):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        target = Path(args[args.index("-test-enumeration-output-path") + 1]) if enumerating else result / "retained-proof"
+        with target.open("a") as output:
+            output.write("active writer\\n")
+        writer_record = Path(os.environ["CI_WRITER_RECORD"])
+        pending_record = writer_record.with_suffix(".tmp")
+        pending_record.write_text(json.dumps({"pid": os.getpid(), "path": str(target)}))
+        pending_record.replace(writer_record)
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            with target.open("a") as output:
+                output.write("more evidence\\n")
+            time.sleep(0.02)
+        sys.exit(130)
     sys.exit(status)
 if enumerating:
     assert (derived / "build-data").is_file()
@@ -85,7 +102,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                            GITHUB_OUTPUT=str(base / "github-output"),
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
                            CI_PASSED_TESTS=str(passed_tests),
-                           CI_INTERRUPT_STAGE=interrupt_stage,
+                           CI_CANCEL_STAGE=cancel_stage, CI_WRITER_RECORD=str(base / "writer.json"),
                            CI_PRODUCES_RESULT="1" if produces_result else "0")
         command = ["bash", str(repo / "scripts/check-native.sh"), suite]
         if workflow_event:
@@ -94,8 +111,41 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
             body = textwrap.dedent(step.split("        run: |\n", 1)[1])
             environment.update(GITHUB_EVENT_NAME=workflow_event, NATIVE_TEST=suite)
             command = ["bash", "-e", "-o", "pipefail", "-c", body]
-        result = subprocess.run(command, cwd=repo,
-                                env=environment, capture_output=True, text=True, timeout=10)
+        if cancel_stage:
+            with (base / "stdout").open("w") as stdout, (base / "stderr").open("w") as stderr:
+                process = subprocess.Popen(command, cwd=repo, env=environment, stdout=stdout, stderr=stderr)
+                unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+                try:
+                    deadline = time.monotonic() + 5
+                    writer_record = base / "writer.json"
+                    while not writer_record.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(writer_record.exists(), "Xcode never entered the active-writing stage")
+                    writer = json.loads(writer_record.read_text())
+                    process.send_signal(cancel_signal)
+                    returncode = process.wait(timeout=5)
+                    target = Path(writer["path"])
+                    evidence = target.read_bytes() if target.exists() else None
+                    time.sleep(0.15)
+                    stable = evidence == (target.read_bytes() if target.exists() else None)
+                    writer_state = subprocess.run(["ps", "-o", "stat=", "-p", str(writer["pid"])],
+                                                  capture_output=True, text=True, check=False).stdout.strip()
+                    self.assertIsNone(unrelated.poll(), "Cancellation reached an unrelated process")
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    unrelated.terminate()
+                    unrelated.wait(timeout=5)
+            result = subprocess.CompletedProcess(command, returncode, (base / "stdout").read_text(),
+                                                 (base / "stderr").read_text())
+            result.writer_stable = stable
+            result.writer_state = writer_state
+            if writer_state and not writer_state.startswith("Z"):
+                time.sleep(4)
+        else:
+            result = subprocess.run(command, cwd=repo,
+                                    env=environment, capture_output=True, text=True, timeout=10)
         return repo, parent, record, result
 
     def assert_registered_artifacts(self, record, directory):
@@ -113,28 +163,30 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
         return {Path(match) for pattern in paths.splitlines() if pattern.strip()
                 for match in glob.glob(str(repo / pattern.strip()))}
 
-    def test_interruption_keeps_pre_registered_results_and_discovery_evidence(self):
-        for stage in ("build-for-testing", "enumerate", "test-without-building"):
-            with self.subTest(stage=stage):
-                repo, parent, record, result = self.run_native(0, suite="FixtureTests", interrupt_stage=stage)
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                commands = json.loads(record.read_text())
-                directory = Path(commands[-1]["derived"]).parent
-                output = record.parent / "github-output"
-                self.assertTrue(output.exists(), "Register artifact paths before an interruptible Xcode command")
-                paths = self.assert_registered_artifacts(record, directory)
-                upload = self.upload_paths(paths, repo)
-                bundles = list(directory.glob("CIResults-*.xcresult"))
-                self.assertTrue(bundles)
-                for bundle in bundles:
-                    self.assertTrue((bundle / "retained-proof").is_file())
-                    self.assertIn(bundle, upload)
-                if stage != "build-for-testing":
-                    self.assertIn("BottoTests/FixtureTests/example()", Path(paths["native_selection_fallback"]).read_text())
-                    self.assertIn(Path(paths["native_selection_fallback"]), upload)
-                self.assertNotIn(directory / "DerivedData", upload)
-                self.assertTrue((directory / "DerivedData/build-data").is_file(), "Interruption must not remove a live run's outputs")
-                self.assertEqual((parent / "unrelated-data").read_text(), "keep")
+    def test_outer_workflow_cancellation_stops_the_writer_before_artifact_upload(self):
+        for stage, event, suite in (("build-for-testing", "pull_request", ""),
+                                    ("enumerate", "workflow_dispatch", "FixtureTests"),
+                                    ("test-without-building", "push", "")):
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(stage=stage, signal=sig):
+                    repo, parent, record, result = self.run_native(
+                        0, workflow_event=event, suite=suite, cancel_stage=stage, cancel_signal=sig)
+                    self.assertEqual(result.returncode, 128 + sig, result.stderr)
+                    self.assertTrue(result.writer_stable, "An Xcode writer mutated its result after the workflow owner exited")
+                    self.assertTrue(not result.writer_state or result.writer_state.startswith("Z"), result.writer_state)
+                    commands = json.loads(record.read_text())
+                    directory = Path(commands[-1]["derived"]).parent
+                    paths = self.assert_registered_artifacts(record, directory)
+                    bundles = list(directory.glob("CIResults-*.xcresult"))
+                    self.assertTrue(bundles)
+                    upload = self.upload_paths(paths, repo)
+                    self.assertTrue(set(bundles).issubset(upload))
+                    self.assertTrue(all((bundle / "retained-proof").is_file() for bundle in bundles))
+                    self.assertNotIn(directory / "DerivedData", upload)
+                    if stage == "enumerate":
+                        self.assertIn(Path(paths["native_selection_fallback"]), upload)
+                    self.assertTrue((directory / "DerivedData/build-data").is_file(), "Cancellation must leave its partial outputs in place")
+                    self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
     def test_outputs_are_external_and_results_survive_success_or_failure(self):
         for status in (0, 65):

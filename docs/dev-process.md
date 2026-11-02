@@ -4,6 +4,30 @@ Use Python 3.9+ on macOS. This helper controls commands it launches. It cannot
 attach to a PID, find jobs by name, or stop an existing backend or Simulator.
 Choose a fresh record and log for each run. Their parent directories must exist.
 
+## Foreground commands and CI cancellation
+
+Use `run` when the caller owns the foreground command and needs its exit status
+and streaming output. It needs no record or log file:
+
+```sh
+exec python3 scripts/dev-process.py run -- ./scripts/check-native.sh
+```
+
+In CI, `exec` makes this helper the step's cancellation owner. It launches the
+native runner in a new process group. INT, TERM, and HUP stop that owned group:
+TERM, a one-second grace, then KILL and a bounded wait for the child. The helper
+does not return to artifact upload while its foreground child is still running.
+`--grace` can select zero to thirty seconds. Cancellation exits with 128 plus
+the signal number; normal completion preserves the command's exit status.
+stdout and stderr stay attached to the caller.
+
+The command must retain its leader until its work finishes. Descendants that
+leave the process group or change credentials are outside this ownership
+contract. SIGKILL or host loss can prevent cleanup; no later PID lookup is used
+to recover control.
+
+## Background commands
+
 ```sh
 python3 scripts/dev-process.py start \
   --record /tmp/my-task-build-01.json \

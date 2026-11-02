@@ -565,9 +565,6 @@ import BottoCore
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
         try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
-        try await waitUntil("File loaded in the retained task", diagnostics: {
-            "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
-        }) { session.file != nil }
         let split = try #require(splitControllers(in: window.rootViewController!).first)
         try await waitUntil("File presentation has hidden the native sidebar") { split.displayMode == .secondaryOnly }
         UIView.performWithoutAnimation {

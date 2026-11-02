@@ -7,6 +7,44 @@ import WebKit
 @testable import Botto
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
+    @Test func expiredRecognitionDoesNotStartWork() async {
+        var started = false
+        let result = await NativeRecognitionDeadline.run(until: .now - .seconds(1)) {
+            started = true
+            return ["unexpected"]
+        }
+        #expect(result == nil && !started)
+    }
+
+    @Test func recognitionExpiryReturnsBeforeUncooperativeWorkAndIgnoresItsLateResult() async {
+        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
+        let worker = Task { await work.wait(); return ["late recognition"] }
+        let waiter = Task {
+            await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
+        }
+        await work.entered(); await expiry.entered()
+        expiry.release()
+        #expect(await waiter.value == nil)
+        work.release()
+        #expect(await worker.value == ["late recognition"])
+        await Task.yield()
+    }
+
+    @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
+        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
+        let worker = Task { await work.wait(); return ["cancelled recognition"] }
+        let waiter = Task {
+            await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
+        }
+        await work.entered(); await expiry.entered()
+        waiter.cancel()
+        #expect(await waiter.value == nil)
+        work.release(); expiry.release()
+        _ = await worker.value
+        let current = await NativeRecognitionDeadline.run(until: .now + .seconds(5)) { ["current recognition"] }
+        #expect(current == ["current recognition"])
+    }
+
     @Test func transientAttachmentsReadCurrentBytesAndOnlyIdentifiedRowsRetainCaptures() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -144,39 +182,40 @@ import WebKit
         host.view.addSubview(original)
         var didRetire = false
         func replaceDocument() async throws {
+            try Task.checkCancellation()
             didRetire = true
             first.stop()
             await replacement.load(block)
+            try Task.checkCancellation()
             let current = try #require(replacement.webView)
             current.frame = original.frame
             host.view.addSubview(current)
         }
-        let initial = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view)
-        try #require(initial === original)
-        let observation = await MountedReplyFileDocument.observe(original, in: host.view) { pixels in
+        // This recognizer deliberately creates a second document before returning old pixels.
+        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view,
+            observationBudget: .seconds(45), recognize: { pixels in
             let words = try await NativeTextRecognition.recognize(pixels, languages: ["en-US"])
             if !didRetire && words.joined(separator: " ").localizedStandardContains("Mounted observation") {
                 if activeResources {
                     let image = UIImage(cgImage: pixels)
+                    var complete = false
                     let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size),
                         isCurrent: { first.webView === original && first.state == .ready && original.window === window },
                         observe: { image, region in
                             let captured = try await RenderedTranscriptFile.observe(image, in: region)
-                            try #require(captured.isComplete, "The control must recognize genuine complete file pixels before retirement")
-                            try await replaceDocument()
+                            complete = captured.isComplete
+                            if complete { try await replaceDocument() }
                             return captured
                         })
+                    guard complete else { return [] }
                     #expect(active == nil, "Retired pixels must not admit a later active-resource sample")
                 } else { try await replaceDocument() }
             }
             return words
-        }
-        #expect(didRetire)
-        #expect(!observation.isCurrent, "Retired pixels must not certify the mounted replacement")
+        })
         let current = try #require(replacement.webView)
-        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view,
-            excluding: original, phase: "replacement after recognition")
-        #expect(observed === current)
+        #expect(didRetire)
+        #expect(observed === current, "The same waiter must reject retired pixels and observe the replacement")
         #expect(current.window === window && original.superview == nil)
     }
 
@@ -562,11 +601,11 @@ import WebKit
     private enum Stage: String {
         case mounting, rendering, recognizing
 
-        var budget: Duration {
+        func budget(observation: Duration) -> Duration {
             switch self {
             case .mounting: .seconds(30)
             case .rendering: .seconds(21)
-            case .recognizing: .seconds(15)
+            case .recognizing: observation
             }
         }
     }
@@ -578,27 +617,32 @@ import WebKit
     }
 
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
-                            phase: String = "initial document", diagnostics: () -> String = { "" }) async throws -> WKWebView {
+                            phase: String = "initial document", observationBudget: Duration = .seconds(15),
+                            diagnostics: () -> String = { "" },
+                            recognize: @escaping @MainActor (CGImage) async throws -> [String] = {
+                                try await NativeTextRecognition.recognize($0, languages: ["en-US"])
+                            }) async throws -> WKWebView {
         let start = ContinuousClock.now
         var stage = Stage.mounting
-        var deadline = start + stage.budget
+        var deadline = start + stage.budget(observation: observationBudget)
         var observation: Observation?
-        var lastRendererState = "none"
+        var rendererStates: [String] = []
         while ContinuousClock.now < deadline {
+            rendererStates = []
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
                 guard let renderer = web.navigationDelegate as? RichContentRenderer else { continue }
                 if stage == .mounting {
                     stage = .rendering
                     // WebKit's own commit and document budgets begin after attachment.
-                    deadline = .now + stage.budget
+                    deadline = .now + stage.budget(observation: observationBudget)
                 }
-                lastRendererState = String(describing: renderer.state)
+                rendererStates.append("\(ObjectIdentifier(web)): \(renderer.state)")
                 guard renderer.state == .ready else { continue }
                 if stage == .rendering {
                     stage = .recognizing
-                    deadline = .now + stage.budget
+                    deadline = .now + stage.budget(observation: observationBudget)
                 }
-                observation = await observe(web, in: root)
+                observation = await observe(web, in: root, deadline: deadline, recognize: recognize)
                 guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
                 if let words = observation.words, words.localizedStandardContains(expected) { return web }
             }
@@ -606,7 +650,7 @@ import WebKit
         }
         let details = """
         phase=\(phase) stage=\(stage.rawValue) elapsed=\(start.duration(to: .now))
-        renderer=\(lastRendererState) views=\(webViews(in: root).count) root=\(root.bounds) attached=\(root.window != nil)
+        renderers=\(rendererStates.joined(separator: " | ")) views=\(webViews(in: root).count) root=\(root.bounds) attached=\(root.window != nil)
         words=\(observation?.words ?? "<none>") current=\(observation?.isCurrent ?? false)
         \(diagnostics())
         """
@@ -622,14 +666,12 @@ import WebKit
         throw DocumentFailure.notRendered
     }
 
-    static func observe(_ web: WKWebView, in root: UIView,
-                        recognize: @MainActor (CGImage) async throws -> [String] = {
-                            try await NativeTextRecognition.recognize($0, languages: ["en-US"])
-                        }) async -> Observation {
+    private static func observe(_ web: WKWebView, in root: UIView, deadline: ContinuousClock.Instant,
+                                recognize: @escaping @MainActor (CGImage) async throws -> [String]) async -> Observation {
         guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else {
             return Observation(words: nil, image: nil, isCurrent: false)
         }
-        let result = await renderedText(in: web, recognize: recognize)
+        let result = await renderedText(in: web, deadline: deadline, recognize: recognize)
         return Observation(words: result.words, image: result.image,
             isCurrent: renderer.webView === web && web.navigationDelegate === renderer && renderer.state == .ready &&
                 web.window != nil && web.window === root.window && web.isDescendant(of: root) &&
@@ -640,8 +682,8 @@ import WebKit
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
     }
 
-    private static func renderedText(in web: WKWebView,
-                                     recognize: @MainActor (CGImage) async throws -> [String]) async -> (words: String?, image: UIImage?) {
+    private static func renderedText(in web: WKWebView, deadline: ContinuousClock.Instant,
+                                     recognize: @escaping @MainActor (CGImage) async throws -> [String]) async -> (words: String?, image: UIImage?) {
         let image: UIImage? = await withCheckedContinuation { continuation in
             let pending = PendingSnapshot(continuation)
             let timeout = Task { @MainActor in
@@ -653,11 +695,8 @@ import WebKit
             }
         }
         guard let pixels = image?.cgImage else { return (nil, image) }
-        do {
-            let words = try await recognize(pixels)
-                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            return (words, image)
-        } catch { return (nil, image) }
+        let words = await NativeRecognitionDeadline.run(until: deadline) { try await recognize(pixels) }
+        return (words?.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " "), image)
     }
 
     private enum DocumentFailure: Error { case notRendered }

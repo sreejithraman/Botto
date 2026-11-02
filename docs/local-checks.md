@@ -55,9 +55,12 @@ cannot claim a passing run. Discovered identifiers, build/test status and
 `.xcresult` survive result finalization failures where possible. The hosted
 native job has a 45-minute budget for the build, Simulator startup, full suite,
 and result upload. It registers external result and discovery paths before
-starting Xcode, so cancellation can still upload evidence without waiting for
-the runner's finalization. DerivedData stays outside the upload. Keep local
-runs on an owned device.
+starting Xcode. Its foreground process owner stops the native runner's process
+group and reaps the runner on cancellation before the always-upload step reads
+those paths. The interrupted run leaves its partial evidence in place without
+running finalization. DerivedData stays outside the upload. See
+[foreground process ownership](dev-process.md#foreground-commands-and-ci-cancellation).
+Keep local runs on an owned device.
 
 For an isolated hosted diagnostic run of a published branch:
 

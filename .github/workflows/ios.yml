@@ -73,13 +73,13 @@ jobs:
           NATIVE_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.native_test || '' }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            ./scripts/check-native.sh --build-only
+            exec python3 scripts/dev-process.py run -- ./scripts/check-native.sh --build-only
           else
             if [[ "$NATIVE_TEST" == -* ]]; then
               echo 'Select a native suite or suite/test, not a runner option.' >&2
               exit 2
             fi
-            ./scripts/check-native.sh "$NATIVE_TEST"
+            exec python3 scripts/dev-process.py run -- ./scripts/check-native.sh "$NATIVE_TEST"
           fi
       - name: Runner resources after checks
         if: always()

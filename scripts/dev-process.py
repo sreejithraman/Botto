@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch and control only this helper's supervised development processes."""
+"""Launch and control only this helper's foreground or supervised processes."""
 
 import argparse
 from contextlib import ExitStack
@@ -257,6 +257,48 @@ def file_path(value):
     return str(path.parent.resolve() / path.name)
 
 
+def run_foreground(args):
+    argv = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if not argv:
+        raise Refusal('provide a command after --')
+    grace = parse_grace(args.grace)
+    interrupted = None
+    child = None
+
+    def request_shutdown(signum, _frame):
+        nonlocal interrupted
+        if interrupted is None:
+            interrupted = signum
+
+    handlers = {sig: signal.getsignal(sig) for sig in
+                (signal.SIGCHLD, signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    try:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, request_shutdown)
+        if interrupted is not None:
+            return 128 + interrupted
+        child = subprocess.Popen(argv, start_new_session=True)
+        while True:
+            if interrupted is not None:
+                for warning in stop_child(child, grace):
+                    print('foreground stop warning: ' + warning, file=sys.stderr)
+                return 128 + interrupted
+            status = child.poll()
+            if status is not None:
+                if interrupted is not None:
+                    return 128 + interrupted
+                return status if status >= 0 else 128 - status
+            time.sleep(0.05)
+    finally:
+        try:
+            if child is not None and child.returncode is None:
+                stop_child(child, grace)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+
+
 def start(args):
     cwd = absolute_path(args.cwd)
     if not Path(cwd).is_dir():
@@ -362,6 +404,9 @@ def main():
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='operation', required=True)
+    foreground = commands.add_parser('run', help='run a foreground command and own its cancellation')
+    foreground.add_argument('--grace', default='1', help='seconds before SIGKILL, from 0 to 30 (default: 1)')
+    foreground.add_argument('command', nargs=argparse.REMAINDER)
     launch = commands.add_parser('start', help='launch a new supervised command')
     launch.add_argument('--record', required=True, help='new private record path; never overwritten')
     launch.add_argument('--cwd', required=True, help='command working directory')
@@ -376,6 +421,8 @@ def main():
     stop.add_argument('--grace', default='5', help='seconds before SIGKILL, from 0 to 30 (default: 5)')
     args = parser.parse_args()
     try:
+        if args.operation == 'run':
+            return run_foreground(args)
         result = start(args) if args.operation == 'start' else control(args)
         print(json.dumps(result, sort_keys=True))
         return 0
