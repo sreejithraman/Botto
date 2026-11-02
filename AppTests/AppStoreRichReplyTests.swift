@@ -8,12 +8,7 @@ import WebKit
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
     @Test func expiredRecognitionDoesNotStartWork() async {
-        var started = false
-        let result = await NativeRecognitionDeadline.run(until: .now - .seconds(1)) {
-            started = true
-            return ["unexpected"]
-        }
-        #expect(result == nil && !started)
+        await checkImmediateRecognition(until: .now - .seconds(1), expected: nil, expectStarted: false)
     }
 
     @Test func recognitionExpiryReturnsBeforeUncooperativeWorkAndIgnoresItsLateResult() async {
@@ -22,20 +17,47 @@ import WebKit
 
     @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
         await checkRecognitionReturnsBeforeWorker(cancelWaiter: true)
-        let current = await NativeRecognitionDeadline.run(until: .now + .seconds(5)) { ["current recognition"] }
-        #expect(current == ["current recognition"])
+        await checkImmediateRecognition(until: .now + .seconds(5), expected: ["current recognition"], expectStarted: true)
+    }
+
+    private func checkImmediateRecognition(until deadline: ContinuousClock.Instant, expected: [String]?, expectStarted: Bool,
+                                           sourceLocation: SourceLocation = #_sourceLocation) async {
+        var started = false, completed = false
+        var result: [String]?
+        let waiter = Task {
+            result = await NativeRecognitionDeadline.run(until: deadline) {
+                started = true
+                return ["current recognition"]
+            }
+            completed = true
+        }
+        defer { waiter.cancel() }
+        let settled = await waitForRecognitionControl { completed }
+        #expect(settled, "Recognition must complete independently of the helper's own deadline", sourceLocation: sourceLocation)
+        if settled { await waiter.value }
+        #expect(result == expected, sourceLocation: sourceLocation)
+        #expect(started == expectStarted, sourceLocation: sourceLocation)
     }
 
     private func checkRecognitionReturnsBeforeWorker(cancelWaiter: Bool, sourceLocation: SourceLocation = #_sourceLocation) async {
         let work = RichReplyFileGate(), expiry = RichReplyFileGate()
         let worker = Task { await work.wait(); return ["late recognition"] }
         var result: [String]?, completed = false
+        var recognitionEntered = false, recognitionResumed = false
+        var recognitionWasCancelled = false, performedLateMutation = false
         let waiter = Task {
-            result = await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
+            result = await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) {
+                recognitionEntered = true
+                let words = await worker.value
+                recognitionWasCancelled = Task.isCancelled
+                if !recognitionWasCancelled { performedLateMutation = true }
+                recognitionResumed = true
+                return words
+            }
             completed = true
         }
         defer { work.release(); expiry.release(); waiter.cancel() }
-        let entered = await waitForRecognitionControl { work.hasEntered && expiry.hasEntered }
+        let entered = await waitForRecognitionControl { work.hasEntered && recognitionEntered && expiry.hasEntered }
         #expect(entered, "Recognition and expiry must enter before the control fires", sourceLocation: sourceLocation)
         if entered {
             if cancelWaiter { waiter.cancel() } else { expiry.release() }
@@ -45,9 +67,14 @@ import WebKit
         work.release(); expiry.release()
         waiter.cancel()
         #expect(await worker.value == ["late recognition"], sourceLocation: sourceLocation)
-        let settled = await waitForRecognitionControl { completed }
-        #expect(settled, "Recognition did not settle after all test gates were released", sourceLocation: sourceLocation)
-        if settled { await waiter.value }
+        _ = await waitForRecognitionControl { completed && recognitionResumed }
+        #expect(completed, "Recognition owner did not settle after all test gates were released", sourceLocation: sourceLocation)
+        #expect(recognitionResumed, "Recognition operation must resume after its producer is released", sourceLocation: sourceLocation)
+        if completed { await waiter.value }
+        if recognitionResumed {
+            #expect(recognitionWasCancelled, "Late recognition must resume cancelled", sourceLocation: sourceLocation)
+            #expect(!performedLateMutation, "Cancellation must prevent late lifecycle work", sourceLocation: sourceLocation)
+        }
         #expect(result == nil, "Late recognition must not be admitted", sourceLocation: sourceLocation)
         await Task.yield()
     }
