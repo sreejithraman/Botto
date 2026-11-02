@@ -13,7 +13,7 @@ DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None):
+    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None, simulator_set=None, interrupt_test=False, omit_destination=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
@@ -27,7 +27,7 @@ class NativeArtifactTests(unittest.TestCase):
         uuid.chmod(0o755)
         xcode = tools / "xcodebuild"
         xcode.write_text('''#!/usr/bin/env python3
-import json, os, sys
+import json, os, signal, sys
 from pathlib import Path
 args = sys.argv[1:]
 action = args[0]
@@ -39,7 +39,8 @@ commands = json.loads(record.read_text()) if record.exists() else []
 commands.append({"action": "enumerate" if enumerating else action, "derived": str(derived), "result": str(result),
                  "selection": [arg for arg in args if arg.startswith("-only-testing:")],
                  "parallel": args[args.index("-parallel-testing-enabled") + 1],
-                 "destination": args[args.index("-destination") + 1]})
+                 "destination": args[args.index("-destination") + 1],
+                 "simulator_set": [arg for arg in args if arg.startswith("-DVTSimulatorSetLocation=")]})
 record.write_text(json.dumps(commands))
 if enumerating:
     assert (derived / "build-data").is_file()
@@ -55,6 +56,9 @@ else:
 if action == "build-for-testing" or os.environ["CI_PRODUCES_RESULT"] == "1":
     result.mkdir()
     (result / "retained-proof").write_text(action + " proof")
+if action == "test-without-building" and os.environ.get("CI_INTERRUPT_TEST") == "1":
+    os.kill(os.getppid(), signal.SIGTERM)
+    sys.exit(143)
 print("native output")
 sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else os.environ["CI_NATIVE_STATUS"]))
 ''')
@@ -78,8 +82,14 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                            RUNNER_TEMP=str(parent), BOTTO_TEST_DESTINATION=f"platform=iOS Simulator,id={DEVICE}",
                            GITHUB_OUTPUT=str(base / "github-output"),
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
-                           CI_PASSED_TESTS=str(passed_tests),
+                           CI_PASSED_TESTS=str(passed_tests), CI_INTERRUPT_TEST="1" if interrupt_test else "0",
                            CI_PRODUCES_RESULT="1" if produces_result else "0")
+        if simulator_set is not None:
+            environment["BOTTO_TEST_SIMULATOR_SET"] = simulator_set
+        else:
+            environment.pop("BOTTO_TEST_SIMULATOR_SET", None)
+        if omit_destination:
+            environment.pop("BOTTO_TEST_DESTINATION")
         command = ["bash", str(repo / "scripts/check-native.sh"), suite]
         if workflow_event:
             workflow = (SCRIPT.parents[1] / ".github/workflows/ios.yml").read_text()
@@ -114,6 +124,65 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                 self.assertEqual([path.name for path in parent.iterdir()], ["unrelated-data"])
                 self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
+    def test_workflow_prepares_and_releases_only_its_isolated_device(self):
+        workflow = (SCRIPT.parents[1] / ".github/workflows/ios.yml").read_text()
+        prepare = workflow.split("      - name: Prepare isolated iPhone Simulator\n", 1)[1]
+        prepare = textwrap.dedent(prepare.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        cleanup = workflow.split("      - name: Release isolated iPhone Simulator\n", 1)[1]
+        cleanup = textwrap.dedent(cleanup.split("        run: |\n", 1)[1].split("\n  verify:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); tools = base / "bin"; tools.mkdir()
+            record = base / "calls.jsonl"
+            xcrun = tools / "xcrun"
+            xcrun.write_text("#!" + sys.executable + "\nimport json, os, sys\n"
+                "with open(os.environ['SIM_CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "if 'create' in sys.argv: print('" + DEVICE + "')\n")
+            xcrun.chmod(0o755)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+                RUNNER_TEMP=str(base), GITHUB_RUN_ID="42", GITHUB_RUN_ATTEMPT="3",
+                GITHUB_ENV=str(base / "env"), GITHUB_OUTPUT=str(base / "output"), SIM_CALLS=str(record))
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", prepare], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            simulator_set = str(base / "botto-simulators-42-3")
+            self.assertIn("BOTTO_TEST_DESTINATION=platform=iOS Simulator,id=" + DEVICE, (base / "env").read_text())
+            self.assertIn("BOTTO_TEST_SIMULATOR_SET=" + simulator_set, (base / "env").read_text())
+            values = dict(line.split("=", 1) for line in (base / "output").read_text().splitlines())
+            env.update(SIMULATOR_SET=values['set_path'], SIMULATOR_ID=values['device_id'])
+            result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", cleanup], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line) for line in record.read_text().splitlines()]
+            self.assertEqual(calls, [
+                ["simctl", "--set", simulator_set, "create", "Botto CI", "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro", "com.apple.CoreSimulator.SimRuntime.iOS-27-0"],
+                ["simctl", "--set", simulator_set, "shutdown", DEVICE],
+                ["simctl", "--set", simulator_set, "delete", DEVICE]])
+
+    def test_explicit_simulator_set_reaches_build_discovery_and_execution(self):
+        simulator_set = "/owned/isolated simulator set"
+        _, _, record, result = self.run_native(0, suite="FixtureTests", simulator_set=simulator_set)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = json.loads(record.read_text())
+        self.assertEqual([c["action"] for c in calls], ["build-for-testing", "enumerate", "test-without-building"])
+        self.assertTrue(all(c["simulator_set"] == ["-DVTSimulatorSetLocation=" + simulator_set] for c in calls))
+
+    def test_isolated_set_cannot_fall_back_to_a_default_device(self):
+        _, _, record, result = self.run_native(0, simulator_set="/owned/set", omit_destination=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicit owned destination", result.stderr)
+        self.assertFalse(record.exists())
+
+    def test_interrupted_execution_already_exposes_its_external_result(self):
+        _, parent, record, result = self.run_native(0, interrupt_test=True)
+        self.assertNotEqual(result.returncode, 0)
+        calls = json.loads(record.read_text())
+        captured = calls[-1]
+        self.assertEqual(captured["action"], "test-without-building")
+        self.assertEqual((Path(captured["result"]) / "retained-proof").read_text(), "test-without-building proof")
+        output = record.parent / "github-output"
+        self.assertTrue(output.exists(), "Interrupted tests must register their output before execution")
+        self.assertEqual(output.read_text().splitlines()[-1], "native_result_fallback=" + captured["result"])
+        self.assertTrue(Path(captured["result"]).is_relative_to(parent))
+        self.assertEqual((parent / "unrelated-data").read_text(), "keep")
+
     def test_failure_without_a_result_retains_native_exit_status(self):
         repo, parent, _, result = self.run_native(2, produces_result=False)
         self.assertEqual(result.returncode, 2, result.stderr)
@@ -134,10 +203,10 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                     output = record.parent / "github-output"
                     if command == "rm":
                         self.assertEqual((repo / ".artifacts/CIResults-fixture-run.xcresult/retained-proof").read_text(), "test-without-building proof")
-                        self.assertFalse(output.exists())
+                        self.assertEqual(output.read_text().splitlines()[-1], "native_result_fallback=" + captured["result"])
                     else:
                         self.assertEqual((Path(captured["result"]) / "retained-proof").read_text(), "test-without-building proof")
-                        self.assertEqual(output.read_text(), "native_result_fallback=" + captured["result"] + "\n")
+                        self.assertEqual(output.read_text().splitlines()[-1], "native_result_fallback=" + captured["result"])
                     self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
     def test_build_failure_skips_tests_and_retains_its_result_and_status(self):

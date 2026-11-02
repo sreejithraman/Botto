@@ -67,6 +67,17 @@ jobs:
         run: |
           sysctl hw.ncpu hw.memsize vm.swapusage
           vm_stat
+      - name: Prepare isolated iPhone Simulator
+        id: simulator
+        run: |
+          simulator_set="$RUNNER_TEMP/botto-simulators-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$simulator_set"
+          simulator_id=$(xcrun simctl --set "$simulator_set" create 'Botto CI' \
+            com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro \
+            com.apple.CoreSimulator.SimRuntime.iOS-27-0)
+          printf 'BOTTO_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' "$simulator_id" >> "$GITHUB_ENV"
+          printf 'BOTTO_TEST_SIMULATOR_SET=%s\n' "$simulator_set" >> "$GITHUB_ENV"
+          printf 'device_id=%s\nset_path=%s\n' "$simulator_id" "$simulator_set" >> "$GITHUB_OUTPUT"
       - name: Build app and tests on PRs; run native tests on main
         id: checks
         env:
@@ -99,6 +110,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+      - name: Release isolated iPhone Simulator
+        if: always() && steps.simulator.outputs.device_id != ''
+        env:
+          SIMULATOR_SET: ${{ steps.simulator.outputs.set_path }}
+          SIMULATOR_ID: ${{ steps.simulator.outputs.device_id }}
+        run: |
+          xcrun simctl --set "$SIMULATOR_SET" shutdown "$SIMULATOR_ID" || true
+          xcrun simctl --set "$SIMULATOR_SET" delete "$SIMULATOR_ID"
 
   verify:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.native_test != '' && 'diagnostic-result' || 'verify' }}

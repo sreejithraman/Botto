@@ -26,6 +26,10 @@ PYTHON
 fi
 
 destination=${BOTTO_TEST_DESTINATION:-}
+if [ -n "${BOTTO_TEST_SIMULATOR_SET:-}" ] && [ -z "$destination" ]; then
+  echo 'An isolated Simulator set requires an explicit owned destination.' >&2
+  exit 2
+fi
 if [ -z "$destination" ]; then
   device_id=$(xcrun simctl list devices available -j | python3 -c '
 import json, sys
@@ -59,6 +63,15 @@ native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
   CODE_SIGNING_ALLOWED=NO)
+if [ -n "${BOTTO_TEST_SIMULATOR_SET:-}" ]; then
+  native_arguments+=("-DVTSimulatorSetLocation=$BOTTO_TEST_SIMULATOR_SET")
+fi
+register_native_result() {
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf 'native_result_fallback=%s\n' "$native_directory/$result_name" >> "$GITHUB_OUTPUT"
+  fi
+}
+register_native_result
 xcodebuild build-for-testing "${native_arguments[@]}" \
   -resultBundlePath "$native_directory/$result_name" || native_status=$?
 if [ "$native_status" -eq 0 ] && [ -n "$selector" ]; then
@@ -80,6 +93,7 @@ PYTHON
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
   result_name="CIResults-$result_id.xcresult"
+  register_native_result
   xcodebuild test-without-building "${native_arguments[@]}" \
     -resultBundlePath "$native_directory/$result_name" || native_status=$?
 fi
@@ -118,11 +132,6 @@ if finalize_native; then
 else
   finalization_status=$?
   printf 'Native test outputs retained at: %s\n' "$native_directory" >&2
-  if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$native_directory/$result_name" ]; then
-    if ! printf 'native_result_fallback=%s\n' "$native_directory/$result_name" >> "$GITHUB_OUTPUT"; then
-      printf 'Could not register the fallback native result for upload.\n' >&2
-    fi
-  fi
 fi
 
 if [ "$native_status" -ne 0 ]; then
