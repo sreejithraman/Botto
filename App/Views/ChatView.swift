@@ -33,7 +33,7 @@ struct ChatView: View {
     @State private var overviewTransition = ChatOverviewTransition()
     @State private var overviewSelectionID: ChatID?
     @State private var overviewCreationSource: ChatID?
-    @State private var recentlyClosedChat: ChatID?
+    @State private var closeNotice: ChatCloseNotice?
     @State private var profileEditor: AppStore.AvatarDestination?
     @State private var showsAttachmentPicker = false
     @State private var childModals: Set<UUID> = []
@@ -63,6 +63,12 @@ struct ChatView: View {
 
     var body: some View {
         readerLifecycle
+        .task(id: closeNotice?.id) {
+            guard let notice = closeNotice else { return }
+            do { try await Task.sleep(for: .seconds(UIAccessibility.isVoiceOverRunning || textSize.isAccessibilitySize ? 12 : 6)) }
+            catch { return }
+            if closeNotice?.id == notice.id { closeNotice = nil }
+        }
         .onChange(of: store.showsConnection) { _, shown in
             if shown { showsProfile = false; dismissOverviewImmediately(); discardPreviews() }
         }
@@ -82,6 +88,7 @@ struct ChatView: View {
             discardPreviews()
         }
         .onDisappear {
+            closeNotice = nil
             dismissOverviewImmediately()
             transcriptPreview.didCapture = nil
             transcriptPreview.invalidate()
@@ -511,19 +518,19 @@ struct ChatView: View {
                guard workspace.isCurrent(owner) else { return }
                Task { await workspace.refreshDirectory(owner) }
            }, closedItems: closed.map { ChatPickerItem(id: $0.id.value.uuidString, title: $0.title) },
-           recentlyClosedID: recentlyClosedChat?.value.uuidString,
+           closeNotice: closeNotice,
            onClose: { id in
                guard overviewCovered, !showsProfile,
                      let card = cards.first(where: { $0.id.value.uuidString == id }),
                      let intent = workspace.captureClose(card.id, owner: owner) else { return }
                if card.id == owner.chat { overviewSelectionID = nil; overviewCreationSource = nil }
-               if let closed = workspace.close(intent) { recentlyClosedChat = closed.id }
+               if let closed = workspace.close(intent) { closeNotice = ChatCloseNotice(chatID: closed.id.value.uuidString) }
            }, onReopen: { id in
                guard overviewCovered, !showsProfile,
                      let chat = closed.first(where: { $0.id.value.uuidString == id }),
                      let intent = workspace.captureReopening(chat.id, owner: owner) else { return }
                workspace.reopen(intent)
-               if recentlyClosedChat == chat.id { recentlyClosedChat = nil }
+               if closeNotice?.chatID == chat.id.value.uuidString { closeNotice = nil }
            })
         .task { await workspace.refreshDirectory(owner) }
     }

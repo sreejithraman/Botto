@@ -59,6 +59,11 @@ struct ChatPickerItem: Identifiable, Equatable {
     }
 }
 
+struct ChatCloseNotice: Identifiable, Equatable {
+    let id = UUID()
+    let chatID: String
+}
+
 /// A bot-scoped tab overview. Ordering, availability and effects belong to the caller.
 struct ChatPickerView: View {
     let bot: BotProfile
@@ -67,7 +72,7 @@ struct ChatPickerView: View {
     let transition: ChatOverviewTransition
     let onDone: () -> Void
     let closedItems: [ChatPickerItem]
-    let recentlyClosedID: String?
+    let closeNotice: ChatCloseNotice?
     let onClose: (String) -> Void
     let onReopen: (String) -> Void
     let headerClearance: CGFloat
@@ -84,9 +89,14 @@ struct ChatPickerView: View {
 
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var confirmingCloseID: String?
     @State private var search = ""
     @State private var connectionRequested = false
     @State private var refreshRequested = false
+    @State private var showsClosedChats = false
+    @State private var presentedSnackbarItem: ChatPickerItem?
+    @Namespace private var footerGlassNamespace
 
     init(bot: BotProfile, items: [ChatPickerItem], previews: ChatTabPreviews,
          transition: ChatOverviewTransition, onDone: @escaping () -> Void, headerClearance: CGFloat = 56,
@@ -94,7 +104,7 @@ struct ChatPickerView: View {
          error: String? = nil, connectionFeedback: ConnectionStatusView? = nil,
          onSelect: @escaping (String) -> Void, onCreate: @escaping () -> Void,
          onSetPreferred: @escaping (String?) -> Void, onRefresh: @escaping () -> Void,
-         closedItems: [ChatPickerItem] = [], recentlyClosedID: String? = nil,
+         closedItems: [ChatPickerItem] = [], closeNotice: ChatCloseNotice? = nil,
          onClose: @escaping (String) -> Void = { _ in }, onReopen: @escaping (String) -> Void = { _ in }) {
         self.bot = bot
         self.items = items
@@ -111,12 +121,13 @@ struct ChatPickerView: View {
         self.onSetPreferred = onSetPreferred
         self.onRefresh = onRefresh
         self.closedItems = closedItems
-        self.recentlyClosedID = recentlyClosedID
+        self.closeNotice = closeNotice
         self.onClose = onClose; self.onReopen = onReopen
     }
 
     private var filteredItems: [ChatPickerItem] { items.filter { $0.matches(search: search) } }
     private var hasSearch: Bool { !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var snackbarItem: ChatPickerItem? { closedItems.first { $0.id == closeNotice?.chatID } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,6 +158,23 @@ struct ChatPickerView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat-picker")
         .accessibilityAction(.escape, onDone)
+        .onChange(of: closeNotice?.id) { _, _ in
+            guard let item = closedItems.first(where: { $0.id == closeNotice?.chatID }) else { return }
+            AccessibilityNotification.Announcement("\(item.displayTitle) closed. History and drafts saved. Undo available.").post()
+        }
+        // Start footer transitions after UIKit has replaced the hosted content.
+        .task(id: closedItems.isEmpty) {
+            guard !Task.isCancelled else { return }
+            withAnimation(footerAnimation) { showsClosedChats = !closedItems.isEmpty }
+        }
+        .task(id: snackbarItem) {
+            guard !Task.isCancelled else { return }
+            withAnimation(footerAnimation) { presentedSnackbarItem = snackbarItem }
+        }
+        .onChange(of: search) { _, _ in confirmingCloseID = nil }
+        .onChange(of: items) { _, items in
+            if !items.contains(where: { $0.id == confirmingCloseID && $0.canClose }) { confirmingCloseID = nil }
+        }
         .onChange(of: isConnected) { _, _ in
             connectionRequested = false; refreshRequested = false
         }
@@ -155,27 +183,18 @@ struct ChatPickerView: View {
         }
     }
 
-    private var bottomBar: some View {
-        ZStack {
-            Group {
-                if let recentlyClosedID, closedItems.contains(where: { $0.id == recentlyClosedID }) {
-                    HStack(spacing: 6) {
-                        Text("Chat closed").foregroundStyle(.secondary)
-                        Button("Undo") { onReopen(recentlyClosedID) }
-                            .frame(minWidth: 44, minHeight: 44)
-                            .accessibilityIdentifier("undo-close-chat")
-                    }
-                } else {
-                    Text(chatCount).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("chat-count")
-                }
-            }
-            .font(.footnote)
-            .padding(.horizontal, 64)
-            HStack {
-                createButton.frame(width: 48, height: 48).tabControlGlass(in: Circle())
-                Spacer()
-                if !closedItems.isEmpty {
+    @ViewBuilder private var bottomBar: some View {
+        if #available(iOS 26, *) {
+            GlassEffectContainer(spacing: 8) { bottomBarContent }
+        } else {
+            bottomBarContent
+        }
+    }
+
+    private var bottomBarContent: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                if showsClosedChats {
                     Menu {
                         Section("Closed chats on this device") {
                             ForEach(closedItems) { item in
@@ -187,14 +206,71 @@ struct ChatPickerView: View {
                         Image(systemName: "clock.arrow.circlepath")
                             .frame(width: 48, height: 48)
                     }
-                    .tabControlGlass(in: Circle())
+                    .tabFooterGlass(in: Circle(), id: "history", namespace: footerGlassNamespace,
+                                    reduceMotion: reduceMotion)
                     .accessibilityLabel("Closed chats")
                     .accessibilityIdentifier("closed-chats")
                 }
             }
+            .frame(width: 48, height: 48)
+            ZStack {
+                if let item = presentedSnackbarItem {
+                    closeSnackbar(item)
+                        .id(item.id)
+                        .zIndex(1)
+                } else {
+                    Text(chatCount).foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .accessibilityIdentifier("chat-count")
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            createButton.frame(width: 48, height: 48)
+                .tabFooterGlass(in: Circle(), id: "new-chat", namespace: footerGlassNamespace,
+                                reduceMotion: reduceMotion)
         }
-        .frame(minHeight: 48)
+        .frame(minHeight: 52)
         .padding(.horizontal, 20).padding(.vertical, 12)
+    }
+
+    private var footerAnimation: Animation {
+        reduceMotion ? .easeOut : .default
+    }
+
+    private func closeSnackbar(_ item: ChatPickerItem) -> some View {
+        let layout = textSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Chat closed")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(textSize.isAccessibilitySize ? 2 : 1)
+                Text(item.displayTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(textSize.isAccessibilitySize ? 2 : 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            Button { onReopen(item.id) } label: {
+                Text("Undo")
+                    .font(.footnote.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44,
+                           alignment: textSize.isAccessibilitySize ? .leading : .trailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(BottoTheme.action)
+            .accessibilityIdentifier("undo-close-chat")
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+        .tabFooterGlass(in: RoundedRectangle(cornerRadius: 28), id: "close-notice",
+                        namespace: footerGlassNamespace, reduceMotion: reduceMotion, interactive: false)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-close-snackbar")
     }
 
     private var searchField: some View {
@@ -299,7 +375,12 @@ struct ChatPickerView: View {
                 ForEach(filteredItems) { item in
                     ChatPickerCard(item: item, transition: transition, preview: previews.image(for: item.id, colorScheme: colorScheme, textSize: textSize), onSelect: { onSelect(item.id) }, onSetPreferred: {
                         onSetPreferred(item.isPreferred ? nil : item.id)
-                    }, onClose: { onClose(item.id) })
+                    }, onClose: {
+                        confirmingCloseID = nil
+                        onClose(item.id)
+                    }, confirmsClose: Binding(get: { confirmingCloseID == item.id }, set: {
+                        confirmingCloseID = $0 ? item.id : nil
+                    }))
                     .id(item.id)
                 }
             }
@@ -326,31 +407,62 @@ struct ChatPickerCard: View {
     let onSelect: () -> Void
     let onSetPreferred: () -> Void
     var onClose: () -> Void = {}
+    @Binding var confirmsClose: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(item: ChatPickerItem, transition: ChatOverviewTransition, preview: UIImage?,
+         onSelect: @escaping () -> Void, onSetPreferred: @escaping () -> Void,
+         onClose: @escaping () -> Void = {}, confirmsClose: Binding<Bool> = .constant(false)) {
+        self.item = item; self.transition = transition; self.preview = preview
+        self.onSelect = onSelect; self.onSetPreferred = onSetPreferred; self.onClose = onClose
+        self._confirmsClose = confirmsClose
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             cardButton
             if item.canClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.semibold))
-                        .frame(width: 28, height: 28)
-                        .background(.regularMaterial, in: Circle())
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
-                .accessibilityLabel("Close \(item.displayTitle)")
-                .accessibilityHint("Keep its history and drafts. Reopen it from Closed chats.")
-                .accessibilityIdentifier("close-chat-\(item.id)")
-                .padding(4)
+                closeControl
+                    .padding(4)
             }
         }
     }
 
+    private var closeControl: some View {
+        Button {
+            if confirmsClose { onClose() }
+            else { confirmsClose = true }
+        } label: {
+            Group {
+                if confirmsClose {
+                    Text("Close")
+                        .padding(.horizontal, 14)
+                        .transition(.opacity)
+                } else {
+                    Image(systemName: "xmark")
+                        .transition(.opacity)
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(confirmsClose ? BottoTheme.action : BottoTheme.ink)
+        .tabControlGlass(in: Capsule())
+        .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.9), value: confirmsClose)
+        .accessibilityLabel(confirmsClose ? "Confirm closing \(item.displayTitle)" : "Close \(item.displayTitle)")
+        .accessibilityHint(confirmsClose
+                          ? "Tap again to close. Tap the chat card to cancel. History and drafts are kept."
+                          : "Ask to close this chat. History and drafts are kept.")
+        .accessibilityValue(confirmsClose ? "Confirmation required" : "")
+        .accessibilityIdentifier(confirmsClose ? "confirm-close-chat-\(item.id)" : "close-chat-\(item.id)")
+        .accessibilityAction(.escape) { confirmsClose = false }
+    }
+
     private var cardButton: some View {
         Button {
+            if confirmsClose { confirmsClose = false; return }
             guard item.isAvailable else { return }
             onSelect()
         } label: {
@@ -377,7 +489,7 @@ struct ChatPickerCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!item.isAvailable)
+        .disabled(!item.isAvailable && !confirmsClose)
         .contextMenu {
             Button(item.preferredActionTitle, systemImage: item.isPreferred ? "pin.slash" : "pin") {
                 onSetPreferred()
@@ -386,7 +498,8 @@ struct ChatPickerCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.accessibilityLabel)
         .accessibilityValue(previewAccessibilityValue)
-        .accessibilityHint(item.isAvailable ? "Open this chat." : "This chat is not available to open.")
+        .accessibilityHint(confirmsClose ? "Cancel closing this chat."
+                           : item.isAvailable ? "Open this chat." : "This chat is not available to open.")
         .accessibilityAddTraits(item.isSelected ? .isSelected : [])
         .accessibilityAction(named: item.preferredActionTitle, onSetPreferred)
         .accessibilityIdentifier("chat-card-\(item.id)")
@@ -519,6 +632,19 @@ private struct ChatTabExcerpt: View {
 }
 
 private extension View {
+    @ViewBuilder func tabFooterGlass<S: Shape>(in shape: S, id: String, namespace: Namespace.ID,
+                                               reduceMotion: Bool, interactive: Bool = true) -> some View {
+        if #available(iOS 26, *) {
+            tabControlGlass(in: shape, interactive: interactive)
+                .glassEffectID(id, in: namespace)
+                .glassEffectTransition(reduceMotion ? .identity : .materialize)
+                .transition(.opacity)
+        } else {
+            tabControlGlass(in: shape, interactive: interactive)
+                .transition(.opacity)
+        }
+    }
+
     @ViewBuilder func tabControlGlass<S: Shape>(in shape: S, interactive: Bool = true) -> some View {
         if #available(iOS 26, *) {
             if interactive { glassEffect(.regular.interactive(), in: shape) }

@@ -62,8 +62,26 @@ Workflow `chats.choose`:
    no excerpt may show beside or behind it, including before an idle capture.
    Open the bot sheet from a filtered grid and dismiss it. The same grid and
    search must remain underneath. The footer count is plain text, with no Done
-   checkmark. Close a non-Main tab using its X; closing another tab must not
-   select it, and closing the current tab must keep the grid open. Returning to
+   checkmark. History sits on the left and New chat on the right. Tap a non-Main
+   tab's X; that same glass control widens into **Close**. Tap it again to
+   close, or tap the chat card to cancel without selecting it. Only one
+   confirmation can be active.
+   Expect an animated snackbar pill between History and New chat, with
+   **Chat closed** above the chat title and Undo alongside. It temporarily replaces
+   the count. The leading text inset and the trailing inset after Undo must match
+   at standard text sizes; Undo keeps a minimum 44 × 44 point tap target. The pill
+   disappears after six seconds (twelve with VoiceOver or
+   accessibility text sizes). The count returns after dismissal.
+   Record the footer while closing the first chat, using Undo, and letting a
+   later notice expire. On iOS 26+, History and the snackbar must use the native
+   Liquid Glass materialization when appearing and disappearing; earlier systems
+   use a standard fade. History disappears when the last closed chat reopens.
+   The snackbar disappears on Undo and timeout; New chat stays fixed. Repeat
+   close/Undo before the motion finishes to check reversal.
+   Reopening the overview must not replay an expired snackbar. Use Reduce Motion
+   to verify the snackbar and History fade without travel or scaling, and the
+   inline confirmation changes without spring motion.
+   Closing another tab must not select it, and closing the current tab must keep the grid open. Returning to
    the cached replacement through its card or header must restore usable composing
    and sending. New chat must also work directly from that grid without opening
    the replacement first. Keep local drafts usable offline and after a failed
