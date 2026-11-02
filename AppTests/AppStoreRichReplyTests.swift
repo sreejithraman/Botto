@@ -17,32 +17,47 @@ import WebKit
     }
 
     @Test func recognitionExpiryReturnsBeforeUncooperativeWorkAndIgnoresItsLateResult() async {
-        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
-        let worker = Task { await work.wait(); return ["late recognition"] }
-        let waiter = Task {
-            await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
-        }
-        await work.entered(); await expiry.entered()
-        expiry.release()
-        #expect(await waiter.value == nil)
-        work.release()
-        #expect(await worker.value == ["late recognition"])
-        await Task.yield()
+        await checkRecognitionReturnsBeforeWorker(cancelWaiter: false)
     }
 
     @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
-        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
-        let worker = Task { await work.wait(); return ["cancelled recognition"] }
-        let waiter = Task {
-            await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
-        }
-        await work.entered(); await expiry.entered()
-        waiter.cancel()
-        #expect(await waiter.value == nil)
-        work.release(); expiry.release()
-        _ = await worker.value
+        await checkRecognitionReturnsBeforeWorker(cancelWaiter: true)
         let current = await NativeRecognitionDeadline.run(until: .now + .seconds(5)) { ["current recognition"] }
         #expect(current == ["current recognition"])
+    }
+
+    private func checkRecognitionReturnsBeforeWorker(cancelWaiter: Bool, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
+        let worker = Task { await work.wait(); return ["late recognition"] }
+        var result: [String]?, completed = false
+        let waiter = Task {
+            result = await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) { await worker.value }
+            completed = true
+        }
+        defer { work.release(); expiry.release(); waiter.cancel() }
+        let entered = await waitForRecognitionControl { work.hasEntered && expiry.hasEntered }
+        #expect(entered, "Recognition and expiry must enter before the control fires", sourceLocation: sourceLocation)
+        if entered {
+            if cancelWaiter { waiter.cancel() } else { expiry.release() }
+        }
+        let returnedBeforeWork = entered ? await waitForRecognitionControl { completed } : false
+        #expect(returnedBeforeWork, "Recognition must return before its blocked worker is released", sourceLocation: sourceLocation)
+        work.release(); expiry.release()
+        waiter.cancel()
+        #expect(await worker.value == ["late recognition"], sourceLocation: sourceLocation)
+        let settled = await waitForRecognitionControl { completed }
+        #expect(settled, "Recognition did not settle after all test gates were released", sourceLocation: sourceLocation)
+        if settled { await waiter.value }
+        #expect(result == nil, "Late recognition must not be admitted", sourceLocation: sourceLocation)
+        await Task.yield()
+    }
+
+    private func waitForRecognitionControl(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
     }
 
     @Test func transientAttachmentsReadCurrentBytesAndOnlyIdentifiedRowsRetainCaptures() async throws {
@@ -590,9 +605,15 @@ import WebKit
 
 @MainActor final class RichReplyFileGate {
     private var continuation: CheckedContinuation<Void, Never>?
-    func wait() async { await withCheckedContinuation { continuation = $0 } }
-    func entered() async { while continuation == nil { await Task.yield() } }
-    func release() { continuation?.resume(); continuation = nil }
+    private(set) var hasEntered = false
+    private var released = false
+    func wait() async {
+        hasEntered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func entered() async { while !hasEntered { await Task.yield() } }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }
 
 /// Observes the document actually mounted by the native preview, independently
