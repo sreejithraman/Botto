@@ -15,7 +15,7 @@ final class MultipleChatUITests: XCTestCase {
         let app = launch()
         select("Weekend plan", app: app)
         picker(app)
-        app.buttons["Close Weekend plan"].tap()
+        closeChat("Weekend plan", app: app)
         XCTAssertTrue(card("Main", app: app).label.contains("Current chat"))
         if usingCard { card("Main", app: app).tap() }
         else { app.buttons["chat-picker-button"].tap() }
@@ -43,7 +43,7 @@ final class MultipleChatUITests: XCTestCase {
         let app = launch()
         select("Weekend plan", app: app)
         picker(app)
-        app.buttons["Close Weekend plan"].tap()
+        closeChat("Weekend plan", app: app)
         XCTAssertTrue(app.buttons["new-chat"].isEnabled)
         app.buttons["new-chat"].tap()
         assertTitle("New chat", app: app)
@@ -54,12 +54,16 @@ final class MultipleChatUITests: XCTestCase {
     @MainActor func testClosingTabsKeepsTheGridAndReopeningPreservesDrafts() {
         let app = launch()
         picker(app)
-        let weekend = card("Weekend plan", app: app)
-        let id = weekend.identifier.replacingOccurrences(of: "chat-card-", with: "")
         XCTAssertFalse(app.buttons["Close Main"].exists)
         let close = app.buttons["Close Weekend plan"]
         XCTAssertTrue(close.waitForExistence(timeout: 5))
         close.tap()
+        XCTAssertTrue(card("Weekend plan", app: app).exists, "The first tap only asks for confirmation.")
+        card("Weekend plan", app: app).tap()
+        XCTAssertTrue(app.buttons["Confirm closing Weekend plan"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(card("Main", app: app).label.contains("Current chat"), "Canceling must not select the closed chat.")
+        XCTAssertTrue(card("Weekend plan", app: app).exists)
+        closeChat("Weekend plan", app: app)
         XCTAssertFalse(card("Weekend plan", app: app).exists)
         XCTAssertTrue(card("Main", app: app).label.contains("Current chat"),
                       "Closing another tab must not select it first.")
@@ -70,16 +74,175 @@ final class MultipleChatUITests: XCTestCase {
         let draft = "Keep my locally closed draft"
         editor(app).tap(); editor(app).typeText(draft)
         picker(app)
-        app.buttons["Close Weekend plan"].tap()
+        closeChat("Weekend plan", app: app)
         XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].exists)
         XCTAssertFalse(card("Weekend plan", app: app).exists)
         XCTAssertTrue(card("Main", app: app).label.contains("Current chat"))
         app.buttons["closed-chats"].tap()
-        app.buttons["reopen-chat-\(id)"].tap()
+        app.buttons["Weekend plan"].tap()
         XCTAssertTrue(card("Weekend plan", app: app).waitForExistence(timeout: 5))
         card("Weekend plan", app: app).tap()
         assertTitle("Weekend plan", app: app)
         XCTAssertEqual(editor(app).value as? String, draft)
+    }
+
+    @MainActor func testCloseSnackbarExpiresAndHistoryRemainsAvailable() {
+        let app = launch()
+        picker(app)
+        app.buttons["Close Weekend plan"].tap()
+        let confirm = app.buttons["Confirm closing Weekend plan"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 3))
+        keepScreenshot("Close confirmation", app: app)
+        confirm.tap()
+        let undo = app.buttons["undo-close-chat"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertGreaterThanOrEqual(undo.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(undo.frame.height, 44)
+        keepScreenshot("Chat closed snackbar", app: app)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Chat closed")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Weekend plan")).firstMatch.exists)
+        let notice = app.descendants(matching: .any)["chat-close-snackbar"]
+        let history = app.buttons["closed-chats"].frame
+        let create = app.buttons["new-chat"].frame
+        XCTAssertGreaterThanOrEqual(notice.frame.minX, history.maxX)
+        XCTAssertLessThanOrEqual(notice.frame.maxX, create.minX)
+        XCTAssertEqual(notice.frame.midY, create.midY, accuracy: 2)
+        XCTAssertFalse(app.staticTexts["chat-count"].exists)
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["chat-count"].exists)
+        app.buttons["chat-picker-button"].tap()
+        picker(app)
+        XCTAssertFalse(undo.exists, "An expired snackbar cannot replay when the overview opens again.")
+        app.buttons["closed-chats"].tap()
+        XCTAssertTrue(app.buttons["Weekend plan"].waitForExistence(timeout: 3))
+    }
+
+    @MainActor func testCloseSnackbarExpiresWhileOverviewIsDismissed() {
+        let app = launch()
+        picker(app)
+        closeChat("Weekend plan", app: app)
+        XCTAssertTrue(app.buttons["undo-close-chat"].exists)
+        app.buttons["chat-picker-button"].tap()
+        let expired = XCTestExpectation(description: "Notice expires while reading the chat")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7) { expired.fulfill() }
+        XCTAssertEqual(XCTWaiter.wait(for: [expired], timeout: 9), .completed)
+        picker(app)
+        XCTAssertFalse(app.buttons["undo-close-chat"].exists)
+        XCTAssertTrue(app.buttons["closed-chats"].exists)
+    }
+
+    @MainActor func testStandardCloseNoticeKeepsUndoForSixSeconds() {
+        let app = launch()
+        picker(app)
+        app.buttons["Close Weekend plan"].tap()
+        let confirmation = app.buttons["Confirm closing Weekend plan"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        let clock = ContinuousClock()
+        let started = clock.now
+        confirmation.tap()
+        let undo = app.buttons["undo-close-chat"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(started.duration(to: clock.now), .seconds(6))
+    }
+
+    @MainActor func testReplacementCloseNoticeSurvivesThePreviousDeadline() async throws {
+        let app = launch()
+        picker(app)
+        app.buttons["Close Weekend plan"].tap()
+        let firstConfirmation = app.buttons["Confirm closing Weekend plan"]
+        XCTAssertTrue(firstConfirmation.waitForExistence(timeout: 3))
+        firstConfirmation.tap()
+        let clock = ContinuousClock()
+        let firstCloseReturnedAt = clock.now
+        let undo = app.buttons["undo-close-chat"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        app.buttons["Close Research notes"].tap()
+        let replacementConfirmation = app.buttons["Confirm closing Research notes"]
+        XCTAssertTrue(replacementConfirmation.waitForExistence(timeout: 3))
+        XCTAssertLessThan(firstCloseReturnedAt.duration(to: clock.now), .seconds(5),
+                          "The test must replace the notice before the earlier timer expires.")
+        replacementConfirmation.tap()
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        try await clock.sleep(until: firstCloseReturnedAt.advanced(by: .seconds(6.25)))
+        XCTAssertTrue(undo.exists, "The earlier timer must not dismiss the replacement notice.")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@", "Research notes")).firstMatch.exists)
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 10))
+    }
+
+    @MainActor func testAccessibilityCloseNoticeUsesTheExtendedUndoWindow() {
+        let app = launch(largeText: true)
+        picker(app)
+        app.scrollViews["chat-tabs-scroll"].swipeDown()
+        let search = app.textFields["chat-picker-search"]
+        search.tap(); search.typeText("Weekend\n")
+        app.buttons["Close Weekend plan"].tap()
+        let confirmation = app.buttons["Confirm closing Weekend plan"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        let clock = ContinuousClock()
+        let started = clock.now
+        confirmation.tap()
+        let undo = app.buttons["undo-close-chat"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertTrue(undo.waitForNonExistence(timeout: 16))
+        XCTAssertGreaterThanOrEqual(started.duration(to: clock.now), .seconds(12))
+        XCTAssertTrue(app.staticTexts["chat-count"].exists)
+    }
+
+    @MainActor func testCloseSnackbarWithReducedMotionAtAccessibilityTextSize() {
+        continueAfterFailure = false
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.launch()
+        let accessibility = settings.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Accessibility")).firstMatch
+        for _ in 0..<6 where !accessibility.isHittable { settings.swipeUp() }
+        XCTAssertTrue(accessibility.waitForExistence(timeout: 5))
+        accessibility.tap()
+        settings.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Motion")).firstMatch.tap()
+        let motion = settings.switches["Reduce Motion"]
+        XCTAssertTrue(motion.waitForExistence(timeout: 5))
+        let wasEnabled = motion.value as? String == "1"
+        defer {
+            settings.activate()
+            if !wasEnabled, motion.value as? String == "1" {
+                motion.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            }
+        }
+        if !wasEnabled { motion.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap() }
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: motion)
+        let settingResult = XCTWaiter.wait(for: [enabled], timeout: 5)
+        keepScreenshot("System Reduce Motion setting", app: settings)
+        XCTAssertEqual(settingResult, .completed, settings.debugDescription)
+        let app = launch(largeText: true)
+        picker(app)
+        app.scrollViews["chat-tabs-scroll"].swipeDown()
+        let search = app.textFields["chat-picker-search"]
+        search.tap(); search.typeText("Weekend\n")
+        keepScreenshot("Large text close target", app: app)
+        closeChat("Weekend plan", app: app)
+        let undo = app.buttons["undo-close-chat"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        keepScreenshot("Snackbar with large text and reduced motion", app: app)
+        undo.tap()
+        XCTAssertTrue(card("Weekend plan", app: app).exists)
+    }
+
+    @MainActor private func keepScreenshot(_ name: String, app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor private func closeChat(_ title: String, app: XCUIApplication) {
+        let close = app.buttons["Close \(title)"]
+        for _ in 0..<6 where !close.isHittable { app.scrollViews["chat-tabs-scroll"].swipeUp() }
+        close.tap()
+        let confirm = app.buttons["Confirm closing \(title)"]
+        let confirms = confirm.waitForExistence(timeout: 3)
+        if !confirms { keepScreenshot("Close target failure", app: app) }
+        XCTAssertTrue(confirms, app.debugDescription)
+        confirm.tap()
+        XCTAssertTrue(card(title, app: app).waitForNonExistence(timeout: 3), app.debugDescription)
     }
 
     @MainActor func testProfileSheetReturnsToTheFilteredChatGrid() {
@@ -773,7 +936,7 @@ final class MultipleChatUITests: XCTestCase {
         picker(app); app.buttons["new-chat"].tap()
         waitForMarker("create-chat.started", directory: directory)
         let opens = try String(contentsOf: directory.appendingPathComponent("open.calls"), encoding: .utf8)
-        app.buttons["Close Weekend plan"].tap()
+        closeChat("Weekend plan", app: app)
         XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].exists)
         XCTAssertTrue(card("Main", app: app).label.contains("Current chat"))
         XCTAssertFalse(card("Weekend plan", app: app).exists)
