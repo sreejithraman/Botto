@@ -69,10 +69,16 @@ import BottoCore
                     if memoryBeforePixelOracle == nil { memoryBeforePixelOracle = memory() }
                     let oracleStart = CACurrentMediaTime()
                     let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
-                    let observation = try RenderedTranscriptFile.observe(image, in: visible)
+                    let revision = marker.revision
+                    let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, isCurrent: {
+                        host?.view === view && document.window === window && document.isDescendant(of: view) &&
+                        meter.isReady(document) && meter.point(.block(Data(last.id.utf8), file.id)) === marker &&
+                        marker.revision == revision && marker.viewport === viewport && marker.window === window &&
+                        meter.terminalVisible() && meter.visible(.row(Data(last.id.utf8))) && ContinuousClock.now < deadline
+                    })
                     oracleWindows.append([oracleStart, CACurrentMediaTime()]); samples += 1
-                    finalImage = image; finalWords = observation.text; finalRegion = visible
-                    if observation.isComplete { complete = true; break }
+                    finalImage = image; finalWords = observation?.text ?? []; finalRegion = visible
+                    if observation?.isComplete == true { complete = true; break }
                 }
             }
             await meter.nextFrame()

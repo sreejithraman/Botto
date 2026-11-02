@@ -1,6 +1,25 @@
 import UIKit
 import Vision
 
+nonisolated enum NativeTextRecognition {
+    @concurrent
+    static func recognize(_ image: CGImage, languages: [String]? = nil,
+                          usesLanguageCorrection: Bool = false,
+                          onRecognition: @Sendable (_ isMainThread: Bool) -> Void = { _ in }) async throws -> [String] {
+        try Task.checkCancellation()
+        return try autoreleasepool {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = usesLanguageCorrection
+            if let languages { request.recognitionLanguages = languages }
+            onRecognition(Thread.isMainThread)
+            try VNImageRequestHandler(cgImage: image).perform([request])
+            try Task.checkCancellation()
+            return request.results?.compactMap { $0.topCandidates(1).first?.string } ?? []
+        }
+    }
+}
+
 /// Test-only rendered-content oracle shared by admission and measurements.
 @MainActor enum RenderedTranscriptFile {
     struct Observation {
@@ -11,18 +30,21 @@ import Vision
             return hasBars && words.contains("update preview") && words.contains("ready for review") && !words.contains("loading preview")
         }
     }
-    static func observe(_ image: UIImage, in rect: CGRect) throws -> Observation {
+    static func observe(_ image: UIImage, in rect: CGRect) async throws -> Observation {
         guard hasFileBarPixels(image, in: rect) else { return .init(hasBars: false, text: []) }
-        return .init(hasBars: true, text: try recognizedText(image, in: rect))
+        return .init(hasBars: true, text: try await recognizedText(image, in: rect))
     }
-    private static func recognizedText(_ image: UIImage, in rect: CGRect) throws -> [String] {
+    static func observeActive(_ image: UIImage, in rect: CGRect, isCurrent: @MainActor () -> Bool,
+                              observe: @MainActor (UIImage, CGRect) async throws -> Observation = {
+                                  try await RenderedTranscriptFile.observe($0, in: $1)
+                              }) async throws -> Observation? {
+        let observation = try await observe(image, rect)
+        return isCurrent() ? observation : nil
+    }
+    private static func recognizedText(_ image: UIImage, in rect: CGRect) async throws -> [String] {
         guard !rect.isNull, rect.width > 0, rect.height > 0,
               let crop = image.cgImage?.cropping(to: rect.applying(CGAffineTransform(scaleX: image.scale, y: image.scale))) else { return [] }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate; request.usesLanguageCorrection = false
-        request.recognitionLanguages = ["en-US"]
-        try VNImageRequestHandler(cgImage: crop).perform([request])
-        return request.results?.compactMap { $0.topCandidates(1).first?.string } ?? []
+        return try await NativeTextRecognition.recognize(crop, languages: ["en-US"])
     }
     private static func hasFileBarPixels(_ image: UIImage, in rect: CGRect) -> Bool {
         guard !rect.isNull, rect.width > 0, rect.height > 0,

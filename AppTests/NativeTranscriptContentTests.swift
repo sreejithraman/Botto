@@ -2,7 +2,6 @@ import Testing
 import SwiftUI
 import UIKit
 import WebKit
-import Vision
 import BottoCore
 @testable import Botto
 
@@ -152,7 +151,7 @@ import BottoCore
                 "crop_in_window": NSCoder.string(for: visible), "image_scale": image.scale,
                 "image_size": NSCoder.string(for: image.size)]
             do {
-                let observation = try RenderedTranscriptFile.observe(image, in: visible)
+                let observation = try await RenderedTranscriptFile.observe(image, in: visible)
                 painted = observation.isComplete
                 trace.lastCapture["oracle_seconds"] = CACurrentMediaTime() - captureFinished
                 trace.lastCapture["has_bars"] = observation.hasBars
@@ -266,19 +265,16 @@ import BottoCore
             window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
             store.forgetConnection(); LocalHistory.remove(for: configuration.id)
         }
-        func renderedCount() throws -> String? {
+        func renderedCount() async throws -> String? {
             host.view.layoutIfNeeded()
             let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
                 window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
             }
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate; request.usesLanguageCorrection = false
-            try VNImageRequestHandler(cgImage: #require(image.cgImage)).perform([request])
-            return request.results?.compactMap { $0.topCandidates(1).first?.string }.first { $0.contains("chats") }
+            return try await NativeTextRecognition.recognize(#require(image.cgImage)).first { $0.contains("chats") }
         }
         var cached: String?
         let deadline = ContinuousClock.now + .seconds(5)
-        while cached == nil, ContinuousClock.now < deadline { await Task.yield(); cached = try renderedCount() }
+        while cached == nil, ContinuousClock.now < deadline { await Task.yield(); cached = try await renderedCount() }
         try #require(cached != nil, "The cached bot row must actually paint its chat count")
         #expect(!store.chats.aggregate(profile: service.profile).directoryComplete)
         #expect(cached == "2 chats")
@@ -286,7 +282,7 @@ import BottoCore
         #expect(store.chats.aggregate(profile: service.profile).directoryComplete)
         #expect(store.chats.aggregate(profile: service.profile).count == 2)
         await Task.yield()
-        #expect(try renderedCount() == cached)
+        #expect(try await renderedCount() == cached)
         let discovered = SessionIdentity(profile: service.profile, root: try ExactID("discovered-root"),
             stored: try ExactID("discovered-tip"), aliases: [])
         service.summaries.append(.init(identity: discovered, title: "Discovered chat", isCanonical: false,
@@ -295,7 +291,7 @@ import BottoCore
         await store.chats.refreshActivityDirectories(for: store.bots)
         #expect(store.chats.aggregate(profile: service.profile).count == 3)
         await Task.yield()
-        #expect(try renderedCount() == "3 chats")
+        #expect(try await renderedCount() == "3 chats")
     }
 
 }

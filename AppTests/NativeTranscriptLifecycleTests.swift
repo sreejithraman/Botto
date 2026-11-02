@@ -155,7 +155,7 @@ import BottoCore
             if !web.isLoading, (try? await web.evaluateJavaScript("document.querySelector('iframe') !== null")) as? Bool == true {
                 committed = true; break
             }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
         }
         if !committed {
             Attachment.record("loading=\(web.isLoading) attached=\(web.window != nil) bounds=\(web.bounds) renderer=\(String(describing: renderer?.state))",
@@ -178,7 +178,7 @@ import BottoCore
                let report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String] {
                 return report
             }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
         }
         Issue.record("actual opaque expanded document did not report its local state")
         return [:]
@@ -603,7 +603,7 @@ import BottoCore
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
@@ -686,7 +686,7 @@ import BottoCore
 
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
