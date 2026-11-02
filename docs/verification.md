@@ -975,3 +975,17 @@ confirmed that a guarded book seed is withheld; it did not exercise the newer
 accepted-read handoff and is not the regression control. The first full-gate
 attempt was stopped for this repair before native/UI completion; its partial
 results are retained in `/tmp/botto-pr-integration/full-gate.log`.
+
+
+The restarted full gate found a second integration regression: in the held
+notification-open retirement test, a background history window changed the
+retained main snapshot ID from its runtime ID to its stored tip. The selected
+chat, history preference and authority fences stayed correct. The unchanged test
+reproduced both disabled and remotely removed pairing cases in isolation
+(`/tmp/botto-pr-integration/retained-snapshot-red.log`). A same-profile, same-tip
+window now preserves the retained runtime ID while replacing its history. The
+two selected notification and inbox-history suites then passed, 27 functions
+(`/tmp/botto-pr-integration/retained-snapshot-green.log`), with the original
+retirement assertions intact. The second full-gate attempt was stopped for this
+repair before completion; its failures remain in
+`/tmp/botto-pr-integration/full-gate-fixed.log`.

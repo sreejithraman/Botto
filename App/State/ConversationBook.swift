@@ -397,7 +397,7 @@ struct ConversationBook: Codable, Sendable {
                 hasEarlierMessages = previous.hasEarlierMessages
             }
             if !messages.isEmpty || record.transcript?.messages.isEmpty == false { record.hasContentHistory = true }
-            let snapshot = Conversation(id: identity.stored.text, storedID: identity.stored.text,
+            let snapshot = Conversation(id: previous?.id ?? identity.stored.text, storedID: identity.stored.text,
                 profileID: identity.profile.text, messages: messages, queuedMessages: previous?.queuedMessages ?? [],
                 hasEarlierMessages: hasEarlierMessages)
             record.transcript = Self.reconciled(snapshot, previous: previous,
