@@ -314,7 +314,12 @@ struct RichReplyRuntime: SuiteTrait, TestScoping {
             try await NativeAccessibilityRuntime.enable()
             try await function()
         }
-        catch { await Self.gate.release(); throw error }
+        catch {
+            #if DEBUG
+            Attachment.record(NativeStartupTrace.shared.failureSnapshot(), named: "native-startup-phases.txt")
+            #endif
+            await Self.gate.release(); throw error
+        }
         await Self.gate.release()
     }
     private actor Gate {

@@ -1566,17 +1566,38 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     static func originalKey(identity: SessionIdentity, attachment: ChatAttachment, messages: [ChatMessage],
                             producingMessage: ChatMessage? = nil) async -> ArtifactOriginalKey? {
+        #if DEBUG
+        let startupTrace = UUID()
+        NativeStartupTrace.shared.record("discovery-queued", id: startupTrace)
+        #endif
         let matches = await Task.detached(priority: .utility) {
-            (producingMessage.map { [$0] } ?? messages).filter { message in
+            #if DEBUG
+            NativeStartupTrace.shared.record("discovery-body", id: startupTrace)
+            #endif
+            let result = (producingMessage.map { [$0] } ?? messages).filter { message in
                 ArtifactDiscovery.artifacts(in: [message]).contains {
                     $0.attachment.map { Data($0.path.utf8) == Data(attachment.path.utf8) } == true
                 }
             }
+            #if DEBUG
+            NativeStartupTrace.shared.record("discovery-end", id: startupTrace)
+            #endif
+            return result
         }.value
+        #if DEBUG
+        NativeStartupTrace.shared.record("discovery-ready", id: startupTrace)
+        #endif
         guard matches.count == 1, let message = matches.first else { return nil }
         guard message.hasStableIdentity(storedID: identity.stored.text) else { return nil }
+        #if DEBUG
+        NativeStartupTrace.shared.record("fingerprint-start", id: startupTrace)
+        #endif
+        let revision = await fingerprint([message])
+        #if DEBUG
+        NativeStartupTrace.shared.record("fingerprint-ready", id: startupTrace)
+        #endif
         return ArtifactOriginalKey(identity: identity, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
-            sourceRevision: await fingerprint([message]))
+            sourceRevision: revision)
     }
 
     func original(for key: ArtifactOriginalKey, force: Bool = false,

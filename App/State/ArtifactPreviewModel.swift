@@ -1,5 +1,8 @@
 // File lifetime pattern adapted from Hermex BotArtifactPreview.swift and QuickLookFilePreview.swift. MIT; see LICENSES/Hermex.txt.
 import Foundation
+#if DEBUG
+import Darwin
+#endif
 import Observation
 import BottoCore
 
@@ -99,19 +102,37 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
         file = previous
         let owner = generation
         isLoading = true
-        let task = Task { try await download() }
+        #if DEBUG
+        let startupTrace = UUID()
+        NativeStartupTrace.shared.record("model-queued", id: startupTrace)
+        #endif
+        let task = Task {
+            #if DEBUG
+            NativeStartupTrace.shared.record("model-body", id: startupTrace)
+            #endif
+            return try await download()
+        }
         downloadTask = task
         defer { if generation == owner { downloadTask = nil; isLoading = false } }
         do {
             let artifact = try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: { task.cancel() }
+            #if DEBUG
+            NativeStartupTrace.shared.record("download-ready", id: startupTrace)
+            #endif
             try Task.checkCancellation()
             guard generation == owner else { return }
             guard artifact.data.count <= DownloadedArtifact.maximumBytes else {
                 throw ArtifactPreviewFailure.tooLarge
             }
+            #if DEBUG
+            NativeStartupTrace.shared.record("file-write-start", id: startupTrace)
+            #endif
             let written = try await ArtifactPreviewFile.write(artifact)
+            #if DEBUG
+            NativeStartupTrace.shared.record("file-write-ready", id: startupTrace)
+            #endif
             guard generation == owner, !Task.isCancelled else { return }
             file = written
             isLoading = false
@@ -136,3 +157,33 @@ private enum ArtifactPreviewFailure: Error, LocalizedError {
     case tooLarge
     var errorDescription: String? { "This file is too large to preview on this device (25 MB maximum)." }
 }
+
+#if DEBUG
+nonisolated final class NativeStartupTrace: @unchecked Sendable {
+    static let shared = NativeStartupTrace()
+    private let lock = NSLock()
+    private var events: [String] = []
+    private var dropped = 0
+
+    func record(_ phase: String, id: UUID) {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        var cpu = timespec(), usage = rusage(), thread: UInt64 = 0
+        let threadResult = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu)
+        let processResult = getrusage(RUSAGE_SELF, &usage)
+        pthread_threadid_np(nil, &thread)
+        let threadCPU = threadResult == 0 ? Double(cpu.tv_sec) + Double(cpu.tv_nsec) / 1e9 : -1
+        let processCPU = processResult == 0
+            ? Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6 : -1
+        let event = "[DEBUG-memory-startup] \(id) \(phase) \(uptime) priority=\(Task.currentPriority.rawValue) thread=\(thread) tcpu=\(threadCPU) pcpu=\(processCPU)"
+        lock.withLock {
+            if events.count == 512 { events.removeFirst(); dropped += 1 }
+            events.append(event)
+        }
+    }
+
+    func failureSnapshot() -> String {
+        lock.withLock { "dropped=\(dropped)\n" + events.joined(separator: "\n") }
+    }
+}
+#endif
