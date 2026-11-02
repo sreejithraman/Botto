@@ -1546,7 +1546,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let startupTrace = UUID()
         print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-queued \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
         let value = await Task.detached(priority: .utility) {
-            print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-body \(ProcessInfo.processInfo.systemUptime) main=\(Thread.isMainThread) priority=\(Task.currentPriority.rawValue)")
+            print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-body \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
             return fingerprintBytes(messages)
         }.value
         print("[DEBUG-pdf-startup] \(startupTrace) fingerprint-ready \(ProcessInfo.processInfo.systemUptime)")
@@ -1576,7 +1576,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let startupTrace = UUID()
         print("[DEBUG-pdf-startup] \(startupTrace) discovery-queued \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
         let matches = await Task.detached(priority: .utility) {
-            print("[DEBUG-pdf-startup] \(startupTrace) discovery-body \(ProcessInfo.processInfo.systemUptime) main=\(Thread.isMainThread) priority=\(Task.currentPriority.rawValue)")
+            print("[DEBUG-pdf-startup] \(startupTrace) discovery-body \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
             return (producingMessage.map { [$0] } ?? messages).filter { message in
                 ArtifactDiscovery.artifacts(in: [message]).contains {
                     $0.attachment.map { Data($0.path.utf8) == Data(attachment.path.utf8) } == true
