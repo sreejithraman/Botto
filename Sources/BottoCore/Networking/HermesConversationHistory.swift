@@ -63,10 +63,14 @@ extension HermesBotService {
             && !rows.contains { $0["archived_truncated"].flag == true }
             && (adapter == .authority || identity.root == identity.stored)
             && !(hasMore && nextOffset == nil)
-        return ConversationHistoryPage(messages: HermesConversationState.messages(projected, stored: identity.stored.text),
-            nextOffset: nextOffset, isComplete: complete,
+        let messages = HermesConversationState.messages(projected, stored: identity.stored.text)
+        let identityRead = offset == 0 && nextOffset == nil && complete
+            ? ConversationIdentityRead(identity: identity, messageIDs: Set(messages.compactMap { message in
+                message.hasStableIdentity(storedID: identity.stored.text) ? Data(message.id.utf8) : nil
+            })) : nil
+        return ConversationHistoryPage(messages: messages, nextOffset: nextOffset, isComplete: complete,
             sourceIDs: Set(ids.map { Data((identity.stored.text + ":row:" + String($0)).utf8) }),
-            unavailableMessageIDs: unavailable)
+            unavailableMessageIDs: unavailable, identityRead: identityRead)
     }
 
     public func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {

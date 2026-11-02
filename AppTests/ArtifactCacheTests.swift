@@ -460,7 +460,8 @@ import BottoCore
             #expect(recovery.contains(key.identity) && !recovery.contains(other))
             let hints = try await session.metadataRecoveryHints()
             #expect(hints.first?.identity == key.identity)
-            #expect(hints.first?.unavailableMessageIDs == [Data("old".utf8)])
+            #expect(hints.first?.unavailableMessageIDs.isEmpty == true)
+            #expect(hints.first?.unverifiedMessageIDs == [Data("old".utf8)])
             #expect(try await !cache.session(scope: otherScope).metadataRecovery().contains(key.identity))
             await cache.close()
             #expect(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
@@ -884,6 +885,69 @@ import BottoCore
             } catch {}
             let reopened = own(ArtifactCache(root: root)).session(scope: scope)
             #expect(try await reopened.original(for: key)?.artifact.data == Data("report".utf8))
+        }
+    }
+
+    @Test(arguments: ["unverified-only", "disjoint", "overlap"])
+    func metadataCodecKeepsDisputesDistinctAndDowngradesConservatively(shape: String) throws {
+        struct OldReader: Decodable { let unavailableMessageIDs: Set<Data>? }
+        let source = SessionIdentity(profile: try ExactID("bot"), root: try ExactID("chat"), stored: try ExactID("chat"), aliases: [])
+        let uncertain = Data("uncertain".utf8)
+        let disputed: Set<Data>? = shape == "unverified-only" ? nil : [shape == "overlap" ? uncertain : Data("disputed".utf8)]
+        let unverified: Set<Data> = [uncertain]
+        let blocked = (disputed ?? []).union(unverified)
+        let record = CachedArtifactChat(identity: source, botName: "Bot", title: "Main", messages: [],
+            updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil,
+            unavailableMessageIDs: disputed, unverifiedMessageIDs: unverified)
+        let encoded = try JSONEncoder().encode(record)
+        let restored = try JSONDecoder().decode(CachedArtifactChat.self, from: encoded)
+        #expect(restored.unavailableMessageIDs == disputed)
+        #expect(restored.unverifiedMessageIDs == unverified)
+        #expect(restored.excludedMessageIDs == blocked)
+        #expect(restored.retainedEvidenceCount == blocked.count)
+        #expect(restored.retainedEvidenceBytes == blocked.reduce(0) { $0 + $1.count })
+        let old = try JSONDecoder().decode(OldReader.self, from: encoded)
+        #expect(old.unavailableMessageIDs == blocked)
+        var downgraded = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        downgraded.removeValue(forKey: "disputedMessageIDs")
+        downgraded.removeValue(forKey: "unverifiedMessageIDs")
+        let afterDowngrade = try JSONDecoder().decode(CachedArtifactChat.self,
+            from: JSONSerialization.data(withJSONObject: downgraded))
+        #expect(afterDowngrade.excludedMessageIDs == blocked)
+        #expect(afterDowngrade.unavailableMessageIDs == blocked)
+        #expect(afterDowngrade.unverifiedMessageIDs == nil)
+    }
+
+    @Test func legacyMetadataCodecKeepsUnavailableIDsAsActualDisputes() throws {
+        let source = SessionIdentity(profile: try ExactID("bot"), root: try ExactID("chat"), stored: try ExactID("chat"), aliases: [])
+        let disputed = Data("disputed".utf8), removed = Data("removed".utf8)
+        let record = CachedArtifactChat(identity: source, botName: "Bot", title: "Main", messages: [],
+            updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil,
+            unavailableMessageIDs: [disputed], removedMessageIDs: [removed])
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        legacy.removeValue(forKey: "disputedMessageIDs")
+        legacy.removeValue(forKey: "unverifiedMessageIDs")
+        let restored = try JSONDecoder().decode(CachedArtifactChat.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(restored.unavailableMessageIDs == [disputed])
+        #expect(restored.unverifiedMessageIDs == nil)
+        #expect(restored.excludedMessageIDs == [disputed, removed])
+    }
+
+    @Test func recoveryHintsKeepActualDisputesSeparateFromAllUnverifiedRows() async throws {
+        try await withCacheRoot { root, own in
+            let (cache, scope, key) = try fixture(root: root); _ = own(cache)
+            let session = cache.session(scope: scope)
+            let disputed = Data("disputed".utf8), uncertain = Data("not-in-retained-messages".utf8)
+            let record = CachedArtifactChat(identity: key.identity, botName: "Bot", title: "Main",
+                messages: [.init(id: "saved-old-row", role: .assistant, text: "Saved reply")],
+                updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil,
+                unavailableMessageIDs: [disputed], unverifiedMessageIDs: [uncertain])
+            try await session.upsert(record)
+            try session.invalidateMetadata([(key.identity.profile, key.identity.root)])
+            let hints = try await session.metadataRecoveryHints()
+            let hint = try #require(hints.first)
+            #expect(hint.unavailableMessageIDs == [disputed])
+            #expect(hint.unverifiedMessageIDs == [Data("saved-old-row".utf8), uncertain])
         }
     }
 

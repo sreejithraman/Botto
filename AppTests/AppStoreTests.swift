@@ -4,6 +4,56 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct AppStoreTests {
+    @Test(arguments: ["completed", "backgrounded", "superseded"])
+    func interruptedSignInWaitsForItsOwnResult(outcome: String) async throws {
+        let original = ConnectionConfiguration(serverURL: URL(string: "https://saved.example")!)
+        var candidate = ConnectionConfiguration(serverURL: URL(string: "https://candidate.example")!)
+        candidate.nativeCredential = .init(refreshToken: "candidate-token", provider: "basic")
+        let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
+        defer {
+            for configuration in [original, candidate, replacement] { LocalHistory.remove(for: configuration.id) }
+        }
+        let storage = MemoryConnectionStorage(saved: original), service = StoreTestService()
+        let store = AppStore(service: service, persistence: storage.persistence)
+        let gate = StoreTestBarrier()
+        defer { gate.release() }
+        service.connectBarrier = gate
+        let request = Task { await store.connect(candidate) }
+        defer { request.cancel() }
+        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        let owner = store.connectionGeneration
+        let callback = try #require(service.onEvent)
+        callback(.disconnected("Handshake interrupted"))
+        callback(.connected(.init(version: "premature-recovery")))
+        #expect(store.link == .offline)
+        #expect(store.serverInfo == nil)
+        #expect(store.configuration == original && storage.saved == original)
+        var rotated = candidate
+        rotated.nativeCredential = .init(refreshToken: "rotated-candidate-token", provider: "basic")
+        callback(.configuration(rotated))
+        #expect(storage.saved == original)
+
+        if outcome == "backgrounded" { await store.setActive(false) }
+        if outcome == "superseded" {
+            service.connectBarrier = nil
+            #expect(await store.connect(replacement))
+        }
+        gate.release()
+        let connected = await request.value
+        #expect(connected == (outcome == "completed"))
+        if outcome == "completed" {
+            #expect(store.connectionGeneration == owner)
+            #expect(store.link == .online)
+            #expect(store.configuration?.nativeCredential == rotated.nativeCredential)
+            #expect(storage.saved == store.configuration)
+        } else {
+            #expect(store.connectionGeneration != owner)
+            #expect(store.configuration?.id == (outcome == "backgrounded" ? original.id : replacement.id))
+            #expect(storage.saved == store.configuration)
+            #expect(store.link == (outcome == "backgrounded" ? .connecting : .online))
+        }
+    }
+
     @Test(arguments: ["current", "background", "workspace"])
     func creationRefreshRejectsRetiredWorkspace(retirement: String) async throws {
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)

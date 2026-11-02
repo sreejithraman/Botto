@@ -2,6 +2,48 @@ import XCTest
 import Vision
 
 final class InboxRetentionUITests: XCTestCase {
+    @MainActor func testInboxHistoryIsVisibleBeforeFirstLiveAttachment() throws {
+        continueAfterFailure = false
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let hold = directory.appendingPathComponent("open.hold")
+        try Data().write(to: hold)
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--reduce-motion"]
+        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
+        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
+        app.launch()
+        let row = app.buttons["bot-row-scout"]
+        let fetched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            row.exists && row.label.contains("Three directions I’d explore")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [fetched], timeout: 10), .completed)
+        app.buttons["pinned-bot-scout"].tap()
+        let started = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("open.started").path)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 10), .completed)
+        let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+            "I’d start with Cold Spring if being outside is the point.")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("open.returned").path))
+        XCTAssertFalse(app.staticTexts["Opening your chat…"].exists)
+        let composer = app.descendants(matching: .any)["chat-composer"]
+        composer.tap(); composer.typeText("Keep this draft while connecting")
+        XCTAssertEqual(composer.value as? String, "Keep this draft while connecting")
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Inbox-fetched history visible while live attachment waits"
+        capture.lifetime = .keepAlways; add(capture)
+        try FileManager.default.removeItem(at: hold)
+        let attached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("open.returned").path)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [attached], timeout: 10), .completed)
+        XCTAssertTrue(reply.exists)
+        XCTAssertEqual(composer.value as? String, "Keep this draft while connecting")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("send.started").path))
+    }
+
     @MainActor func testHTMLArtifactCoversRenderWithoutOpeningTheReader() {
         continueAfterFailure = false
         let app = XCUIApplication()

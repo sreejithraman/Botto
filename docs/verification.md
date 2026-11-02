@@ -787,3 +787,172 @@ bottleneck and pinned-selection race remain unresolved under Snip Snap item
 `B14EBCD5-EA29-4987-B202-A4FA7B4D5160`; this change does not claim a performance
 repair. Source/artifact evidence is retained in
 `/tmp/botto-stream-followup-20261101/investigation.json`.
+
+
+## Shared inbox and chat history — 1–2 November 2026
+
+The inbox retains typed messages in the transcript that chat renders. Its
+excerpt derives from that content, so opening a chat can display a fetched
+reply while live attachment waits. Recent reads use one bounded 300-row
+response instead of joining moving offset pages. The maximum row budget
+stays unchanged; ordinary reads may return more than the former first 100 rows.
+
+The stale-chat regression failed before integration. Additional regressions
+reproduced delayed-selection races, partial-read quarantine loss, safe revision
+loss, failed-restoration gate escapes, deferred writes, absent saved disputes,
+and unchanged reseeding hiding resolved results. The repaired cases preserve
+exact drafts, read evidence, live access, stable row exclusions and saved data.
+
+Identity resolution now has separate process-local evidence. Core tests cover
+raw duplicates and malformed IDs before filtering, deletion across an offset
+boundary, exactly 100-row uncertainty, source mismatch, replay/buffer additions,
+incremental expiry, and compressed ancestry. Paged active-tip reads retain their
+read-acknowledgment behavior without gaining identity-resolution proof. Book
+and Library resolve only observed verified IDs; absent disputes remain. Library
+can display coherent results during a storage failure while retaining unread
+negative metadata and deferred writes. Recovery tests use real temporary caches,
+SQL-lock cases and injected read-result failures, then independent reopen.
+
+The final producer contract check, `./scripts/check-core.sh`, passed 438 tests
+in 11 suites and the MainActor-default compatibility build. The final integrated
+native run passed 321 tests in 16 suites on an owned iPhone 17 Pro Simulator
+running iOS 27. Two UI workflows passed: Scout's fetched typed reply appeared
+before a held first attachment, and Milo's cached content remained usable while
+attaching. Both allowed drafting, retained exact draft text afterward and
+sent no message. These counts overlap earlier checks and should not be added.
+
+Recovery regressions distinguish hint-first safe revisions from actual identity
+disputes, preserve verified Search/artifact rows and captured originals beside a
+new unverified row, and deny resolution from a complete page without producer
+identity evidence. Codec controls cover separate and overlapping uncertainty,
+legacy decoding and conservative older-reader exclusions. A separate boundary
+regression reproduces safe revision loss when a fresh page lacks optional proof;
+the complete-page fix preserves that revision across recovery and independent
+cold reopen while retaining the actual saved dispute. Follow-up partial-page
+checks keep conflicting revisions unverified across recovery and cold reopen,
+then admit the current row from a resolving read. Existing stale-file-deletion
+and unsettled-live-tail controls pass. Rejected, hidden and oversized page
+controls promote hint-only or removal-only evidence into actual dispute metadata;
+six cases verify partial-read exclusion, durable reopen and coherent resolution.
+Repeated-publication controls add six sequences with failed/incomplete pagination
+or repeated refresh, each with and without a working assistant tail. Weak merges
+retain revision uncertainty through recovery and cold partial reads; a later
+accepted resolving read saves the current file while keeping an absent dispute. Directory and partial-read gates still
+apply. Temporary caches exercise actual persistence and injected read failures.
+
+Final logs are `.artifacts/page-identity-read-core-check.log` and
+`.artifacts/repeated-partial-native-acceptance.log`. Source bindings are
+`.artifacts/page-identity-read-source-sha256.txt` and
+`.artifacts/repeated-partial-final-source.json`; all Swift bytes matched the final run.
+Red/green logs are `.artifacts/recovery-evidence-{red,green}.log` and
+`.artifacts/page-revision-recovery-{red,green}.log`. The initial integrated
+318-function run is retained in `recovery-evidence-native-acceptance.log`;
+the final run supersedes it after the additional boundary fix. Prior identity,
+startup and SQL-lock evidence remains in the earlier named artifacts. The latest
+regressions are `.artifacts/hint-quarantine-{red,green}.log` and
+`.artifacts/partial-revision-uncertainty-{red,green}.log`. Repeated-publication
+red/green proof is `.artifacts/repeated-partial-revision-{red,green}.log`;
+the focused green run passed five functions in one suite. The attempted broad
+partial-page revision replacement failed existing controls and was reverted;
+`hint-quarantine-native-acceptance.log` records that rejected candidate and does
+not establish final acceptance. Exported final UI screenshots and receipts are in
+`/tmp/botto-chat-sync-evidence/repeated-partial-final-ui/`.
+
+The working changes are based on
+`a31309e6dab97cd6295f7149679cf1b37cd9cb2c`. These deterministic transport, model
+and demo checks do not establish a production-host reproduction, physical-device
+acceptance, a full verification-map recipe, or a latency improvement.
+
+## Cache restoration and admission — 2 November 2026
+
+The Library restoration lifecycle now owns its active task, attempt ID and prior
+outcome. Concurrent callers join it; retries preserve prior-attempt persistence
+eligibility; retirement rejects late completion and ends loading immediately.
+Typed admission inputs replace the independent reconciliation/coverage/proof
+parameters. Partial history and recovery hints cannot carry resolving proof.
+Saved rows carry their checked persistence certificate; row ordering uses a
+separate policy. External interfaces and the saved format are unchanged.
+
+A held-read regression reproduced continued loading after retirement on the
+previous implementation (`.artifacts/cache-restoration-lifecycle-red.log`).
+The lifecycle change passed six focused functions in two suites, including
+retry, joined restore, roster change and deferred durability controls
+(`.artifacts/cache-restoration-lifecycle-green.log`). The integrated refactor
+passed 322 native functions in 16 suites and both held-attachment/draft UI
+workflows (`.artifacts/cache-architecture-native-acceptance.log`). Its
+272 Swift hashes are in `.artifacts/cache-architecture-source.json`. Unchanged
+Core code retains the prior 438-function and MainActor compatibility evidence.
+Counts overlap and are not added. UI exports are in
+`/tmp/botto-cache-architecture/ui/`. These fixture/Simulator checks do not
+establish production-host, physical-device, full-map or performance acceptance.
+
+The held-read test also asserts that the second restore remains unfinished
+before release and completes afterward. Replacing the join with an immediate
+return fails that assertion (`.artifacts/cache-restoration-join-red.log`).
+Restoring the production implementation passes all six focused functions in
+two suites (`.artifacts/cache-restoration-join-green.log`). Only this test's
+assertions changed after the integrated run; production Swift hashes still
+match it. The final 272-file source binding is
+`.artifacts/cache-restoration-join-source.json`. The focused rerun covers the
+stronger assertion; the integrated and UI results retain their original source
+binding. Counts overlap and are not added.
+
+## Reader and connection lifecycles — 2 November 2026
+
+Chat and Library artifact readers now use one lifecycle in `ArtifactPreviewModel`.
+Their source/access policies remain distinct. Read, output, export failure and
+terminal finish states own their tasks and captured files. Reload failures keep
+the last useful file; stale read and export callbacks cannot settle a new owner.
+AppStore's connection lifecycle now owns its candidate, event/recovery lifetimes
+and status. An interrupted explicit handshake retains its candidate and cannot
+be committed by an automatic recovery event. Durable credential rotation remains
+separate from the retiring screen.
+
+The new interrupted-sign-in sequence passed against the previous AppStore and
+after refactoring, covering completion, backgrounding and replacement. The
+baseline changed only the preview implementation and added this test; it is not
+a reproduction of a connection bug (`.artifacts/lifecycle-interrupted-baseline.log`).
+Focused checks passed 116 functions in six suites
+(`.artifacts/lifecycle-focused-green.log`). Integrated checks passed 371 functions
+in 15 suites, plus four UI cases: completed preview/share after background recovery,
+Save cancellation/reopen and connection replacement, retained inbox history before
+attachment, and drafting while attachment waits
+(`.artifacts/lifecycle-integrated-green.log`). Counts overlap and are not added.
+The source bindings and UI exports are in `/tmp/botto-lifecycle-followup/`.
+Each run has a source binding; focused and integrated runtime/test hashes match.
+Runtime and test sources stayed stable while those checks ran. These
+fixture/Simulator checks do not establish
+signed Keychain or live-host sign-in, physical-device, full-map, exhaustive
+interleaving or performance acceptance. Core code is unchanged.
+
+The subsequent ARCH-02 review found that a queued chat reload could renew access
+after recovery. Request admission now synchronously prepares an immutable loader
+before scheduling the read. A new actual-reader regression requests Reload offline,
+publishes recovery before the task starts, and checks that a deliberate new retry
+is required. The app and tests compiled for the generic Simulator destination while T3
+Simulator capacity and boot failures blocked execution
+(`.artifacts/lifecycle-authority-build.log`). After an owned Simulator became
+available, the regression failed against the exact pre-fix producers with an extra
+network read and replaced file (`.artifacts/lifecycle-authority-red.log`), then
+passed against the repaired source
+(`.artifacts/lifecycle-authority-regression-green.log`). The repaired source also
+passed 372 native functions in 15 suites; its two chat UI cases and completed-file
+background case passed (`.artifacts/lifecycle-authority-integrated-green.log`).
+
+That integrated command failed at the text UI check's file-card setup. One
+unchanged retry failed there too (`.artifacts/lifecycle-authority-ui-retry.log`).
+The helper selected the first accessibility match while the transcript changed;
+Canvas contains two notes.txt references. It now waits for an enabled, reachable
+card with the requested filename, preserving the content and export assertions.
+All four affected artifact UI cases then passed: background recovery, text
+Save/reopen/replacement, PDF zoom/Share cancellation, and rendered image/Share
+replacement (`.artifacts/lifecycle-authority-ui-ready-green.log`). Together with
+the two unchanged chat cases, six distinct UI cases have passing observations.
+The failed attempts remain recorded; the initial integrated command is not a
+passing full-suite gate. Counts overlap and are not added.
+
+Production and native test bytes remained unchanged between the regression,
+372-function run and final UI run; only the UI helper changed before the last
+run. Source bindings, failure recording, and UI exports remain in
+`/tmp/botto-lifecycle-followup/`. The earlier 371-function/four-UI run covers the
+pre-ARCH-02 snapshot. These fixture/Simulator checks retain the limits above.

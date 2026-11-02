@@ -103,20 +103,35 @@ public struct ConversationReadEvidence: Equatable, Sendable {
         self.summaryObservedBeforeRead = summaryObservedBeforeRead
     }
 }
+/// Runtime evidence from one exhaustive durable response whose raw identities were checked before projection.
+public struct ConversationIdentityRead: Sendable {
+    public let identity: SessionIdentity
+    /// Projected stable IDs from the checked response; replay and later live additions are excluded.
+    public let messageIDs: Set<Data>
+    public init(identity: SessionIdentity, messageIDs: Set<Data>) {
+        self.identity = identity; self.messageIDs = messageIDs
+    }
+    public func matches(_ identity: SessionIdentity) -> Bool {
+        self.identity.profile == identity.profile && self.identity.root == identity.root && self.identity.stored == identity.stored
+    }
+}
 public struct OpenedConversation: Sendable {
     public let identity: SessionIdentity
     public let snapshot: Conversation
     public let access: ConversationAccess
     public let readEvidence: ConversationReadEvidence?
+    public let identityRead: ConversationIdentityRead?
     /// Process-local causal ordering for this read; absent on incremental publications.
     public let historyReadStartedAt: ContinuousClock.Instant?
     public let observedSource: SessionIdentity?
     public let activity: ConversationActivity?
     public init(identity: SessionIdentity, snapshot: Conversation, access: ConversationAccess,
                 readEvidence: ConversationReadEvidence? = nil, activity: ConversationActivity? = nil,
-                historyReadStartedAt: ContinuousClock.Instant? = nil, observedSource: SessionIdentity? = nil) {
+                historyReadStartedAt: ContinuousClock.Instant? = nil, observedSource: SessionIdentity? = nil,
+                identityRead: ConversationIdentityRead? = nil) {
         self.identity = identity; self.snapshot = snapshot; self.access = access
         self.readEvidence = readEvidence
+        self.identityRead = identityRead
         self.activity = activity
         self.historyReadStartedAt = historyReadStartedAt
         self.observedSource = observedSource

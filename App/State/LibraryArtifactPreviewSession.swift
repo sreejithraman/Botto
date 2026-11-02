@@ -7,67 +7,43 @@ import BottoCore
     let item: LibraryArtifact
     private let library: WorkspaceLibrary
     private let model = ArtifactPreviewModel()
-    private var finished = false
-    private var completedFile: ArtifactPreviewFile?
-    private var pendingOutput: ArtifactOutput?
-    private var outputFailure: (id: UUID, message: String)?
-    @ObservationIgnored private var loadTask: Task<Void, Never>?
 
     init(item: LibraryArtifact, library: WorkspaceLibrary) {
         self.item = item
         self.library = library
     }
 
-    var isCurrent: Bool { !finished && library.isCurrent(item) }
-    var file: ArtifactPreviewFile? { isCurrent ? completedFile : nil }
+    var isCurrent: Bool { !model.isFinished && library.isCurrent(item) }
+    var file: ArtifactPreviewFile? { isCurrent ? model.file : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
     var isLoading: Bool { isCurrent && model.isLoading }
     var canReload: Bool { isCurrent && item.artifact.attachment != nil }
     var title: String { item.artifact.title }
     var previewBlock: ReplyContent.Block? { isCurrent ? item.artifact.block : nil }
-    var output: ArtifactOutput? { isCurrent ? pendingOutput : nil }
-    var exportError: String? { isCurrent ? outputFailure?.message : nil }
-    var exportErrorID: UUID? { isCurrent ? outputFailure?.id : nil }
-    var isPresentingOutput: Bool { output != nil || exportError != nil }
+    var output: ArtifactOutput? { isCurrent ? model.output : nil }
+    var exportError: String? { isCurrent ? model.exportError : nil }
+    var exportErrorID: UUID? { isCurrent ? model.exportErrorID : nil }
+    var isPresentingOutput: Bool { isCurrent && model.isPresentingOutput }
 
-    func retry() { load(force: false) }
+    func retry() { load(.initial) }
 
     func reload() {
         guard canReload else { return }
-        load(force: true)
+        load(.reload)
     }
 
-    private func load(force: Bool) {
-        guard isCurrent, loadTask == nil, (force || completedFile == nil), !isPresentingOutput else { return }
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            defer { loadTask = nil }
-            await model.load(preservingFile: force) { [library, item] in try await library.download(item, force: force) }
-            guard isCurrent else { model.cancel(); return }
-            if let file = model.file { completedFile = file }
-        }
+    private func load(_ request: ArtifactPreviewModel.Request) {
+        model.request(request, isCurrent: { [weak self] in self?.isCurrent == true }, prepareDownload: { [library, item] in
+            { try await library.download(item, force: request == .reload) }
+        })
     }
 
     func beginOutput(_ kind: ArtifactOutput.Kind) {
-        guard isCurrent, loadTask == nil, !isPresentingOutput, let file else { return }
-        pendingOutput = ArtifactOutput(kind: kind, file: file)
+        guard isCurrent else { return }
+        model.beginOutput(kind)
     }
 
-    func endOutput(id: UUID, error: Error? = nil) {
-        guard pendingOutput?.id == id else { return }
-        pendingOutput = nil
-        outputFailure = error.map { (id, $0.localizedDescription) }
-    }
-
-    func clearExportError(id: UUID?) {
-        guard let id, outputFailure?.id == id else { return }
-        outputFailure = nil
-    }
-
-    func finish() {
-        finished = true
-        loadTask?.cancel(); loadTask = nil
-        model.cancel(); completedFile = nil
-        pendingOutput = nil; outputFailure = nil
-    }
+    func endOutput(id: UUID, error: Error? = nil) { model.endOutput(id: id, error: error) }
+    func clearExportError(id: UUID?) { model.clearExportError(id: id) }
+    func finish() { model.finish() }
 }

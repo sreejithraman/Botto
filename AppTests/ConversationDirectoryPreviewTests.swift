@@ -206,7 +206,7 @@ import XCTest
             stores.append((store, configuration))
             let connected = await store.connect(configuration)
             XCTAssertTrue(connected)
-            await store.chats.refreshInboxPreviews(profiles: [service.profile])
+            await store.chats.refreshInboxHistory(profiles: [service.profile])
             entries.append(try XCTUnwrap(store.inbox.first))
         }
         for scheme in [ColorScheme.light, .dark] {
@@ -237,6 +237,99 @@ import XCTest
 }
 
 @MainActor struct InboxMessagePreviewTests {
+    @Test func inboxReplyIsAlreadyInChatWhileLiveAttachmentWaits() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let old = ChatMessage(id: "old", role: .assistant, text: "Previous reply")
+        let fresh = ChatMessage(id: "fresh", role: .assistant, text: "The **latest** reply, in full.",
+            attachments: [.init(name: "report.pdf", path: "/report.pdf", mimeType: "application/pdf")])
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0])
+        book.cache(.init(id: "cached", storedID: identity.stored.text, profileID: service.profile.text, messages: [old]), for: id)
+        book.update(id) { $0.draft = .init(text: "Keep my draft", revision: UUID()) }
+        service.snapshots[identity.root]?.messages = [old, fresh]
+        let workspace = fixture(service, book: book)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(workspace.aggregate(profile: service.profile).preview?.text == "The latest reply, in full.")
+        let gate = WorkspaceGate(); service.openGate = gate
+        let opening = Task { await workspace.openBot(profile: service.profile) }
+        await gate.entered()
+        let waiting = try #require(workspace.screen(profile: service.profile))
+        #expect(waiting.snapshot?.messages == [old, fresh])
+        #expect(workspace.draft(waiting.owner) == "Keep my draft")
+        #expect(waiting.isOpening && !waiting.canAct)
+        #expect(workspace.persisted().record(id)?.seen == nil)
+        gate.release(); await opening.value
+        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == [old, fresh])
+        #expect(workspace.draft(try #require(workspace.screen(profile: service.profile)?.owner)) == "Keep my draft")
+        workspace.retireWorkspace()
+    }
+
+    @Test(arguments: [true, false])
+    func boundedHistoryPreservesAProvenPrefixAndQualifiesAnUnjoinedWindow(overlaps: Bool) async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let older = ChatMessage(id: "older", role: .user, text: "An older question")
+        let anchor = ChatMessage(id: "anchor", role: .assistant, text: "Old revision")
+        let removed = ChatMessage(id: "removed", role: .assistant, text: "Removed from the new suffix")
+        let revised = ChatMessage(id: "anchor", role: .assistant, text: "Revised answer")
+        let latest = ChatMessage(id: "latest", role: .assistant, text: "Newest answer")
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0])
+        book.cache(.init(id: "cached", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [older, anchor, removed]), for: id)
+        service.previewResult = .init(messages: overlaps ? [revised, latest] : [latest], hasEarlierMessages: true)
+        let workspace = fixture(service, book: book)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        workspace.setOnline(false)
+        await workspace.openBot(profile: service.profile)
+        let screen = try #require(workspace.screen(profile: service.profile))
+        #expect(screen.snapshot?.messages == (overlaps ? [older, revised, latest] : [latest]))
+        #expect(screen.hasEarlierMessages == !overlaps)
+        #expect(screen.snapshot?.pendingRequests.isEmpty == true)
+        #expect(!screen.canAct)
+        #expect(workspace.aggregate(profile: service.profile).preview?.text == "Newest answer")
+        let restored = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
+        let cold = fixture(service, book: restored)
+        cold.setOnline(false); await cold.openBot(profile: service.profile)
+        #expect(cold.screen(profile: service.profile)?.snapshot?.messages == screen.snapshot?.messages)
+        #expect(cold.screen(profile: service.profile)?.hasEarlierMessages == !overlaps)
+    }
+
+    @Test func anUnavailableAnchorCannotProvePrefixContinuity() throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let older = ChatMessage(id: "older", role: .assistant, text: "Old prefix")
+        let anchor = ChatMessage(id: "anchor", role: .assistant, text: "Disputed old anchor")
+        var snapshot = Conversation(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [older, anchor])
+        snapshot.unavailableMessageIDs = [Data(anchor.id.utf8)]
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0]); book.cache(snapshot, for: id)
+        let observed = ChatMessage(id: anchor.id, role: .assistant, text: "Newly fetched row")
+        book.cache(.init(messages: [observed], hasEarlierMessages: true), for: id)
+        #expect(book.record(id)?.transcript?.messages == [observed])
+        #expect(book.record(id)?.transcript?.hasEarlierMessages == true)
+        let index = TranscriptMessageIndex(book.record(id)?.transcript)
+        #expect(!index.matches(observed))
+    }
+
+    @Test func incompleteLiveHistoryKeepsItsQualifierThroughIncrementalsAndDisk() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        service.snapshots[identity.root]?.hasEarlierMessages = true
+        let workspace = fixture(service)
+        await workspace.openBot(profile: service.profile)
+        #expect(workspace.screen(profile: service.profile)?.hasEarlierMessages == true)
+        service.snapshots[identity.root]?.messages.append(.init(id: "delta", role: .assistant, text: "A new reply"))
+        workspace.receive(try service.publication(identity))
+        #expect(workspace.screen(profile: service.profile)?.hasEarlierMessages == true)
+        let restored = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
+        let cold = fixture(service, book: restored)
+        cold.setOnline(false); await cold.openBot(profile: service.profile)
+        #expect(cold.screen(profile: service.profile)?.hasEarlierMessages == true)
+        service.snapshots[identity.root]?.hasEarlierMessages = false
+        await workspace.openBot(profile: service.profile)
+        #expect(workspace.screen(profile: service.profile)?.hasEarlierMessages == false)
+        workspace.retireWorkspace(); cold.retireWorkspace()
+    }
+
     @MainActor private final class Callback {
         var entered = false
     }
@@ -258,12 +351,12 @@ import XCTest
             .init(id: "silent", role: .assistant, text: "[SILENT]")]
         let workspace = fixture(service)
         let before = workspace.persisted()
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "The service is healthy.")
         #expect(service.opens.isEmpty)
         #expect(workspace.persisted().records.allSatisfy { $0.seen == nil })
         #expect(workspace.persisted().records.map(\.summary) == before.records.map(\.summary))
-        #expect(workspace.persisted().records.allSatisfy { $0.transcript == nil })
+        #expect(workspace.persisted().records.first { $0.binding.identity?.root == identity.root }?.transcript?.messages == service.snapshots[identity.root]?.messages)
         let restored = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
         #expect(fixture(service, book: restored).aggregate(profile: service.profile).preview?.text == "The service is healthy.")
     }
@@ -276,7 +369,7 @@ import XCTest
         let otherID = try #require(book.matching(other))
         book.updatePreference(service.profile) { $0.preferred = otherID }
         let workspace = fixture(service, book: book)
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(service.previewReads.map(\.root) == [other.root])
         #expect(service.previewReads.map(\.stored) == [other.stored])
         #expect(service.previewReads.map(\.profile) == [other.profile])
@@ -290,12 +383,64 @@ import XCTest
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let gate = WorkspaceGate(); service.previewGate = gate
         let workspace = fixture(service)
-        let read = Task { await workspace.refreshInboxPreviews(profiles: [service.profile]) }
+        let read = Task { await workspace.refreshInboxHistory(profiles: [service.profile]) }
         await gate.entered()
         service.snapshots[identity.root]?.messages.append(.init(id: "new", role: .assistant, text: "A newer live reply."))
         await workspace.openBot(profile: service.profile)
         gate.release(); await read.value
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "A newer live reply.")
+        #expect(workspace.persisted().records.allSatisfy { $0.seen == nil })
+        workspace.retireWorkspace()
+    }
+
+    @Test func attachingRetiresAnOlderOptionalHistoryRead() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let cached = ChatMessage(id: "cached", role: .assistant, text: "Cached reply")
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0])
+        book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [cached]), for: id)
+        service.snapshots[identity.root]?.messages = [.init(id: "intermediate", role: .assistant, text: "Older optional read")]
+        let previewGate = WorkspaceGate(); service.previewGate = previewGate
+        let workspace = fixture(service, book: book)
+        let preview = Task { await workspace.refreshInboxHistory(profiles: [service.profile]) }
+        await previewGate.entered()
+        let latest = ChatMessage(id: "latest", role: .assistant, text: "Current attachment reply")
+        service.snapshots[identity.root]?.messages = [latest]
+        let openGate = WorkspaceGate(); service.openGate = openGate
+        let opening = Task { await workspace.openBot(profile: service.profile) }
+        await openGate.entered()
+        previewGate.release(); await preview.value
+        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == [cached])
+        openGate.release(); await opening.value
+        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == [latest])
+        #expect(workspace.aggregate(profile: service.profile).preview?.text == latest.text)
+        workspace.retireWorkspace()
+    }
+
+    @Test(arguments: ["success", "failure", "cancel"])
+    func delayedSelectionFencesHistoryForItsActualAttachmentTarget(outcome: String) async throws {
+        let service = try WorkspaceTestService(), target = service.summaries[0].identity
+        var book = ConversationBook()
+        for summary in service.summaries { _ = book.merge(summary) }
+        let mainID = try #require(book.matching(target))
+        book.updatePreference(service.profile) { $0.preferred = mainID }
+        let workspace = fixture(service, book: book)
+        await workspace.openBot(profile: service.profile)
+        let main = try #require(workspace.screen(profile: service.profile))
+        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
+        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
+        let gate = WorkspaceGate(); service.openGate = gate
+        let cancellation = Callback()
+        let opening = Task { await workspace.openNotificationChat(target, isCurrent: { !cancellation.entered }) }
+        await gate.entered()
+        let count = service.previewReads.count
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(service.previewReads.count == count)
+        if outcome == "failure" { service.openError = HermesServiceError.timeout }
+        if outcome == "cancel" { cancellation.entered = true; opening.cancel() }
+        gate.release()
+        #expect(await opening.value == (outcome == "success"))
         #expect(workspace.persisted().records.allSatisfy { $0.seen == nil })
         workspace.retireWorkspace()
     }
@@ -307,14 +452,15 @@ import XCTest
         let id = book.merge(service.summaries[0])
         book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
             messages: [.init(id: "cached", role: .assistant, text: "Keep this useful reply.")]), for: id)
-        service.previewResult = .init(preview: nil, isComplete: false)
+        service.previewUnavailable = true
         if fails { service.previewError = HermesServiceError.timeout }
         let workspace = fixture(service, book: book)
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "Keep this useful reply.")
         service.previewError = nil
-        service.previewResult = .init(preview: nil, isComplete: true)
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        service.previewUnavailable = false
+        service.previewResult = .init(messages: [], hasEarlierMessages: false)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(workspace.aggregate(profile: service.profile).preview == nil)
         let restored = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
         #expect(fixture(service, book: restored).aggregate(profile: service.profile).preview == nil)
@@ -324,12 +470,12 @@ import XCTest
         let service = try WorkspaceTestService()
         let gate = WorkspaceGate(); service.previewGate = gate
         let workspace = fixture(service)
-        let stale = Task { await workspace.refreshInboxPreviews(profiles: [service.profile]) }
+        let stale = Task { await workspace.refreshInboxHistory(profiles: [service.profile]) }
         await gate.entered()
         workspace.retireConnection(); workspace.setOnline(true)
         service.previewGate = nil
-        service.previewResult = .init(preview: .init(message: .init(id: "new", role: .assistant, text: "The reconnected reply.")), isComplete: true)
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "The reconnected reply.")], hasEarlierMessages: false)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         gate.release(); await stale.value
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "The reconnected reply.")
         #expect(service.opens.isEmpty)
@@ -341,7 +487,7 @@ import XCTest
         let id = book.merge(service.summaries[0])
         book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
             messages: [.init(id: "old", role: .assistant, text: "Keep the cached reply.")]), for: id)
-        service.previewResult = .init(preview: .init(message: .init(id: "new", role: .assistant, text: "A retired result.")), isComplete: true)
+        service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "A retired result.")], hasEarlierMessages: false)
         let workspace = fixture(service, book: book), callback = Callback()
         withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
             MainActor.assumeIsolated {
@@ -350,7 +496,7 @@ import XCTest
                 workspace.retireConnection()
             }
         }
-        await workspace.refreshInboxPreviews(profiles: [service.profile])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(callback.entered)
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "Keep the cached reply.")
     }
@@ -364,7 +510,9 @@ import XCTest
             .init(id: "silent", role: .assistant, text: "[SILENT]")]), for: id)
         var raw = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(book)) as? [String: Any])
         var records = try #require(raw["records"] as? [[String: Any]])
-        for index in records.indices { records[index].removeValue(forKey: "inboxPreview") }
+        for index in records.indices {
+            records[index]["inboxPreview"] = ["message": ["messageID": "stale", "text": "An old excerpt"]]
+        }
         raw["records"] = records
         let restored = try JSONDecoder().decode(ConversationBook.self, from: JSONSerialization.data(withJSONObject: raw))
         #expect(fixture(service, book: restored).aggregate(profile: service.profile).preview?.text == "A useful cached answer.")

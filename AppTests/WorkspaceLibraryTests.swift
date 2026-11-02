@@ -2102,7 +2102,8 @@ import BottoCore
         #expect(try await reopened.download(offline).data == Data("main".utf8))
         reopened.accept(identity: service.first, snapshot: stale, title: "Main", evidence: .read(startedAt: staleReadStartedAt, observedSource: service.first))
         #expect(!reopened.artifacts.contains { $0.artifact.messageID == old.id })
-        reopened.accept(identity: service.first, snapshot: stale, title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
+        reopened.accept(identity: service.first, snapshot: stale, title: "Main", evidence: .read(startedAt: .now, observedSource: service.first,
+            identityRead: .init(identity: service.first, messageIDs: Set(stale.messages.map { Data($0.id.utf8) }))))
         let recoveryDeadline = ContinuousClock.now + .seconds(5)
         while !reopened.artifacts.contains(where: { $0.artifact.messageID == old.id }), ContinuousClock.now < recoveryDeadline { await Task.yield() }
         #expect(reopened.artifacts.contains { $0.artifact.messageID == old.id })
@@ -4075,11 +4076,20 @@ private actor NextLibraryProjectionPause {
         historyOffsets.append(offset)
         await (historyBarriers[identity] ?? historyBarrier)?.wait()
         if let failure = historyFailures[identity], historyFailureOffsets[identity] == nil || historyFailureOffsets[identity] == offset { throw failure }
-        if let page = historyPages[identity]?[offset] { return page }
+        if let page = historyPages[identity]?[offset] { return certifyingIdentity(page, identity: identity, offset: offset) }
         if failHistory || identity == failingHistorySource { throw HermesServiceError.disconnected }
         if hiddenFirstPage, offset == 0 { return .init(messages: [], nextOffset: 100, isComplete: true, sourceIDs: [Data("hidden-head".utf8)]) }
         let rows = messages[identity] ?? []
-        return .init(messages: rows, nextOffset: nil, isComplete: true, sourceIDs: Set(rows.map { Data($0.id.utf8) }))
+        return certifyingIdentity(.init(messages: rows, nextOffset: nil, isComplete: true, sourceIDs: Set(rows.map { Data($0.id.utf8) })), identity: identity, offset: offset)
+    }
+    private func certifyingIdentity(_ page: ConversationHistoryPage, identity: SessionIdentity, offset: Int) -> ConversationHistoryPage {
+        let ids = Set(page.messages.map { Data($0.id.utf8) })
+        let proof = page.identityRead ?? (offset == 0 && page.nextOffset == nil && page.isComplete
+            && page.unavailableMessageIDs.isEmpty && ids.count == page.messages.count
+            && page.sourceIDs.map { $0 == ids } != false
+            ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil)
+        return .init(messages: page.messages, nextOffset: page.nextOffset, isComplete: page.isComplete,
+            sourceIDs: page.sourceIDs, unavailableMessageIDs: page.unavailableMessageIDs, identityRead: proof)
     }
     func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
         downloadCount += 1

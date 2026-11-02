@@ -196,24 +196,19 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
     private var destination: AppStore.ArtifactDestination
     private let store: AppStore
     private let model = ArtifactPreviewModel()
-    private var completedFile: ArtifactPreviewFile?
-    private var finished = false
-    private var pendingOutput: Output?
-    private var outputError: (id: UUID, message: String)?
-    @ObservationIgnored private var loadTask: Task<Void, Never>?
 
-    var file: ArtifactPreviewFile? { isCurrent ? completedFile : nil }
+    var file: ArtifactPreviewFile? { isCurrent ? model.file : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
     var isLoading: Bool { isCurrent && model.isLoading }
     // Local captures follow semantic presentation; cache misses still require live access.
     var isCurrent: Bool {
-        !finished && store.isAuthorizedArtifactPresentation(destination)
-            && (completedFile != nil || store.canStartArtifactRead(destination))
+        !model.isFinished && store.isAuthorizedArtifactPresentation(destination)
+            && (model.file != nil || store.canStartArtifactRead(destination))
     }
-    var output: Output? { isCurrent ? pendingOutput : nil }
-    var exportError: String? { isCurrent ? outputError?.message : nil }
-    var exportErrorID: UUID? { isCurrent ? outputError?.id : nil }
-    var isPresentingOutput: Bool { output != nil || exportError != nil }
+    var output: Output? { isCurrent ? model.output : nil }
+    var exportError: String? { isCurrent ? model.exportError : nil }
+    var exportErrorID: UUID? { isCurrent ? model.exportErrorID : nil }
+    var isPresentingOutput: Bool { isCurrent && model.isPresentingOutput }
     var title: String { file?.filename ?? destination.attachment.name }
 
     fileprivate init(destination: AppStore.ArtifactDestination, store: AppStore) {
@@ -222,46 +217,32 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
 
     fileprivate func isCurrent(in store: AppStore) -> Bool { self.store === store && isCurrent }
 
-    func retry() { load(force: false) }
+    func retry() { load(.initial) }
+    func reload() { load(.reload) }
 
-    func reload() { load(force: true) }
-
-    private func load(force: Bool) {
-        guard isCurrent, loadTask == nil, (force || completedFile == nil), !isPresentingOutput else { return }
-        if let renewed = store.renewedArtifactDestination(destination) { destination = renewed }
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            defer { loadTask = nil }
-            await model.load(preservingFile: force) { [store, destination] in
-                try await store.downloadArtifact(destination, force: force)
+    private func load(_ request: ArtifactPreviewModel.Request) {
+        model.request(request, isCurrent: { [weak self] in self?.isCurrent == true }, prepareDownload: {
+            if let renewed = store.renewedArtifactDestination(destination) { destination = renewed }
+            return { [store, destination] in
+                try await store.downloadArtifact(destination, force: request == .reload)
             }
-            guard isCurrent else { model.cancel(); return }
-            if let file = model.file { completedFile = file }
-        }
+        })
     }
 
     func beginOutput(_ kind: Output.Kind) {
-        guard isCurrent, loadTask == nil, !isPresentingOutput, let file else { return }
-        pendingOutput = Output(kind: kind, file: file)
+        guard isCurrent else { return }
+        model.beginOutput(kind)
     }
 
     func endOutput(id: UUID, error: Error? = nil) {
-        guard isCurrent, pendingOutput?.id == id else { return }
-        pendingOutput = nil
-        outputError = error.map { (id, $0.localizedDescription) }
+        guard isCurrent else { return }
+        model.endOutput(id: id, error: error)
     }
 
-    func clearExportError(id: UUID?) {
-        guard let id, outputError?.id == id else { return }
-        outputError = nil
-    }
+    func clearExportError(id: UUID?) { model.clearExportError(id: id) }
 
     fileprivate func finish() {
-        guard !finished else { return }
-        finished = true
-        completedFile = nil
-        pendingOutput = nil; outputError = nil
-        loadTask?.cancel(); loadTask = nil; model.cancel()
+        guard model.finish() else { return }
         store.finishArtifact(destination)
     }
 }

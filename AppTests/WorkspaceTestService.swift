@@ -67,7 +67,8 @@ import BottoCore
     var rosterProfiles: [BotProfile]?
     var previewGate: WorkspaceGate?
     var previewError: (any Error)?
-    var previewResult: ConversationPreviewRead?
+    var previewResult: ConversationHistoryWindow?
+    var previewUnavailable = false
     var previewReads: [SessionIdentity] = []
     var directoryChanges: Set<ExactID> = []
     var journal: JournalDurability = .saved
@@ -126,11 +127,11 @@ import BottoCore
         if let captured { return captured }
         return .init(summaries: summaries.filter { $0.identity.profile == profile }, activity: directoryActivity, isComplete: directoryComplete)
     }
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
-        let result = previewResult ?? .init(preview: snapshots[identity.root].flatMap {
-            ConversationPreview.latest(in: $0.messages)
-        }, isComplete: true)
+        let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map {
+            .init(messages: $0.messages, hasEarlierMessages: false)
+        }
         await previewGate?.wait()
         if let previewError { throw previewError }
         return result

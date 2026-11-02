@@ -203,7 +203,7 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Profile for Milo"].waitForExistence(timeout: 5))
     }
 
-    @MainActor func testDraftingWorksWhileUncachedConversationOpens() throws {
+    @MainActor func testDraftingWorksWhileInboxHistoryAttaches() throws {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -214,8 +214,14 @@ final class ConversationUITests: XCTestCase {
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
         XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 5))
+        let fetched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["bot-row-milo"].label.contains("I also drafted a note")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [fetched], timeout: 10), .completed)
         app.buttons["pinned-bot-milo"].tap()
-        XCTAssertTrue(app.staticTexts["Opening your chat…"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+            "Take a look before it goes anywhere.")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Opening your chat…"].exists)
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Chat avatar while attachment is pending"
         capture.lifetime = .keepAlways

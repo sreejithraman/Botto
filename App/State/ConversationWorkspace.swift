@@ -158,6 +158,7 @@ struct ChatScreen {
     let selectedViewLifetime: UUID
     let canCreate: Bool
     let isOpening: Bool
+    let hasEarlierMessages: Bool
     let isSending: Bool
     let isUploading: Bool
     let isCreating: Bool
@@ -262,7 +263,11 @@ private struct ReadObservationKey: Hashable, Sendable {
     @ObservationIgnored private var recoveryHandoff: RecoveryHandoff?
     // Rejected recovery grants stay rejected if their frame arrives after connected.
     @ObservationIgnored private var retiredRecoveryAccesses: Set<ConversationAccess> = []
-    private var opening: UUID?
+    private struct Opening {
+        let id: UUID
+        let chat: ChatID
+    }
+    private var opening: Opening?
     @ObservationIgnored private var navigationRequest: UUID?
     private var selectedViewLifetime = UUID()
     private var transcriptVisible = false
@@ -328,13 +333,13 @@ private struct ReadObservationKey: Hashable, Sendable {
         let task: Task<ConversationDirectory, Error>
     }
     @ObservationIgnored private var directoryReads: [ExactID: DirectoryRead] = [:]
-    private struct InboxPreviewRead {
+    private struct RecentHistoryRead {
         let id: UUID
         let recovery: UUID
-        let task: Task<ConversationPreviewRead, Error>
+        let task: Task<ConversationHistoryWindow?, Error>
     }
-    @ObservationIgnored private var inboxPreviewReads: [ChatID: InboxPreviewRead] = [:]
-    @ObservationIgnored private var inboxPreviewRefresh: (id: UUID, task: Task<Void, Never>)?
+    @ObservationIgnored private var inboxHistoryReads: [ChatID: RecentHistoryRead] = [:]
+    @ObservationIgnored private var inboxHistoryRefresh: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var pendingInboxProfiles: Set<ExactID> = []
     @ObservationIgnored private var inboxProfiles: Set<ExactID> = []
     private var loadingDirectories: Set<ExactID> = []
@@ -486,7 +491,9 @@ private struct ReadObservationKey: Hashable, Sendable {
             canEditDraft: canEditDraft(rendered),
             selectedViewLifetime: selectedViewLifetime,
             canCreate: canCreateFrom(rendered) && creations[profile] == nil && !uncertainCreation.contains(profile),
-            isOpening: selection.isOpening, isSending: sends[id] != nil,
+            isOpening: selection.isOpening,
+            hasEarlierMessages: snapshot?.hasEarlierMessages == true,
+            isSending: sends[id] != nil,
             isUploading: uploadReservations[id] != nil, isCreating: creations[profile] != nil,
             isLoadingDirectory: loadingDirectories.contains(profile), error: errors[id] ?? readOnlyExplanation(record) ?? directoryWarnings[profile],
             attachments: staged.map(\.attachment), needsReattachment: staged.contains { !$0.valid },
@@ -765,12 +772,36 @@ private struct ReadObservationKey: Hashable, Sendable {
         await attach(intent.target)
     }
     private enum SelectionCommit { case immediate, afterAttachment }
+    @discardableResult private func installTranscript(_ publication: OpenedConversation, for id: ChatID, title: String) -> Bool {
+        let connection = recovery, epoch = presentation, previous = live
+        let ownsInstallation: @MainActor () -> Bool = {
+            !self.retired && self.online && self.recovery == connection && self.presentation == epoch && self.selected == id
+        }
+        let accepted = mutateBook { book -> OpenedConversation? in
+            guard ownsInstallation() else { return nil }
+            return book.cache(publication, for: id)
+        }
+        guard let accepted, ownsInstallation() else {
+            if publication.access != live?.access { retiredRecoveryAccesses.insert(publication.access) }
+            return false
+        }
+        live = accepted
+        guard ownsInstallation() else {
+            if live?.access == accepted.access { live = nil }
+            retiredRecoveryAccesses.insert(accepted.access)
+            return false
+        }
+        updateActivity(accepted, id: id, previous: previous); rebuildRequests(); onDirty()
+        onAcceptedTranscript?(accepted, previous?.snapshot, title)
+        return true
+    }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
                                           libraryRequest: UUID? = nil,
                                           accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
                                           commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> SessionIdentity? {
         guard !Task.isCancelled, !retired, let record = book.record(id),
               libraryRequest == nil || navigationRequest == libraryRequest else { return nil }
+        inboxHistoryReads.removeValue(forKey: id)?.task.cancel()
         let preserveSelection = selectionCommit == .afterAttachment
         if preserveSelection, record.isUnverified || availability[id] == false { return nil }
         if !preserveSelection && locallySelected != id { locallySelected = nil }
@@ -799,10 +830,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             return identity
         }
-        let attempt = UUID(); opening = attempt
+        let attempt = UUID(); opening = .init(id: attempt, chat: id)
         let epoch = presentation, connection = recovery, pendingSelection = selected
         let initialMainBinding = initialMainBindings[record.profile]
-        defer { if opening == attempt { opening = nil } }
+        defer { if opening?.id == attempt { opening = nil } }
         let target: SessionTarget
         switch record.binding {
         case .provisionalMain: target = .canonical(profile: record.profile, expectedRoot: nil)
@@ -810,9 +841,9 @@ private struct ReadObservationKey: Hashable, Sendable {
             target = canonical ? .canonical(profile: record.profile, expectedRoot: identity.root) : .stored(identity)
         }
         do {
-            let opened = try await service.openChat(target)
+            let opened = book.reconciled(try await service.openChat(target), for: id)
             guard !Task.isCancelled, !retired, recovery == connection, presentation == epoch,
-                  selected == pendingSelection, opening == attempt,
+                  selected == pendingSelection, opening?.id == attempt,
                   libraryRequest == nil || navigationRequest == libraryRequest else {
                 retiredRecoveryAccesses.insert(opened.access)
                 if !preserveSelection { return nil }
@@ -840,14 +871,12 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             if (staging[actual] ?? []).contains(where: { $0.source.stored != opened.identity.stored }) { invalidateStaging(actual) }
             retiredRecoveryAccesses.remove(opened.access)
-            let previousSnapshot = live?.snapshot
-            live = opened; locallySelected = nil; readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
-            mutateBook { $0.cache(opened.snapshot, for: actual, readEvidence: opened.readEvidence) }; updateActivity(opened, id: actual); rebuildRequests(); onDirty()
-            onAcceptedTranscript?(opened, previousSnapshot, record.title)
+            locallySelected = nil; readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
+            guard installTranscript(opened, for: actual, title: record.title) else { return nil }
             return opened.identity
         } catch {
             guard !retired, recovery == connection, presentation == epoch,
-                  selected == pendingSelection, opening == attempt,
+                  selected == pendingSelection, opening?.id == attempt,
                   libraryRequest == nil || navigationRequest == libraryRequest else { return nil }
             if !preserveSelection {
                 errors[id] = error.localizedDescription
@@ -870,65 +899,68 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
         }
     }
-    func scheduleInboxPreviews(for profiles: [BotProfile]) {
-        scheduleInboxPreviews(profiles: Set(profiles.compactMap { try? ExactID($0.id) }))
+    func scheduleInboxHistory(for profiles: [BotProfile]) {
+        scheduleInboxHistory(profiles: Set(profiles.compactMap { try? ExactID($0.id) }))
     }
-    private func scheduleInboxPreviews(profiles: Set<ExactID>) {
+    private func scheduleInboxHistory(profiles: Set<ExactID>) {
         guard online, !retired else { return }
         pendingInboxProfiles.formUnion(profiles)
-        guard inboxPreviewRefresh == nil else { return }
+        guard inboxHistoryRefresh == nil else { return }
         let id = UUID(), epoch = recovery
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { if inboxPreviewRefresh?.id == id { inboxPreviewRefresh = nil } }
+            defer { if inboxHistoryRefresh?.id == id { inboxHistoryRefresh = nil } }
             while !Task.isCancelled, online, !retired, recovery == epoch, !pendingInboxProfiles.isEmpty {
                 let batch = pendingInboxProfiles
                 pendingInboxProfiles = []
-                await refreshInboxPreviews(profiles: batch)
+                await refreshInboxHistory(profiles: batch)
             }
         }
-        inboxPreviewRefresh = (id, task)
+        inboxHistoryRefresh = (id, task)
     }
-    func refreshInboxPreviews(profiles: Set<ExactID>) async {
+    func refreshInboxHistory(profiles: Set<ExactID>) async {
         guard online, !retired, !Task.isCancelled else { return }
         var remaining = profiles.makeIterator()
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<4 {
-                if let profile = remaining.next() { group.addTask { await self.refreshInboxPreview(profile: profile) } }
+                if let profile = remaining.next() { group.addTask { await self.refreshInboxHistoryForProfile(profile: profile) } }
             }
             while await group.next() != nil {
                 guard !Task.isCancelled else { group.cancelAll(); return }
-                if let profile = remaining.next() { group.addTask { await self.refreshInboxPreview(profile: profile) } }
+                if let profile = remaining.next() { group.addTask { await self.refreshInboxHistoryForProfile(profile: profile) } }
             }
         }
     }
-    private func refreshInboxPreview(profile: ExactID) async {
+    private func refreshInboxHistoryForProfile(profile: ExactID) async {
         guard online, !retired, !Task.isCancelled, inboxProfiles.contains(profile),
               let id = book.opening(profile), let record = book.record(id), !record.isUnverified,
               let identity = record.binding.identity, availability[id] != false else { return }
-        if selected == id, live != nil { return }
-        let read: InboxPreviewRead
-        if let existing = inboxPreviewReads[id], existing.recovery == recovery { read = existing }
+        if opening?.chat == id || (selected == id && live != nil) { return }
+        let read: RecentHistoryRead
+        if let existing = inboxHistoryReads[id], existing.recovery == recovery { read = existing }
         else {
             let service = service
             read = .init(id: UUID(), recovery: recovery,
-                task: Task { try await service.conversationPreview(identity) })
-            inboxPreviewReads[id] = read
+                task: Task { try await service.recentConversationHistory(identity) })
+            inboxHistoryReads[id] = read
         }
-        let summary = record.summary, message = record.inboxMessage
-        defer { if inboxPreviewReads[id]?.id == read.id { inboxPreviewReads[id] = nil } }
+        let summary = record.summary, transcript = record.transcript
+        defer { if inboxHistoryReads[id]?.id == read.id { inboxHistoryReads[id] = nil } }
         do {
-            let result = try await read.task.value
-            guard result.isComplete, read.recovery == recovery, inboxPreviewReads[id]?.id == read.id else { return }
+            guard let result = try await read.task.value else { return }
+            guard read.recovery == recovery, inboxHistoryReads[id]?.id == read.id else { return }
             let applied = mutateBook { book in
                 // Observation callbacks run before this borrow and may retire the
                 // connection or publish a newer transcript.
-                guard !retired, online, read.recovery == recovery, inboxPreviewReads[id]?.id == read.id,
+                guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
                       inboxProfiles.contains(profile), book.opening(profile) == id,
                       let current = book.record(id), current.binding.identity == identity,
-                      current.summary == summary, current.inboxMessage == message,
+                      current.summary == summary,
+                      TranscriptContentRevision.sameSnapshotContent(current.transcript, transcript),
+                      current.transcript?.hasEarlierMessages == transcript?.hasEarlierMessages,
+                      opening?.chat != id,
                       selected != id || live == nil else { return false }
-                book.update(id) { $0.inboxPreview = .init(message: result.preview) }
+                book.cache(result, for: id)
                 return true
             }
             if applied { onDirty() }
@@ -1019,7 +1051,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard isCurrent(owner), let profile = book.record(owner.chat)?.profile,
               chat == nil || book.record(chat!)?.profile == profile else { return }
         mutateBook { $0.updatePreference(profile) { $0.preferred = chat } }; onDirty()
-        scheduleInboxPreviews(profiles: [profile])
+        scheduleInboxHistory(profiles: [profile])
     }
     func draft(_ owner: PresentationOwner) -> String { draftBook.record(owner.chat)?.draft.text ?? "" }
     func editDraft(_ text: String, owner: PresentationOwner) {
@@ -1094,7 +1126,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let access = live?.access { retiredRecoveryAccesses.insert(access) }
         live = nil
         retireActionOwnership()
-        opening = attempt
+        opening = .init(id: attempt, chat: id)
         let operationOwner = owner(id)
         let task = Task { [weak self] in
             guard let self else { return }
@@ -1108,14 +1140,14 @@ private struct ReadObservationKey: Hashable, Sendable {
             retiringForegroundReads.remove(attempt)
             if foregroundRead?.id == attempt {
                 foregroundRead = nil
-                if opening == attempt { opening = nil }
+                if opening?.id == attempt { opening = nil }
             }
         }
-        guard !Task.isCancelled, foregroundRead?.id == attempt, opening == attempt,
+        guard !Task.isCancelled, foregroundRead?.id == attempt, opening?.id == attempt,
               selectedViewLifetime == lifetime, isCurrent(owner) else { return }
         do {
-            let opened = try await service.openChat(.stored(source))
-            guard !Task.isCancelled, foregroundRead?.id == attempt, opening == attempt,
+            let opened = book.reconciled(try await service.openChat(.stored(source)), for: owner.chat)
+            guard !Task.isCancelled, foregroundRead?.id == attempt, opening?.id == attempt,
                   selectedViewLifetime == lifetime, isCurrent(owner) else {
                 retiredRecoveryAccesses.insert(opened.access); return
             }
@@ -1130,12 +1162,9 @@ private struct ReadObservationKey: Hashable, Sendable {
             // even for identical content. Only the selected visual lifetime survives.
             retireActionOwnership()
             retiredRecoveryAccesses.remove(opened.access)
-            let previousSnapshot = live?.snapshot
-            live = opened; readAuthorityBlocked = false
+            readAuthorityBlocked = false
             availability[owner.chat] = true; errors[owner.chat] = nil
-            mutateBook { $0.cache(opened.snapshot, for: owner.chat, readEvidence: opened.readEvidence) }
-            updateActivity(opened, id: owner.chat); rebuildRequests(); onDirty()
-            onAcceptedTranscript?(opened, previousSnapshot, book.record(owner.chat)?.title ?? "Chat")
+            installTranscript(opened, for: owner.chat, title: book.record(owner.chat)?.title ?? "Chat")
             // No displayed() call here: only the fresh, visible view may acknowledge.
         } catch {
             guard foregroundRead?.id == attempt, selectedViewLifetime == lifetime, isCurrent(owner) else { return }
@@ -1564,13 +1593,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             retireActionOwnership()
         }
         if (staging[id] ?? []).contains(where: { $0.source.stored != publication.identity.stored }) { invalidateStaging(id) }
-        live = publication
         let canonical = book.preference(publication.identity.profile)?.main == id
         _ = mutateBook { $0.merge(.init(identity: publication.identity, title: record.title,
             isCanonical: canonical, persistence: .unknown)) }
-        mutateBook { $0.cache(publication.snapshot, for: id, readEvidence: publication.readEvidence) }
-        updateActivity(publication, id: id, previous: previous); rebuildRequests(); onDirty()
-        onAcceptedTranscript?(publication, previous?.snapshot, record.title)
+        installTranscript(publication, for: id, title: record.title)
     }
     /// Lightweight inventory activity never changes selection, transcripts, seen or grants.
     func applyActivity(profile: ExactID, observations: [SessionIdentity: ObservedActivity]) {
@@ -1690,9 +1716,9 @@ private struct ReadObservationKey: Hashable, Sendable {
         online = false; recovery = UUID(); live = nil
         for id in staging.keys { invalidateStaging(id) }
         for read in directoryReads.values { read.task.cancel() }
-        inboxPreviewRefresh?.task.cancel(); inboxPreviewRefresh = nil; pendingInboxProfiles = []
-        for read in inboxPreviewReads.values { read.task.cancel() }
-        inboxPreviewReads = [:]
+        inboxHistoryRefresh?.task.cancel(); inboxHistoryRefresh = nil; pendingInboxProfiles = []
+        for read in inboxHistoryReads.values { read.task.cancel() }
+        inboxHistoryReads = [:]
         directoryReads = [:]; loadingDirectories = []; mutateActivity { $0 = [:] }; mutateProfileActivity { $0 = [:] }; activityDirectories = []
         retirePresentation()
         // A new connection may provide a genuinely fresh recovery attachment.

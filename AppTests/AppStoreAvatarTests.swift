@@ -483,7 +483,7 @@ import BottoCore
         case "demo":
             await store.enterDemo()
             let profiles = Set(try store.bots.map { try ExactID($0.id) })
-            await store.chats.refreshInboxPreviews(profiles: profiles)
+            await store.chats.refreshInboxHistory(profiles: profiles)
         default:
             service.profiles = [BotProfile(id: "shared", name: "Replacement")]
             #expect(await store.connect(second))

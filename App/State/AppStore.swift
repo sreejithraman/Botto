@@ -95,12 +95,101 @@ import BottoCore
         var pending: [UUID: CheckedContinuation<Bool, Never>] = [:]
     }
 
-    private(set) var link: Link = .unconfigured {
-        didSet { library.setOnline(link == .online) }
+    private struct ConnectionLifecycle {
+        private enum Phase {
+            case unconfigured, waiting, connecting(ConnectionConfiguration)
+            case interrupted(ConnectionConfiguration), online, offline
+        }
+        private var phase: Phase = .unconfigured
+        private(set) var generation = UUID()
+        private(set) var recoveryGeneration = UUID()
+        private(set) var serverInfo: ServerInfo?
+        private(set) var errorMessage: String?
+
+        var link: Link {
+            switch phase {
+            case .unconfigured: .unconfigured
+            case .waiting, .connecting: .connecting
+            case .online: .online
+            case .interrupted, .offline: .offline
+            }
+        }
+        var candidate: ConnectionConfiguration? {
+            switch phase {
+            case .connecting(let candidate), .interrupted(let candidate): candidate
+            default: nil
+            }
+        }
+        func ownsAttempt(_ owner: UUID) -> Bool { generation == owner && candidate != nil }
+
+        mutating func restore(hasSavedSetup: Bool) {
+            phase = hasSavedSetup ? .offline : .unconfigured
+            errorMessage = nil
+        }
+        mutating func savedSetupFailed(_ error: any Error) { errorMessage = error.localizedDescription }
+        mutating func awaitStartup() { phase = .waiting }
+
+        mutating func begin(_ candidate: ConnectionConfiguration) -> UUID {
+            generation = UUID()
+            phase = .connecting(candidate)
+            errorMessage = nil
+            return generation
+        }
+        mutating func updateCandidate(_ updated: ConnectionConfiguration) {
+            guard let candidate, updated.id == candidate.id, updated.serverURL == candidate.serverURL else { return }
+            switch phase {
+            case .connecting: phase = .connecting(updated)
+            case .interrupted: phase = .interrupted(updated)
+            default: break
+            }
+        }
+        mutating func complete(_ owner: UUID, info: ServerInfo) -> Bool {
+            guard ownsAttempt(owner) else { return false }
+            phase = .online
+            serverInfo = info; errorMessage = nil
+            return true
+        }
+        mutating func cancel(_ owner: UUID, hasSavedSetup: Bool, failure: (any Error)? = nil) -> Bool {
+            guard ownsAttempt(owner) else { return false }
+            generation = UUID()
+            phase = hasSavedSetup ? .offline : .unconfigured
+            if let failure { errorMessage = failure.localizedDescription }
+            return true
+        }
+        mutating func suspend(hasSavedSetup: Bool) {
+            generation = UUID()
+            phase = hasSavedSetup ? .waiting : .unconfigured
+        }
+        mutating func forget() {
+            generation = UUID(); phase = .unconfigured
+            serverInfo = nil; errorMessage = nil
+        }
+        mutating func credentialStorageFailed(_ error: any Error, hasSavedSetup: Bool) {
+            generation = UUID()
+            phase = hasSavedSetup ? .offline : .unconfigured
+            errorMessage = error.localizedDescription
+        }
+        mutating func disconnected(_ reason: String) {
+            if let candidate { phase = .interrupted(candidate) }
+            else { phase = .offline }
+            // Socket recovery retains the event owner while retiring attachment reads.
+            recoveryGeneration = UUID()
+            errorMessage = reason
+        }
+        mutating func recovered(_ info: ServerInfo) -> Bool {
+            guard candidate == nil else { return false }
+            phase = .online
+            serverInfo = info; errorMessage = nil
+            return true
+        }
     }
+    private var connection = ConnectionLifecycle() {
+        didSet { library.setOnline(connection.link == .online) }
+    }
+    var link: Link { connection.link }
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
-    private(set) var serverInfo: ServerInfo?
+    var serverInfo: ServerInfo? { connection.serverInfo }
     private var cachedBots: [BotProfile] = [] { didSet { library.observeBots(cachedBots, evidence: .cached) } }
     private var pinned: Set<ExactID> = []
     private var unpinned: Set<ExactID> = []
@@ -143,7 +232,7 @@ import BottoCore
             if newValue == nil { historySaveFailure = nil }
         }
     }
-    var connectionError: String?
+    var connectionError: String? { connection.errorMessage }
     var pendingConnectionInput: String?
     var showsConnection = false {
         didSet {
@@ -160,14 +249,12 @@ import BottoCore
     @ObservationIgnored private let persistence: ConnectionPersistence
     @ObservationIgnored private let cleanupHistory: (UUID?) throws -> Void
     @ObservationIgnored private var richReplies: RichReplyPresentations?
-    private var generation = UUID()
+    private var generation: UUID { connection.generation }
     private var avatarWorkspaceGeneration = UUID()
-    // Automatic socket recovery keeps the event owner, but retires pending attachments.
-    @ObservationIgnored private var attachmentRecoveryGeneration = UUID()
+    private var attachmentRecoveryGeneration: UUID { connection.recoveryGeneration }
     @ObservationIgnored private var started = false
     @ObservationIgnored private var active = true
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
-    @ObservationIgnored private var connectingConfiguration: ConnectionConfiguration?
     // Refresh consumes the previous token, even if secure storage is temporarily locked.
     // Retain the replacement independently of the visible workspace and socket owner.
     @ObservationIgnored private var rotatedConfigurations: [UUID: ConnectionConfiguration] = [:]
@@ -194,19 +281,19 @@ import BottoCore
         self.avatars = BotAvatarStore(now: avatarNow)
         // Injected vaults need not own the app's one production cache directory.
         self.cleanupHistory = cleanupHistory ?? (persistence == nil ? { try LocalHistory.removeUnreachable(keeping: $0) } : { _ in })
-        if loadSavedSetup(), configuration != nil { link = .connecting }
+        if loadSavedSetup(), configuration != nil { connection.awaitStartup() }
         bindPushNotifications()
     }
 
     @discardableResult private func loadSavedSetup() -> Bool {
         do { configuration = try persistence.load() }
         catch {
-            savedSetupLoadFailed = true; connectionError = error.localizedDescription
+            savedSetupLoadFailed = true; connection.savedSetupFailed(error)
             return false
         }
-        savedSetupLoadFailed = false; connectionError = nil
+        savedSetupLoadFailed = false
         artifactCache.prune(reachableConfigurationIDs: Set(configuration.map { [$0.id] } ?? []))
-        link = configuration == nil ? .unconfigured : .offline
+        connection.restore(hasSavedSetup: configuration != nil)
         var loaded = LocalHistory()
         cacheLoadFailed = false
         if let configuration {
@@ -245,7 +332,7 @@ import BottoCore
         chats.onAcceptedTranscript = { [weak self, weak library] publication, previous, title in
             guard let self, let library, library === self.library else { return }
             let evidence: WorkspaceLibrary.TranscriptEvidence = publication.historyReadStartedAt.map {
-                .read(startedAt: $0, observedSource: publication.observedSource)
+                .read(startedAt: $0, observedSource: publication.observedSource, identityRead: publication.identityRead)
             }
                 ?? .incremental(previous: previous)
             library.accept(identity: publication.identity, snapshot: publication.snapshot, title: title, evidence: evidence)
@@ -463,16 +550,13 @@ import BottoCore
             pendingPushNotification = nil
             retireArtifactPresentation()
         }
-        generation = UUID()
+        let owner = connection.begin(candidate)
         avatars.reset()
-        let owner = generation
         push.retireConnection()
         service.disconnect()
         chats.retireConnection()
         cacheTask?.cancel()
         retireRefresh()
-        link = .connecting; connectionError = nil
-        connectingConfiguration = candidate
         service.onEvent = { [weak self] event in
             guard let self else { return }
             // Token rotation may finish while a socket is being replaced. Keep the saved
@@ -490,7 +574,7 @@ import BottoCore
             }
             guard generation == owner else { return false }
             if Task.isCancelled { cancelConnection(owner: owner); return false }
-            var saved = connectingConfiguration ?? candidate
+            var saved = connection.candidate ?? candidate
             saved.installID = info.installID ?? saved.installID
             let previousID = configuration?.id
             let preservesHistory = configuration?.id != saved.id && canPreserveHistory(for: saved, confirmedBy: info)
@@ -520,9 +604,10 @@ import BottoCore
             let sameWorkspace = !changedCache && mountedArtifactScope == Self.artifactScope(saved)
             if !sameWorkspace { mount(replacementHistory, configuration: saved) }
             if changedCache { selectedBotID = nil; cacheLoadFailed = false }
-            connectingConfiguration = nil
             retireAvatarWorkspace(ifReplacingWith: saved)
-            configuration = saved; serverInfo = info; link = .online; chats.setOnline(true)
+            configuration = saved
+            guard connection.complete(owner, info: info) else { return false }
+            chats.setOnline(true)
             reconcileArtifactPresentation()
             if !isDemo {
                 if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) { LocalHistory.remove(for: previousID) }
@@ -550,8 +635,7 @@ import BottoCore
         } catch {
             guard generation == owner else { return false }
             if !(error is CancellationError), !Task.isCancelled { onFailure?(error) }
-            cancelConnection(owner: owner)
-            connectionError = error.localizedDescription
+            cancelConnection(owner: owner, failure: error)
             return false
         }
     }
@@ -572,12 +656,10 @@ import BottoCore
             && provider == (candidate.nativeCredential?.provider ?? "basic")
     }
 
-    private func cancelConnection(owner: UUID) {
-        guard generation == owner, connectingConfiguration != nil else { return }
-        generation = UUID(); connectingConfiguration = nil
+    private func cancelConnection(owner: UUID, failure: (any Error)? = nil) {
+        guard connection.cancel(owner, hasSavedSetup: configuration != nil, failure: failure) else { return }
         service.disconnect()
         chats.retireConnection(); retireRefresh()
-        link = configuration == nil ? .unconfigured : .offline
     }
 
     func refresh(revalidateAvatars: Bool = false) async {
@@ -693,7 +775,7 @@ import BottoCore
                 if let id = configuration?.id { avatars.refresh(profiles, connectionID: id, using: service) }
                 await chats.refreshActivityDirectories(for: profiles)
                 guard generation == owner, botRefresh === refresh else { return }
-                chats.scheduleInboxPreviews(for: profiles)
+                chats.scheduleInboxHistory(for: profiles)
                 scheduleSave()
                 published = true
             } catch {
@@ -945,12 +1027,12 @@ import BottoCore
             flush()
             service.disconnect()
             chats.retireConnection()
-            generation = UUID(); retireRefresh(); link = configuration == nil ? .unconfigured : .connecting
-            connectingConfiguration = nil
+            connection.suspend(hasSavedSetup: configuration != nil)
+            retireRefresh()
         } else {
             // Local persistence can recover after unlocking even if the network cannot.
             flush()
-            if started, !isConnected, connectingConfiguration == nil, let configuration { await connect(configuration) }
+            if started, !isConnected, connection.candidate == nil, let configuration { await connect(configuration) }
         }
     }
 
@@ -972,14 +1054,13 @@ import BottoCore
             catch { self?.notice = "Saved setup was removed, but artifact cleanup couldn’t finish. Botto will retry when it opens again." }
         }
         retireAvatarWorkspace(ifReplacingWith: nil)
-        generation = UUID(); retireRefresh()
+        connection.forget(); retireRefresh()
         service.onEvent = nil; service.disconnect()
         cacheTask?.cancel()
         avatars.reset()
-        configuration = nil; serverInfo = nil; mount(.init(), configuration: nil); selectedBotID = nil
-        connectingConfiguration = nil
+        configuration = nil; mount(.init(), configuration: nil); selectedBotID = nil
         rotatedConfigurations = [:]
-        isDemo = false; link = .unconfigured; connectionError = nil; savedSetupLoadFailed = false
+        isDemo = false; savedSetupLoadFailed = false
         if let oldID, !protectedCaches.contains(oldID) { LocalHistory.remove(for: oldID) }
         cleanHistory(keeping: nil)
         demoConnectionID = nil
@@ -1001,10 +1082,11 @@ import BottoCore
     func leaveDemo() {
         retireAvatarWorkspace(ifReplacingWith: nil)
         service.onEvent = nil; service.disconnect(); service = liveService
-        generation = UUID(); retireRefresh(); isDemo = false; configuration = nil; mount(.init(), configuration: nil)
+        connection.suspend(hasSavedSetup: false)
+        retireRefresh(); isDemo = false; configuration = nil; mount(.init(), configuration: nil)
         demoConnectionID = nil
         avatars.reset()
-        selectedBotID = nil; link = .unconfigured
+        selectedBotID = nil
         loadSavedSetup()
         bindPushNotifications()
     }
@@ -1026,9 +1108,7 @@ import BottoCore
             Task { await refresh() }
         case .configuration(let updated):
             rotatedConfigurations[updated.id] = updated
-            if updated.id == connectingConfiguration?.id, updated.serverURL == connectingConfiguration?.serverURL {
-                connectingConfiguration = updated
-            }
+            connection.updateCandidate(updated)
             if updated.id == configuration?.id {
                 retireAvatarWorkspace(ifReplacingWith: updated)
                 if configuration.map(Self.richReplyAccount) != Self.richReplyAccount(updated) {
@@ -1043,20 +1123,18 @@ import BottoCore
                 // connection even while a different workspace or the demo is visible.
                 try persistSavedRotation()
             } catch {
-                generation = UUID(); connectingConfiguration = nil
+                connection.credentialStorageFailed(error, hasSavedSetup: configuration != nil)
                 service.disconnect(); chats.retireConnection(); retireRefresh()
-                link = configuration == nil ? .unconfigured : .offline
-                notice = error.localizedDescription; connectionError = error.localizedDescription
+                notice = error.localizedDescription
             }
         case .disconnected(let reason):
             retireRefresh()
-            chats.retireConnection(allowRecoveryPublication: active && !showsConnection && connectingConfiguration == nil)
-            attachmentRecoveryGeneration = UUID()
-            link = .offline; connectionError = reason
+            chats.retireConnection(allowRecoveryPublication: active && !showsConnection && connection.candidate == nil)
+            connection.disconnected(reason)
             for index in cachedBots.indices { cachedBots[index].status = .idle }
         case .connected(let info):
-            guard active, connectingConfiguration == nil else { return }
-            serverInfo = info; link = .online; connectionError = nil; chats.setOnline(true)
+            guard active, connection.recovered(info) else { return }
+            chats.setOnline(true)
             Task { await refresh() }
         }
     }

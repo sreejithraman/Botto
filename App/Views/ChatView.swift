@@ -655,6 +655,13 @@ private struct ChatTranscript: View {
         let activeWorkDetailsID = activeWorkDetailsID(in: displayRows)
         let lastMessageID = messages.entries.last?.id
         let requests = NativeTranscriptRequestPlan(screen?.requests ?? [])
+        if screen?.hasEarlierMessages == true {
+            rows.append(.init(id: .historyNotice, value: .auxiliary("recent-history")) { _, _ in
+                hosted(Text("Some earlier history isn’t available on this device yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12))
+            })
+        }
         if messages.hasAmbiguity || requests.hasAmbiguity {
             rows.append(.init(id: .identityNotice, value: .auxiliary("ambiguous-identifiers")) { _, _ in
                 hosted(NativeTranscriptIdentityNotice())

@@ -16,7 +16,15 @@ Decision rationale: [direct Hermes access](adr/0002-direct-hermes-backend.md),
 - Both protocol adapters are selected by `gateway.ready.payload.session_authority`. Sidecar uses verified `close_on_disconnect:false`. Authority omits that key, negotiates `runtime.describe`, creates with advertised `gui`, uses durable submission IDs and current generation fences, and restores atomic `pending/prompts`. The `gui` source is accepted by both inspected implementations; Botto never writes Hermex's platform note.
 - Password and native-refresh auth validate the reviewed origin, status/version and any public installation identity before credentials. Webapp may hide `install_id` before sign-in; Botto then requires authenticated `/api/status` identity and compares any saved pin before opening the workspace. In that case the reviewed origin is the credential-delivery trust boundary; installation pinning follows authentication. See [the identity decision](adr/0008-authenticated-installation-identity.md). Known versions below 0.21.5 are rejected. Explicit `version:unknown` is accepted for source installations; gateway capabilities are still validated. Only `CF-Access-Client-Id` and `CF-Access-Client-Secret` custom headers are allowed. Access credentials necessarily accompany `/api/status` to pass the proxy. Redirects are refused, including same-origin redirects. Use the final origin URL.
 - Upload is scoped to the live service/connection/profile/stored chat. Pass complete returned `ChatAttachment` values unchanged to `send`, including optional `stagingID`. The service registry validates the unique token and complete descriptor. Unconsumed uploads survive ordinary A→B→A navigation and can use fresh A access; old A access itself is retired. Historical paths or decoded tokens alone grant nothing. Admission consumes only submitted tokens. Reconnect, incompatible stored-origin change and process restart require reattachment. Client limits are eight files, 25 MiB each and 50 MiB per prompt. Images are resized/re-encoded off-main; authority sends explicit per-prompt image references; sidecar uses its verified vision-tool text reference. File references are taken verbatim from `file.attach`.
-- Native transport caps each history HTTP response (`GET /api/sessions/{id}/messages`) and WebSocket message at 96 MiB. Two 25 MiB images require 69,905,072 base64 bytes, leaving about 29 MiB for JSON, text and other rows. Other HTTP responses retain their 32 MiB ceiling; native sign-in separately validates a 128 KiB response limit. HTTP receipt checks delivered chunks before appending, regardless of missing or understated Content-Length. Botto requests 100 rows per REST page; both inspected hosts support row pagination (maximum 500), but a single image-bearing row cannot be divided this way. A response page or WebSocket snapshot above 96 MiB is refused before projection. These bounds do not guarantee restoration of arbitrary-length or arbitrarily image-heavy histories.
+- Native transport caps each history HTTP response (`GET /api/sessions/{id}/messages`) and WebSocket message at 96 MiB. Two 25 MiB images require 69,905,072 base64 bytes, leaving about 29 MiB for JSON, text and other rows. Other HTTP responses retain their 32 MiB ceiling; native sign-in separately validates a 128 KiB response limit. HTTP receipt checks delivered chunks before appending, regardless of missing or understated Content-Length. Full history reads request 100 rows per REST page; the inbox requests one 300-row window; both inspected hosts support row pagination (maximum 500), but a single image-bearing row cannot be divided this way. A response page or WebSocket snapshot above 96 MiB is refused before projection. These bounds do not guarantee restoration of arbitrary-length or arbitrarily image-heavy histories.
+
+AppStore's connection lifecycle owns the explicit candidate, connection event
+lifetime, attachment recovery lifetime and displayed status. An interrupted
+handshake retains its candidate until that attempt completes or retires; an
+automatic recovery event cannot commit it. Startup and foreground waiting stay
+neutral. Backgrounding, replacement and cancellation retire the attempt before
+late results can publish. Saved setup and refresh-token rotation remain separate
+durable facts: a retired screen can still owe a synchronous credential save.
 
 ## Inbox message previews
 
@@ -27,19 +35,51 @@ not replace the last readable message. Useful replies, attributed bot messages,
 attachments and real failures remain eligible. Raw roster and directory preview
 strings are inventory metadata, not display-ready latest-message evidence.
 
-`conversationPreview(_:)` reads up to three latest pages of 100 history rows,
-without attaching a chat, changing live access or creating read acknowledgment.
-It uses the host's display metadata and display content on a temporary projection;
-canonical transcripts stay intact. A complete search found a readable message or
-exhausted history. An incomplete search or failed request preserves the saved
-excerpt. Legacy sidecar history cannot prove absence before a compressed tip.
+`recentConversationHistory(_:)` reads one newest window of at most 300 history
+rows without attaching a chat, changing live access, or creating read
+acknowledgment. `ConversationHistoryWindow` retains full typed messages and
+reports whether older messages may exist. One response avoids joining offset
+pages from different host states. Both pinned hosts cap the requested limit at
+500; this read keeps the existing maximum of 300 rows, though an ordinary read
+can now return more than the former first 100-row page. The workspace saves
+these messages in the same transcript used by chat; the inbox derives its excerpt from that
+transcript. Formatting and attachment descriptors survive the transition into
+chat. An incomplete search or failed request preserves the saved content.
+Legacy sidecar history cannot prove absence before a compressed tip.
 
-The workspace refreshes opening-chat excerpts in the background, with at most four
-concurrent lookups per batch. Live selected-chat publications supply their own
-preview. Cached excerpts remain available offline; read identity, connection,
-opening choice and newer transcript checks reject stale completions. Preview
-reads never change unread or seen evidence. The row uses the message timestamp
-when a projected message is available.
+A bounded window replaces the cached suffix when its first stable message
+uniquely anchors in the same stored transcript and is not quarantined.
+Partial same-tip windows preserve all prior identity disputes, including for
+fetched rows whose conflicting occurrence may be outside the window. An
+exhaustive single window resolves only IDs actually returned; absent prior
+disputes remain. Attachments, foreground rereads and live deltas pass through
+the same reconciliation before display, saving or Library admission.
+`OpenedConversation.identityRead` carries process-local `ConversationIdentityRead`
+evidence for the exact profile, root and stored tip. Raw IDs are checked before
+filtering; the proof lists stable projected IDs from that exhaustive response,
+before replay adds any rows.
+A complete authority snapshot or exhaustive first REST response can supply it;
+separate moving offset pages cannot. Replay-added IDs and later incremental
+publications gain no identity proof. This evidence resolves only its listed IDs,
+never grants live access, and is independent of read acknowledgment and coverage. Without a join, chat shows the
+newest window with an earlier-history notice. Coverage travels with `Conversation`,
+including through attachment, live publications and persistence; only complete
+history clears the notice. Replay completeness remains separate from durable
+history coverage. A complete active-tip read can still acknowledge its matching
+inventory when older sidecar compression segments remain unavailable. A full
+window replaces cached history, including removed rows. Drafts and seen evidence
+are independent of these cache writes; background reads can reveal unread
+content but never acknowledge it. Older excerpt-only cache fields are ignored;
+existing saved transcripts remain readable without a schema migration.
+
+The workspace refreshes opening-chat history in the background, with at most
+four concurrent lookups per batch. Live selected-chat publications update the
+same transcript. Each attachment records its target, including delayed Search
+and notification selection. It cancels an outstanding optional history read for that chat; fresh
+optional reads wait until its attachment ends. Identity, connection,
+opening choice, and exact retained-content checks reject stale completions.
+Cached content remains available offline. The row uses the latest readable
+message's timestamp.
 
 ## Read-only library
 
@@ -156,6 +196,16 @@ whole-chat path deduplication is reserved for the gallery. Decoded covers use
 the same producer digest, and explicit reload invalidates cover requests.
 Reader loads and exports serialize; the native presenter pins the output's
 captured file until its completion or cancellation.
+
+Chat and Library readers share `ArtifactPreviewModel` as their lifecycle owner.
+Its state owns the active read task, last useful file, read failure, native output
+and export failure. Reload retains the prior file; read and output states are
+exclusive. Matching attempt and output IDs fence late callbacks. Finish drops
+ownership before cancellation and is terminal. Reader adapters retain their
+distinct source/access checks and recheck them before admitting downloaded bytes.
+After admitting a request, the model synchronously prepares its captured download
+closure before creating a task. Queued chat reads cannot renew access from a
+later connection recovery.
 
 `downloadArtifact(_:in:)` is a read-only library operation. It requires a current
 connection and service-observed identity proof before and after the bounded
@@ -379,12 +429,59 @@ jumps, or durable captures; legacy saved IDs follow the same rule.
 
 Saved chat history and the artifact index persist independently. Inert reseeding
 preserves raw ambiguity evidence and never replaces an indexed same-ID revision.
-A complete history read also retains bounded IDs of removed rows, so later
-partial reads and saved history cannot restore them. Accepted rows or complete
-history can restore those IDs; known removals do not invalidate complete coverage.
-At cold restore, conflicting same-ID content or a seed-only row absent from an
-independently saved complete index has no verifiable revision order: Library
-quarantines that row until fresh accepted or complete evidence resolves it.
+A complete history read retains bounded IDs of removed rows, so later partial
+reads and saved history cannot restore them. Current accepted rows can prove
+presence without proving uniqueness. Safe accepted edits replace prior
+revisions, and unchanged live updates retain complete coverage. Partial pages
+preserve indexed revisions, absent older rows and known revision uncertainty.
+During pending recovery, conflicting same-ID revisions remain unverified;
+revision protection records only incoming rows equal to the canonical revision.
+Repeating a partial publication cannot resolve uncertainty, including after a
+cold reopen. An accepted transcript read or complete history replacement can
+resolve revisions without clearing actual identity disputes.
+
+Known ID disputes need coherent, message-specific identity evidence to resolve.
+A history-page producer supplies optional `ConversationIdentityRead` only after
+checking raw identities in an exhaustive first response. Library consumes that
+proof; completeness, source ID sets, and multi-page scans cannot create it.
+A multi-page scan can replace ordinary cached content but cannot clear a known
+dispute. Fresh pages protect only admitted canonical revisions during restoration even
+when they lack identity-resolution proof; that evidence never releases the
+metadata gate or clears an actual dispute. An ID absent from a coherent read
+stays disputed. Recovery hints carry
+unverified saved revisions separately from known ID disputes: a fresh accepted
+revision can supersede the former, while the latter needs identity evidence.
+Exact stored-tip binding and existing freshness fences apply to both. The saved
+index preserves these sets separately. Its legacy unavailable field encodes their
+union so older app versions continue to withhold uncertain rows.
+
+Cache admission uses typed inputs for accepted transcripts, complete replacements,
+partial history, inert seeds, checked saved rows, recovery hints, quarantine,
+source observation and directory absence. Coverage, exclusions and resolving
+proof derive from that input. Partial history and hints have no resolving-proof
+field; row ordering uses a separate merge policy.
+
+Restoration owns a state machine: unstarted, restoring, finished with either
+reconciliation or retry needed, and retired. An active attempt carries its task,
+identity and previous outcome, preserving persistence eligibility while retrying.
+Concurrent restores join that attempt. Only its matching completion can settle
+it; retirement ends ownership before cancellation and immediately ends loading.
+Seeding, projection, identity evidence and metadata eligibility remain independent.
+
+Startup restoration tracks accepted revisions and identity evidence separately.
+When saved metadata cannot load, verified coherent results can appear in Library
+while metadata writes wait for its negative evidence to be reconciled. Unchanged
+reseeding retains that display proof, including across freshness shortcuts.
+Presentation filters each message, artifact and Search entry by verified ID, so
+a later unverified row cannot hide verified results or gain artifact admission.
+Directory membership and partial scans cannot release metadata reconciliation.
+Recovery hints merge missing exclusions even when a fresh result already exists.
+Quarantine and hidden-row overlap inspect every retained ID, including uncertainty
+and removal records, so rejected pages cannot lose disputes held only in hints.
+Fresh changes still record durable recovery guards before SQL is available;
+the writer retains gated dirty identities and revisions and saves only eligible
+rows. Successful reconciliation schedules the deferred save. A dispute absent
+from the fresh read therefore survives persistence and a cold reopen.
 Legacy records without removal metadata carry no known removals. Seeds remain
 partial, and missing evidence cannot clear a known quarantine. Observed tip
 changes keep a bounded retired-stored-ID set, including through a failed history

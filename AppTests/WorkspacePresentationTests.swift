@@ -364,6 +364,40 @@ import BottoCore
         #expect(presentation.artifact == nil)
     }
 
+    @Test func offlineReloadCannotAcquireAuthorityFromRecoveryBeforeItsTaskStarts() async throws {
+        let (store, service, configuration) = try await fixture()
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let presentation = WorkspacePresentation()
+        let session = try openFile(presentation: presentation, store: store, service: service)
+        try await loaded(session)
+        let file = try #require(session.file)
+        service.onEvent?(.disconnected("Recovering"))
+        #expect(session.isCurrent && session.canReload)
+
+        session.reload()
+        #expect(session.isLoading)
+        // No suspension separates the request from recovery. Its queued task
+        // must use the authority captured while the connection was offline.
+        service.downloadData = Data("Recovered file bytes".utf8)
+        service.onEvent?(.conversation(try service.publication(service.summaries[0].identity)))
+        service.onEvent?(.connected(.init(version: "recovered")))
+        #expect(store.isConnected)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while session.isLoading, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!session.isLoading)
+        #expect(service.downloads == 1)
+        #expect(session.file === file && session.errorMessage != nil)
+
+        session.reload()
+        let retryDeadline = ContinuousClock.now + .seconds(5)
+        while session.isLoading, ContinuousClock.now < retryDeadline { await Task.yield() }
+        try #require(!session.isLoading)
+        #expect(service.downloads == 2)
+        #expect(session.file?.data == Data("Recovered file bytes".utf8))
+        #expect(session.errorMessage == nil)
+        presentation.closeArtifact(id: session.id)
+    }
+
     @Test func capturedUncachedDestinationCannotStartOrReplayAfterRecovery() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }

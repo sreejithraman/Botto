@@ -116,6 +116,7 @@ func retiredFullReadNeverPublishesOldEvidence(retirement: String) async throws {
     let summary = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first)
     let opened = try await service.openChat(.stored(summary.identity))
     #expect(!opened.snapshot.isWorking)
+    #expect(!opened.snapshot.hasEarlierMessages)
     #expect(opened.readEvidence?.summaryObservedBeforeRead == summary,
         "A complete idle snapshot covers the replay head even after old ring entries expire")
 }
@@ -217,4 +218,130 @@ func failedOrMismatchedHistoryCannotPublishReadEvidence(condition: String) async
     host.transport.handler = original
     let current = try await service.openChat(.stored(identity))
     #expect(current.readEvidence?.summaryObservedBeforeRead.messageCount == 4)
+}
+
+@MainActor @Test(arguments: ["delta", "optimistic"])
+func historyCoveragePersistsThroughIncompleteAttachmentStorageAndLivePublications(path: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    host.storedRows = [evidenceLifetimeRow(host, count: 4)]
+    host.snapshot["messages_omitted"] = .bool(true)
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            return .object(["session_id": .string(host.root), "profile": .string(host.bot.id),
+                "messages_omitted": .bool(true), "messages": .array([
+                    .object(["id": .number(1), "role": .string("assistant"), "text": .string("Available recent reply")])])])
+        }
+        return try original?(request) ?? .object([:])
+    }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let opened = try await service.openChat(.stored(identity))
+    #expect(opened.snapshot.hasEarlierMessages)
+    #expect(opened.readEvidence == nil)
+    let restored = try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(opened.snapshot))
+    #expect(restored.hasEarlierMessages)
+    var publications: [OpenedConversation] = []
+    service.onEvent = { if case .conversation(let next) = $0 { publications.append(next) } }
+    if path == "delta" {
+        host.sockets[0].push(host.event("message.delta", seq: 1, payload: ["text": .string("A new live message")]))
+        try await eventually { !publications.isEmpty }
+    } else {
+        _ = try await service.send(text: "A new live message", attachments: [], access: opened.access, operationID: UUID())
+    }
+    #expect(!publications.isEmpty)
+    #expect(publications.allSatisfy { $0.snapshot.hasEarlierMessages })
+    #expect(publications.last?.snapshot.messages.last?.text == "A new live message")
+    host.transport.handler = original
+    let complete = try await service.openChat(.stored(identity))
+    #expect(!complete.snapshot.hasEarlierMessages)
+    #expect(complete.readEvidence != nil)
+}
+
+@MainActor @Test(arguments: ["omitted", "truncated", "missing-id", "negative-id", "duplicate-id", "bad-pagination", "compressed-sidecar"])
+func incompleteStoredHistoryRemainsQualifiedAfterAttachment(condition: String) async throws {
+    let host = try HermesTestHost(authority: condition != "compressed-sidecar"), service = host.service()
+    defer { service.disconnect() }
+    if condition != "compressed-sidecar" { host.storedRows = [evidenceLifetimeRow(host, count: 4)] }
+    host.snapshot["messages_omitted"] = .bool(true)
+    if condition == "compressed-sidecar" {
+        host.snapshot["stored_session_id"] = .string("compressed-tip")
+        host.snapshot["session_key"] = .string("compressed-tip")
+        host.methodOverride = { frame, socket in
+            if frame["method"].text == "session.list" {
+                return .object(["sessions": .array([.object(["id": .string(host.root), "resolved_id": .string("compressed-tip")])])])
+            }
+            return host.defaultReply(frame, socket: socket)
+        }
+    }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            var row: HermesJSON = .object(["id": .number(1), "role": .string("assistant"), "text": .string("Available content")])
+            if condition == "missing-id" { row["id"] = .null }
+            if condition == "negative-id" { row["id"] = .number(-1) }
+            if condition == "truncated" { row["archived_truncated"] = .bool(true) }
+            let rows = condition == "duplicate-id" ? [row, row] : [row]
+            return .object(["session_id": .string(identity.stored.text), "profile": .string(host.bot.id),
+                "messages_omitted": .bool(condition == "omitted"), "messages": .array(rows),
+                "pagination": .object(["offset": .number(condition == "bad-pagination" ? 100 : 0),
+                    "limit": .number(100), "order": .string("latest"), "returned": .number(Double(rows.count))])])
+        }
+        return try original?(request) ?? .object([:])
+    }
+    let opened = try await service.openChat(.stored(identity))
+    #expect(opened.snapshot.hasEarlierMessages)
+    #expect(opened.snapshot.messages.first?.text == "Available content")
+    #expect(opened.readEvidence == nil)
+    #expect(opened.identityRead == nil)
+}
+
+@Test func legacyChatHistoryDecodesWithoutAnEarlierHistoryQualifier() throws {
+    let snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
+        messages: [.init(id: "stored:row:1", role: .assistant, text: "Saved reply")], hasEarlierMessages: true)
+    let encoded = try JSONEncoder().encode(snapshot)
+    #expect(try JSONDecoder().decode(Conversation.self, from: encoded).hasEarlierMessages)
+    var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    legacy.removeValue(forKey: "hasEarlierMessages")
+    let restored = try JSONDecoder().decode(Conversation.self, from: JSONSerialization.data(withJSONObject: legacy))
+    #expect(!restored.hasEarlierMessages)
+    #expect(restored.messages.last?.text == "Saved reply")
+}
+
+@MainActor @Test func completeCompressedSidecarTipCanBeReadWhileEarlierHistoryStaysQualified() async throws {
+    let host = try HermesTestHost(authority: false), service = host.service()
+    defer { service.disconnect() }
+    let tip = "compressed-tip"
+    host.snapshot["stored_session_id"] = .string(tip)
+    host.snapshot["session_key"] = .string(tip)
+    host.storedRows = [.object(["id": .string(tip), "_lineage_root_id": .string(host.root),
+        "_lineage_ids": .array([.string(host.root), .string(tip)]), "message_count": .number(1),
+        "preview": .string("Current tip reply"), "last_active": .number(103)])]
+    host.methodOverride = { frame, socket in
+        if frame["method"].text == "session.list" {
+            return .object(["sessions": .array([.object(["id": .string(host.root), "resolved_id": .string(tip)])])])
+        }
+        return host.defaultReply(frame, socket: socket)
+    }
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            return .object(["session_id": .string(tip), "profile": .string(host.bot.id), "messages": .array([
+                .object(["id": .number(1), "role": .string("assistant"), "text": .string("Current tip reply")])])])
+        }
+        return try original?(request) ?? .object([:])
+    }
+    _ = try await service.connect(configuration: host.configuration)
+    let summary = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first)
+    #expect(summary.identity.root != summary.identity.stored)
+    #expect(summary.messageCount == 1)
+    let opened = try await service.openChat(.stored(summary.identity))
+    #expect(opened.snapshot.hasEarlierMessages)
+    #expect(opened.identityRead == nil)
+    #expect(opened.snapshot.messages.map(\.text) == ["Current tip reply"])
+    let evidence = try #require(opened.readEvidence)
+    #expect(evidence.summaryObservedBeforeRead == summary)
 }

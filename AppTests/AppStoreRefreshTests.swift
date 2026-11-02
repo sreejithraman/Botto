@@ -119,7 +119,7 @@ import BottoCore
                   preview: "Fresh preview", updatedAt: newer, messageCount: 1)
         ], activity: [:], isComplete: false)
         await store.refresh()
-        await store.chats.refreshInboxPreviews(profiles: [profile])
+        await store.chats.refreshInboxHistory(profiles: [profile])
         #expect(store.bots.map(\.id) == ["recent", "unread", "waiting"])
         let updated = try #require(store.bot(withID: "recent"))
         #expect(updated.name == "Renamed" && updated.preview == "Fresh preview" && updated.status == .waiting)
@@ -513,9 +513,9 @@ import BottoCore
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directories[profile] ?? authority.directory(profile)
     }
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
-        guard let messages = previewMessages[identity.profile.text] else { return .init(preview: nil, isComplete: false) }
-        return .init(preview: ConversationPreview.latest(in: messages), isComplete: true)
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
+        guard let messages = previewMessages[identity.profile.text] else { return nil }
+        return .init(messages: messages, hasEarlierMessages: false)
     }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
