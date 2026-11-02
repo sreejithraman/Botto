@@ -7,6 +7,10 @@ import Testing
 import BottoCore
 @testable import Botto
 
+private enum PDFStartupPollingProbe {
+    @TaskLocal static var suspends = false
+}
+
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct AdaptiveWorkspaceTests {
     @Test func retainedWorkspaceKeepsNativeEditorAndTranscriptAcrossFullStreamAndRosterUpdates() async throws {
         let service = try NativeTranscriptReviewService()
@@ -547,11 +551,19 @@ import BottoCore
     }
 
     @Test func repeatedRetainedPDFStartupProbe() async throws {
-        for iteration in 1...10 {
-            print("[DEBUG-pdf-startup] repetition=\(iteration) sidebar")
-            try await nativeWideSidebarFeedbackDoesNotParkTheRetainedFile()
-            print("[DEBUG-pdf-startup] repetition=\(iteration) quicklook")
-            try await oneQuickLookPDFSurvivesFullWidthReturnAndParking()
+        for iteration in 1...5 {
+            for suspends in [false, true] {
+                await PDFStartupPollingProbe.$suspends.withValue(suspends) {
+                    let mode = suspends ? "sleep5ms" : "yield"
+                    defer { print("[DEBUG-pdf-startup] cohort-end") }
+                    print("[DEBUG-pdf-startup] repetition=\(iteration) mode=\(mode) sidebar")
+                    do { try await nativeWideSidebarFeedbackDoesNotParkTheRetainedFile() }
+                    catch { Issue.record(error) }
+                    print("[DEBUG-pdf-startup] repetition=\(iteration) mode=\(mode) quicklook")
+                    do { try await oneQuickLookPDFSurvivesFullWidthReturnAndParking() }
+                    catch { Issue.record(error) }
+                }
+            }
         }
     }
 
@@ -927,7 +939,11 @@ import BottoCore
         var previousPoll = ContinuousClock.now
         while !condition() && ContinuousClock.now < deadline {
             polls += 1
-            await Task.yield()
+            if PDFStartupPollingProbe.suspends {
+                try await Task.sleep(for: .milliseconds(5))
+            } else {
+                await Task.yield()
+            }
             let resumed = ContinuousClock.now
             maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
         }
