@@ -59,6 +59,9 @@ native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
   -parallel-testing-enabled NO
   -derivedDataPath "$native_directory/DerivedData"
   CODE_SIGNING_ALLOWED=NO)
+if [ "$selector" = InboxPreviewRenderingTests ]; then
+  native_arguments+=(-only-testing:BottoTests/AdaptiveWorkspaceTests)
+fi
 xcodebuild build-for-testing "${native_arguments[@]}" \
   -resultBundlePath "$native_directory/$result_name" || native_status=$?
 if [ "$native_status" -eq 0 ] && [ -n "$selector" ]; then
