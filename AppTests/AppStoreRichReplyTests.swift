@@ -691,7 +691,7 @@ import WebKit
                     deadline = .now + stage.budget(observation: observationBudget)
                 }
                 observation = await observe(web, in: root, deadline: deadline, recognize: recognize)
-                guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
+                guard let observation, ContinuousClock.now < deadline else { continue }
                 if let words = observation.words, words.localizedStandardContains(expected) { return web }
             }
             try await Task.sleep(for: .milliseconds(40))
