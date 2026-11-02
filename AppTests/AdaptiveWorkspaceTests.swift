@@ -559,10 +559,12 @@ import BottoCore
         defer { window.close() }
         let selectionRevision = presentation.revision
         await store.open(try #require(store.bots.first))
-        try await waitUntil("Hosted selection finished before the file tap") { presentation.revision != selectionRevision }
+        try await waitForSelectedWorkspace(store: store, presentation: presentation, window: window,
+            previousRevision: selectionRevision)
         let destination = try #require(store.artifactDestination(for: .init(name: "report.pdf", path: "/report.pdf", mimeType: "application/pdf"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
         try await waitUntil("File loaded in the retained task", diagnostics: {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }) { session.file != nil }
@@ -600,10 +602,12 @@ import BottoCore
         defer { window.close() }
         let selectedRevision = presentation.revision
         await store.open(try #require(store.bots.first))
-        try await waitUntil("Hosted bot selection settled") { presentation.revision != selectedRevision }
+        try await waitForSelectedWorkspace(store: store, presentation: presentation, window: window,
+            previousRevision: selectedRevision)
         let destination = try #require(store.artifactDestination(for: .init(name: "report.pdf", path: "/report.pdf", mimeType: "application/pdf"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
         try await waitUntil("One native reader loaded in the paired workspace", diagnostics: {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads) readers=\(self.readers(in: window.rootViewController!).count)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }) {
@@ -689,7 +693,10 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: .init(name: "report.pdf", path: "/report.pdf", mimeType: "application/pdf"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
-        try await waitUntil("Compact native reader loaded") {
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
+        try await waitUntil("Compact native reader loaded", diagnostics: {
+            self.nativeNavigationState(window: window, presentation: presentation, store: store)
+        }) {
             session.file != nil && self.readers(in: window.rootViewController!).count == 1
         }
         let original = try #require(readers(in: window.rootViewController!).first)
@@ -728,11 +735,15 @@ import BottoCore
         defer { window.close() }
         let selected = presentation.revision
         await store.open(try #require(store.bots.first))
-        try await waitUntil("Selected native text workspace settled") { presentation.revision != selected }
+        try await waitForSelectedWorkspace(store: store, presentation: presentation, window: window,
+            previousRevision: selected)
         let destination = try #require(store.artifactDestination(for: .init(name: "notes.txt", path: "/notes.txt", mimeType: "text/plain"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
-        try await waitUntil("Actual local native text is readable without a recovery toggle") {
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
+        try await waitUntil("Actual local native text is readable without a recovery toggle", diagnostics: {
+            "file=\(session.file != nil) downloads=\(service.downloads) textViews=\(self.nativeTextViews(in: window).map { "text=\($0.text ?? "nil") hidden=\($0.isHidden) bounds=\($0.bounds)" })\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }) {
             self.nativeTextViews(in: window).contains { $0.text == text && !$0.isHidden }
         }
         let original = try #require(nativeTextViews(in: window).first { $0.text == text })
@@ -910,10 +921,36 @@ import BottoCore
         }
     }
 
-    private func waitUntil(_ message: String = "Condition became true", diagnostics: () -> String = { "" },
+    private func waitForSelectedWorkspace(store: AppStore, presentation: WorkspacePresentation,
+                                          window: UIWindow, previousRevision: UUID) async throws {
+        try await waitUntil("Selected native workspace finished navigation", diagnostics: {
+            self.nativeNavigationState(window: window, presentation: presentation, store: store)
+        }) {
+            guard let root = window.rootViewController, let profile = store.selectedBotID.flatMap({ try? ExactID($0) }),
+                  store.chats.screen(profile: profile)?.isOpening == false else { return false }
+            return presentation.revision != previousRevision &&
+                self.shellTranscripts(in: root).contains { $0.viewIfLoaded?.window === window } &&
+                self.navigationControllers(in: root).allSatisfy { $0.transitionCoordinator == nil }
+        }
+    }
+
+    private func waitForArtifactFile(_ session: ArtifactPreviewSession, store: AppStore,
+                                     presentation: WorkspacePresentation, service: WorkspaceTestService,
+                                     window: UIWindow) async throws {
+        let diagnostics = {
+            "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }
+        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics) {
+            session.file != nil || session.errorMessage != nil || !session.isCurrent
+        }
+        try #require(session.file != nil, Comment(rawValue: diagnostics()))
+    }
+
+    private func waitUntil(_ message: String = "Condition became true", timeout: Duration = .seconds(10),
+                           diagnostics: () -> String = { "" },
                            sourceLocation: SourceLocation = #_sourceLocation,
                            _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
+        let deadline = ContinuousClock.now + timeout
         var polls = 0, maximumGap = Duration.zero
         var previousPoll = ContinuousClock.now
         while !condition() && ContinuousClock.now < deadline {

@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None):
+    def run_native(self, status, *, build_status=0, produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None, interrupt_stage=""):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
@@ -27,7 +28,7 @@ class NativeArtifactTests(unittest.TestCase):
         uuid.chmod(0o755)
         xcode = tools / "xcodebuild"
         xcode.write_text('''#!/usr/bin/env python3
-import json, os, sys
+import json, os, signal, sys
 from pathlib import Path
 args = sys.argv[1:]
 action = args[0]
@@ -39,13 +40,18 @@ commands = json.loads(record.read_text()) if record.exists() else []
 commands.append({"action": "enumerate" if enumerating else action, "derived": str(derived), "result": str(result),
                  "selection": [arg for arg in args if arg.startswith("-only-testing:")],
                  "parallel": args[args.index("-parallel-testing-enabled") + 1],
+                 "diagnostics": args[args.index("-collect-test-diagnostics") + 1] if "-collect-test-diagnostics" in args else None,
                  "destination": args[args.index("-destination") + 1]})
 record.write_text(json.dumps(commands))
+def finish(status):
+    if os.environ["CI_INTERRUPT_STAGE"] == ("enumerate" if enumerating else action):
+        os.kill(os.getppid(), signal.SIGTERM)
+    sys.exit(status)
 if enumerating:
     assert (derived / "build-data").is_file()
     Path(args[args.index("-test-enumeration-output-path") + 1]).write_text(
         "BottoTests/FixtureTests/example()\\nBottoTests/OtherTests/unrelated()\\n")
-    sys.exit(0)
+    finish(0)
 if action == "test-without-building":
     if not (derived / "build-data").is_file():
         sys.exit(98)
@@ -56,7 +62,7 @@ if action == "build-for-testing" or os.environ["CI_PRODUCES_RESULT"] == "1":
     result.mkdir()
     (result / "retained-proof").write_text(action + " proof")
 print("native output")
-sys.exit(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else os.environ["CI_NATIVE_STATUS"]))
+finish(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else os.environ["CI_NATIVE_STATUS"]))
 ''')
         xcode.chmod(0o755)
         xcrun = tools / "xcrun"
@@ -79,6 +85,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                            GITHUB_OUTPUT=str(base / "github-output"),
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
                            CI_PASSED_TESTS=str(passed_tests),
+                           CI_INTERRUPT_STAGE=interrupt_stage,
                            CI_PRODUCES_RESULT="1" if produces_result else "0")
         command = ["bash", str(repo / "scripts/check-native.sh"), suite]
         if workflow_event:
@@ -90,6 +97,44 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
         result = subprocess.run(command, cwd=repo,
                                 env=environment, capture_output=True, text=True, timeout=10)
         return repo, parent, record, result
+
+    def assert_registered_artifacts(self, record, directory):
+        paths = dict(line.split("=", 1) for line in (record.parent / "github-output").read_text().splitlines())
+        self.assertEqual(Path(paths["native_result_fallback"]), directory / "CIResults-*.xcresult")
+        self.assertEqual(Path(paths["native_selection_fallback"]), directory / "selected-tests.txt")
+        return paths
+
+    def upload_paths(self, outputs, repo):
+        workflow = (SCRIPT.parents[1] / ".github/workflows/ios.yml").read_text()
+        upload = workflow.split("      - name: Save native test results\n", 1)[1]
+        paths = textwrap.dedent(upload.split("          path: |\n", 1)[1].split("          include-hidden-files:", 1)[0])
+        for name, value in outputs.items():
+            paths = paths.replace("${{ steps.checks.outputs." + name + " }}", value)
+        return {Path(match) for pattern in paths.splitlines() if pattern.strip()
+                for match in glob.glob(str(repo / pattern.strip()))}
+
+    def test_interruption_keeps_pre_registered_results_and_discovery_evidence(self):
+        for stage in ("build-for-testing", "enumerate", "test-without-building"):
+            with self.subTest(stage=stage):
+                repo, parent, record, result = self.run_native(0, suite="FixtureTests", interrupt_stage=stage)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                commands = json.loads(record.read_text())
+                directory = Path(commands[-1]["derived"]).parent
+                output = record.parent / "github-output"
+                self.assertTrue(output.exists(), "Register artifact paths before an interruptible Xcode command")
+                paths = self.assert_registered_artifacts(record, directory)
+                upload = self.upload_paths(paths, repo)
+                bundles = list(directory.glob("CIResults-*.xcresult"))
+                self.assertTrue(bundles)
+                for bundle in bundles:
+                    self.assertTrue((bundle / "retained-proof").is_file())
+                    self.assertIn(bundle, upload)
+                if stage != "build-for-testing":
+                    self.assertIn("BottoTests/FixtureTests/example()", Path(paths["native_selection_fallback"]).read_text())
+                    self.assertIn(Path(paths["native_selection_fallback"]), upload)
+                self.assertNotIn(directory / "DerivedData", upload)
+                self.assertTrue((directory / "DerivedData/build-data").is_file(), "Interruption must not remove a live run's outputs")
+                self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
     def test_outputs_are_external_and_results_survive_success_or_failure(self):
         for status in (0, 65):
@@ -103,6 +148,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                 self.assertEqual({command["destination"] for command in commands}, {f"platform=iOS Simulator,id={DEVICE}"})
                 self.assertTrue(all(command["selection"] == ["-only-testing:BottoTests"] for command in commands))
                 self.assertTrue(all(command["parallel"] == "NO" for command in commands))
+                self.assertTrue(all(command["diagnostics"] == "never" for command in commands))
                 for command in commands:
                     for key in ("derived", "result"):
                         path = Path(command[key])
@@ -131,13 +177,11 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                     directory = Path(captured["derived"]).parent
                     self.assertTrue(directory.is_dir())
                     self.assertIn(str(directory), result.stderr)
-                    output = record.parent / "github-output"
+                    self.assert_registered_artifacts(record, directory)
                     if command == "rm":
                         self.assertEqual((repo / ".artifacts/CIResults-fixture-run.xcresult/retained-proof").read_text(), "test-without-building proof")
-                        self.assertFalse(output.exists())
                     else:
                         self.assertEqual((Path(captured["result"]) / "retained-proof").read_text(), "test-without-building proof")
-                        self.assertEqual(output.read_text(), "native_result_fallback=" + captured["result"] + "\n")
                     self.assertEqual((parent / "unrelated-data").read_text(), "keep")
 
     def test_build_failure_skips_tests_and_retains_its_result_and_status(self):
@@ -151,7 +195,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                 retained = repo / ".artifacts/CIResults-Build-fixture-run.xcresult/retained-proof"
                 if failure:
                     retained = Path(build["result"]) / "retained-proof"
-                    self.assertEqual((record.parent / "github-output").read_text(), "native_result_fallback=" + build["result"] + "\n")
+                    self.assert_registered_artifacts(record, Path(build["derived"]).parent)
                 else:
                     self.assertEqual([path.name for path in parent.iterdir()], ["unrelated-data"])
                 self.assertEqual(retained.read_text(), "build-for-testing proof")
@@ -207,8 +251,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                 self.assertEqual(result.returncode, status or 73)
                 last = json.loads(record.read_text())[-1]
                 self.assertEqual((Path(last["result"]) / "retained-proof").read_text(), "test-without-building proof")
-                self.assertIn("native_result_fallback=" + last["result"],
-                              (record.parent / "github-output").read_text())
+                self.assert_registered_artifacts(record, Path(last["derived"]).parent)
 
     def test_focused_run_can_select_an_exact_test(self):
         _, _, record, result = self.run_native(0, suite="FixtureTests/example()")

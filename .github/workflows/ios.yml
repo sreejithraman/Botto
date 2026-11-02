@@ -55,7 +55,7 @@ jobs:
   native:
     if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
@@ -96,6 +96,7 @@ jobs:
             .artifacts/CIResults-*.xcresult
             .artifacts/CISelectedTests-*.txt
             ${{ steps.checks.outputs.native_result_fallback }}
+            ${{ steps.checks.outputs.native_selection_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

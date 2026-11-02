@@ -51,12 +51,17 @@ PYTHON
 )
 native_directory=$(mktemp -d "${native_parent%/}/botto-native.XXXXXX")
 result_id=$(uuidgen)
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'native_result_fallback=%s/CIResults-*.xcresult\nnative_selection_fallback=%s/selected-tests.txt\n' \
+    "$native_directory" "$native_directory" >> "$GITHUB_OUTPUT"
+fi
 result_name="CIResults-Build-$result_id.xcresult"
 native_status=0
 native_arguments=(-project Botto.xcodeproj -scheme Botto -configuration Debug
   "-only-testing:$selection"
   -destination "$destination"
   -parallel-testing-enabled NO
+  -collect-test-diagnostics never
   -derivedDataPath "$native_directory/DerivedData"
   CODE_SIGNING_ALLOWED=NO)
 xcodebuild build-for-testing "${native_arguments[@]}" \
@@ -118,11 +123,6 @@ if finalize_native; then
 else
   finalization_status=$?
   printf 'Native test outputs retained at: %s\n' "$native_directory" >&2
-  if [ -n "${GITHUB_OUTPUT:-}" ] && [ -d "$native_directory/$result_name" ]; then
-    if ! printf 'native_result_fallback=%s\n' "$native_directory/$result_name" >> "$GITHUB_OUTPUT"; then
-      printf 'Could not register the fallback native result for upload.\n' >&2
-    fi
-  fi
 fi
 
 if [ "$native_status" -ne 0 ]; then

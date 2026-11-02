@@ -151,7 +151,9 @@ import WebKit
             current.frame = original.frame
             host.view.addSubview(current)
         }
-        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view) { pixels in
+        let initial = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view)
+        try #require(initial === original)
+        let observation = await MountedReplyFileDocument.observe(original, in: host.view) { pixels in
             let words = try await NativeTextRecognition.recognize(pixels, languages: ["en-US"])
             if !didRetire && words.joined(separator: " ").localizedStandardContains("Mounted observation") {
                 if activeResources {
@@ -169,9 +171,12 @@ import WebKit
             }
             return words
         }
-        let current = try #require(replacement.webView)
         #expect(didRetire)
-        #expect(observed === current, "Retired pixels must not certify the mounted replacement")
+        #expect(!observation.isCurrent, "Retired pixels must not certify the mounted replacement")
+        let current = try #require(replacement.webView)
+        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view,
+            excluding: original, phase: "replacement after recognition")
+        #expect(observed === current)
         #expect(current.window === window && original.superview == nil)
     }
 
@@ -554,29 +559,81 @@ import WebKit
 /// Observes the document actually mounted by the native preview, independently
 /// of the direct-loader grants and the service's captured-byte count.
 @MainActor enum MountedReplyFileDocument {
+    private enum Stage: String {
+        case mounting, rendering, recognizing
+
+        var budget: Duration {
+            switch self {
+            case .mounting: .seconds(30)
+            case .rendering: .seconds(21)
+            case .recognizing: .seconds(15)
+            }
+        }
+    }
+
+    struct Observation {
+        let words: String?
+        let image: UIImage?
+        let isCurrent: Bool
+    }
+
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
-                            recognize: @MainActor (CGImage) async throws -> [String] = {
-                                try await NativeTextRecognition.recognize($0, languages: ["en-US"])
-                            }) async throws -> WKWebView {
-        // Match the renderer's fifteen-second cold startup plus document budget.
-        let deadline = ContinuousClock.now + .seconds(21)
-        var observed: (words: String?, image: UIImage?)?
+                            phase: String = "initial document", diagnostics: () -> String = { "" }) async throws -> WKWebView {
+        let start = ContinuousClock.now
+        var stage = Stage.mounting
+        var deadline = start + stage.budget
+        var observation: Observation?
+        var lastRendererState = "none"
         while ContinuousClock.now < deadline {
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
-                guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else { continue }
-                observed = await renderedText(in: web, recognize: recognize)
-                guard renderer.webView === web, web.navigationDelegate === renderer, renderer.state == .ready,
-                      web.window != nil, web.window === root.window, web.isDescendant(of: root),
-                      web.bounds.width > 0, web.bounds.height > 0, ContinuousClock.now < deadline else { continue }
-                if let words = observed?.words, words.localizedStandardContains(expected) { return web }
+                guard let renderer = web.navigationDelegate as? RichContentRenderer else { continue }
+                if stage == .mounting {
+                    stage = .rendering
+                    // WebKit's own commit and document budgets begin after attachment.
+                    deadline = .now + stage.budget
+                }
+                lastRendererState = String(describing: renderer.state)
+                guard renderer.state == .ready else { continue }
+                if stage == .rendering {
+                    stage = .recognizing
+                    deadline = .now + stage.budget
+                }
+                observation = await observe(web, in: root)
+                guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
+                if let words = observation.words, words.localizedStandardContains(expected) { return web }
             }
             try await Task.sleep(for: .milliseconds(40))
         }
-        let diagnostic = FileManager.default.temporaryDirectory.appendingPathComponent("botto-mounted-\(UUID().uuidString).png")
-        if let image = observed?.image?.pngData() { try? image.write(to: diagnostic) }
-        print("BOTTO_MOUNTED_DOCUMENT stage=\(previous == nil ? "initial" : "replacement") views=\(webViews(in: root).count) root=\(root.bounds) words=\(observed?.words ?? "<none>") image=\(diagnostic.path)")
-        Issue.record("The actual mounted document did not render: \(expected)")
+        let details = """
+        phase=\(phase) stage=\(stage.rawValue) elapsed=\(start.duration(to: .now))
+        renderer=\(lastRendererState) views=\(webViews(in: root).count) root=\(root.bounds) attached=\(root.window != nil)
+        words=\(observation?.words ?? "<none>") current=\(observation?.isCurrent ?? false)
+        \(diagnostics())
+        """
+        Attachment.record(details, named: "mounted-document-readiness.txt")
+        if let image = observation?.image { Attachment.record(image, named: "mounted-document.png", as: .png) }
+        if root.bounds.width > 0, root.bounds.height > 0 {
+            let image = UIGraphicsImageRenderer(bounds: root.bounds).image { _ in
+                root.drawHierarchy(in: root.bounds, afterScreenUpdates: false)
+            }
+            Attachment.record(image, named: "mounted-document-host.png", as: .png)
+        }
+        Issue.record("The actual mounted document did not render: \(expected) (\(phase), \(stage.rawValue))")
         throw DocumentFailure.notRendered
+    }
+
+    static func observe(_ web: WKWebView, in root: UIView,
+                        recognize: @MainActor (CGImage) async throws -> [String] = {
+                            try await NativeTextRecognition.recognize($0, languages: ["en-US"])
+                        }) async -> Observation {
+        guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else {
+            return Observation(words: nil, image: nil, isCurrent: false)
+        }
+        let result = await renderedText(in: web, recognize: recognize)
+        return Observation(words: result.words, image: result.image,
+            isCurrent: renderer.webView === web && web.navigationDelegate === renderer && renderer.state == .ready &&
+                web.window != nil && web.window === root.window && web.isDescendant(of: root) &&
+                web.bounds.width > 0 && web.bounds.height > 0)
     }
 
     private static func webViews(in view: UIView) -> [WKWebView] {
