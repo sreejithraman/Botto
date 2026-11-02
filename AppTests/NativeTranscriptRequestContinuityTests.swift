@@ -458,10 +458,22 @@ import BottoCore
 @MainActor private func continuityTextViews(_ view: UIView) -> [UITextView] {
     (view as? UITextView).map { [$0] } ?? view.subviews.flatMap(continuityTextViews)
 }
-@MainActor private func continuityWait(_ reason: String, until condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
-    while !condition(), ContinuousClock.now < deadline { await Task.yield() }
-    try #require(condition(), "Timed out: \(reason)")
+@MainActor private func continuityWait(_ reason: String, diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
+    let start = ContinuousClock.now, deadline = start + .seconds(10)
+    var lastPoll = start, maximumPollGap = Duration.zero
+    var polls = 0
+    while !condition(), ContinuousClock.now < deadline {
+        let now = ContinuousClock.now
+        maximumPollGap = max(maximumPollGap, lastPoll.duration(to: now))
+        lastPoll = now; polls += 1
+        await Task.yield()
+    }
+    let ready = condition()
+    if !ready {
+        Attachment.record("reason=\(reason) elapsed=\(start.duration(to: .now)) polls=\(polls) maximumPollGap=\(maximumPollGap)\n\(diagnostics())",
+                          named: "native-continuity-readiness.txt")
+    }
+    try #require(ready, "Timed out: \(reason)")
 }
 
 // These mounted-controller contracts exercise policy replacement on no-op
@@ -526,7 +538,9 @@ extension NativeTranscriptRequestContinuityTests {
         fixture.expectSameMountedRow(cell, scope: scope, geometry: geometry, frame: frame)
         try #require(scope.canPresent && originalCallbackBuilds == 1)
         open()
-        try await continuityWait("held actual card callback opens one real reader with original bytes") {
+        try await continuityWait("held actual card callback opens one real reader with original bytes", diagnostics: {
+            "opened=\(opened) downloads=\(fixture.service.base.downloads) artifact=\(presentation.artifact != nil) file=\(presentation.artifact?.file != nil) loading=\(presentation.artifact?.isLoading ?? false) current=\(presentation.artifact?.isCurrent ?? false) error=\(presentation.artifact?.errorMessage ?? "<none>") scopeCurrent=\(scope.isCurrent) canPresent=\(scope.canPresent) ownerCurrent=\(store.chats.isCurrent(owner)) generationCurrent=\(store.artifactGeneration == generation)"
+        }) {
             opened == 1 && fixture.service.base.downloads == 1 && presentation.artifact?.file != nil
         }
         let reader = try #require(presentation.artifact), file = try #require(reader.file)

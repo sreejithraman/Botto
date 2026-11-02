@@ -675,10 +675,17 @@ import WebKit
         var deadline = start + stage.budget(observation: observationBudget)
         var observation: Observation?
         var rendererStates: [String] = []
+        var seenRenderers: [ObjectIdentifier: RichContentRenderer] = [:]
+        var lastPoll = start, maximumPollGap = Duration.zero
+        var polls = 0
         while ContinuousClock.now < deadline {
+            let now = ContinuousClock.now
+            maximumPollGap = max(maximumPollGap, lastPoll.duration(to: now))
+            lastPoll = now; polls += 1
             rendererStates = []
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
                 guard let renderer = web.navigationDelegate as? RichContentRenderer else { continue }
+                seenRenderers[ObjectIdentifier(renderer)] = renderer
                 if stage == .mounting {
                     stage = .rendering
                     // WebKit's own commit and document budgets begin after attachment.
@@ -699,6 +706,8 @@ import WebKit
         let details = """
         phase=\(phase) stage=\(stage.rawValue) elapsed=\(start.duration(to: .now))
         renderers=\(rendererStates.joined(separator: " | ")) views=\(webViews(in: root).count) root=\(root.bounds) attached=\(root.window != nil)
+        polls=\(polls) maximumPollGap=\(maximumPollGap)
+        observedRenderers=\(seenRenderers.map { "\($0.key): \($0.value.state) watchdog=\($0.value.lastWatchdogFailure ?? "<none>")" }.sorted().joined(separator: " | "))
         words=\(observation?.words ?? "<none>") current=\(observation?.isCurrent ?? false)
         \(diagnostics())
         """

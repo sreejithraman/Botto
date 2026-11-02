@@ -12,6 +12,9 @@ final class RichContentRenderer: NSObject {
     private(set) var height: CGFloat = 120
     private(set) var webView: WKWebView?
     private(set) var presentation: DiagramPresentation?
+    #if DEBUG
+    private(set) var lastWatchdogFailure: String?
+    #endif
     @ObservationIgnored private let isolatedScope = RichReplyPresentations()
     @ObservationIgnored private var ticket: DiagramRenderTicket?
     @ObservationIgnored private var pressureBlocked: Input?
@@ -122,6 +125,9 @@ final class RichContentRenderer: NSObject {
         case .render(let ticket): self.ticket = ticket
         }
         state = .loading
+        #if DEBUG
+        lastWatchdogFailure = nil
+        #endif
         do {
             let script = try RichContentDocument.bootstrap(block: block, generation: token,
                 dark: dark, reduceMotion: reduceMotion, bundle: bundle, diagramHeight: width == nil ? nil : (diagramViewportHeight ?? 480))
@@ -222,6 +228,9 @@ final class RichContentRenderer: NSObject {
                 if (self.state == .loading && now > self.deadline) ||
                     (self.state == .ready && now > self.lastHeartbeat + .seconds(3)) ||
                     self.snapshotDeadline.map({ now > $0 }) == true {
+                    #if DEBUG
+                    self.lastWatchdogFailure = "state=\(self.state) awaitingHostCommit=\(self.awaitingHostCommit) loadingExpired=\(self.state == .loading && now > self.deadline) heartbeatExpired=\(self.state == .ready && now > self.lastHeartbeat + .seconds(3)) snapshotExpired=\(self.snapshotDeadline.map { now > $0 } ?? false) heartbeatAge=\(self.lastHeartbeat.duration(to: now))"
+                    #endif
                     self.fail("Preview stopped responding. Source is still available.")
                     return
                 }
