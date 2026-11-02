@@ -984,8 +984,10 @@ chat, history preference and authority fences stayed correct. The unchanged test
 reproduced both disabled and remotely removed pairing cases in isolation
 (`/tmp/botto-pr-integration/retained-snapshot-red.log`). A same-profile, same-tip
 window now preserves the retained runtime ID while replacing its history. The
-two selected notification and inbox-history suites then passed, 27 functions
+selected `NotificationStoreTests` and `ConversationDirectoryPreviewTests` suites
+then passed, 27 functions
 (`/tmp/botto-pr-integration/retained-snapshot-green.log`), with the original
-retirement assertions intact. The second full-gate attempt was stopped for this
+retirement assertions intact. The separate `InboxMessagePreviewTests` suite was
+not selected. The second full-gate attempt was stopped for this
 repair before completion; its failures remain in
 `/tmp/botto-pr-integration/full-gate-fixed.log`.

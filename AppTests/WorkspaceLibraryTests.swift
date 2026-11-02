@@ -99,8 +99,12 @@ import BottoCore
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
         library.observeBots([service.profiles[0]], evidence: .observed)
         let fresh = [ChatMessage(id: "main-file", role: .assistant, text: "Fresh reseed needle\nMEDIA:/fresh.txt")]
-        library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: fresh),
-            title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.first))
+        service.messages[service.first] = fresh
+        let started = ContinuousClock.now
+        let read = try await service.conversationHistory(service.first, offset: 0)
+        let identityRead = try #require(read.identityRead)
+        library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: read.messages),
+            title: "Fresh", evidence: .read(startedAt: started, observedSource: service.first, identityRead: identityRead))
         #expect(library.chats.first { $0.identity == service.first }?.messages == fresh)
         service.failDirectory = true
         library.seed(book: book, bots: service.profiles)
@@ -184,8 +188,12 @@ import BottoCore
         try #require(await projection.waitUntilEntered(timeout: .seconds(5)))
         let freshMessages = [ChatMessage(id: "fresh-file", role: .assistant, text: "Fresh withdrawal needle\nMEDIA:/fresh.txt")]
         if freshRead {
-            library.accept(identity: service.second, snapshot: .init(id: "side", storedID: "side", profileID: "other", messages: freshMessages),
-                title: "Fresh", evidence: .read(startedAt: .now, observedSource: service.second))
+            service.messages[service.second] = freshMessages
+            let started = ContinuousClock.now
+            let read = try await service.conversationHistory(service.second, offset: 0)
+            let identityRead = try #require(read.identityRead)
+            library.accept(identity: service.second, snapshot: .init(id: "side", storedID: "side", profileID: "other", messages: read.messages),
+                title: "Fresh", evidence: .read(startedAt: started, observedSource: service.second, identityRead: identityRead))
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
         library.observeBots(service.profiles, evidence: .observed)
