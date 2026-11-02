@@ -440,7 +440,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             guard !closed else { throw ArtifactCacheError.unavailable }
             let entry = invalidation(scope: scope, profile: profile, root: root)
             let ledger = try writableLedger(configuration: entry.configuration, namespace: entry.namespace)
-            guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.retired }
+            guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.superseded }
         }
     }
     func begin(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
@@ -594,12 +594,14 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private var sessions: [WeakSession] = []
     init(root: URL?, limits: Limits = .init(), beforeCaptureCommit: (@Sendable () -> Void)? = nil,
          beforeMetadataWrite: (@Sendable () -> Void)? = nil, afterMetadataWrite: (@Sendable () -> Void)? = nil,
+         beforeMetadataRevisionCheck: (@Sendable () -> Void)? = nil,
          afterChatLoad: (@Sendable () async throws -> Void)? = nil) {
         let resolvedRoot = root ?? FileManager.default.temporaryDirectory.appendingPathComponent("BottoArtifactEphemeral-\(UUID().uuidString)")
         self.afterChatLoad = afterChatLoad
         journal = ArtifactMetadataJournal(root: resolvedRoot, limits: limits)
         backend = ArtifactCacheBackend(root: resolvedRoot, ephemeral: root == nil, limits: limits, journal: journal,
-            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite, afterMetadataWrite: afterMetadataWrite)
+            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite, afterMetadataWrite: afterMetadataWrite,
+            beforeMetadataRevisionCheck: beforeMetadataRevisionCheck)
     }
     func session(scope: ArtifactCacheScope) -> ArtifactCacheSession {
         let session = ArtifactCacheSession(backend: backend, journal: journal, scope: scope, barrier: maintenance, afterChatLoad: afterChatLoad)
@@ -761,7 +763,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         try accepted(())
     }
 }
-private enum ArtifactCacheError: Error { case unavailable, retired, unsupportedSchema, quota }
+enum ArtifactCacheError: Error { case unavailable, retired, superseded, unsupportedSchema, quota }
 
 fileprivate actor ArtifactCacheBackend {
     private let root: URL
@@ -770,6 +772,7 @@ fileprivate actor ArtifactCacheBackend {
     private let journal: ArtifactMetadataJournal
     private let beforeMetadataWrite: (@Sendable () -> Void)?
     private let afterMetadataWrite: (@Sendable () -> Void)?
+    private let beforeMetadataRevisionCheck: (@Sendable () -> Void)?
     private var database: SQLiteConnection?
     private var closed = false
     private var leases: [UUID: (scope: ArtifactCacheScope, state: ArtifactCacheLeaseState)] = [:]
@@ -779,10 +782,12 @@ fileprivate actor ArtifactCacheBackend {
     private let decoder = PropertyListDecoder()
 
     init(root: URL, ephemeral: Bool, limits: ArtifactCache.Limits, journal: ArtifactMetadataJournal,
-         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?, afterMetadataWrite: (@Sendable () -> Void)?) {
+         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?, afterMetadataWrite: (@Sendable () -> Void)?,
+         beforeMetadataRevisionCheck: (@Sendable () -> Void)?) {
         self.ephemeral = ephemeral; self.root = root; self.limits = limits; self.journal = journal
         self.beforeMetadataWrite = beforeMetadataWrite
         self.afterMetadataWrite = afterMetadataWrite
+        self.beforeMetadataRevisionCheck = beforeMetadataRevisionCheck
         self.beforeCaptureCommit = beforeCaptureCommit
         encoder.outputFormat = .binary
     }
@@ -889,6 +894,7 @@ fileprivate actor ArtifactCacheBackend {
     }
     func upsert(_ record: CachedArtifactChat, lease: UUID, revision: UUID) throws {
         let scope = try scope(lease)
+        beforeMetadataRevisionCheck?()
         try journal.requirePendingWrite(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
         beforeMetadataWrite?()
         try Task.checkCancellation(); _ = try self.scope(lease)

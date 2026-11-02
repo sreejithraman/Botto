@@ -1471,6 +1471,56 @@ import BottoCore
         cold.retire(); await coldCache.close()
     }
 
+    @Test func supersededMetadataWriteSavesItsSuccessorWithoutAnotherRefresh() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = CaptureCommitGate(); defer { gate.release() }
+        let service = LibraryTestService()
+        let source = service.first
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root, beforeMetadataRevisionCheck: { gate.pause() })
+        let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.restore()
+        func book(_ messages: [ChatMessage], title: String) -> ConversationBook {
+            var book = ConversationBook()
+            let id = book.merge(.init(identity: source, title: title, isCanonical: false, persistence: .durable))
+            book.cache(.init(id: source.root.text, storedID: source.stored.text, profileID: source.profile.text, messages: messages), for: id)
+            return book
+        }
+        let first = ChatMessage(id: "first", role: .assistant, text: "First revision")
+        let latest = ChatMessage(id: "latest", role: .assistant, text: "Latest revision\nMEDIA:/latest.txt")
+        gate.arm()
+        library.seed(book: book([first], title: "First"), bots: service.profiles)
+        let admissionDeadline = ContinuousClock.now + .seconds(5)
+        while !gate.isEntered, ContinuousClock.now < admissionDeadline { await Task.yield() }
+        try #require(gate.isEntered)
+        await library.restore()
+        library.accept(identity: source, snapshot: .init(id: source.root.text, storedID: source.stored.text,
+            profileID: source.profile.text, messages: [first, latest]), title: "Latest",
+            evidence: .read(startedAt: .now, observedSource: source))
+        let projectionDeadline = ContinuousClock.now + .seconds(5)
+        while library.artifacts.first?.artifact.messageID != "latest", ContinuousClock.now < projectionDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(library.chats.first?.messages == [first, latest])
+        try #require(library.artifacts.first?.artifact.messageID == "latest")
+        gate.release()
+        let saveDeadline = ContinuousClock.now + .seconds(5)
+        while try await session.metadataRecovery().contains(source), ContinuousClock.now < saveDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(try await !session.metadataRecovery().contains(source))
+        #expect(library.statusAction != .retry)
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        #expect(try await coldSession.loadChats().first?.messages == [first, latest])
+        let cold = WorkspaceLibrary(service: service, cache: coldSession)
+        await cold.restore()
+        #expect(cold.chats.first?.messages == [first, latest])
+        #expect(cold.artifacts.first?.artifact.messageID == "latest")
+        cold.retire(); await coldCache.close()
+    }
+
     @Test(arguments: [false, true])
     func aSecondDirtyChatIsGuardedWhileTheFirstSQLWriteIsBlocked(seedOldBook: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

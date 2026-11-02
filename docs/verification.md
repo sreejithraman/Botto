@@ -941,9 +941,11 @@ background case passed (`.artifacts/lifecycle-authority-integrated-green.log`).
 
 That integrated command failed at the text UI check's file-card setup. One
 unchanged retry failed there too (`.artifacts/lifecycle-authority-ui-retry.log`).
-The helper selected the first accessibility match while the transcript changed;
-Canvas contains two notes.txt references. It now waits for an enabled, reachable
-card with the requested filename, preserving the content and export assertions.
+The helper used its first accessibility match, and Canvas contains two notes.txt
+references. Instability during transcript replacement is a source-based explanation;
+the retained frames do not identify the queried accessibility row. It now waits
+for an enabled, reachable card with the requested filename, preserving the content
+and export assertions.
 All four affected artifact UI cases then passed: background recovery, text
 Save/reopen/replacement, PDF zoom/Share cancellation, and rendered image/Share
 replacement (`.artifacts/lifecycle-authority-ui-ready-green.log`). Together with
@@ -956,3 +958,20 @@ Production and native test bytes remained unchanged between the regression,
 run. Source bindings, failure recording, and UI exports remain in
 `/tmp/botto-lifecycle-followup/`. The earlier 371-function/four-UI run covers the
 pre-ARCH-02 snapshot. These fixture/Simulator checks retain the limits above.
+
+
+PR integration on current main also exposed a queued metadata-write handoff gap.
+The cache rejected a superseded revision as a retired writer, and Library could
+leave the newer dirty revision unsaved. A controlled Library test holds the old
+write before its revision check, accepts and projects a newer read, and requires
+that content and its artifact after an independent cold reopen without another
+refresh. It failed on the integrated writer with a retained guard and missing
+cold content, then passed after distinguishing supersession and continuing with
+the newer local revision. Genuine SQL-failure and stale-write controls also
+passed (three functions in two suites). Logs and source manifests are under
+`/tmp/botto-pr-integration/writer-handoff-controlled-red*` and
+`/tmp/botto-pr-integration/writer-handoff-green*`. An earlier test attempt only
+confirmed that a guarded book seed is withheld; it did not exercise the newer
+accepted-read handoff and is not the regression control. The first full-gate
+attempt was stopped for this repair before native/UI completion; its partial
+results are retained in `/tmp/botto-pr-integration/full-gate.log`.

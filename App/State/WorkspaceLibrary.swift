@@ -678,7 +678,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     }), let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
                     inFlightUpsert = (id, revision)
                     defer { inFlightUpsert = nil }
-                    try await cache.upsert(row, revision: revision)
+                    do { try await cache.upsert(row, revision: revision) }
+                    catch ArtifactCacheError.superseded where dirtyVersions[id] != revision || records[id] == nil {
+                        continue
+                    }
                     persistedIDs.insert(id)
                     if dirtyVersions[id] == revision, let current = cachedChat(id), sameCachedChat(current, row) {
                         metadataRecovery.invalidated.remove(ArtifactMetadataRecovery.key(row.identity))
