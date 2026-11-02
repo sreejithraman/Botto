@@ -732,7 +732,9 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: .init(name: "notes.txt", path: "/notes.txt", mimeType: "text/plain"), botID: service.profile.text))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
-        try await waitUntil("Actual local native text is readable without a recovery toggle") {
+        try await waitUntil("Actual local native text is readable without a recovery toggle", diagnostics: {
+            "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads) textViews=\(self.nativeTextViews(in: window).count)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }) {
             self.nativeTextViews(in: window).contains { $0.text == text && !$0.isHidden }
         }
         let original = try #require(nativeTextViews(in: window).first { $0.text == text })

@@ -99,19 +99,37 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
         file = previous
         let owner = generation
         isLoading = true
-        let task = Task { try await download() }
+        #if DEBUG
+        let startupTrace = UUID()
+        print("[DEBUG-native-startup] \(startupTrace) model-queued \(ProcessInfo.processInfo.systemUptime)")
+        #endif
+        let task = Task {
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) model-body \(ProcessInfo.processInfo.systemUptime)")
+            #endif
+            return try await download()
+        }
         downloadTask = task
         defer { if generation == owner { downloadTask = nil; isLoading = false } }
         do {
             let artifact = try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: { task.cancel() }
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) download-ready \(ProcessInfo.processInfo.systemUptime)")
+            #endif
             try Task.checkCancellation()
             guard generation == owner else { return }
             guard artifact.data.count <= DownloadedArtifact.maximumBytes else {
                 throw ArtifactPreviewFailure.tooLarge
             }
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) file-write-start \(ProcessInfo.processInfo.systemUptime)")
+            #endif
             let written = try await ArtifactPreviewFile.write(artifact)
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) file-write-ready \(ProcessInfo.processInfo.systemUptime)")
+            #endif
             guard generation == owner, !Task.isCancelled else { return }
             file = written
             isLoading = false

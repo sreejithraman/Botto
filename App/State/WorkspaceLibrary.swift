@@ -1566,17 +1566,38 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     static func originalKey(identity: SessionIdentity, attachment: ChatAttachment, messages: [ChatMessage],
                             producingMessage: ChatMessage? = nil) async -> ArtifactOriginalKey? {
+        #if DEBUG
+        let startupTrace = UUID()
+        print("[DEBUG-native-startup] \(startupTrace) discovery-queued \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
+        #endif
         let matches = await Task.detached(priority: .utility) {
-            (producingMessage.map { [$0] } ?? messages).filter { message in
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) discovery-body \(ProcessInfo.processInfo.systemUptime) priority=\(Task.currentPriority.rawValue)")
+            #endif
+            let result = (producingMessage.map { [$0] } ?? messages).filter { message in
                 ArtifactDiscovery.artifacts(in: [message]).contains {
                     $0.attachment.map { Data($0.path.utf8) == Data(attachment.path.utf8) } == true
                 }
             }
+            #if DEBUG
+            print("[DEBUG-native-startup] \(startupTrace) discovery-end \(ProcessInfo.processInfo.systemUptime) matches=\(result.count)")
+            #endif
+            return result
         }.value
+        #if DEBUG
+        print("[DEBUG-native-startup] \(startupTrace) discovery-ready \(ProcessInfo.processInfo.systemUptime)")
+        #endif
         guard matches.count == 1, let message = matches.first else { return nil }
         guard message.hasStableIdentity(storedID: identity.stored.text) else { return nil }
+        #if DEBUG
+        print("[DEBUG-native-startup] \(startupTrace) fingerprint-start \(ProcessInfo.processInfo.systemUptime)")
+        #endif
+        let revision = await fingerprint([message])
+        #if DEBUG
+        print("[DEBUG-native-startup] \(startupTrace) fingerprint-ready \(ProcessInfo.processInfo.systemUptime)")
+        #endif
         return ArtifactOriginalKey(identity: identity, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
-            sourceRevision: await fingerprint([message]))
+            sourceRevision: revision)
     }
 
     func original(for key: ArtifactOriginalKey, force: Bool = false,
