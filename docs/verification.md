@@ -1000,9 +1000,8 @@ The third full-gate attempt completed with exit 65
 identity evidence from the existing test service's history producer, preserving
 all assertions and parameter cases. That fixture migration exposed six remaining
 issues: during failed restoration, a stale book seed could enter a fresh accepted
-chat and survive a cold reopen. The seed guard now distinguishes an inert seed
-from an already accepted source using the existing acceptance fence and source
-proofs. The same Library recovery, retention and inbox-history suites then passed
+chat and survive a cold reopen. The initial seed guard distinguished an inert seed
+from an already accepted source using the acceptance fence and source proofs. The same Library recovery, retention and inbox-history suites then passed
 183 functions in three suites (`/tmp/botto-pr-integration/recovery-seed-green.log`).
 The preceding failed run remains in `coherent-fixtures-green.log`; its filename
 does not indicate success.
@@ -1011,5 +1010,47 @@ The third gate also had six UI assertion failures before its Simulator lease was
 released externally. Later runner failures and independent export readback occurred
 after that release. The gate did not pass. Its log and summary remain; focused
 reruns rotated away its original Xcode result bundle. New comparison runs retain
-explicit result bundles. UI baseline comparison and a fresh independent export
-readback remain pending.
+explicit result bundles. Subsequent comparisons and export checks are recorded below.
+
+
+Pass 20 found that bounded ordering-fence eviction could reopen the stale-seed
+path, and that inbox windows updated chat without publishing their fetched rows
+to Library. Both were reproduced through actual restoration and workspace paths.
+Admission now retains explicit seed/window/guard provenance with each canonical
+record. A shared transcript publication carries live reads and inbox windows;
+only fetched rows receive fresh read evidence. Exhaustive producers may certify
+window identity, while bounded windows preserve unresolved exclusions. Passive
+positive windows defer guarding unread saved rows; new negative evidence still
+guards immediately. Windows preserve known unsettled working tails.
+
+Four new test functions cover fence churn, fetched-window publication, working
+tail persistence, and a dispute arriving before saved metadata can be read. The
+existing offline withdrawal test also covers inbox prefetch in all eight parameter
+cases, preserving its original assertions. Against the final tests, restoring the
+two old behaviors failed with 31 issues across those four functions (113-function
+Library suite). Removing only the negative-evidence barrier failed the privacy
+check with three issues; treating a window as working-state evidence failed the
+tail check with four. After restoring the exact candidate, all 200 functions in
+four suites passed. Core checks passed 438 tests in 11 suites plus MainActor
+compatibility. Logs, commands, source manifests and explicit result bundles are
+under `/tmp/botto-pr-integration/`: `recovery-publication-final-mutant-red`,
+`passive-window-negative-mutant-red`, `window-working-state-mutant-red`,
+`recovery-publication-final-green`, and `recovery-window-core`.
+
+On the preceding `97d63dc` snapshot, all 843 Swift Testing functions in 70 suites
+and 24 XCTest cases passed. Six comparison UI cases failed; immutable immediate
+main reproduced the six original assertion failures. One current stress attempt
+stopped earlier at Scout/Iris profile readiness, so it is not a comparable
+performance observation. Duo passed six cases, skipped its iPad-only case, and
+failed at notes.txt card setup; main reproduced that setup failure. These results
+do not establish performance acceptance. The distinct avatar, offline feedback,
+Duo setup and streaming follow-ups are saved in Snip Snap.
+
+All five artifact export UI cases passed on that snapshot. Independent provider
+readback verified all 80 expected bytes and SHA-256
+`ab2d37c15d4277807c8d7c9ac788d680ce95645b07a1d0e61ee34005a2b41cce`
+in AppleLocalStorage. Its first readback attempt rejected a `/tmp` symlink input;
+the same absence receipt passed through its canonical `/private/tmp` path.
+The final repaired snapshot still requires broad native, chat UI and artifact
+export checks, and the pass-21 independent reviews. No passing full gate or
+release acceptance is claimed.

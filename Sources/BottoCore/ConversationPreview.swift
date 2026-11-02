@@ -50,9 +50,12 @@ public struct ConversationHistoryWindow: Sendable {
     /// Older messages may exist outside this bounded read.
     public let hasEarlierMessages: Bool
     public var preview: ConversationPreview? { ConversationPreview.latest(in: messages) }
+    /// Producer-checked evidence from an exhaustive response; bounded windows carry none.
+    public let identityRead: ConversationIdentityRead?
 
-    public init(messages: [ChatMessage], hasEarlierMessages: Bool) {
+    public init(messages: [ChatMessage], hasEarlierMessages: Bool, identityRead: ConversationIdentityRead? = nil) {
         self.messages = messages
         self.hasEarlierMessages = hasEarlierMessages
+        self.identityRead = identityRead
     }
 }

@@ -1,6 +1,26 @@
 import Foundation
 import BottoCore
 
+struct ChatTranscriptPublication: Sendable {
+    enum Evidence: Sendable {
+        case read(startedAt: ContinuousClock.Instant, observedSource: SessionIdentity?, identityRead: ConversationIdentityRead? = nil)
+        case window(startedAt: ContinuousClock.Instant, observedSource: SessionIdentity, identityRead: ConversationIdentityRead? = nil)
+        case incremental(previous: Conversation?)
+
+        var readContext: (startedAt: ContinuousClock.Instant, observedSource: SessionIdentity?, identityRead: ConversationIdentityRead?)? {
+            switch self {
+            case .read(let startedAt, let source, let proof): (startedAt, source, proof)
+            case .window(let startedAt, let source, let proof): (startedAt, source, proof)
+            case .incremental: nil
+            }
+        }
+    }
+    let identity: SessionIdentity
+    let snapshot: Conversation
+    let title: String
+    let evidence: Evidence
+}
+
 struct ChatID: Hashable, Codable, Sendable, Identifiable {
     let value: UUID
     init(value: UUID = UUID()) { self.value = value }

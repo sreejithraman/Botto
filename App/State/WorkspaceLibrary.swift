@@ -108,10 +108,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
     }
     private enum Coverage: Equatable, Sendable { case complete, partial }
-    enum TranscriptEvidence: Sendable {
-        case read(startedAt: ContinuousClock.Instant, observedSource: SessionIdentity?, identityRead: ConversationIdentityRead? = nil)
-        case incremental(previous: Conversation?)
-    }
     private enum MessageMerge: Equatable { case replace, preserveExisting, acceptedRevisions, prependOlder }
     private struct Exclusions {
         var unavailable = Set<Data>()
@@ -359,7 +355,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var freshnessUnverified = false
     private var dirtyChats: Set<LibraryChat.ID> = []
     private var dirtyVersions: [LibraryChat.ID: UUID] = [:]
-    private var unreconciledMetadataIDs = Set<LibraryChat.ID>()
+    private enum MetadataAdmission: Equatable { case seed, passiveWindow, requiresGuard }
+    private var unreconciledMetadata: [LibraryChat.ID: MetadataAdmission] = [:]
     private struct WorkingTail: Equatable {
         let stored: ExactID
         let messageID: Data
@@ -520,7 +517,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
             guard rosterRevision == roster else { return .needsRetry }
             let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure ? .needsRetry : .reconciled
-            if outcome == .reconciled { unreconciledMetadataIDs = []; unverifiedPersistenceChanges = false }
+            if outcome == .reconciled { unreconciledMetadata = [:]; unverifiedPersistenceChanges = false }
             return outcome
         } catch {
             if !isRetired {
@@ -633,8 +630,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var savedOrWriting = persistedIDs
         if let inFlightUpsert { savedOrWriting.insert(inFlightUpsert.id) }
         return savedOrWriting.filter { records[$0] == nil }.union(dirtyChats.filter {
-            records[$0] != nil && !restorationHints.contains($0) && (!unreconciledMetadataIDs.contains($0)
-                || acceptanceFence.contains($0) || observations[$0]?.contentAt != nil)
+            records[$0] != nil && !restorationHints.contains($0)
+                && (unreconciledMetadata[$0] == nil || unreconciledMetadata[$0] == .requiresGuard)
         })
     }
 
@@ -674,7 +671,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         continue
                     }
                     guard let id = dirtyChats.first(where: {
-                        records[$0] != nil && !restorationHints.contains($0) && !unreconciledMetadataIDs.contains($0)
+                        records[$0] != nil && !restorationHints.contains($0) && unreconciledMetadata[$0] == nil
                     }), let row = cachedChat(id), let revision = dirtyVersions[id] else { return }
                     inFlightUpsert = (id, revision)
                     defer { inFlightUpsert = nil }
@@ -737,30 +734,31 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         revalidationRevision = UUID()
     }
 
-    func accept(identity source: SessionIdentity, snapshot: Conversation, title: String, evidence: TranscriptEvidence) {
+    func accept(_ publication: ChatTranscriptPublication) {
+        accept(identity: publication.identity, snapshot: publication.snapshot, title: publication.title, evidence: publication.evidence)
+    }
+
+    func accept(identity source: SessionIdentity, snapshot: Conversation, title: String, evidence: ChatTranscriptPublication.Evidence) {
         guard !isRetired else { return }
+        let read = evidence.readContext
         if let rosterReadFloors {
             guard let floor = rosterReadFloors[source.profile] else { return }
-            switch evidence {
-            case .read(let startedAt, _, _): guard startedAt >= floor else { return }
-            case .incremental:
-                guard floor == mountedAt || observations[key(for: source)] != nil else { return }
-            }
+            if let read { guard read.startedAt >= floor else { return } }
+            else { guard floor == mountedAt || observations[key(for: source)] != nil else { return } }
         }
         let id = key(for: source), observation = observations[id]
         let expected = observation?.stored ?? records[id]?.identity.stored
         let provesSource: Bool
-        switch evidence {
-        case .read(let startedAt, let observedSource, _):
-            provesSource = observedSource.map {
+        if let read {
+            provesSource = read.observedSource.map {
                 $0.profile == source.profile && $0.root == source.root && $0.stored == source.stored
             } == true
             let floor = observation?.contentAt ?? mountedAt
-            guard startedAt >= floor,
+            guard read.startedAt >= floor,
                   (records[id]?.directoryAbsent != true && !restorationHints.contains(id)) || provesSource,
                   expected == nil || expected == source.stored || (
-                    startedAt >= (observation?.sourceAt ?? mountedAt) && provesSource) else { return }
-        case .incremental:
+                    read.startedAt >= (observation?.sourceAt ?? mountedAt) && provesSource) else { return }
+        } else {
             provesSource = false
             guard records[id]?.directoryAbsent != true, !restorationHints.contains(id), expected == nil || expected == source.stored else { return }
         }
@@ -775,7 +773,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let protectsRestore: Bool
         let identityRead: ConversationIdentityRead?
         switch evidence {
-        case .read(_, _, let proof):
+        case .read, .window:
+            let proof = read?.identityRead
             messages = snapshot.messages; unavailable = knownUnavailable; protectsRestore = true
             identityRead = !snapshot.hasEarlierMessages && proof?.matches(source) == true ? proof : nil
         case .incremental(let baseline):
@@ -799,18 +798,30 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 return sameSource || (previous == nil && observations[id] == nil)
             }
         }
-        if restoration.needsReconciliation { unreconciledMetadataIDs.insert(id) }
-        else { unreconciledMetadataIDs.remove(id) }
-        let tail = snapshot.isWorking && snapshot.messages.last?.role == .assistant
-            ? snapshot.messages.last.map { WorkingTail(stored: source.stored, messageID: Data($0.id.utf8)) } : nil
-        if unsettledTail[id] != tail { unsettledTail[id] = tail; markDirty(id) }
+        if restoration.needsReconciliation {
+            switch evidence {
+            // A positive background read must not strand an unread, valid disk entry behind a guard.
+            case .window where unreconciledMetadata[id] != .requiresGuard
+                && knownUnavailable.isSubset(of: previous?.unavailableMessageIDs ?? [])
+                && (expected == nil || expected == source.stored):
+                unreconciledMetadata[id] = .passiveWindow
+            default: unreconciledMetadata[id] = .requiresGuard
+            }
+        } else { unreconciledMetadata[id] = nil }
+        switch evidence {
+        case .window: break
+        case .read, .incremental:
+            let tail = snapshot.isWorking && snapshot.messages.last?.role == .assistant
+                ? snapshot.messages.last.map { WorkingTail(stored: source.stored, messageID: Data($0.id.utf8)) } : nil
+            if unsettledTail[id] != tail { unsettledTail[id] = tail; markDirty(id) }
+        }
         let admission = prepareAdmission(source: source, botName: botNames[source.profile] ?? source.profile.text, title: title,
             updatedAt: newest(previous?.updatedAt, messages.last?.timestamp),
             input: .accepted(messages: messages, unavailable: unavailable, identityRead: identityRead))
         commitCanonical(admission, target: id, projectionOwner: .caller)
         if (restoration.needsReconciliation), provesSource, records[id]?.identity.stored == source.stored { initialSourceProofs[id] = source.stored }
         if records[id]?.identity.stored == source.stored {
-            if case .read = evidence { observe(source, content: true) }
+            if read != nil { observe(source, content: true) }
             else if !sameMessages(previous?.messages ?? [], records[id]?.messages ?? [])
                 || previous?.unavailableMessageIDs != records[id]?.unavailableMessageIDs {
                 observe(source, content: true)
@@ -847,7 +858,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func presented(_ chat: LibraryChat) -> LibraryChat? {
-        guard unreconciledMetadataIDs.contains(chat.id) else { return chat }
+        guard unreconciledMetadata[chat.id] != nil else { return chat }
         guard let rows = initialReadRows[chat.id], rows.hasCoherentRead,
               rows.stored == chat.identity.stored, initialSourceProofs[chat.id] == chat.identity.stored else { return nil }
         let messages = chat.messages.filter { rows.resolved.contains(Data($0.id.utf8)) }
@@ -981,9 +992,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         continue
                     }
                     if restoration.needsReconciliation {
-                        guard records[id] == nil || (unreconciledMetadataIDs.contains(id)
-                            && initialSourceProofs[id] != source.stored && !acceptanceFence.contains(id)) else { continue }
-                        unreconciledMetadataIDs.insert(id)
+                        guard records[id] == nil || unreconciledMetadata[id] == .seed else { continue }
+                        unreconciledMetadata[id] = .seed
                     }
                     if transcript.isWorking, let tail = transcript.messages.last, tail.role == .assistant {
                         unsettledTail[id] = WorkingTail(stored: source.stored, messageID: Data(tail.id.utf8)); markDirty(id)
@@ -1017,7 +1027,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         persistenceTask?.cancel(); transcriptTask?.cancel(); pendingTranscripts = [:]; originals = [:]
         cancelOperations()
         acceptanceFence = AcceptanceFence(capacity: acceptanceFence.capacity); indexingMetrics.retainedAcceptanceFences = 0
-        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadataIDs = []; dirtyVersions = [:]
+        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadata = [:]; dirtyVersions = [:]
         reconcileProjectionWaiters()
     }
     private func cancelOperations() {
@@ -1184,7 +1194,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             unverified.subtract(incomingIDs)
             removed.subtract(incomingIDs)
         case .partialHistory:
-            if unreconciledMetadataIDs.contains(key) {
+            if unreconciledMetadata[key] != nil {
                 let retained = Dictionary((sameTip ? previous?.messages ?? [] : []).map { (Data($0.id.utf8), $0) }, uniquingKeysWith: { first, _ in first })
                 for message in messages {
                     let id = Data(message.id.utf8)
@@ -1322,7 +1332,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         for id in records.keys where next[id] == nil { markDirty(id); recordAcceptance(id) }
         records = next; coverage = nextCoverage; projectionStates = nextStates
-        unreconciledMetadataIDs.formIntersection(next.keys)
+        unreconciledMetadata = unreconciledMetadata.filter { next[$0.key] != nil }
         restorationHints.formIntersection(next.keys)
         unsettledTail = unsettledTail.filter { next[$0.key]?.directoryAbsent == false && next[$0.key]?.identity.stored == $0.value.stored }
         observations = observations.filter { next[$0.key] != nil }
@@ -1369,7 +1379,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         commit(admission, discoveries: retained)
         // Reinstalling a checked saved row is a read, not a new metadata edit.
         // Resolve it before persistence can create a speculative guard.
-        if !wasDirty || unreconciledMetadataIDs.contains(target), let persistedRead, let current = cachedChat(target),
+        if !wasDirty || unreconciledMetadata[target] != nil, let persistedRead, let current = cachedChat(target),
            sameCachedChat(current, persistedRead, includingCertificate: false) {
             summaries[target] = persistedRead.summary; heads[target] = persistedRead.headFingerprint
             dirtyChats.remove(target); dirtyVersions[target] = nil
@@ -1449,6 +1459,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let retained = chat.retainedMessageIDs
         let unavailable = ids.intersection(retained)
         guard !unavailable.isSubset(of: chat.unavailableMessageIDs) else { return }
+        if restoration.needsReconciliation { unreconciledMetadata[id] = .requiresGuard }
         commitCanonical(prepareAdmission(source: source, botName: chat.botName, title: chat.title,
             updatedAt: chat.updatedAt, input: .quarantine(unavailable: unavailable)), target: id)
     }
@@ -1486,8 +1497,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let messages = input.messages, unavailable = input.exclusions.unavailable, identityRead = input.identityRead
         guard rosterPermits(source.profile), admittedBy() else { return false }
         let target = key(for: source)
-        if (restoration.needsReconciliation), !input.isRestoration, !input.directoryAbsent {
-            unreconciledMetadataIDs.insert(target)
+        if restoration.needsReconciliation {
+            switch input {
+            case .accepted, .replacement, .partialHistory:
+                unreconciledMetadata[target] = .requiresGuard
+            case .seed, .observedSource:
+                if unreconciledMetadata[target] == nil { unreconciledMetadata[target] = .seed }
+            case .restored, .recoveryHint, .quarantine, .absent: break
+            }
         }
         commitCanonical(prepareAdmission(source: source, botName: botName, title: title,
             updatedAt: updatedAt, input: input), target: target,
@@ -1550,10 +1567,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     let key = key(for: summary.identity)
                     guard canScan(key) else { observedRetained.insert(key); incomplete = true; continue }
                     restorationHints.remove(key)
-                    if (restoration.needsReconciliation), records[key] == nil { unreconciledMetadataIDs.insert(key) }
+                    if restoration.needsReconciliation, records[key] == nil { unreconciledMetadata[key] = .seed }
                     if let previous = records[key] {
                         observedRetained.insert(key)
                         if previous.directoryAbsent || previous.identity.stored != summary.identity.stored {
+                            if restoration.needsReconciliation { unreconciledMetadata[key] = .requiresGuard }
                             observe(summary.identity, content: false)
                             commitCanonical(prepareAdmission(source: summary.identity, botName: bot.name,
                                 title: summary.isCanonical ? "Main" : (summary.title.isEmpty ? "New chat" : summary.title),
@@ -1584,7 +1602,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                             && canScan($0.id) && unsettledTail[$0.id] == nil && !$0.directoryAbsent
                     }
                     for chat in absent {
-                        restorationHints.remove(chat.id); unreconciledMetadataIDs.remove(chat.id)
+                        restorationHints.remove(chat.id); unreconciledMetadata[chat.id] = nil
                         observe(chat.identity, content: true)
                         commitCanonical(prepareAdmission(source: chat.identity, botName: chat.botName, title: chat.title,
                             updatedAt: Date(), input: .absent), target: chat.id)

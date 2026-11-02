@@ -129,8 +129,12 @@ import BottoCore
     }
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
-        let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map {
-            .init(messages: $0.messages, hasEarlierMessages: false)
+        let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map { snapshot in
+            let ids = Set(snapshot.messages.map { Data($0.id.utf8) })
+            let proof = !snapshot.hasEarlierMessages && (snapshot.unavailableMessageIDs ?? []).isEmpty
+                && ids.count == snapshot.messages.count && snapshot.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
+                ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
+            return .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages, identityRead: proof)
         }
         await previewGate?.wait()
         if let previewError { throw previewError }

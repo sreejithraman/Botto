@@ -240,7 +240,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let service: any BotService
-    @ObservationIgnored var onAcceptedTranscript: (@MainActor (OpenedConversation, Conversation?, String) -> Void)?
+    @ObservationIgnored var onAcceptedTranscript: (@MainActor (ChatTranscriptPublication) -> Void)?
     @ObservationIgnored private let onDirty: @MainActor () -> Void
     @ObservationIgnored var onPresentationChange: (@MainActor () -> Void)?
     @ObservationIgnored var onVisibleChatChange: (@MainActor (SessionIdentity?) -> Void)?
@@ -336,6 +336,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     private struct RecentHistoryRead {
         let id: UUID
         let recovery: UUID
+        let startedAt: ContinuousClock.Instant
         let task: Task<ConversationHistoryWindow?, Error>
     }
     @ObservationIgnored private var inboxHistoryReads: [ChatID: RecentHistoryRead] = [:]
@@ -792,7 +793,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             return false
         }
         updateActivity(accepted, id: id, previous: previous); rebuildRequests(); onDirty()
-        onAcceptedTranscript?(accepted, previous?.snapshot, title)
+        let evidence: ChatTranscriptPublication.Evidence = accepted.historyReadStartedAt.map {
+            .read(startedAt: $0, observedSource: accepted.observedSource, identityRead: accepted.identityRead)
+        } ?? .incremental(previous: previous?.snapshot)
+        onAcceptedTranscript?(.init(identity: accepted.identity, snapshot: accepted.snapshot, title: title, evidence: evidence))
         return true
     }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
@@ -940,7 +944,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let existing = inboxHistoryReads[id], existing.recovery == recovery { read = existing }
         else {
             let service = service
-            read = .init(id: UUID(), recovery: recovery,
+            read = .init(id: UUID(), recovery: recovery, startedAt: .now,
                 task: Task { try await service.recentConversationHistory(identity) })
             inboxHistoryReads[id] = read
         }
@@ -949,7 +953,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         do {
             guard let result = try await read.task.value else { return }
             guard read.recovery == recovery, inboxHistoryReads[id]?.id == read.id else { return }
-            let applied = mutateBook { book in
+            let applied: (publication: ChatTranscriptPublication, retained: Conversation)? = mutateBook { book in
                 // Observation callbacks run before this borrow and may retire the
                 // connection or publish a newer transcript.
                 guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
@@ -959,11 +963,26 @@ private struct ReadObservationKey: Hashable, Sendable {
                       TranscriptContentRevision.sameSnapshotContent(current.transcript, transcript),
                       current.transcript?.hasEarlierMessages == transcript?.hasEarlierMessages,
                       opening?.chat != id,
-                      selected != id || live == nil else { return false }
+                      selected != id || live == nil else { return nil }
                 book.cache(result, for: id)
-                return true
+                guard let retained = book.record(id)?.transcript else { return nil }
+                var fetched = retained
+                fetched.messages = result.messages
+                fetched.hasEarlierMessages = result.hasEarlierMessages
+                return (.init(identity: identity, snapshot: fetched, title: current.title,
+                    evidence: .window(startedAt: read.startedAt, observedSource: identity, identityRead: result.identityRead)), retained)
             }
-            if applied { onDirty() }
+            if let applied {
+                onDirty()
+                guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
+                      inboxProfiles.contains(profile), book.opening(profile) == id,
+                      let current = book.record(id), current.binding.identity == identity,
+                      current.summary == summary,
+                      TranscriptContentRevision.sameSnapshotContent(current.transcript, applied.retained),
+                      current.transcript?.hasEarlierMessages == applied.retained.hasEarlierMessages,
+                      opening?.chat != id, selected != id || live == nil else { return }
+                onAcceptedTranscript?(applied.publication)
+            }
         } catch {
             // Optional history reads preserve the cached excerpt and existing activity.
         }

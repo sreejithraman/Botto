@@ -329,13 +329,9 @@ import BottoCore
             exactAccount: configuration.map(Self.richReplyAccount) ?? [], incarnation: UUID())
         chats = ConversationWorkspace(scope: scope, book: history.book, service: service,
             onDirty: { [weak self] in self?.reconcileArtifactPresentation(); self?.scheduleSave() })
-        chats.onAcceptedTranscript = { [weak self, weak library] publication, previous, title in
+        chats.onAcceptedTranscript = { [weak self, weak library] publication in
             guard let self, let library, library === self.library else { return }
-            let evidence: WorkspaceLibrary.TranscriptEvidence = publication.historyReadStartedAt.map {
-                .read(startedAt: $0, observedSource: publication.observedSource, identityRead: publication.identityRead)
-            }
-                ?? .incremental(previous: previous)
-            library.accept(identity: publication.identity, snapshot: publication.snapshot, title: title, evidence: evidence)
+            library.accept(publication)
             library.reconcileOriginalConsumers()
         }
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }

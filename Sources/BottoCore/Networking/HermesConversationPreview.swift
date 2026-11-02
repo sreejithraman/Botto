@@ -49,7 +49,11 @@ extension HermesBotService {
         let messages = HermesConversationState.messages(displayRows, stored: identity.stored.text)
         // Legacy REST history stops at the current compression segment.
         let hasEarlierMessages = rows.count == limit || (adapter != .authority && identity.root != identity.stored)
-        let window = ConversationHistoryWindow(messages: messages, hasEarlierMessages: hasEarlierMessages)
+        let identityRead = !hasEarlierMessages
+            ? ConversationIdentityRead(identity: identity, messageIDs: Set(messages.compactMap { message in
+                message.hasStableIdentity(storedID: identity.stored.text) ? Data(message.id.utf8) : nil
+            })) : nil
+        let window = ConversationHistoryWindow(messages: messages, hasEarlierMessages: hasEarlierMessages, identityRead: identityRead)
         return window.preview != nil || !hasEarlierMessages ? window : nil
     }
 }

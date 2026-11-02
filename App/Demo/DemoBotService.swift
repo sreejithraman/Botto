@@ -142,7 +142,11 @@ import BottoCore
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,
               let chat = chats[identity.root.bytes] else { throw HermesServiceError.wrongConversation }
-        return .init(messages: chat.messages, hasEarlierMessages: false)
+        let ids = Set(chat.messages.map { Data($0.id.utf8) })
+        let proof = !chat.hasEarlierMessages && (chat.unavailableMessageIDs ?? []).isEmpty
+            && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
+            ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
+        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
     }
 
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {

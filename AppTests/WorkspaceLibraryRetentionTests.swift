@@ -2304,7 +2304,7 @@ import BottoCore
         let hints = try await session.metadataRecoveryHints().filter { $0.identity == source }
         return Set(rows.flatMap { $0.unavailableMessageIDs ?? [] }).union(hints.flatMap(\.unavailableMessageIDs))
     }
-    func coherentRead(_ source: SessionIdentity, messages: [ChatMessage]) -> WorkspaceLibrary.TranscriptEvidence {
+    func coherentRead(_ source: SessionIdentity, messages: [ChatMessage]) -> ChatTranscriptPublication.Evidence {
         .read(startedAt: .now, observedSource: source,
             identityRead: .init(identity: source, messageIDs: Set(messages.map { Data($0.id.utf8) })))
     }

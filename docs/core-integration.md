@@ -54,7 +54,8 @@ fetched rows whose conflicting occurrence may be outside the window. An
 exhaustive single window resolves only IDs actually returned; absent prior
 disputes remain. Attachments, foreground rereads and live deltas pass through
 the same reconciliation before display, saving or Library admission.
-`OpenedConversation.identityRead` carries process-local `ConversationIdentityRead`
+`OpenedConversation.identityRead` and exhaustive `ConversationHistoryWindow.identityRead`
+carry process-local `ConversationIdentityRead`
 evidence for the exact profile, root and stored tip. Raw IDs are checked before
 filtering; the proof lists stable projected IDs from that exhaustive response,
 before replay adds any rows.
@@ -104,9 +105,12 @@ pages per chat. Partial, cancelled, and failed scans show a warning and merge
 useful same-tip results within those limits. A changed stored tip retires the old
 tip's artifacts. Strong unchanged complete summaries skip history reads; weak
 summaries probe the newest page and keep older history visibly unverified.
-Explicit refresh rebuilds history. Accepted workspace transcripts feed a
-coalesced local projection after successful installation, without library reads
-or changes to unread evidence.
+Explicit refresh rebuilds history. Live transcripts and inbox windows publish `ChatTranscriptPublication` after
+successful installation. It carries rows and read evidence without live access.
+A window publishes only its fetched rows; an older prefix retained in chat does
+not become a fresh read. Library coalesces local projection without additional
+reads or changes to unread evidence. Windows preserve any known working tail
+because history coverage does not establish that streaming has finished.
 
 Canonical admission synchronously withdraws ambiguous IDs, changed producers,
 and retired tips within the retained budgets. It keeps only projections still
@@ -146,6 +150,14 @@ database footprint have a 40 MiB allowance. Individual originals stay within
 25 MiB. Missing or corrupt blobs miss; locked or unknown databases remain intact.
 The saved-history writer and version remain unchanged. Conversations add a
 backward-compatible optional ambiguity field.
+
+During restoration, `MetadataAdmission` distinguishes inert seeds, passive
+positive windows, and rows requiring a recovery guard. This provenance survives
+ordering-fence eviction and prevents an old book seed from replacing accepted
+rows. A positive window alone defers guarding unread saved metadata until
+reconciliation. New exclusions, producer changes and authoritative updates guard
+immediately, so a failed restore cannot leave disputed content available after
+a cold reopen.
 
 Before attempting changed metadata rows, the cache atomically records their
 scoped invalidation hashes outside SQLite. A successful replacement clears its

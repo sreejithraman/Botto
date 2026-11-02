@@ -106,6 +106,9 @@ func recentHistoryReadsNewestWindowWithoutChangingTheLiveAttachment(authority: B
     #expect(result?.messages.last?.id == host.root + ":row:200")
     #expect(result?.messages.dropFirst().allSatisfy { $0.text == "[SILENT]" } == true)
     #expect(result?.hasEarlierMessages == false)
+    let proof = try #require(result?.identityRead)
+    #expect(proof.matches(identity))
+    #expect(proof.messageIDs == Set(try #require(result).messages.map { Data($0.id.utf8) }))
     #expect(offsets == [0])
     #expect(host.sockets.flatMap(\.sent).map { $0["method"].text } == methods)
     #expect(publications == 0)
@@ -335,6 +338,12 @@ func recentHistoryDistinguishesNewestWindowFromExhaustiveHistory(condition: Stri
     }
     let result = try #require(try await service.recentConversationHistory(identity))
     #expect(result.hasEarlierMessages == (condition == "authorityBounded" || condition == "sidecarCompressed"))
+    if result.hasEarlierMessages { #expect(result.identityRead == nil) }
+    else {
+        let proof = try #require(result.identityRead)
+        #expect(proof.matches(identity))
+        #expect(proof.messageIDs == Set(result.messages.map { Data($0.id.utf8) }))
+    }
     #expect(result.messages.last?.text == "A readable reply")
 }
 
