@@ -1319,5 +1319,56 @@ barrier cases and twenty saved/absent cases. All 250 functions passed in the
 five affected native suites. Runtime/test bytes matched the run manifest; only
 contract/proof prose changed during the run.
 Evidence: `hint-clock-{red,controlled-red,green,final-native}*` under
-`/tmp/botto-pr-integration/`. Current UI/provider and fresh source review remain
-pending; no full-gate or release acceptance is claimed.
+`/tmp/botto-pr-integration/`. These native results do not establish full-gate or
+release acceptance.
+Final UI/source-review and integration results follow.
+
+The final history head `1f62478` passed all seven chat/export UI cases in one
+run. Independent Files-provider readback verified the expected 80 bytes and
+SHA-256 `ab2d37c15d4277807c8d7c9ac788d680ce95645b07a1d0e61ee34005a2b41cce`.
+All 486 tracked source hashes matched before and after; host bytes were retained.
+All four pass-29 source assessments completed without material findings.
+
+Integration with `main` at `ec4dc58` produced `f49e66c`. The sole conflict was
+adjacent additions in `WorkspaceLibraryRetentionTests`; the resolution retained
+the complete upstream readiness helper and both parents' tests. All four
+pass-30 assessments covered the 35 integration paths and affected assumptions,
+retaining their accepted coverage for unchanged history/cache code. They found
+no material source issue. Ponytail disclosed an inventory of prior other-angle
+acceptance filenames and digests; it read no peer reports, receipts or
+conclusions. The parent accepted that metadata-only caveat. Review originals,
+read receipts and hashes remain under `/tmp/botto-chat-sync-review/pass-30/`.
+
+On that integrated source, the full `scripts/check.sh` attempt passed 438 core
+functions across eleven suites, MainActor compatibility, 24 native XCTest
+cases and 863 native functions across 70 suites. A separate complete Python
+run passed all 234 tests. The full gate did not pass: nine UI assertions failed
+before an explicit release of its exact simulator lease. SimLock recorded the
+release at 2026-11-03 06:10:09 UTC; the releasing actor is unknown. The parent
+stopped and awaited only its owned consumers after observing the lease absent.
+It issued no commands or cleanup against the ended device. Later runner
+failures and the missing final provider proof do not establish product defects.
+The artifact-export and all twelve inbox-retention UI cases passed before the
+interruption. These partial results are not a completed full-gate result.
+
+A fresh, nine-case control on an exact archive of `ec4dc58` reproduced eight
+failures: four Avatar cases (chosen shared avatar, name/custom mode changes,
+offline background/reconnect and save-sheet dismissal), the offline file/action
+feedback case, both first-stream fixture cases and the Duo parked-file reopening
+case. The diagram-scroll case passed in that control. Baseline source hashes
+matched the pinned Git objects before and after. No production cause or fix for
+these baseline failures is claimed. The unchanged integrated branch also passed
+that diagram case in a separate focused run. Its full-run visibility failure remains unresolved and has a saved
+Snip Snap follow-up; the focused pass is not a demonstrated fix.
+
+The integrated source separately passed all seven affected chat/export UI cases
+in one run. A new absence receipt and independent Files-provider readback
+verified all 80 original bytes and the expected digest; those bytes were copied
+to the host before device release. All 489 source hashes matched the run's
+manifest. Evidence: `main-integration/{full-gate*,baseline-nine*,tooling*,
+integrated-ui-binding.json,integrated-retained-notes.txt}` and
+`integrated-final-chat-export*` under `/tmp/botto-pr-integration/`.
+These author-run before/after bindings do not constitute continuous filesystem
+monitoring. There is no full-suite, performance, live-host, physical-device,
+complete verification-map or release acceptance. Final PR preparation changes
+only this verification prose; runtime and test bytes retain those bindings.
