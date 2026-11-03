@@ -167,6 +167,13 @@ Restoration rechecks saved rows against guards created during its own awaits and
 merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
 Accepted rows survive retry behind the visibility gate; a successful SQL read
 can release them when it proves no saved source exists for their chat.
+Hint admission reports either an installed source or a deferred result. Only
+installed sources receive restoration receipts. A deferred hint keeps its scope
+pending while independent saved peers continue loading. Hidden hints rank after
+chat rows in the shared retention budget; a checked saved row can release its
+inert seed gate. Different-tip hints stay pending until current source
+proof preserves the old tip as retired. Retry treats discarded scopes as negative
+hints even when their earlier journal write failed, before admitting SQL bodies.
 
 Before attempting changed metadata rows, the cache atomically records their
 scoped invalidation hashes outside SQLite. A successful replacement clears its

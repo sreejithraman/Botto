@@ -1118,7 +1118,43 @@ as `bounded-window-producer-red*`, `guarded-restore-replay-red*`,
 `churn-reconciliation-green*`, and `recovery-budget-final*`. The initial
 `bounded-window-guard-red` used an incomplete pressure fixture; its corrected
 successor supplies the four-case failure evidence. The first hint-identity
-attempt stopped before tests executed and supplies no runtime result. The final five-suite run passed all 243 functions. Production and test hashes
+attempt stopped before tests executed and supplies no runtime result. The final
+five-suite run passed all 243 functions. Production and test hashes
 remained unchanged during that run; only these proof and contract docs changed.
-Pass-23 source review and a final UI/provider run remain pending. Earlier
-full-gate and UI failures remain disclosed.
+On `e93d567`, all seven affected UI cases passed in one run and independent
+provider readback verified all 80 bytes and the expected digest. The source and
+test hashes stayed unchanged. Result bundle, binding, readback receipt and retained
+provider bytes are under `/tmp/botto-pr-integration/budget-final-chat-export*`
+and `budget-final-retained-notes.txt`. This selected run does not replace the
+failed full gate.
+
+Pass 23 found that an oversized recovery hint could stop unrelated saved peers
+from loading, a skipped different-tip hint could lose retirement evidence, and a
+failed guard could let an older producer return during a later retry. With the
+saved producer explicitly loaded before its healthy peer, the three-function
+regression failed across five cases with 25 issues: 16 peer-availability issues,
+four different-tip issues, and five live/cold failed-guard issues. The same-tip
+control passed. Loading the peer first had retried the guard and masked that
+last failure; the final fixture asserts the actual saved-row order.
+
+Hint installation now returns a typed installed/deferred result, with receipts
+bound to the retained source. Deferred scopes keep their gate while independent
+saved rows load. Discarded scopes retry guard admission and merge saved negative
+hints before any SQL body can return. The focused five cases passed. A further
+seed-before-restore cold control reproduced eight peer-availability issues;
+checked saved rows now release their own inert seed gate while another hint
+remains pending. The first broader run executed 246 functions and failed with
+11 issues in two existing recovery functions. A hidden hint could occupy the
+only retained chat slot, and its installation incorrectly required the separate
+presentation/save-ready result. Hints now rank after chat rows, and admission
+checks their actual retained source. The five focused functions passed all 12
+parameter cases, followed by all 246 functions in the five affected suites.
+All 486 tracked hashes stayed unchanged through the final native run; this proof
+wording changed afterward. Pass-24 source review and final UI/provider checks
+remain pending. Evidence: `hint-disposition-final-red*`, `hint-disposition-green*`,
+`hint-seeded-peer-red*`, `hint-disposition-final-native*` (failed),
+`hint-liveness-green*`, and `hint-admission-final-native*` under the same retained
+directory. The initial red attempts included an overstrict same-tip
+immediate-visibility assertion; independently persisted conflicting revisions
+correctly stay unverified until a fresh read. All privacy and peer controls remain.
+Earlier full-gate failures remain disclosed.

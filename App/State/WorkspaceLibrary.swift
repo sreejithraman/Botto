@@ -361,6 +361,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var dirtyChats: Set<LibraryChat.ID> = []
     private var dirtyVersions: [LibraryChat.ID: UUID] = [:]
     private enum MetadataAdmission: Equatable { case seed, passiveWindow, requiresGuard }
+    private enum RecoveryHintAdmission { case installed(SessionIdentity), deferred }
     private enum DiscardedEvidence: Equatable {
         case scoped(Set<Data>), all(UUID)
 
@@ -491,25 +492,32 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             try await readMetadataRecovery()
             let discardedBefore = discardedEvidence, guardsBefore = metadataRecovery.invalidated
             var savedSources = Set<Data>()
-            var hintReceipts: [LibraryChat.ID: AcceptanceFence.Stamp] = [:]
-            @MainActor func restoreHint(_ hint: ArtifactMetadataHint) async -> Bool {
+            var hintReceipts: [LibraryChat.ID: (source: SessionIdentity, stamp: AcceptanceFence.Stamp)] = [:]
+            var deferredHints = false
+            @MainActor func restoreHint(_ hint: ArtifactMetadataHint) async {
                 savedSources.insert(ArtifactMetadataRecovery.key(hint.identity))
-                guard rosterPermits(hint.identity.profile), pendingRosterRestriction?.contains(hint.identity.profile) != false else { return true }
+                guard rosterPermits(hint.identity.profile), pendingRosterRestriction?.contains(hint.identity.profile) != false else { return }
                 let id = key(for: hint.identity), stamp = acceptanceFence.stamp
-                await installRestorationHint(hint, admittedBy: { !self.isRetired && self.rosterRevision == roster
+                let admission = await installRestorationHint(hint, admittedBy: { !self.isRetired && self.rosterRevision == roster
                     && self.acceptanceFence.permits(id, since: stamp) })
-                guard !isRetired, rosterRevision == roster, records[id] != nil,
-                      acceptanceFence.permits(id, since: stamp) else {
-                    discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)])
-                    return false
+                switch admission {
+                case .deferred:
+                    deferredHints = true
+                    if records[id] == nil { discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)]) }
+                case .installed(let source):
+                    guard !isRetired, rosterRevision == roster, records[id]?.identity == source,
+                          acceptanceFence.permits(id, since: stamp) else {
+                        discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)])
+                        deferredHints = true
+                        return
+                    }
+                    hintReceipts[id] = (source, stamp)
                 }
-                hintReceipts[id] = stamp
-                return true
             }
             withdrawUntrustedRestoration()
             if metadataRecovery.hasInvalidations {
                 for hint in try await cache.metadataRecoveryHints() {
-                    guard await restoreHint(hint) else { return .needsRetry }
+                    await restoreHint(hint)
                 }
             }
             let loaded = try await cache.loadChats()
@@ -518,7 +526,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             guard !isRetired, rosterRevision == roster else { return .needsRetry }
             if !metadataRecovery.invalidated.isSubset(of: guardsBefore) {
                 for hint in try await cache.metadataRecoveryHints() {
-                    guard await restoreHint(hint) else { return .needsRetry }
+                    await restoreHint(hint)
                 }
             }
             @MainActor func canRestore(_ row: CachedArtifactChat) -> Bool {
@@ -540,8 +548,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             for row in loaded {
                 guard rosterRevision == roster else { return .needsRetry }
                 let id = key(for: row.identity)
-                if metadataRecovery.contains(row.identity) {
-                    guard await restoreHint(ArtifactMetadataHint(saved: row)) else { return .needsRetry }
+                let discarded = discardedEvidence.contains(profile: row.identity.profile, root: row.identity.root)
+                if discarded && !metadataRecovery.contains(row.identity) {
+                    markDirty(id)
+                    _ = invalidateMetadata([id])
+                }
+                if discarded || metadataRecovery.contains(row.identity) {
+                    await restoreHint(ArtifactMetadataHint(saved: row))
                     continue
                 }
                 persistedIDs.insert(id)
@@ -563,7 +576,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     observe(row.identity, content: false, at: mountedAt)
                 }
                 await installAsync(source: row.identity, botName: row.botName, title: row.title,
-                    updatedAt: row.updatedAt, input: .restored(row), admittedBy: { canRestore(row) })
+                    updatedAt: row.updatedAt, input: .restored(row), admittedBy: { canRestore(row) }, onCommit: {
+                        if self.unreconciledMetadata[id] == .seed { self.unreconciledMetadata[id] = nil }
+                    })
             }
             guard rosterRevision == roster else { return .needsRetry }
             if !metadataRecovery.all {
@@ -572,10 +587,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     restorationHints.remove(id); markDirty(id)
                 }
             }
-            let staleHints = hintReceipts.filter { records[$0.key] == nil || !acceptanceFence.permits($0.key, since: $0.value) }
+            let staleHints = hintReceipts.filter { records[$0.key]?.identity != $0.value.source
+                || !acceptanceFence.permits($0.key, since: $0.value.stamp) }
             discardedEvidence.record(Set(staleHints.keys.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
             let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
-                || discardedEvidence != discardedBefore || !staleHints.isEmpty ? .needsRetry : .reconciled
+                || deferredHints || discardedEvidence != discardedBefore || !staleHints.isEmpty ? .needsRetry : .reconciled
             if outcome == .reconciled {
                 unreconciledMetadata = [:]; unverifiedPersistenceChanges = false; discardedEvidence = .scoped([])
             }
@@ -639,13 +655,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         dirtyChats.subtract(unsafe)
     }
 
-    private func installRestorationHint(_ hint: ArtifactMetadataHint, admittedBy: @MainActor () -> Bool) async {
+    private func installRestorationHint(_ hint: ArtifactMetadataHint, admittedBy: @MainActor () -> Bool) async -> RecoveryHintAdmission {
         let id = key(for: hint.identity)
-        guard rosterPermits(hint.identity.profile), admittedBy() else { return }
+        guard rosterPermits(hint.identity.profile), admittedBy() else { return .deferred }
         let accepted = unreconciledMetadata[id] == .requiresGuard || unreconciledMetadata[id] == .passiveWindow
         if let current = records[id], !restorationHints.contains(id) || accepted {
             let sameTip = current.identity.stored == hint.identity.stored
-            guard initialSourceProofs[id] == current.identity.stored || (accepted && sameTip) else { return }
+            guard initialSourceProofs[id] == current.identity.stored || (accepted && sameTip) else { return .deferred }
             var retired = hint.retiredStoredIDs
             if !sameTip { retired.insert(hint.identity.stored.bytes) }
             commitCanonical(prepareAdmission(source: current.identity, botName: current.botName, title: current.title,
@@ -653,16 +669,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     ? .recoveryHint(.init(unavailable: hint.unavailableMessageIDs, unverified: hint.unverifiedMessageIDs,
                         removed: hint.removedMessageIDs, retiredStored: retired))
                     : .seed(messages: [], exclusions: .init(retiredStored: retired))), target: id)
+            guard records[id]?.identity == current.identity else { return .deferred }
             if sameTip && accepted { restorationHints.remove(id) }
-            return
+            return .installed(current.identity)
         }
-        if let current = records[id], current.identity.stored != hint.identity.stored { return }
+        if let current = records[id], current.identity.stored != hint.identity.stored { return .deferred }
         restorationHints.insert(id)
         _ = await installAsync(source: hint.identity, botName: hint.botName, title: hint.title, updatedAt: hint.updatedAt,
             input: .seed(messages: [], exclusions: .init(unavailable: hint.unavailableMessageIDs,
                 unverified: hint.unverifiedMessageIDs, removed: hint.removedMessageIDs, retiredStored: hint.retiredStoredIDs)),
             admittedBy: admittedBy)
-        if restorationHints.contains(id), admittedBy() { dirtyChats.remove(id) }
+        guard admittedBy(), records[id]?.identity == hint.identity else { return .deferred }
+        if restorationHints.contains(id) { dirtyChats.remove(id) }
+        return .installed(hint.identity)
     }
 
     private func sameCachedChat(_ a: CachedArtifactChat, _ b: CachedArtifactChat, includingCertificate: Bool = true) -> Bool {
@@ -1338,6 +1357,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             retiredStoredIDs: retired, directoryAbsent: absent))
         candidates.removeAll { !rosterPermits($0.source.profile) }
         candidates.sort { a, b in
+            let aHint = restorationHints.contains(a.id), bHint = restorationHints.contains(b.id)
+            if aHint != bHint { return !aHint }
             if a.updatedAt != b.updatedAt { return (a.updatedAt ?? .distantPast) > (b.updatedAt ?? .distantPast) }
             if a.source.profile != b.source.profile { return a.source.profile.bytes.lexicographicallyPrecedes(b.source.profile.bytes) }
             return a.source.root.bytes.lexicographicallyPrecedes(b.source.root.bytes)
