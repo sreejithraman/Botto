@@ -7,6 +7,14 @@ import WebKit
 /// never receives the app's service, session, URL request, cookies or credentials.
 @MainActor @Observable
 final class RichContentRenderer: NSObject {
+    // Hosted WebKit launches can take over twenty seconds before trusted host commit.
+    private nonisolated static let hostStartupTimeout: Duration = .seconds(30)
+    private nonisolated static let documentInitializationTimeout: Duration = .seconds(5)
+    private nonisolated static let diagramCaptureTimeout: Duration = .seconds(5)
+    nonisolated static var maximumAttachedLoadDuration: Duration {
+        hostStartupTimeout + documentInitializationTimeout + diagramCaptureTimeout
+    }
+
     enum State: Equatable { case idle, loading, deferred, ready, failed(String) }
     private(set) var state: State = .idle
     private(set) var height: CGFloat = 120
@@ -218,7 +226,7 @@ final class RichContentRenderer: NSObject {
         // any document. The trusted main-frame commit starts the shorter budget
         // before its document-end bootstrap can create the untrusted child.
         awaitingHostCommit = true
-        deadline = .now + .seconds(15)
+        deadline = .now + Self.hostStartupTimeout
         view.loadHTMLString(RichContentDocument.hostHTML, baseURL: nil)
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
@@ -294,7 +302,7 @@ final class RichContentRenderer: NSObject {
         awaitsInitialMeasurement = false
         state = .ready
         if input?.diagramWidth != nil, snapshotDeadline == nil {
-            snapshotDeadline = .now + .seconds(5)
+            snapshotDeadline = .now + Self.diagramCaptureTimeout
         }
         captureDiagramIfReady()
     }
@@ -325,7 +333,7 @@ final class RichContentRenderer: NSObject {
         }
         guard let capture = ticket, capture.startCapture() else { return }
         snapshotPending = true
-        if snapshotDeadline == nil { snapshotDeadline = .now + .seconds(5) }
+        if snapshotDeadline == nil { snapshotDeadline = .now + Self.diagramCaptureTimeout }
         let token = generation
         let size = view.bounds.size
         let configuration = WKSnapshotConfiguration()
@@ -394,7 +402,7 @@ extension RichContentRenderer: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard webView === self.webView, !generation.isEmpty, awaitingHostCommit else { return }
         awaitingHostCommit = false
-        deadline = .now + .seconds(5)
+        deadline = .now + Self.documentInitializationTimeout
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,

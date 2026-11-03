@@ -149,7 +149,7 @@ import BottoCore
 
     private func childReport(_ web: WKWebView) async throws -> [String: String] {
         weak var renderer = web.navigationDelegate as? RichContentRenderer
-        let readyDeadline = ContinuousClock.now + .seconds(21)
+        let readyDeadline = ContinuousClock.now + RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
         var committed = false
         while ContinuousClock.now < readyDeadline {
             if !web.isLoading, (try? await web.evaluateJavaScript("document.querySelector('iframe') !== null")) as? Bool == true {

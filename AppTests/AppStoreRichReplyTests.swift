@@ -235,7 +235,7 @@ import WebKit
         }
         // This recognizer deliberately creates a second document before returning old pixels.
         let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view,
-            observationBudget: .seconds(45), recognize: { pixels in
+            observationBudget: RichContentRenderer.maximumAttachedLoadDuration + .seconds(30), recognize: { pixels in
             let words = try await NativeTextRecognition.recognize(pixels, languages: ["en-US"])
             if !didRetire && words.joined(separator: " ").localizedStandardContains("Mounted observation") {
                 if activeResources {
@@ -652,7 +652,7 @@ import WebKit
         func budget(observation: Duration) -> Duration {
             switch self {
             case .mounting: .seconds(30)
-            case .rendering: .seconds(21)
+            case .rendering: RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
             case .recognizing: observation
             }
         }

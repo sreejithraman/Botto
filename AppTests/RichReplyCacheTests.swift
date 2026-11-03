@@ -285,7 +285,7 @@ import UIKit
         RichContentRenderer()
     }
     private func wait(_ predicate: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(21)
+        let deadline = ContinuousClock.now + RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
         try #require(predicate())
     }

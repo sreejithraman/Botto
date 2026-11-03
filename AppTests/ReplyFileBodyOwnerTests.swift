@@ -11,7 +11,7 @@ import BottoCore
         defer { fixture.close() }
         let state = fixture.state, store = fixture.store, service = fixture.service
         let identity = try identity(for: state.message)
-        try await wait("initial rendered HTML and layout writer", timeout: .seconds(30), diagnostics: {
+        try await wait("initial rendered HTML and layout writer", timeout: RichContentRenderer.maximumAttachedLoadDuration + .seconds(5), diagnostics: {
             "\(fixture.readiness) measured=\(state.access[store.artifactGeneration]?.measurement(for: identity) != nil)"
         }) {
             state.size.height > 500 && fixture.webViews.count == 1 &&
@@ -68,7 +68,7 @@ import BottoCore
         #expect(refreshed.data == service.downloadData)
         service.downloadGate = nil
         state.settled = true
-        try await wait("short resolved body takes natural height", timeout: .seconds(30), diagnostics: {
+        try await wait("short resolved body takes natural height", timeout: RichContentRenderer.maximumAttachedLoadDuration + .seconds(5), diagnostics: {
             "\(fixture.readiness) measured=\(state.access[store.artifactGeneration]?.measurement(for: identity) != nil)"
         }) {
             fixture.webViews.count == 1 && state.size.height > 70 && state.size.height < initialHeight - 150

@@ -111,7 +111,7 @@ import BottoCore
     private func requirePaintedFile(_ block: Int, phase: PaintPhase, host: UIViewController, window: UIWindow,
                                     sourceLocation: SourceLocation = #_sourceLocation) async throws {
         var trace = PaintReadinessTrace(phase: phase)
-        let readinessDeadline = ContinuousClock.now + .seconds(30)
+        let readinessDeadline = ContinuousClock.now + RichContentRenderer.maximumAttachedLoadDuration + .seconds(5)
         var observationDeadline: ContinuousClock.Instant?
         var painted = false
         defer {
