@@ -537,7 +537,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 switch admission {
                 case .deferred:
                     scopeAdmissions[id] = .deferred
-                    if records[id] == nil { discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)]) }
+                    if records[id] == nil,
+                       !discardedEvidence.contains(profile: hint.identity.profile, root: hint.identity.root) {
+                        discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)])
+                    }
                 case .installed(let source): recordChecked(source, since: stamp)
                 }
             }

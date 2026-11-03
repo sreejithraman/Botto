@@ -18,6 +18,106 @@ import BottoCore
         return book
     }
 
+    @Test(arguments: [false, true])
+    func unchangedOversizedHintCannotFenceAPostLossRead(retryWhileReading: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true)
+        let current = SessionIdentity(profile: service.first.profile, root: service.first.root,
+            stored: try ExactID("current-tip"), aliases: [service.first.root, try ExactID("current-tip")])
+        let fresh = ChatMessage(id: "fresh", role: .assistant, text: "Fresh post-loss needle\nMEDIA:/fresh.txt",
+            timestamp: Date(timeIntervalSince1970: 200))
+        let peer = ChatMessage(id: "peer-file", role: .assistant, text: "Available offline peer\nMEDIA:/peer.txt",
+            timestamp: Date(timeIntervalSince1970: 100))
+        let disputed = (0..<4).map { ChatMessage(id: "private-\($0)", role: .assistant,
+            text: "Old guarded private needle\nMEDIA:/private-\($0).txt", timestamp: Date(timeIntervalSince1970: Double($0))) }
+        service.messages[current] = [fresh]; service.messages[service.second] = [peer]
+        service.replacementFirst = current
+        service.previewEnabled = true
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
+        let warm = WorkspaceLibrary(service: service, cache: warmSession)
+        await warm.restore(); warm.setOnline(true)
+        let startedAt = ContinuousClock.now
+        let page = try await service.conversationHistory(service.second, offset: 0)
+        warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
+            profileID: service.second.profile.text, messages: page.messages), title: "Peer",
+            evidence: .read(startedAt: startedAt, observedSource: service.second, identityRead: page.identityRead))
+        let captureDeadline = ContinuousClock.now + .seconds(3)
+        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline { await Task.yield() }
+        #expect(try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second })).data == Data("side".utf8))
+        let warmDeadline = ContinuousClock.now + .seconds(3)
+        var saved = try await warmSession.loadChats(), recovery = try await warmSession.metadataRecovery()
+        while !saved.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || recovery.contains(service.second),
+              ContinuousClock.now < warmDeadline {
+            await Task.yield(); saved = try await warmSession.loadChats(); recovery = try await warmSession.metadataRecovery()
+        }
+        try #require(saved.contains { $0.identity == service.second && $0.messages == [peer] })
+        try #require(!recovery.contains(service.second))
+        warm.retire(); await warmCache.close()
+        let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
+        try await fixture.upsert(.init(identity: service.first, botName: "Helper", title: "Guarded old tip",
+            messages: disputed, updatedAt: Date(timeIntervalSince1970: 1), coverage: .partial,
+            summary: nil, headFingerprint: nil, unavailableMessageIDs: Set(disputed.map { Data($0.id.utf8) })))
+        try fixture.invalidateMetadata([(service.first.profile, service.first.root)])
+        await fixtureCache.close()
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 3, chatCount: 3), cache: session)
+        defer { library.retire() }
+        await library.restore()
+        #expect(!library.chats.contains { $0.identity.root == current.root })
+        #expect(try await session.metadataRecovery().contains(current))
+        var book = ConversationBook()
+        let chat = book.merge(.init(identity: current, title: "Current", isCanonical: true, persistence: .durable))
+        book.cache(.init(id: current.root.text, storedID: current.stored.text, profileID: current.profile.text, messages: []), for: chat)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: {})
+        defer { workspace.retireWorkspace() }
+        var publications: [ChatTranscriptPublication] = []
+        workspace.onAcceptedTranscript = { publications.append($0); library.accept($0) }
+        workspace.observeProfiles(service.profiles); workspace.setOnline(true)
+        let barrier = StoreTestBarrier()
+        service.previewBarrier = barrier
+        let reading = Task { await workspace.refreshInboxHistory(profiles: [current.profile]) }
+        defer { reading.cancel(); barrier.release() }
+        try #require(await barrier.waitUntilEntered(timeout: .seconds(3)))
+        if retryWhileReading { await library.restore(); await library.restore() }
+        #expect(library.artifacts.contains { $0.chat.identity == service.second })
+        service.previewBarrier = nil; barrier.release(); await reading.value
+        let publication = try #require(publications.first)
+        #expect(publications.count == 1 && publication.snapshot.messages == [fresh])
+        #expect(publication.evidence.readContext?.identityRead?.matches(current) == true)
+        #expect(library.indexingMetrics.acceptedSnapshots == 1)
+        let deadline = ContinuousClock.now + .seconds(3)
+        saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        while !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current),
+              ContinuousClock.now < deadline {
+            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        }
+        let restored = try #require(saved.first { $0.identity == current && $0.messages == [fresh] })
+        #expect(restored.retiredStoredIDs?.contains(service.first.stored.bytes) == true)
+        #expect(!recovery.contains(current))
+        #expect(!LibrarySearchResults(query: "Fresh post-loss needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(library.artifacts.contains { $0.chat.identity == current && $0.artifact.attachment?.path == "/fresh.txt" })
+        let offlinePeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        let downloads = service.downloadCount
+        #expect(try await library.download(offlinePeer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        library.retire(); await cache.close()
+        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        var oldBook = ConversationBook()
+        let oldChat = oldBook.merge(.init(identity: service.first, title: "Old", isCanonical: true, persistence: .durable))
+        oldBook.cache(.init(id: service.first.root.text, storedID: service.first.stored.text,
+            profileID: service.first.profile.text, messages: disputed), for: oldChat)
+        cold.seed(book: oldBook, bots: service.profiles); await cold.restore()
+        #expect(cold.chats.contains { $0.identity == current && $0.messages == [fresh] })
+        #expect(LibrarySearchResults(query: "Old guarded private needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
+        let coldPeer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
+        #expect(try await cold.download(coldPeer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        cold.retire(); await coldCache.close()
+    }
+
     enum HeldScopeInterruption: CaseIterable, Sendable {
         case none, failedScan, partialScan, partialScanBeforeRecovery, delayedRead
     }

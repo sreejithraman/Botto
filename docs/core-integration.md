@@ -167,8 +167,9 @@ for other chats does not. An evicted scope with no saved row keeps Book seeds
 and partial publications gated. A coherent source read releases its scoped hold
 only when the retained messages match the complete producer proof. Overflow
 remains conservative until the cache owner is retired. Each retained scope also
-keeps its loss time, so a read started before eviction cannot release it. The
-shared admission path applies this check to Library scans. SQL absence alone
+keeps its loss time, so a read started before eviction cannot release it. Retrying
+an already-held saved hint keeps that time; only a new loss of canonical producer
+or exclusion evidence advances it. The shared admission path applies this check to Library scans. SQL absence alone
 cannot certify a held partial record. The writer journals held canonical scopes
 but keeps their guards until a qualifying check; directory observations and
 incomplete pages cannot clear them. A complete scan reconciles its checked

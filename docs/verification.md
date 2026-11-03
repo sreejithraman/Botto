@@ -1291,4 +1291,33 @@ suites. Runtime/test bytes matched the run manifest; only proof prose changed
 during the run. Evidence:
 `saved-hint-{red,green,admission-green,producer-guard-green,final-native}*`
 under `/tmp/botto-pr-integration/`; the first green label records a failed run.
-Current UI/provider and fresh four-angle source review remain pending.
+On `2a50b59`, all seven affected UI cases passed in one run and independent
+provider readback verified all 80 bytes and the expected digest
+(`hint-final-chat-export*`). All 486 tracked hashes matched before and after the
+run, and provider bytes were retained on the host. All four pass-28 assessments
+completed; Adversarial found the retry-timing issue below, while the other three
+found no additional material issue.
+
+
+Pass 28 found that retrying the same oversized negative hint could move an
+existing loss timestamp and reject a complete read started after the actual
+loss. The new barrier test pauses a real complete inbox response, retries the
+hint twice, then releases the response. A current stored tip lets its row and
+retirement evidence fit while the four-ID old hint cannot. The no-retry control
+passed on the old production; the retry case failed admission and saved-row
+assertions. The initial fixture stopped at a missing-publication precondition;
+its service identity omitted the root/tip aliases added by Book binding. The
+corrected fixture uses the same proven aliases and supplies the controlled red.
+
+Hint deferral now initializes an unknown scope's loss time once. An unchanged
+retry preserves an existing time; actual canonical producer/evidence loss still
+records a newer time. The test checks fresh Search/artifacts, actual SQL/guard
+settlement, persisted retirement, cold rejection of the old Book and independent
+captured peer bytes offline. Existing pre-loss delayed-read rejection remains in
+the focused selection. All eleven focused functions passed, including the two
+barrier cases and twenty saved/absent cases. All 250 functions passed in the
+five affected native suites. Runtime/test bytes matched the run manifest; only
+contract/proof prose changed during the run.
+Evidence: `hint-clock-{red,controlled-red,green,final-native}*` under
+`/tmp/botto-pr-integration/`. Current UI/provider and fresh source review remain
+pending; no full-gate or release acceptance is claimed.
