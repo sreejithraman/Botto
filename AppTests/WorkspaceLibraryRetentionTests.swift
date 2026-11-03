@@ -693,6 +693,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root)
         let library = WorkspaceLibrary(service: service, cache: cache.session(scope: scope))
+        defer { library.retire() }
         library.setOnline(true)
         let key = ArtifactOriginalKey(identity: source, messageID: Data("report".utf8),
             path: Data("/report.txt".utf8), sourceRevision: Data("revision".utf8))
@@ -709,6 +710,7 @@ import BottoCore
                 return DownloadedArtifact(data: Data("older response".utf8), filename: "report.txt", mimeType: "text/plain")
             }
         }
+        defer { first.cancel(); oldRead.release() }
         await oldRead.waitUntilEntered()
         let reload = Task {
             reloadStarted = true
@@ -717,6 +719,7 @@ import BottoCore
                 return DownloadedArtifact(data: Data("newer response".utf8), filename: "report.txt", mimeType: "text/plain")
             }
         }
+        defer { reload.cancel() }
         let deadline = ContinuousClock.now + .seconds(5)
         while !reloadStarted, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         oldRead.release()
@@ -953,8 +956,10 @@ import BottoCore
         let gate = StoreTestBarrier()
         service.gate = gate; service.gatedOffset = 100
         let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
         library.setOnline(true)
         let scan = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
+        defer { scan.cancel(); gate.release() }
         await gate.waitUntilEntered()
         let current = changesTip ? SessionIdentity(profile: source.profile, root: source.root,
             stored: try ExactID("new-tip"), aliases: [source.root]) : source

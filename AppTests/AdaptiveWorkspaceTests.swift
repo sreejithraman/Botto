@@ -467,7 +467,6 @@ import BottoCore
 
     private func settledDetailNavigation(in window: UIWindow) -> UINavigationController? {
         guard window.isKeyWindow, !window.isHidden, let root = window.rootViewController else { return nil }
-        window.layoutIfNeeded()
         return navigationControllers(in: root).first { navigation in
             guard navigation.viewControllers.count > 1, let top = navigation.topViewController else { return false }
             return navigation.viewIfLoaded?.window === window && top.viewIfLoaded?.window === window &&
