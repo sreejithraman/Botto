@@ -5,6 +5,121 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct AppStoreAvatarTests {
+    @Test func cancelingPreviewRevalidationCannotRestoreOldConfirmation() async throws {
+        let service = AvatarService(); service.holdImages = false
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 512)).image { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 512, height: 512))
+        }
+        let asset = BotAvatarAsset(data: try #require(image.pngData()), mimeType: "image/png")
+        service.suppliedAsset = asset
+        service.profiles[0].appearance = BotAppearance(rawShape: BotAvatarCatalog.geometry(for: .triangle).recipe,
+            custom: true, imageKind: "shape", bottoPreviewSHA256: asset.sha256)
+        let store = BotAvatarStore(), connection = UUID(), bot = service.profiles[0]
+        defer { service.releaseImages(); store.reset() }
+        store.refresh([bot], connectionID: connection, using: service)
+        try await avatarEventually { !store.isLoading(bot) }
+        #expect(store.isStaticPreview(for: bot))
+        service.holdImages = true
+        store.refresh([bot], connectionID: connection, using: service, revalidate: [bot.id])
+        try await avatarEventually { service.pending.count == 1 }
+        #expect(!store.isStaticPreview(for: bot))
+        store.cancel(); service.releaseImages()
+        #expect(!store.isStaticPreview(for: bot))
+        store.refresh([bot], connectionID: connection, using: service)
+        #expect(!store.isStaticPreview(for: bot))
+        service.holdImages = false
+        store.refresh([bot], connectionID: connection, using: service, revalidate: [bot.id])
+        try await avatarEventually { !store.isLoading(bot) }
+        #expect(store.isStaticPreview(for: bot))
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func savedImageWarningWaitsForConfirmedPreview(failedRead: Bool, photo: Bool) async throws {
+        let service = AvatarService()
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 512)).image { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 512, height: 512))
+        }
+        let asset = BotAvatarAsset(data: try #require(image.pngData()), mimeType: "image/png")
+        service.suppliedAsset = asset
+        service.profiles[0].appearance = BotAppearance(rawShape: BotAvatarCatalog.geometry(for: .triangle).recipe,
+            custom: true, imageKind: photo ? "photo" : "shape", bottoPreviewSHA256: asset.sha256)
+        let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        let connection = ConnectionConfiguration(serverURL: URL(string: "https://confirmed-avatar.example")!)
+        defer { service.releaseImages(); store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #expect(await store.connect(connection))
+        try await avatarEventually { service.pending.count == 1 }
+        let destination = try #require(store.avatarDestination(for: store.bots[0]))
+        #expect(store.hasSavedAvatarImage(for: store.bots[0]))
+        service.releaseImages()
+        try await avatarEventually { !store.isLoadingAvatar(for: store.bots[0]) }
+        #expect(store.hasSavedAvatarImage(for: store.bots[0]) == photo)
+
+        let refreshed = try await store.reloadAvatar(destination)
+        try await avatarEventually { service.pending.count == 1 }
+        #expect(store.hasSavedAvatarImage(for: store.bots[0]), "A revalidation makes the old confirmation uncertain.")
+        if failedRead {
+            service.failImages = true; service.releaseImages()
+            try await avatarEventually { !store.isLoadingAvatar(for: store.bots[0]) }
+            #expect(store.hasSavedAvatarImage(for: store.bots[0]))
+        }
+        try await store.saveAvatar(.shape(.circle), to: refreshed)
+        service.releaseImages()
+        #expect(service.saves == 1 && store.bots[0].hasAvatar == false)
+        #expect(store.avatar(for: store.bots[0]) == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func completedSaveRefreshesAnImageReadBetweenMetadataAndUpload(profileEditor: Bool) async throws {
+        let service = AvatarService(); service.holdImages = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 512))
+        let image = renderer.image { context in
+            UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 512, height: 512))
+        }
+        service.avatarToSave = BotAvatarAsset(data: try #require(image.pngData()), mimeType: "image/png")
+        let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        let connection = ConnectionConfiguration(serverURL: URL(string: "https://interleaved-avatar.example")!)
+        defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #expect(await store.connect(connection))
+        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        let destination = try #require(store.avatarDestination(for: store.bots[0]))
+        service.holdSave = true
+        let save = Task {
+            let choice = BotAvatarChoice.geometry(BotAvatarCatalog.geometry(for: .triangle))
+            if profileEditor { try await store.saveProfile(.init(), avatar: choice, to: destination) }
+            else { try await store.saveAvatar(choice, to: destination) }
+        }
+        try await avatarEventually { service.pendingSave != nil }
+        service.onEvent?(.botsChanged)
+        try await avatarEventually { service.reads >= 2 && store.avatar(for: store.bots[0]) != nil }
+        service.pendingSave?.resume(); service.pendingSave = nil
+        try await save.value
+        try await avatarEventually { service.reads >= 3 && store.avatar(for: store.bots[0]) == nil }
+        #expect(service.saves == 1)
+    }
+
+    @Test(arguments: ["preview", "photo", "replacement", "replacement-160", "unmarked"])
+    func derivedStaticPreviewKeepsTheDrawnFaceWhilePhotosKeepPrecedence(kind: String) async throws {
+        let service = AvatarService(); service.holdImages = false
+        let edge = kind == "replacement-160" ? 160 : 512
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: edge, height: edge), format: format).image { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: edge, height: edge))
+        }
+        let asset = BotAvatarAsset(data: try #require(image.pngData()), mimeType: "image/png")
+        service.suppliedAsset = asset
+        let geometry = BotAvatarCatalog.geometry(for: .triangle)
+        service.profiles[0].appearance = BotAppearance(rawShape: geometry.recipe, custom: true,
+            imageKind: kind == "photo" ? "photo" : "shape",
+            bottoPreviewSHA256: kind == "unmarked" ? nil : kind.hasPrefix("replacement") ? String(repeating: "0", count: 64) : asset.sha256)
+        let store = BotAvatarStore()
+        store.refresh(service.profiles, connectionID: UUID(), using: service)
+        try await avatarEventually { !store.isLoading(service.profiles[0]) }
+        #expect(service.reads == 1)
+        #expect((store.image(for: service.profiles[0]) == nil) == (kind == "preview"))
+        #expect(store.isStaticPreview(for: service.profiles[0]) == (kind == "preview"))
+        store.reset()
+    }
+
     @Test(arguments: [false, true])
     func foregroundRecoveryStaysNeutralUntilTheConnectionResult(fails: Bool) async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://foreground-avatar.example")!)
@@ -163,6 +278,32 @@ import BottoCore
         let reloaded = try await store.reloadAvatar(current)
         #expect(reloaded.profile.name == "Saved before the avatar failed")
         #expect(service.profileSaves == 2 && service.saves == 1)
+    }
+
+    @Test func rendererFailureBeforeAvatarWriteAllowsRetryButSavedMetadataRequiresReload() async throws {
+        let service = AvatarService(); service.holdImages = false
+        let store = AppStore(service: service, persistence: AvatarStorage().persistence)
+        let connection = ConnectionConfiguration(serverURL: URL(string: "https://renderer-save.example")!)
+        defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
+        #expect(await store.connect(connection))
+        let destination = try #require(store.avatarDestination(for: store.bots[0]))
+        let choice = BotAvatarChoice.geometry(BotAvatarCatalog.geometry(for: .circle))
+        service.rendererError = .invalidFrame
+        await #expect(throws: BotAvatarEngineError.invalidFrame) {
+            try await store.saveProfile(.init(), avatar: choice, to: destination)
+        }
+        #expect(service.profileSaves == 0 && service.mutations == 0)
+        #expect(store.bots[0] == destination.profile)
+        service.rendererError = nil
+        try await store.saveProfile(.init(), avatar: choice, to: destination)
+        #expect(service.mutations == 1)
+        #expect(store.bots[0].appearance?.geometry == BotAvatarCatalog.geometry(for: .circle))
+        let current = try #require(store.avatarDestination(for: store.bots[0]))
+        service.rendererError = .unavailable
+        await #expect(throws: HermesServiceError.partialProfile) {
+            try await store.saveProfile(.init(name: "Saved metadata"), avatar: choice, to: current)
+        }
+        #expect(service.profileSaves == 1 && service.mutations == 1)
     }
 
     @Test func cachedAvatarCanOpenOfflineAndSaveOnlyAfterDeliberateOnlineAttempt() async throws {
@@ -872,6 +1013,7 @@ import BottoCore
     var connectError: HermesServiceError?
     var profileSaves = 0
     var saveError: HermesServiceError?
+    var rendererError: BotAvatarEngineError?
     var targetReadError: HermesServiceError?
     var holdTargetRead = false
     var pendingTargetRead: CheckedContinuation<Void, Never>?
@@ -885,6 +1027,7 @@ import BottoCore
     var saves = 0
     var mutations = 0
     var holdSave = false
+    var avatarToSave: BotAvatarAsset?
     var pendingSave: CheckedContinuation<Void, Never>?
     var pending: [CheckedContinuation<Void, Never>] = []
     var pendingRosters: [CheckedContinuation<Void, Never>] = []
@@ -922,6 +1065,7 @@ import BottoCore
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
         saves += 1
+        if let rendererError { throw rendererError }
         // Mirror the real service's fresh target read and prewrite connection fence.
         let owner = connectionGeneration
         if holdTargetRead { await withCheckedContinuation { pendingTargetRead = $0 } }
@@ -937,11 +1081,13 @@ import BottoCore
         if let saveError { throw saveError }
         mutations += 1
         profiles[index].appearance = choice.applying(to: fresh.appearance ?? BotAppearance())
-        profiles[index].hasAvatar = false
+        profiles[index].appearance?.bottoPreviewSHA256 = avatarToSave?.sha256
+        profiles[index].hasAvatar = avatarToSave != nil
         profiles[index].lookRevision = (fresh.lookRevision ?? 0) + 1
         if failRosterAfterSave { failRoster = true }
         let saved = profiles[index]
         if holdSave { await withCheckedContinuation { pendingSave = $0 } }
+        if let avatarToSave { suppliedAsset = avatarToSave }
         return saved
     }
     func createBot(_ draft: BotDraft) async throws -> BotProfile {

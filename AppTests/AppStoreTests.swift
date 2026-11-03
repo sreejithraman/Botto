@@ -4,6 +4,22 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct AppStoreTests {
+    @Test func demoCreationAndReconnectKeepTheBotAndWorkspace() async throws {
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        await store.enterDemo()
+        defer { store.leaveDemo() }
+        let workspace = store.chats
+        let bot = try #require(await store.create(.init(name: "Fern", avatar: .shape(.drop))))
+        #expect(store.bot(withID: bot.id)?.name == "Fern")
+        await store.open(bot)
+        #expect(store.selectedBotID == bot.id)
+        #expect(store.chats.screen(profile: try ExactID(bot.id)) != nil)
+        let configuration = try #require(store.configuration)
+        #expect(await store.connect(configuration))
+        #expect(store.chats === workspace)
+        #expect(store.bot(withID: bot.id)?.face.shape == .drop)
+    }
+
     @Test(arguments: ["current", "background", "workspace"])
     func creationRefreshRejectsRetiredWorkspace(retirement: String) async throws {
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)

@@ -4,6 +4,7 @@ import Foundation
 @MainActor final class HermesGateway {
     struct Timing {
         var request: Duration = .seconds(30)
+        var avatarGeneration: Duration = .seconds(75)
         var heartbeat: Duration = .seconds(15)
         var silence: Duration = .seconds(45)
         var reconnectDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30)]
@@ -78,6 +79,7 @@ import Foundation
 
     func call(_ method: String, _ params: [String: HermesJSON], mutation: Bool = false,
               timeoutPolicy: TimeoutPolicy = .disconnect,
+              timeout: Duration? = nil,
               validate: (() throws -> Void)? = nil) async throws -> HermesJSON {
         guard let socket, !closed, replayEpoch != nil, !Task.isCancelled else { throw HermesServiceError.disconnected }
         nextID += 1
@@ -91,7 +93,7 @@ import Foundation
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let timer = Task { [weak self, timing] in
-                    do { try await Task.sleep(for: timing.request) } catch { return }
+                    do { try await Task.sleep(for: timeout ?? timing.request) } catch { return }
                     guard let self, self.pending[id] != nil else { return }
                     if timeoutPolicy == .requestOnly, !mutation {
                         self.settle(id, result: .failure(HermesServiceError.timeout))

@@ -1,9 +1,9 @@
 # Avatar playground
 
-Drawn avatars use Playful motion in production. The Debug/Internal
-playground retains comparison styles and local activity controls for iteration.
-All samples and live avatars use `App/Design/BotAvatarMotion.swift`; sample controls
-live in `App/Demo/BotMotionPrototype.swift`.
+The Debug/Internal playground uses the same pinned Open Bot Avatar engine and
+native Canvas painter as production. Its local activity controls live in
+`App/Demo/BotMotionPrototype.swift`. Preset families and generated characters
+share one renderer; the earlier comparison styles are removed.
 
 ## Open it
 
@@ -28,22 +28,22 @@ phases. The size slider compares 30–96pt faces; the gallery also shows native
 
 | Activity | Performance |
 | --- | --- |
-| Idle | Quiet breathing, sparse blinks and occasional eye movements. |
-| Thinking | Shared work rhythm, upward gaze and a warm glowing lightbulb. |
-| Working | Hops, rocking, double bounces, scoots, stretch/tuck and wiggles. |
-| Using tool | Shared work rhythm, open watchful eyes and a wrench. |
-| Error | One expansion and damped shake, then wide eyes and a circular speech cue. |
-| Needs you | Pondering head tilts, thoughtful glances and a tilted question bubble. |
-| Replying | Shared work rhythm with conversational gaze. |
-| Finished | One tucked full somersault, sparkles and a soft landing into idle. |
-| Unavailable | Closed eyes with three independently rising, fading z marks. |
+| Idle | Canonical Idle mood with independent profile time offsets. |
+| Thinking | Canonical Thinking with a lightbulb cue. |
+| Working | Canonical Thinking. |
+| Using tool | Canonical Thinking with a contour-attached wrench. |
+| Error | One expansion and shake, then an exclamation cue. |
+| Needs you | Canonical Thinking with a question cue. |
+| Replying | Canonical Thinking. |
+| Finished | Brief Happy mood, one tucked somersault, then the saved mood. |
+| Unavailable | Closed canonical eyes with rising z marks. |
+| Offline | Closed canonical eyes with a static no-signal cue. |
 
-Original retains the earlier sparse-blink/working-sway baseline. Attentive keeps
-the body rigid with smaller lifts, Soft deforms gently, and Playful adds emphasis.
-Production uses Playful. Preview Reduce Motion and inactive scenes remove
-timelines while preserving still semantic cues. Saved images and picker previews
-stay still. Activity cues keep the same base size at equal avatar size; their
-positions adapt to the face's eye bounds.
+Preview Reduce Motion and inactive scenes stop frame loops while preserving
+static semantic cues. Saved images and picker previews stay still. Attachment
+points derive from projected canonical contours at every size. Canonical mood
+easing owns ordinary transitions; native status reactions do not replace its
+blink, gaze, volume or base motion.
 
 ## Follow activity
 
@@ -61,24 +61,28 @@ as successful execution. Reactions carry original time/identity across ordinary
 refreshes, and view recreation does not restart them. See [avatar ownership and
 live signal limits](avatars.md#refresh-and-motion).
 
-The six work phrases rotate over 22.8 seconds with bot-specific ordering. The
-completion reaction lasts 1.85 seconds. Its final angle remains unwrapped during
-late style blending to avoid an extra turn. Motion changes blend from the visible
-pose over 0.24 seconds; cues crossfade over 0.18 seconds. Timelines sample up to 30Hz.
-Energy use and physical-device feel have not been measured.
+The completion reaction lasts 1.85 seconds and never repeats from an idle
+snapshot. Each visible instance requests at most one frame at a time, normally
+up to 30Hz. Offscreen, inactive and reduced-motion instances have no repeating
+frame loop. Cold preparation runs off-main with canonical resting previews;
+warm frames reuse immutable native paths. Energy use and physical-device feel
+require separate measurement.
 
 ## Verification
 
-`BotFaceMotionTests` cover pose timing, static rendering and the completed turn's
-orientation during late style changes. `BotAvatarPresentationTests` cover shared
-clocks, aggregate precedence, reaction identity and lifetime. BottoCore's
-`ConversationActivityTests` exercise both Hermes adapters through captured
-transport fixtures, including replay, tool overlap, stale generations and
-same-chat rereads.
+`BotFaceMotionTests` cover narrow reaction timing, reduced-motion policy and
+stored-expression mood mapping. `BotAvatarLayoutTests` cover palette, image
+precedence, fitted bounds and cues. `CustomAvatarLayoutTests` prepare actual
+canonical assets and paint fixed frames for all ten families and official custom
+examples, including arcs, side views, Happy eyes and containment.
+`OpenBotAvatarEngineTests` compare the Swift bridge with independently generated
+Node reference frames. Test coverage is not a claim that these checks passed
+for the current snapshot.
 
-Simulator checks exercised all nine activities, all ten shapes, Replay, size
-changes, Reduced Motion, developer navigation and the isolated demo. An actual
-demo reply produced one completion reaction; stopping a longer streamed reply
-produced none. A signed Debug build was installed on an iPhone and the
-playground was confirmed visible. These observations do not establish physical
-animation timing, exhaustive containment, VoiceOver, iPad or energy behavior.
+`BotAvatarPresentationTests` and BottoCore's `ConversationActivityTests` retain
+ownership of work clocks, aggregate precedence, verified outcomes, replay and
+stale-event behavior. Complete acceptance must also exercise the real playground,
+replay and interrupted states, every family at header/row sizes, saved images,
+actual system Reduce Motion, scene transitions, VoiceOver and a live verified
+outcome. Historical observations of the earlier renderer do not prove the
+canonical renderer. Record current results in [verification](verification.md).

@@ -138,6 +138,15 @@ import BottoCore
 
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
 
+    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
+        guard connected else { throw HermesServiceError.disconnected }
+        guard profiles.contains(where: { $0.id.utf8.elementsEqual(bot.id.utf8) }) else {
+            throw HermesServiceError.profileUnavailable
+        }
+        try Task.checkCancellation()
+        return try BotAvatarGeometry(json: #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18 30 L18 14 Q18 10 24 14 L34 24 L66 24 L76 14 Q82 10 82 18 L82 72 Q82 86 68 86 L32 86 Q18 86 18 72 Z"},"eyes":{"x":50,"y":48,"spacing":16,"scale":1}}"#)
+    }
+
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,

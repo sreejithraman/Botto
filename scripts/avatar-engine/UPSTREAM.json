@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/DominikScholz/open-bot-avatar",
+  "revision": "3a5119877844165eebafe57d3100da475f67d0a8",
+  "esbuild": "0.28.2",
+  "files": {
+    "LICENSE": "891ecc8c486c4067b259a326895c539296e0a6d62afb9e2d21b410938badde24",
+    "animator.ts": "b44a19a3366af9d2fde1a3f122107f2a81535779d734aad286067efcc475467c",
+    "color.ts": "7baee7b6508efe4fab04237408a1edccec4f38d17a9b884e63c6e3d85e9b9884",
+    "contour.ts": "320354495c26332dbaff3fd07439559f7f5c9d806b4b70e415c733619f112f36",
+    "examples.ts": "9eb098d30ee863f53ea96fa029e42c4c53be9efeb4a310e1becf169fe78f4284",
+    "follow.ts": "8f2ec4cb108f94c6182a08e9272fe0de9ac357993b4b8073b744fc61b3c1f8af",
+    "mood.ts": "5d50c0960c228f01faf19074ef1c8bf84bbc4bf581b4bcdaa1b1880c11757d04",
+    "motion.ts": "3593c71794c20ea57f4835efffeb1dc162790625b9fc146adc3fc244cad2710c",
+    "path.ts": "fba03160e17c54ca896f84f803efb8b2d39a1d95ad37755a0c040208ea8c5a0a",
+    "render.ts": "2d16fc3f56263f72f43f92e5e2490af759934259df333ae4280159c7e252bb07",
+    "seams.ts": "4510408fb0260a243071aa9b3bc76589bd406b26e2ffa18dac90c488c73857ef",
+    "types.ts": "985b7a19db64be2a1074a4ceacd95a140e9daea0c7d37f1183496e76bf87d2f3",
+    "validate.ts": "6a8f6b36a7ac09ce73d8e48b2df23fc1b4399c9a9cb6915ac5211c40d2732e90",
+    "volume.ts": "23bbcd3496d356f100dca99c8efa431ddc3d6f6c869dcc1685857cc7bec1a250"
+  }
+}

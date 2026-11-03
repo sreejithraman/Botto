@@ -111,10 +111,10 @@ import Testing
         default: socket.reject(frame, code: -32601); return nil
         }
     }
-    func service(requestTimeout: Duration = .seconds(1)) -> HermesBotService {
+    func service(requestTimeout: Duration = .seconds(1), avatarEngine: BotAvatarEngine = .shared) -> HermesBotService {
         HermesBotService(transportFactory: { [transport] in transport },
             timing: .init(request: requestTimeout, heartbeat: .seconds(10), silence: .seconds(30), reconnectDelays: [.milliseconds(10)]),
-            journal: HermesSubmissionJournal(directory: nil))
+            journal: HermesSubmissionJournal(directory: nil), avatarEngine: avatarEngine)
     }
     var configuration: ConnectionConfiguration {
         ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice", password: "test-password", installID: "fixture-install")

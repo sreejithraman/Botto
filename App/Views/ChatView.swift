@@ -339,7 +339,8 @@ struct ChatView: View {
     }
 
     private var shortAvatarHeaderLift: CGFloat {
-        let layout = BotAvatarLayout(shape: bot.face.shape, size: 56, imageSize: store.avatar(for: bot)?.size)
+        let layout = BotAvatarLayout(shape: bot.face.shape, size: 56, imageSize: store.avatar(for: bot)?.size,
+                                     geometry: bot.appearance?.geometry)
         return max(0, headerReferenceHeight - layout.fittedHeight)
     }
 

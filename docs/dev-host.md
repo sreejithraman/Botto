@@ -97,6 +97,14 @@ After approval, real Hermes executes it and the responder summarizes its real
 tool result. Input containing `BOTTO_QUESTION` requests a note through Hermes's
 clarify tool. Title generation is disabled; terminal and clarify toolsets are pinned.
 
+The `Botto avatar geometry` one-shot prompt returns a fixed valid Cat definition.
+This exercises real generation routing, profile persistence and custom rendering;
+it does not evaluate a model's artistic quality. The opt-in package check is
+`BOTTO_TEST_HERMES_AVATAR_URL=http://127.0.0.1:19119 swift test --filter disposableHostGeneratesAndPersistsACustomAvatarWithoutChangingChat`.
+It creates an owned profile, saves and independently refetches its recipe,
+checks chat access, then replaces it with a classic shape. Set
+`BOTTO_TEST_AVATAR_REPORT_PATH` to retain the generated profile without credentials.
+
 The current provider port is preserved in `process.json` so cloned profile
 configs keep working across restarts. A fresh runtime uses backend-port + 1
 for its provider, normally `19120`. Both listeners bind only `127.0.0.1`.
