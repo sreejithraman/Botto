@@ -53,9 +53,9 @@ import BottoCore
     @Test func sharedBudgetTrimmingSchedulesTheSurvivingChatBeforeCapturePublication() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let service = RetainedLibraryService(), transport = StoreTestBarrier(), projection = StoreTestBarrier()
+        let service = RetainedLibraryService(), transport = StoreTestBarrier()
         let pause = BudgetProjectionPause()
-        defer { transport.release(); projection.release() }
+        defer { transport.release(); pause.release() }
         let source = service.source("background"), active = service.source("active")
         let kept = service.message("kept", text: "MEDIA:/kept.txt", at: 20)
         service.summaries = [service.summary(source, at: 20)]
@@ -64,7 +64,7 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
         let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 3), cache: session, projector: { messages, tail in
-            if messages.contains(where: { $0.id == kept.id }), await pause.take() { await projection.wait() }
+            if messages.contains(where: { $0.id == kept.id }) { await pause.waitIfArmed() }
             return await WorkspaceLibrary.project(messages, streamingMessage: tail)
         })
         defer { library.retire() }
@@ -76,7 +76,7 @@ import BottoCore
         var completions = 0
         let first = Task { let result = try await library.download(item); completions += 1; return result }
         defer { first.cancel() }
-        await transport.waitUntilEntered(); await pause.arm()
+        await transport.waitUntilEntered(); pause.arm()
         library.accept(identity: active,
             snapshot: .init(id: "active", storedID: "active", profileID: "helper", messages: [
                 service.message("active-1", text: "First new row", at: 30),
@@ -85,9 +85,8 @@ import BottoCore
         #expect(library.isCurrent(item))
         #expect(library.chats.first { $0.identity == source }?.messages.map(\.id) == [kept.id])
         var deadline = ContinuousClock.now + .seconds(5)
-        while !(await pause.wasTaken), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        try #require(await pause.wasTaken, "The trimmed non-target chat needs its own scheduled projection.")
-        await projection.waitUntilEntered()
+        while !pause.wasTaken, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(pause.wasTaken, "The trimmed non-target chat needs its own scheduled projection.")
         let registered = library.indexingMetrics.galleryConsumersRegistered
         let second = Task { let result = try await library.download(item); completions += 1; return result }
         defer { second.cancel() }
@@ -98,7 +97,7 @@ import BottoCore
         service.downloadGate = nil; transport.release()
         _ = try await session.loadChats()
         #expect(completions == 0, "Both gallery readers wait for current provenance without blocking the cache actor.")
-        projection.release()
+        pause.release()
         deadline = .now + .seconds(5)
         while completions < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(completions == 2)
@@ -108,6 +107,32 @@ import BottoCore
         let reopened = ArtifactCache(root: root)
         #expect(try await reopened.session(scope: scope).original(for: key)?.artifact.data == service.downloadedBytes)
         await reopened.close()
+    }
+
+    @Test(arguments: [false, true])
+    func projectionTeardownReleasesCancelledWorkersBeforeOrAfterEntry(lateEntry: Bool) async throws {
+        let pause = BudgetProjectionPause()
+        pause.arm()
+        var completed = false
+        let worker = Task {
+            await pause.waitIfArmed()
+            #expect(Task.isCancelled, "The control must exercise a cancelled projection worker.")
+            completed = true
+        }
+        defer { worker.cancel(); pause.release() }
+        if lateEntry {
+            #expect(!pause.wasTaken, "The cancelled worker must enter only after teardown releases the pause.")
+        } else {
+            let deadline = ContinuousClock.now + .seconds(3)
+            while !pause.wasTaken, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(pause.wasTaken)
+        }
+        worker.cancel()
+        pause.release()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !completed, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(completed, "Teardown must release an entered or late cancelled projection worker.")
+        if completed { await worker.value }
     }
 
     @Test func anotherChatCannotRestartAGatedProjectionOrDelayItsNextPage() async throws {
@@ -1436,13 +1461,26 @@ import BottoCore
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
 }
 
-private actor BudgetProjectionPause {
+@MainActor private final class BudgetProjectionPause {
     private var armed = false
     private(set) var wasTaken = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
     func arm() { armed = true }
-    func take() -> Bool {
-        guard armed else { return false }
-        armed = false; wasTaken = true; return true
+
+    func waitIfArmed() async {
+        guard armed else { return }
+        armed = false
+        wasTaken = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
