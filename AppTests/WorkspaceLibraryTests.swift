@@ -18,6 +18,130 @@ import BottoCore
         return book
     }
 
+    @Test(arguments: [false, true])
+    func discardedAbsentScopeRejectsALateBookUntilATrustedRead(trustedRead: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = LibraryTestService(secondBot: true)
+        service.previewEnabled = true; service.previewHasEarlierMessages = true
+        let current = ChatMessage(id: "main-file", role: .assistant, text: "Safe current producer", timestamp: Date(timeIntervalSince1970: 1))
+        let peer = ChatMessage(id: "peer-file", role: .assistant, text: "Independent peer needle\nMEDIA:/peer.txt",
+            timestamp: Date(timeIntervalSince1970: 5_000))
+        service.messages[service.first] = [current]; service.messages[service.second] = [peer]
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
+        let warm = WorkspaceLibrary(service: service, cache: warmSession)
+        warm.observeBots(service.profiles, evidence: .cached)
+        await warm.restore(); warm.setOnline(true)
+        let peerStartedAt = ContinuousClock.now
+        let peerPage = try await service.conversationHistory(service.second, offset: 0)
+        warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
+            profileID: service.second.profile.text, messages: peerPage.messages), title: "Peer",
+            evidence: .read(startedAt: peerStartedAt, observedSource: service.second, identityRead: try #require(peerPage.identityRead)))
+        let captureDeadline = ContinuousClock.now + .seconds(3)
+        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline { await Task.yield() }
+        #expect(try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second })).data == Data("side".utf8))
+        let warmDeadline = ContinuousClock.now + .seconds(3)
+        var warmRows = try await warmSession.loadChats(), warmRecovery = try await warmSession.metadataRecovery()
+        while !warmRows.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || warmRecovery.contains(service.second),
+              ContinuousClock.now < warmDeadline {
+            await Task.yield(); warmRows = try await warmSession.loadChats(); warmRecovery = try await warmSession.metadataRecovery()
+        }
+        try #require(warmRows.contains { $0.identity == service.second && $0.messages == [peer] })
+        try #require(!warmRecovery.contains(service.second))
+        try #require(!warmRows.contains { $0.identity == service.first })
+        warm.retire(); await warmCache.close()
+        let ledger = root.appendingPathComponent("metadata-recovery.plist"), unreadable = Data("temporarily unreadable recovery".utf8)
+        try unreadable.write(to: ledger)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 3), cache: session)
+        defer { library.retire() }
+        await library.restore()
+        let peerReadStartedAt = ContinuousClock.now
+        let verifiedPeer = try await service.conversationHistory(service.second, offset: 0)
+        library.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
+            profileID: service.second.profile.text, messages: verifiedPeer.messages), title: "Peer",
+            evidence: .read(startedAt: peerReadStartedAt, observedSource: service.second, identityRead: verifiedPeer.identityRead))
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: savedBook(service), service: service, onDirty: {})
+        defer { workspace.retireWorkspace() }
+        workspace.onAcceptedTranscript = { library.accept($0) }
+        workspace.observeProfiles(service.profiles); workspace.setOnline(true)
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        for index in 2...4 {
+            let source = SessionIdentity(profile: service.first.profile, root: try ExactID("pressure-\(index)"),
+                stored: try ExactID("pressure-\(index)"), aliases: [])
+            service.messages[source] = [.init(id: "pressure", role: .assistant, text: "Newer safe pressure row",
+                timestamp: Date(timeIntervalSince1970: Double(index)))]
+            let startedAt = ContinuousClock.now
+            let page = try await service.conversationHistory(source, offset: 0)
+            library.accept(identity: source, snapshot: .init(id: source.root.text, storedID: source.stored.text,
+                profileID: source.profile.text, messages: page.messages), title: "Pressure",
+                evidence: .read(startedAt: startedAt, observedSource: source, identityRead: try #require(page.identityRead)))
+        }
+        #expect(library.indexingMetrics.acceptedSnapshots == 5)
+        #expect(!library.chats.contains { $0.identity == service.first })
+        #expect(try Data(contentsOf: ledger) == unreadable)
+        try FileManager.default.removeItem(at: ledger)
+        await library.restore(); await library.restore()
+        #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
+        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
+        let restoredPeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        var downloads = service.downloadCount
+        #expect(try await library.download(restoredPeer).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        let superseded = ChatMessage(id: current.id, role: .assistant, text: "Superseded private needle\nMEDIA:/superseded-private.txt",
+            timestamp: Date(timeIntervalSince1970: 10_000))
+        var oldBook = ConversationBook()
+        let oldChat = oldBook.merge(.init(identity: service.first, title: "Old Book", isCanonical: true, persistence: .durable))
+        oldBook.cache(.init(id: service.first.root.text, storedID: service.first.stored.text,
+            profileID: service.first.profile.text, messages: [superseded]), for: oldChat)
+        library.seed(book: oldBook, bots: service.profiles); await library.restore()
+        #expect(LibrarySearchResults(query: "Superseded private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/superseded-private.txt" })
+        #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
+        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
+        let peerAfterSeed = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        downloads = service.downloadCount
+        #expect(try await library.download(peerAfterSeed).data == Data("side".utf8))
+        #expect(service.downloadCount == downloads)
+        if trustedRead {
+            let proven = ChatMessage(id: current.id, role: .assistant, text: "Trusted recovery needle\nMEDIA:/trusted.txt",
+                timestamp: Date(timeIntervalSince1970: 10_001))
+            service.messages[service.first] = [proven]
+            let startedAt = ContinuousClock.now
+            let page = try await service.conversationHistory(service.first, offset: 0)
+            library.accept(identity: service.first, snapshot: .init(id: service.first.root.text, storedID: service.first.stored.text,
+                profileID: service.first.profile.text, messages: page.messages), title: "Trusted",
+                evidence: .read(startedAt: startedAt, observedSource: service.first, identityRead: try #require(page.identityRead)))
+            let provenDeadline = ContinuousClock.now + .seconds(3)
+            var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
+            while !saved.contains(where: { $0.identity == service.first && $0.messages == [proven] }) || recovery.contains(service.first),
+                  ContinuousClock.now < provenDeadline {
+                await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            }
+            try #require(saved.contains { $0.identity == service.first && $0.messages == [proven] })
+            #expect(!recovery.contains(service.first))
+            let following = ChatMessage(id: current.id, role: .assistant, text: "Following partial window needle\nMEDIA:/following.txt",
+                timestamp: Date(timeIntervalSince1970: 10_002))
+            service.messages[service.first] = [following]
+            await workspace.refreshInboxHistory(profiles: [service.first.profile])
+            let followingDeadline = ContinuousClock.now + .seconds(3)
+            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            while !saved.contains(where: { $0.identity == service.first && $0.messages == [following] }) || recovery.contains(service.first),
+                  ContinuousClock.now < followingDeadline {
+                await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            }
+            #expect(service.previewReadCount == 2)
+            #expect(!LibrarySearchResults(query: "Following partial window needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+            #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/following.txt" })
+            #expect(saved.contains { $0.identity == service.first && $0.messages == [following] })
+            #expect(!recovery.contains(service.first))
+            #expect(library.artifacts.contains { $0.chat.identity == service.second })
+        }
+        library.retire(); await cache.close()
+    }
+
     enum IndependentWindowSavedSource: CaseIterable, Sendable { case absent, sameTip, differentTip }
 
     @Test(arguments: IndependentWindowSavedSource.allCases)

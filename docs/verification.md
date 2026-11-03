@@ -1185,11 +1185,37 @@ found four issues in two legacy-tip compatibility functions. Per-chat settlement
 now preserves the established Book-versus-legacy-index tip choice and records the
 displaced tip. The four focused functions across nine cases passed. The final
 five-suite run passed all 247 functions. All 486 tracked hashes stayed unchanged
-through that run; this proof wording changed afterward. Pass-25 review and final
-UI/provider checks remain pending. Evidence under `/tmp/botto-pr-integration/`:
+through that run; this proof wording changed afterward. On `0c0e8fa`, all seven
+affected UI cases passed in one run and independent provider readback verified all 80 bytes and the expected
+digest (`scoped-final-chat-export*`). All 486 tracked hashes stayed unchanged.
+Pass 25 found the unchecked discarded-scope issue described below. Evidence under
+`/tmp/botto-pr-integration/`:
 `independent-window-{red,controlled-red,final-red,green}*` (green failed two cases),
 `scope-liveness-green*`, `scoped-recovery-final-native*` (failed),
 `scope-legacy-green*`, and `scope-settlement-verified-native*`. The earlier
 `scope-settlement-final-native` attempt refused an ended Simulator lease before
 executing tests. The replacement Pro Max failed to boot without host details;
 the advised retry on an iPhone 17 Pro booted and ran the verified suite.
+
+
+Pass 25 found that a successful retry could clear a hold for an evicted chat
+whose failed recovery guard had never been checked. The new regression starts
+with no saved row for that chat, fails the guard, evicts it under chat pressure,
+repairs storage, retries and then seeds an older Book. Its unrelated saved peer
+has a fresh producer read and captured bytes available offline. The controlled
+red run reproduced five Search, artifact and persistence issues across two cases.
+Two earlier attempts stopped at a missing-peer precondition before exercising
+the stale-seed path. The corrected fixture keeps that peer through a fresh
+producer read while applying pressure. Those attempts provide no evidence of
+the stale-seed failure. A still earlier attempt refused an ended lease before executing tests.
+
+Restoration now preserves unchecked scope holds after other chats settle. Book
+seeds remain gated for those scopes. Only a matching coherent producer read,
+whose complete rows survive admission, releases that scope; later partial
+updates can then continue normally. The focused run passed nine functions,
+including both new cases. The five affected native suites passed all 248
+functions. App and test dependencies matched the run manifest; only proof prose
+changed during that run. Current UI/provider checks and pass-26 source review
+remain pending. Evidence: `unchecked-hold-{executed-red,fixture-diagnostic,controlled-red,green,final-native}*`
+under `/tmp/botto-pr-integration/`. Prior failed full-gate results and acceptance
+limits remain unchanged.

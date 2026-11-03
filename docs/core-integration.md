@@ -162,7 +162,11 @@ identical, so the guard reaches disk before retirement. Canonical retention reco
 required guards before discarding rows or exclusions. Lost evidence also leaves
 bounded scope hashes until reconciliation; overflow withholds uncertain partial
 Library admissions across the scope. Chat history can still display its fetched
-rows. A coherent source read or saved-metadata reconciliation releases that hold.
+rows. Only a check of that exact scope releases its hold; completing restoration
+for other chats does not. An evicted scope with no saved row keeps Book seeds
+and partial publications gated. A coherent source read releases its scoped hold
+only when the retained messages match the complete producer proof. Overflow
+remains conservative until the cache owner is retired.
 Restoration rechecks saved rows against guards created during its own awaits and
 merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
 Accepted rows survive retry behind the visibility gate; a successful SQL read

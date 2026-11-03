@@ -641,7 +641,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
             let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
                 || !deferred.isEmpty || evidenceChanged || !unreconciledMetadata.isEmpty ? .needsRetry : .reconciled
-            if outcome == .reconciled { unverifiedPersistenceChanges = false; discardedEvidence = .scoped([]) }
+            if outcome == .reconciled { unverifiedPersistenceChanges = false }
             return outcome
         } catch {
             if !isRetired {
@@ -904,9 +904,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             provesSource = false
             guard records[id]?.directoryAbsent != true, !restorationHints.contains(id), expected == nil || expected == source.stored else { return }
         }
-        if discardedEvidence.contains(profile: source.profile, root: source.root) {
-            guard provesSource, !snapshot.hasEarlierMessages, read?.identityRead?.matches(source) == true else { return }
-        }
+        let checksDiscardedScope = discardedEvidence.contains(profile: source.profile, root: source.root)
+        let coherentRead = checksDiscardedScope && (read?.identityRead.map { proof in
+            provesSource && !snapshot.hasEarlierMessages && proof.matches(source)
+                && Set(snapshot.messages.map { Data($0.id.utf8) }) == proof.messageIDs
+                && snapshot.unavailableMessageIDs?.isEmpty != false
+        } == true)
+        if checksDiscardedScope { guard coherentRead else { return } }
         restorationHints.remove(id)
         indexingMetrics.acceptedSnapshots += 1
         recordAcceptance(id)
@@ -973,6 +977,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             updatedAt: newest(previous?.updatedAt, messages.last?.timestamp),
             input: .accepted(messages: messages, unavailable: unavailable, identityRead: identityRead))
         commitCanonical(admission, target: id, projectionOwner: .caller)
+        if checksDiscardedScope, coherentRead, records[id]?.identity == source,
+           sameMessages(records[id]?.messages ?? [], snapshot.messages) {
+            discardedEvidence.resolve([ArtifactMetadataRecovery.key(source)])
+        }
         if (restoration.needsReconciliation), provesSource, records[id]?.identity.stored == source.stored { initialSourceProofs[id] = source.stored }
         if records[id]?.identity.stored == source.stored {
             if read != nil { observe(source, content: true) }
@@ -1131,7 +1139,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                           Data(transcript.profileID.utf8) == source.profile.bytes,
                           Data(transcript.storedID.utf8) == source.stored.bytes else { continue }
                     let id = key(for: source)
-                    guard rosterPermits(source.profile) else { continue }
+                    guard rosterPermits(source.profile),
+                          !discardedEvidence.contains(profile: source.profile, root: source.root) else { continue }
                     guard acceptanceFence.permits(id, since: seed.accepted), records[id]?.directoryAbsent != true,
                           records[id] == nil || records[id]?.identity.stored == source.stored else { continue }
                     if metadataRecovery.withholdsBookSeed(source) || pendingRosterRestriction?.contains(source.profile) == false {
