@@ -408,6 +408,9 @@ import BottoCore
 
     func avatar(for bot: BotProfile) -> UIImage? { avatars.image(for: bot) }
     func isLoadingAvatar(for bot: BotProfile) -> Bool { avatars.isLoading(bot) }
+    func hasSavedAvatarImage(for bot: BotProfile) -> Bool {
+        bot.hasAvatar == true && !avatars.isStaticPreview(for: bot)
+    }
 
     func avatarDestination(for bot: BotProfile) -> AvatarDestination? {
         guard let configuration, let current = cachedBots.first(where: { $0.id == bot.id }) else { return nil }
@@ -415,6 +418,14 @@ import BottoCore
                                  configurationID: configuration.id,
                                  account: AvatarDestination.account(for: configuration),
                                  installID: configuration.installID.map { Data($0.utf8) }, demo: isDemo)
+    }
+
+    func generateAvatar(description: String, for destination: AvatarDestination) async throws -> BotAvatarGeometry {
+        let owner = generation, recovery = attachmentRecoveryGeneration
+        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
+        let geometry = try await service.generateAvatar(description: description, for: destination.profile)
+        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
+        return geometry
     }
 
     func saveAvatar(_ choice: BotAvatarChoice, to destination: AvatarDestination) async throws {
@@ -432,6 +443,9 @@ import BottoCore
         let published = await refreshBots()
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
         guard published else { throw HermesServiceError.avatarRefresh }
+        if let id = configuration?.id {
+            avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [destination.profile.id])
+        }
     }
 
     func reloadAvatar(_ destination: AvatarDestination) async throws -> AvatarDestination {
@@ -474,6 +488,9 @@ import BottoCore
         let published = await refreshBots()
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
         guard published else { throw HermesServiceError.partialProfile }
+        if avatar != nil, let id = configuration?.id {
+            avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [destination.profile.id])
+        }
     }
 
     private func validateAvatarDestination(_ destination: AvatarDestination, connection: UUID, recovery: UUID) throws {
@@ -609,7 +626,7 @@ import BottoCore
             }
             if rotatedConfigurations[saved.id] != nil { rotatedConfigurations[saved.id] = saved }
             let changedCache = configuration?.id != saved.id
-            let sameWorkspace = !changedCache && mountedArtifactScope == Self.artifactScope(saved)
+            let sameWorkspace = !changedCache && mountedArtifactScope == (isDemo ? nil : Self.artifactScope(saved))
             if !sameWorkspace { mount(replacementHistory, configuration: saved) }
             if changedCache { selectedBotID = nil; cacheLoadFailed = false }
             retireAvatarWorkspace(ifReplacingWith: saved)

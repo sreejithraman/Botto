@@ -12,7 +12,10 @@ public enum BotAvatarShape: String, CaseIterable, Codable, Identifiable, Sendabl
 /// A projection of the shared look. Writes merge into freshly read metadata, not this projection.
 public struct BotAppearance: Codable, Equatable, Sendable {
     /// Keep the shared choice verbatim, including recipes and future shape kinds.
-    public var rawShape: String?
+    public var rawShape: String? {
+        didSet { geometry = BotAvatarGeometry.fromRecipe(rawShape) }
+    }
+    public private(set) var geometry: BotAvatarGeometry?
     public var shape: BotAvatarShape? {
         get { rawShape.flatMap(BotAvatarShape.init(rawValue:)) }
         set { rawShape = newValue?.rawValue }
@@ -21,24 +24,36 @@ public struct BotAppearance: Codable, Equatable, Sendable {
     public var custom: Bool
     public var imageKind: String?
     public var expression: String?
+    public var bottoPreviewSHA256: String?
     public var isGenerated: Bool { BotAvatarRecipe.isBlobatar(rawShape) }
 
     private enum CodingKeys: String, CodingKey {
         case rawShape = "shape"
-        case color, custom, imageKind, expression
+        case color, custom, imageKind, expression, bottoPreviewSHA256
     }
 
     public init(shape: BotAvatarShape? = nil, color: String? = nil, custom: Bool = false,
-                imageKind: String? = nil, expression: String? = nil) {
+                imageKind: String? = nil, expression: String? = nil, bottoPreviewSHA256: String? = nil) {
         self.init(rawShape: shape?.rawValue, color: color, custom: custom || shape != nil || color != nil,
-                  imageKind: imageKind, expression: expression)
+                  imageKind: imageKind, expression: expression, bottoPreviewSHA256: bottoPreviewSHA256)
     }
 
     /// Reads shared metadata without treating an automatically seeded shape as a user edit.
     public init(rawShape: String?, color: String? = nil, custom: Bool = false,
-                imageKind: String? = nil, expression: String? = nil) {
-        self.rawShape = rawShape; self.color = color; self.custom = custom
-        self.imageKind = imageKind; self.expression = expression
+                imageKind: String? = nil, expression: String? = nil, bottoPreviewSHA256: String? = nil) {
+        self.rawShape = rawShape; self.geometry = BotAvatarGeometry.fromRecipe(rawShape)
+        self.color = color; self.custom = custom
+        self.imageKind = imageKind; self.expression = expression; self.bottoPreviewSHA256 = bottoPreviewSHA256
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(rawShape: try values.decodeIfPresent(String.self, forKey: .rawShape),
+                  color: try values.decodeIfPresent(String.self, forKey: .color),
+                  custom: try values.decodeIfPresent(Bool.self, forKey: .custom) ?? false,
+                  imageKind: try values.decodeIfPresent(String.self, forKey: .imageKind),
+                  expression: try values.decodeIfPresent(String.self, forKey: .expression),
+                  bottoPreviewSHA256: try values.decodeIfPresent(String.self, forKey: .bottoPreviewSHA256))
     }
 
     public func face(for profileID: String) -> BotFace {
@@ -87,6 +102,7 @@ public enum BotAvatarChoice: Equatable, Sendable {
     case shape(BotAvatarShape)
     case face(BotFace)
     case edit(BotAvatarEdit)
+    case geometry(BotAvatarGeometry, color: BotAvatarEdit.Color? = nil)
 
     public var appearance: BotAppearance { applying(to: BotAppearance()) }
 
@@ -96,8 +112,18 @@ public enum BotAvatarChoice: Equatable, Sendable {
         case .automatic: return BotAppearance(expression: current.expression)
         case .shape(let shape): return BotAppearance(shape: shape, custom: true, imageKind: "shape", expression: current.expression)
         case .face(let face): return BotAppearance(shape: face.shape, color: face.sharedColor, custom: true, imageKind: "shape", expression: current.expression)
+        case .geometry(let geometry, let color):
+            let selectedColor: String?
+            switch color {
+            case .automatic: selectedColor = nil
+            case .value(let value): selectedColor = BotAvatarColors.preset(for: value)?.shared ?? value
+            case nil: selectedColor = current.color
+            }
+            return BotAppearance(rawShape: geometry.recipe, color: selectedColor, custom: true,
+                                 imageKind: "shape", expression: current.expression)
         case .edit(let edit):
             var result = current
+            result.bottoPreviewSHA256 = nil
             if let shape = edit.shape { result.shape = shape }
             switch edit.color {
             case .automatic: result.color = nil
@@ -134,6 +160,7 @@ extension BotAvatarChoice {
 
     func merging(into received: [String: HermesJSON]) -> [String: HermesJSON] {
         var look = received
+        look.removeValue(forKey: "bottoPreviewSHA256")
         switch self {
         case .automatic:
             for key in ["shape", "color", "custom", "imageKind"] { look.removeValue(forKey: key) }
@@ -145,6 +172,15 @@ extension BotAvatarChoice {
         case .face(let face):
             look["shape"] = .string(face.shape.rawValue)
             look["color"] = .string(face.sharedColor)
+            look["custom"] = .bool(true)
+            look["imageKind"] = .string("shape")
+        case .geometry(let geometry, let color):
+            look["shape"] = .string(geometry.recipe)
+            switch color {
+            case .automatic: look.removeValue(forKey: "color")
+            case .value(let value): look["color"] = .string(BotAvatarColors.preset(for: value)?.shared ?? value)
+            case nil: break
+            }
             look["custom"] = .bool(true)
             look["imageKind"] = .string("shape")
         case .edit(let edit):

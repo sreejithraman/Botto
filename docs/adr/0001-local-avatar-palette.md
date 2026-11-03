@@ -4,6 +4,12 @@ status: accepted
 
 # Share avatar identity with Botto's own rendering
 
+The rendering implementation below was extended by
+[ADR 0011](0011-custom-avatar-recipes.md): all drawn faces now use the pinned
+Open Bot Avatar engine with native painting. Its canonical rendering and motion
+replace the former local drawing code and eye animation. The shared identity,
+palette and deliberate-edit decisions in this ADR still apply.
+
 Botto shares Hermes avatar identity: the same supported shape family and a
 recognizable color family. Botto owns the outlines, proportions, eyes, expressions,
 and motion so those identities fit its visual design. A purple cloud remains a

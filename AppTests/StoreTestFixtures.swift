@@ -37,6 +37,7 @@ import BottoCore
     var profiles: [BotProfile] = []
     var botsBarrier: StoreTestBarrier?
     var createdBot: BotProfile?
+    var avatarGenerator: ((String, BotProfile) async throws -> BotAvatarGeometry)?
     var createCount = 0
     var info = ServerInfo(version: "test", installID: "test-install")
     var chat = Conversation(id: "runtime", storedID: "stored", profileID: "milo")
@@ -78,6 +79,10 @@ import BottoCore
         createCount += 1
         guard let createdBot else { throw HermesServiceError.disconnected }
         return createdBot
+    }
+    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
+        guard let avatarGenerator else { throw BotAvatarGenerationError.unsupportedHost }
+        return try await avatarGenerator(description, bot)
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now

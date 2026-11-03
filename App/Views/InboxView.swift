@@ -92,13 +92,13 @@ struct InboxView: View {
     private func pinnedRail(_ pinned: [BotProfile]) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 20) {
+                LazyHStack(alignment: .top, spacing: 20) {
                     ForEach(pinned) { bot in
                         Button { open(bot) } label: {
                             VStack(spacing: 9) {
                                 AppBotAvatar(store: store, bot: bot, size: 70, fitsBody: true)
                                     .frame(height: 70, alignment: .top)
-                                Text(bot.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+                                Text(bot.name).font(.caption).lineLimit(2, reservesSpace: true).multilineTextAlignment(.center)
                             }.frame(width: 82)
                         }
                         .buttonStyle(.plain)

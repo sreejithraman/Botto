@@ -3,7 +3,6 @@ import SwiftUI
 import BottoCore
 
 struct BotMotionExperiment: Equatable {
-    var style: BotMotionStyle = .playful
     var activity: BotMotionActivity = .idle
     var triggeredAt: Date = .now
     var workStartedAt: Date = .now
@@ -198,9 +197,6 @@ struct BotMotionPrototype: View {
                 Button(inApp ? "Back to lab" : "Try in demo") { inApp.toggle() }
                     .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
             }
-            Picker("Motion style", selection: $experiment.style) {
-                ForEach(BotMotionStyle.allCases) { style in Text(style.rawValue).tag(style) }
-            }.pickerStyle(.segmented)
             HStack {
                 if inApp {
                     Text("Following each bot's live activity").font(.footnote).foregroundStyle(.secondary)
@@ -246,7 +242,7 @@ struct BotMotionPrototypeFace: View {
         let activity = observedActivity ?? experiment.activity
         let value = BotAvatarPresentation(activity: activity, enteredAt: experiment.triggeredAt,
             workStartedAt: experiment.workStartedAt)
-        BotAvatarMotion(profile: profile, size: size, presentation: value, style: experiment.style, still: still)
+        BotAvatarMotion(profile: profile, size: size, presentation: value, still: still)
     }
 }
 #endif

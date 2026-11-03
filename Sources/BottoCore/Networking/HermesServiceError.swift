@@ -27,7 +27,7 @@ public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
         case .avatarRefresh: "Your avatar was saved, but Botto couldn’t refresh it. Reload the avatar before making another change."
         case .avatarReload: "Botto couldn’t reload the avatar from Hermes. Try reloading again before making another change."
         case .avatarConflict: "This avatar changed on Hermes. Reload it before choosing again."
-        case .partialAvatar: "The face was saved, but removing the previous image was not confirmed. Reload the avatar to check what Hermes kept before saving again."
+        case .partialAvatar: "The face was saved, but updating its image was not confirmed. Reload the avatar to check what Hermes kept before saving again."
         case .uncertainAvatar: "Hermes did not confirm the avatar change. It may have saved. Reload the avatar to check before saving again."
         case .invalidAvatar: "Choose a valid avatar shape and color."
         case .invalidAddress: "Enter a Hermes dashboard HTTP or HTTPS address without credentials, query or fragment."

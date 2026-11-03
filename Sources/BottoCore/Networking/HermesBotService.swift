@@ -7,6 +7,7 @@ import Foundation
     let transportFactory: () -> any HermesTransport
     let timing: HermesGateway.Timing
     let journal: HermesSubmissionJournal
+    let avatarEngine: BotAvatarEngine
     var configuration: ConnectionConfiguration?
     var info: ServerInfo?
     var http: HermesHTTPConnection?
@@ -47,7 +48,8 @@ import Foundation
     var pendingStopObservation: HermesStopObservation?
     var holdOverflow = false
     var active = true
-    var savingAvatars = Set<String>()
+    var savingAvatars: [String: UUID] = [:]
+    var avatarGenerations: [String: UUID] = [:]
     var creating = false
     var sending: Set<SessionIdentity> = []
     var answering: Set<String> = []
@@ -65,8 +67,9 @@ import Foundation
         self.init(transportFactory: { NativeHermesTransport() }, timing: .init(), journal: HermesSubmissionJournal())
     }
     init(transportFactory: @escaping () -> any HermesTransport, timing: HermesGateway.Timing = .init(),
-         journal: HermesSubmissionJournal = HermesSubmissionJournal()) {
+         journal: HermesSubmissionJournal = HermesSubmissionJournal(), avatarEngine: BotAvatarEngine = .shared) {
         self.transportFactory = transportFactory; self.timing = timing; self.journal = journal
+        self.avatarEngine = avatarEngine
     }
 
     public func connect(configuration supplied: ConnectionConfiguration) async throws -> ServerInfo {
@@ -155,7 +158,7 @@ import Foundation
         resetGateway()
         if let http { http.retire(); retiredHTTP.append(http) }
         http = nil
-        attached = false; attaching = false; held = []; answering = []; savingAvatars = []
+        attached = false; attaching = false; held = []; answering = []
     }
 
     public func bots() async throws -> [BotProfile] {
@@ -262,6 +265,9 @@ import Foundation
         guard Self.validProfileName(name), !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw HermesServiceError.invalidName }
         creating = true; defer { creating = false }
         let socket = try readyGateway(), owner = connectionGeneration
+        let avatar = try await canonicalAvatarChoice(draft.avatar, socket: socket, owner: owner)
+        let preview = try await staticAvatarPreview(avatar.appearance, profileID: name, socket: socket, owner: owner)
+        try checkConnection(owner)
         guard !(try await bots()).contains(where: { $0.id == name }) else { throw HermesServiceError.nameTaken }
         try checkConnection(owner)
         var params: [String: HermesJSON] = ["name": .string(name), "share_auth": .bool(true)]
@@ -273,12 +279,20 @@ import Foundation
         do {
             try checkConnection(owner)
             guard draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reply["soul_written"].flag == true else { throw HermesServiceError.partialCreation }
-            let look = draft.avatar.merging(into: ["title": .string(draft.name)])
+            var look = avatar.merging(into: ["title": .string(draft.name)])
+            if let preview { look["bottoPreviewSHA256"] = .string(preview.sha256) }
             let configured = try await socket.call("profiles.configure", ["name": .string(name),
                 "ui_meta": .object(["hermes-bots": .object(look)]),
                 "ui_meta_expected_revisions": .object(["hermes-bots": .number(0)])], mutation: true,
                 validate: { try self.checkConnection(owner) })
             guard configured["applied"]["ui_meta"].flag == true else { throw HermesServiceError.partialCreation }
+            if let preview {
+                let result = try await socket.call("profiles.set_asset", ["name": .string(name), "asset": .string("avatar"),
+                    "data": .string("data:image/png;base64," + preview.data.base64EncodedString())],
+                    mutation: true, validate: { try self.checkConnection(owner) })
+                try checkConnection(owner)
+                guard result["ok"].flag == true, result["asset"].text == "avatar" else { throw HermesServiceError.partialCreation }
+            }
             let rows = try await awaitCreatedProfile(name, socket: socket, owner: owner)
             if rows.isEmpty {
                 let created = try await socket.call("session.create", adapter.create(profile: name, requestID: UUID().uuidString),
@@ -318,14 +332,17 @@ import Foundation
         return asset
     }
 
-    /// Explicit user selection only. Read, merge and CAS the shared look before clearing an image.
+    /// Explicit user selection only. CAS the shared look before replacing its image.
     /// The two RPCs cannot be atomic; a partial or uncertain write is never retried here.
     public func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
         try choice.validate()
-        guard Self.safeSegment(bot.id), !savingAvatars.contains(bot.id) else { throw HermesServiceError.avatarConflict }
+        guard Self.safeSegment(bot.id), savingAvatars[bot.id] == nil else { throw HermesServiceError.avatarConflict }
         let socket = try readyGateway(), owner = connectionGeneration
-        savingAvatars.insert(bot.id)
-        defer { if owner == connectionGeneration { savingAvatars.remove(bot.id) } }
+        let attempt = UUID()
+        savingAvatars[bot.id] = attempt
+        defer { if savingAvatars[bot.id] == attempt { savingAvatars[bot.id] = nil } }
+        let choice = try await canonicalAvatarChoice(choice, socket: socket, owner: owner)
+        try checkConnection(owner)
         var row = try await appearanceRow(profile: bot.id, socket: socket, owner: owner)
         guard let fresh = Self.profile(row), let revision = Self.appearanceRevision(row) else { throw HermesServiceError.incompatible }
         // Only the avatar that was presented may be replaced. The namespace revision
@@ -337,7 +354,11 @@ import Foundation
             throw HermesServiceError.avatarConflict
         }
         try choice.validate(current: fresh.appearance)
-        let look = choice.merging(into: row["ui_meta"]["hermes-bots"].fields ?? [:])
+        var look = choice.merging(into: row["ui_meta"]["hermes-bots"].fields ?? [:])
+        let preview = try await staticAvatarPreview(choice.applying(to: fresh.appearance ?? BotAppearance()),
+                                                    profileID: bot.id, socket: socket, owner: owner)
+        try checkConnection(owner)
+        if let preview { look["bottoPreviewSHA256"] = .string(preview.sha256) }
         let configured: HermesJSON
         do {
             configured = try await socket.call("profiles.configure", ["name": .string(bot.id),
@@ -351,18 +372,21 @@ import Foundation
             if configured["applied"]["ui_meta_conflicts"] != .null { throw HermesServiceError.avatarConflict }
             throw HermesServiceError.uncertainAvatar
         }
-        if fresh.hasAvatar == true {
+        if preview != nil || fresh.hasAvatar == true {
             do {
-                let cleared = try await socket.call("profiles.set_asset", ["name": .string(bot.id), "asset": .string("avatar"), "clear": .bool(true)],
+                var params: [String: HermesJSON] = ["name": .string(bot.id), "asset": .string("avatar")]
+                if let preview { params["data"] = .string("data:image/png;base64," + preview.data.base64EncodedString()) }
+                else { params["clear"] = .bool(true) }
+                let result = try await socket.call("profiles.set_asset", params,
                     mutation: true, validate: { try self.checkConnection(owner) })
                 try checkConnection(owner)
-                guard cleared["ok"].flag == true, cleared["asset"].text == "avatar" else { throw HermesServiceError.partialAvatar }
+                guard result["ok"].flag == true, result["asset"].text == "avatar" else { throw HermesServiceError.partialAvatar }
             } catch { throw HermesServiceError.partialAvatar }
         }
         try checkConnection(owner)
         row["ui_meta"]["hermes-bots"] = .object(look)
         row["ui_meta_revisions"]["hermes-bots"] = configured["applied"]["ui_meta_revisions"]["hermes-bots"]
-        row["has_avatar"] = .bool(false)
+        row["has_avatar"] = .bool(preview != nil)
         guard let saved = Self.profile(row) else { throw HermesServiceError.partialAvatar }
         onEvent?(.botsChanged)
         return saved
@@ -452,6 +476,8 @@ import Foundation
     }
 
     func resetGateway() {
+        avatarGenerations = [:]
+        savingAvatars = [:]
         pendingStopObservation = nil
         state?.motion.canRetain = false
         retireAccess(); runtimeOwners = [:]
@@ -574,7 +600,8 @@ import Foundation
             status: .idle, isPinned: look["pinned"].flag == true, model: row["model"].nonempty,
             appearance: BotAppearance(rawShape: look["shape"].text,
                 color: look["color"].text, custom: look["custom"].flag == true,
-                imageKind: look["imageKind"].text, expression: look["expression"].text),
+                imageKind: look["imageKind"].text, expression: look["expression"].text,
+                bottoPreviewSHA256: look["bottoPreviewSHA256"].text),
             hasAvatar: row["has_avatar"].flag, lookRevision: appearanceRevision(row))
     }
     static func liveStatus(_ wire: String?) -> BotStatus? {

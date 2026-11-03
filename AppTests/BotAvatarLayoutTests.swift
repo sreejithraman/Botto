@@ -101,58 +101,9 @@ struct BotAvatarLayoutTests {
         #expect(overflowPixels(actual, outside: body) == 0)
     }
 
-    @Test(arguments: BotAvatarShape.allCases)
-    func expressionsAndMotionFitBody(shape: BotAvatarShape) throws {
-        // Sample working gaze/lid bounds, real sway frames and the settled frame.
-        // Head roll rotates the body and the face together.
-        var settledBlink = BotFacePose.settledWorking
-        settledBlink.lid = BotFacePose.blink.lid
-        let poses: [BotFacePose] = [.rest, .blink, .settledWorking, settledBlink,
-                                  .working(at: 5), .working(at: 15), .working(at: 25)] + [-0.0475, -0.0075].flatMap { x in
-            [-0.024, 0.024].flatMap { y in
-                [0.06, 1.0].map { lid in BotFacePose(gazeX: x, gazeY: y, roll: y < 0 ? -4.2 : 4.2, lid: lid) }
-            }
-        }
-        var failures: [String] = []
-        for size: CGFloat in [24, 56, 120, 300] {
-            let scale: CGFloat = size <= 56 ? 3 : 1
-            // This opaque preset has fixed body/eye colors; contrast tests cover appearance.
-            for (index, pose) in poses.enumerated() {
-                let body = try render(BotAvatarBody(shape: shape).fill(Color.botBody("#22c55e"))
-                    .rotationEffect(.degrees(pose.roll)), size: size, scale: scale)
-                for expression in BotAvatarExpression.allCases {
-                    let profile = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
-                        shape: shape, color: "#22c55e", expression: expression.rawValue
-                    ))
-                    let actual = try render(BotAvatarMark(profile: profile, size: size, pose: pose), size: size, scale: scale)
-                    let overflow = overflowPixels(actual, outside: body)
-                    if overflow > 0 || (pose.lid == 1 && actual.bytes == body.bytes) {
-                        failures.append("\(shape)/\(expression)/\(size)/pose \(index): \(overflow) overflow pixels")
-                    }
-                }
-            }
-        }
-        #expect(failures.isEmpty == true, "\(failures.count) failing frames: \(failures.prefix(12))")
-    }
 
-    @Test func largeWorkingCapsulesStayInsideAtDisplayScale() throws {
-        let poses: [BotFacePose] = [.rest] + [-0.0475, -0.0075].flatMap { x in
-            [-0.024, 0.024].map { y in BotFacePose(gazeX: x, gazeY: y, roll: y < 0 ? -4.2 : 4.2) }
-        }
-        for shape in [BotAvatarShape.triangle, .cloud, .drop, .pill] {
-            for pose in poses {
-                let body = try render(BotAvatarBody(shape: shape).fill(.black)
-                    .rotationEffect(.degrees(pose.roll)), size: 300)
-                for expression in BotAvatarExpression.allCases {
-                    let profile = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
-                        shape: shape, color: "#22c55e", expression: expression.rawValue
-                    ))
-                    let actual = try render(BotAvatarMark(profile: profile, size: 300, pose: pose), size: 300)
-                    #expect(overflowPixels(actual, outside: body) == 0, "\(shape)/\(expression)/\(pose)")
-                }
-            }
-        }
-    }
+
+
 
     @Test func whiteCustomColorsStayWhiteInBothAppearances() throws {
         for source in ["#ffffff", "#FFFFFF", "#fff", "white", "rgb(255 255 255)", "hsl(0 0% 100%)"] {
@@ -171,67 +122,9 @@ struct BotAvatarLayoutTests {
         }
     }
 
-    @Test func fallbackColorsAndExpressionsStayContained() throws {
-        for shape in BotAvatarShape.allCases {
-            for color in ["#22c55e", "#123456", "#ffffff", "invalid"] {
-                for scheme in [ColorScheme.light, .dark] {
-                    for size: CGFloat in [56, 300] {
-                        let body = try render(BotAvatarBody(shape: shape).fill(Color.botBody(color))
-                            .environment(\.colorScheme, scheme), size: size)
-                        let neutral = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
-                            shape: shape, color: color, expression: "neutral"
-                        ))
-                        let expected = try render(BotAvatar(profile: neutral, size: size, motion: .still)
-                            .environment(\.colorScheme, scheme), size: size)
-                        #expect(expected.bytes != body.bytes)
-                        for expression: String? in [nil, "future-expression"] {
-                            var profile = neutral
-                            profile.appearance?.expression = expression
-                            let actual = try render(BotAvatar(profile: profile, size: size, motion: .still)
-                                .environment(\.colorScheme, scheme), size: size)
-                            #expect(actual.bytes == expected.bytes)
-                            #expect(overflowPixels(actual, outside: body) == 0)
-                        }
-                    }
-                }
-            }
-        }
-    }
 
-    @Test func rotatedCapsulesHaveBreathingRoom() throws {
-        let poses: [BotFacePose] = [.rest] + [-0.0475, -0.0075].flatMap { x in
-            [-0.024, 0.024].map { y in BotFacePose(gazeX: x, gazeY: y) }
-        }
-        var failures: [String] = []
-        for shape in BotAvatarShape.allCases {
-            let body = try render(BotAvatarBody(shape: shape).fill(Color.botBody("#22c55e")), size: 300, scale: 1)
-            for expression in BotAvatarExpression.allCases {
-                let profile = BotProfile(id: "fixture", name: "Fixture", appearance: BotAppearance(
-                    shape: shape, color: "#22c55e", expression: expression.rawValue
-                ))
-                for (index, pose) in poses.enumerated() {
-                    let actual = try render(BotAvatarMark(profile: profile, size: 300, pose: pose), size: 300, scale: 1)
-                    var crowded = false
-                    for y in 0..<actual.height {
-                        for x in 0..<actual.width {
-                            // The green fixture's dark eye pixels differ strongly
-                            // from the body. Compare full capsules, never centers.
-                            let offset = (y * actual.width + x) * 4
-                            guard Int(body.bytes[offset + 1]) - Int(actual.bytes[offset + 1]) > 48,
-                                  actual.alpha(x, y) > 128 else { continue }
-                            // Three pixels at 300 pt: at least 1% of the mark
-                            // separates the painted eye from the body boundary.
-                            for (dx, dy) in [(3, 0), (-3, 0), (0, 3), (0, -3)] {
-                                if body.alpha(x + dx, y + dy) < 128 { crowded = true }
-                            }
-                        }
-                    }
-                    if crowded { failures.append("\(shape)/\(expression)/pose \(index)") }
-                }
-            }
-        }
-        #expect(failures.isEmpty == true, "Capsules need padding: \(failures)")
-    }
+
+
 
     @Test func reducedMotionPolicyAndForcedStillUseTheStaticFrame() throws {
         for shape in BotAvatarShape.allCases {
@@ -323,10 +216,10 @@ struct BotAvatarLayoutTests {
                     shape: shape, color: "#f97316", expression: expression.rawValue
                 ))
                 for activity in activities {
-                    let frame = BotCharacterFrame.resting(activity: activity)
                     for size: CGFloat in [30, 96] {
-                        let reference = try render(BotAvatarMark(profile: profile, size: size,
-                            pose: BotFacePose(lid: frame.lid), animatedEyes: frame.eyes(for: profile)), size: size)
+                        let asset = BotAvatarRenderCache.shared.asset(for: BotAvatarCatalog.geometry(for: shape))!
+                        let reference = try render(BotAvatarCanvas(asset: asset, frame: asset.source.restingFrame,
+                            color: profile.face.color, eyes: BotAvatarActivityStyle.eyes(profile: profile, activity: activity)), size: size)
                         let actual = try render(BotAvatarMotion(profile: profile, size: size,
                             presentation: .init(activity: activity, enteredAt: .distantPast), still: true), size: size)
                         var covered = 0

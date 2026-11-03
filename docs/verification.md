@@ -4,6 +4,134 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Static custom avatar compatibility (3 November 2026)
+
+Custom character Save and custom creation now export a transparent 512px PNG
+from the canonical resting frame. The recipe remains in shared metadata and
+`bottoPreviewSHA256` identifies the derived asset. Botto animates the recipe;
+image-capable clients can display the PNG. Color edits refresh it and preset
+replacement clears it. Different image bytes and explicitly marked photos
+retain image precedence. Other clients own their image-cache refresh behavior.
+Hermes Desktop itself was not driven in this run. Interactive Botto fixture
+launch hit the unsigned build’s Keychain recovery screen; the native assertions
+above use the app’s public test interfaces.
+
+The initial Save regression failed with no asset upload, then passed. All 470
+Core tests passed; the MainActor-default compatibility build and arm64 iOS app
+and test-bundle build passed. On an owned iPhone 17 Pro / iOS 27.0 Simulator,
+51 tests in AppStoreAvatarTests and CustomAvatarLayoutTests passed. These cover
+preview-versus-photo precedence, native painting and existing avatar lifecycle.
+A refresh between metadata save and image upload reproduced stale cached art in
+both Save paths; the test failed before explicit post-Save revalidation and
+passed afterward. Timeout/rejection tests retain partial-save reporting and no
+automatic replay. Metadata and image writes remain separate host operations.
+
+A later review found that the old 160px face-copy heuristic could still hide a
+different marked replacement, and the editor could mistake an unresolved image
+for a confirmed preview. Both reproduced through native public interfaces before
+repair. The store now retains a distinct confirmed-preview result; pending or
+failed reads keep the replacement explanation, and marked nonmatching images
+bypass the legacy size heuristic. All 53 tests in the same two native suites
+passed after repair, including explicit-photo cases and held or failed reads
+followed by Save. Canceling revalidation also reproduced an older confirmation
+returning; queueing a recheck now discards that confirmation until fresh matching
+bytes arrive. The regression covers cancellation, reuse and successful recovery. An optional offscreen editor capture failed in SwiftUI’s
+navigation renderer and was removed from the test harness. No interactive editor
+or Desktop UI pass follows from these state checks.
+
+A disposable real Hermes authority host at `4a0eaf79` passed custom generation,
+Save, independent metadata and PNG readback, custom bot creation with its PNG,
+chat-access preservation, cache roundtrip and later preset replacement. Only the
+model was deterministic. Its missing Python interpreter was restored inside the
+disposable fixture before the successful run. A first native runner attempt used
+the parent SimLock directory and could not find the device; the corrected exact
+iOS device set passed. These results do not establish real-provider character
+quality, every client’s cache behavior, physical-device or whole-app acceptance.
+
+## Canonical avatars (2 November 2026)
+
+Avatar work started from `origin/main` at `3729934`. All ten Hermes shape
+families now use premade Open Bot Avatar v1 definitions and the pinned canonical
+engine at `3a5119877844165eebafe57d3100da475f67d0a8`, painted by native Canvas.
+Existing identity and metadata need no migration.
+
+The premade body contours start from the earlier Botto shapes from `3729934`,
+including Cloud's three puffs and Drop's broad base. Later visual tuning restores
+the first canonical hexagon, rounds the triangle's corners with circular arcs
+and enlarges Cloud's middle puff. The cloud is mirrored so its larger side puff
+sits on the right. Overlapping parts are joined and fitted to the canonical
+safe area. IDs, eye definitions, colors and engine behavior are preserved.
+The earlier restored catalog passed all 466 Core tests and reproducible preview
+generation. Timing and RSS measurements below also describe earlier catalogs.
+Contour comparisons use the production painter on macOS. A later iPhone 17 Pro
+Simulator run on iOS 27.0 captured the final contours in light and dark appearance:
+48 pt catalog, 56 pt rows and fitted chat header, 88 pt gallery, and 110 pt editor.
+The triangle corners look rounded and the cloud's larger side puff is on the
+right. Thinking and Offline cues were inspected on the changed shapes. Saving
+the triangle and reopening retained it; canceling a staged cloud kept the
+triangle. These editor checks use demo memory, not Hermes persistence.
+
+The separate 30 pt squircle header sample in the playground lets its Offline
+cue touch the adjacent label. Complete containment and the broader native
+workflow suite remain unproven. Actual system Reduce Motion, VoiceOver, iPad,
+physical devices and device energy were not checked in this visual run. The
+fresh supported T3 session succeeded and was released after capture export.
+
+The three-shape tuning passed 48 focused avatar tests; its hexagon render
+matches the first canonical version byte-for-byte. The subsequent corner and
+cloud repair changes only triangle and cloud body paths. Its geometry checks
+verify circular corner radii, tangent joins after canonical normalization and
+an exact horizontal cloud reflection. Thirteen focused catalog/reference tests,
+reproducible preview generation and generic iOS app/test compilation pass.
+
+The core gate passes 466 tests and its MainActor-default compatibility build.
+The reproducible engine build, upstream source hashes and independent Node
+frame comparisons pass. On this Mac, decoding all ten bundled resting previews
+measured 14.22 ms. Preparing ten complete shapes measured 9.54 s on the engine
+actor; bundled resting faces remain available during preparation. A warm
+11-avatar workload of 330 frame requests measured 57.13 ms total after moving
+cache lookup ahead of validation (previously 1298.96 ms for the same workload).
+These numbers cover the earlier single-VM bridge, not native painting or iPhone
+energy use. After isolating cold work, a fresh Mac run measured the same 330 warm
+frames at 70.70 ms alone and 58.76 ms during a separate cold preparation. This
+proves no shared actor queue; the small timing difference is not a speedup claim.
+Ten prepared VMs added about 112.6 MB RSS in that process, including geometry and
+assets. The revised registry keeps twelve playback VMs plus at most two temporary cold
+VMs and a validator. Eighteen engine tests pass, including thirteen
+active definitions, temporary preparation at full capacity, shared cancellation,
+abandoned work, and per-instance cleanup without a registry-wide barrier.
+Physical-device memory and behavior with more simultaneous distinct faces remain
+unmeasured.
+
+A disposable authority host at Hermes `4a0eaf7989b6804319ddb94fa5d96c5a716080a1`
+with a deterministic local provider passed generation, no pre-Save profile or
+chat-history writes, explicit Save, independent fresh-client metadata read,
+cache roundtrip, preserved live chat access, and later classic-shape replacement.
+It does not prove real Codex character quality or final provider identity.
+Native raster parity, layout and UI acceptance are being checked separately.
+
+A source review found that one renderer error could end a mounted avatar's
+live loop. A regression failed before the repair, then passed against the
+production model and native cache in an isolated macOS Swift Testing harness.
+Seven tests cover resumed frames with the current activity and a fresh instance,
+bounded persistent failure, suspended cleanup, cancellation, retirement,
+replacement and exact instance cleanup. Preparation tests distinguish temporary
+failures from invalid definitions and reject late results after replacement.
+The same tests are in the iOS app suite; their iOS execution remains pending.
+The bundled JavaScript/Swift worker regression also injects a failure after
+validation, verifies renderer-error classification and successful preparation of
+the same character on retry, and preserves real validator-rejection diagnostics.
+Service regressions cover recovery of a valid generated result with one model
+request, bounded validation/preparation failures, cancellation/disconnection,
+and zero Save/create writes on renderer failure. The new hosted AppStore test
+checks deliberate retry before a write and partial-save recovery after metadata
+is saved; it compiles but still awaits iOS execution.
+
+Evidence lives in the owning worktree's `.artifacts/custom-avatar/` and
+`/tmp/botto-custom-avatar*` logs. Physical-device performance, actual system
+Reduce Motion, VoiceOver, iPad layouts, production model quality and complete
+avatar recipe acceptance remain unproven by these checks.
+
 ## Offline cache withdrawal follow-up (1 November 2026)
 
 The locked-initial-index/no-chat-book regression fails on `436becc`: after a
