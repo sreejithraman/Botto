@@ -335,7 +335,8 @@ import WebKit
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        let originalDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view)
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view,
+            phase: "initial duplicate publication", diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
         let originalDownloads = service.downloads
         let incoming = [first,
             ChatMessage(id: "duplicate", role: .user, text: "Second duplicate remains literal and visible"),
@@ -376,7 +377,8 @@ import WebKit
         let controller = try #require(collectionController(host))
         controller.collection.scrollToItem(at: IndexPath(item: 0, section: 0), at: .top, animated: false)
         let restoredDocument = try await MountedReplyFileDocument.waitForText("Previously trusted document", in: host.view,
-            excluding: originalDocument)
+            excluding: originalDocument, phase: "restored duplicate publication",
+            diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
         #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
         #expect(service.downloads == originalDownloads, "A fresh unique renderer may reuse the original captured bytes")
         // Keep duplicate prompts as distinct rows, without response controls.
@@ -414,7 +416,8 @@ import WebKit
         let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
         window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        let originalDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view)
+        let originalDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
+            phase: "initial hidden duplicate", diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
         let controller = try #require(collectionController(host)), downloads = service.downloads
         let heldCandidate = controller.collection.visibleCells.compactMap { ($0 as? NativeTranscriptCell)?.exposure }.first
         let held = try #require(heldCandidate)
@@ -439,7 +442,8 @@ import WebKit
         service.snapshots[session.root]?.messages = [file]
         service.onEvent?(.conversation(try service.publication(session)))
         let restoredDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
-            excluding: originalDocument)
+            excluding: originalDocument, phase: "restored hidden duplicate",
+            diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
         #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
         #expect(service.downloads == downloads)
         #expect(!held.canPresent)
@@ -533,7 +537,7 @@ import WebKit
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(reason)")
     }
 

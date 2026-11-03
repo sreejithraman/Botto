@@ -55,7 +55,7 @@ jobs:
   native:
     if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: xcode-27
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
@@ -73,13 +73,13 @@ jobs:
           NATIVE_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.native_test || '' }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            ./scripts/check-native.sh --build-only
+            exec python3 scripts/dev-process.py run -- ./scripts/check-native.sh --build-only
           else
             if [[ "$NATIVE_TEST" == -* ]]; then
               echo 'Select a native suite or suite/test, not a runner option.' >&2
               exit 2
             fi
-            ./scripts/check-native.sh "$NATIVE_TEST"
+            exec python3 scripts/dev-process.py run -- ./scripts/check-native.sh "$NATIVE_TEST"
           fi
       - name: Runner resources after checks
         if: always()
@@ -95,7 +95,10 @@ jobs:
           path: |
             .artifacts/CIResults-*.xcresult
             .artifacts/CISelectedTests-*.txt
+            .artifacts/CINative-*.log
             ${{ steps.checks.outputs.native_result_fallback }}
+            ${{ steps.checks.outputs.native_selection_fallback }}
+            ${{ steps.checks.outputs.native_log_fallback }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

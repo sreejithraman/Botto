@@ -509,7 +509,7 @@ import BottoCore
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(20)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
