@@ -166,7 +166,13 @@ rows. Only a check of that exact scope releases its hold; completing restoration
 for other chats does not. An evicted scope with no saved row keeps Book seeds
 and partial publications gated. A coherent source read releases its scoped hold
 only when the retained messages match the complete producer proof. Overflow
-remains conservative until the cache owner is retired.
+remains conservative until the cache owner is retired. Each retained scope also
+keeps its loss time, so a read started before eviction cannot release it. The
+shared admission path applies this check to Library scans. SQL absence alone
+cannot certify a held partial record. The writer journals held canonical scopes
+but keeps their guards until a qualifying check; directory observations and
+incomplete pages cannot clear them. A complete scan reconciles its checked
+metadata before finishing its save.
 Restoration rechecks saved rows against guards created during its own awaits and
 merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
 Accepted rows survive retry behind the visibility gate; a successful SQL read

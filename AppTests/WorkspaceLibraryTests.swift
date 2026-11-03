@@ -18,8 +18,12 @@ import BottoCore
         return book
     }
 
-    @Test(arguments: [false, true])
-    func discardedAbsentScopeRejectsALateBookUntilATrustedRead(trustedRead: Bool) async throws {
+    enum HeldScopeInterruption: CaseIterable, Sendable {
+        case none, failedScan, partialScan, partialScanBeforeRecovery, delayedRead
+    }
+
+    @Test(arguments: [false, true], HeldScopeInterruption.allCases)
+    func discardedAbsentScopeRejectsALateBookUntilATrustedRead(trustedRead: Bool, interruption: HeldScopeInterruption) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let service = LibraryTestService(secondBot: true)
@@ -65,11 +69,28 @@ import BottoCore
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: savedBook(service), service: service, onDirty: {})
         defer { workspace.retireWorkspace() }
-        workspace.onAcceptedTranscript = { library.accept($0) }
+        var publications: [ChatTranscriptPublication] = []
+        workspace.onAcceptedTranscript = { publications.append($0); library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
-        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        let delayedGate = StoreTestBarrier()
+        defer { delayedGate.release() }
+        var delayedRead: Task<Void, Never>?
+        if interruption == .delayedRead {
+            service.previewHasEarlierMessages = false
+            service.messages[service.first] = [current, .init(id: "delayed-old-only", role: .assistant,
+                text: "Delayed private needle\nMEDIA:/delayed-private.txt", timestamp: Date(timeIntervalSince1970: 10_000))]
+            service.previewBarrier = delayedGate
+            delayedRead = Task { await workspace.refreshInboxHistory(profiles: [service.first.profile]) }
+            await delayedGate.waitUntilEntered()
+            service.messages[service.first] = [current]
+            let startedAt = ContinuousClock.now
+            let page = try await service.conversationHistory(service.first, offset: 0)
+            library.accept(identity: service.first, snapshot: .init(id: service.first.root.text, storedID: service.first.stored.text,
+                profileID: service.first.profile.text, messages: page.messages), title: "Current",
+                evidence: .read(startedAt: startedAt, observedSource: service.first, identityRead: page.identityRead))
+        } else { await workspace.refreshInboxHistory(profiles: [service.first.profile]) }
         for index in 2...4 {
-            let source = SessionIdentity(profile: service.first.profile, root: try ExactID("pressure-\(index)"),
+            let source = SessionIdentity(profile: try ExactID("pressure-profile"), root: try ExactID("pressure-\(index)"),
                 stored: try ExactID("pressure-\(index)"), aliases: [])
             service.messages[source] = [.init(id: "pressure", role: .assistant, text: "Newer safe pressure row",
                 timestamp: Date(timeIntervalSince1970: Double(index)))]
@@ -82,8 +103,37 @@ import BottoCore
         #expect(library.indexingMetrics.acceptedSnapshots == 5)
         #expect(!library.chats.contains { $0.identity == service.first })
         #expect(try Data(contentsOf: ledger) == unreadable)
+        if let delayedRead {
+            service.previewBarrier = nil; delayedGate.release(); await delayedRead.value
+            let publication = try #require(publications.last)
+            #expect(publication.snapshot.messages.contains { $0.text.contains("Delayed private needle") })
+            #expect(publication.evidence.readContext?.identityRead != nil)
+            #expect(library.indexingMetrics.acceptedSnapshots == 5)
+            #expect(LibrarySearchResults(query: "Delayed private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+            #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/delayed-private.txt" })
+            service.previewHasEarlierMessages = true
+        }
+        func scanHeldScope(failing: Bool) async {
+            if failing { service.failingHistorySource = service.first }
+            else {
+                service.historyPages[service.first] = [0: .init(messages: [current], nextOffset: 1, isComplete: false)]
+                service.historyFailures[service.first] = HermesServiceError.disconnected
+                service.historyFailureOffsets[service.first] = 1
+            }
+            library.setOnline(true)
+            await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+            library.setOnline(false)
+            service.failingHistorySource = nil; service.historyPages[service.first] = nil
+            service.historyFailures[service.first] = nil; service.historyFailureOffsets[service.first] = nil
+        }
+        if interruption == .partialScanBeforeRecovery { await scanHeldScope(failing: false) }
         try FileManager.default.removeItem(at: ledger)
         await library.restore(); await library.restore()
+        if interruption == .failedScan || interruption == .partialScan {
+            await scanHeldScope(failing: interruption == .failedScan)
+        }
+        let persistenceDeadline = ContinuousClock.now + .seconds(3)
+        while library.isLoading, ContinuousClock.now < persistenceDeadline { await Task.yield() }
         #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
         #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
         let restoredPeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
@@ -95,10 +145,14 @@ import BottoCore
         var oldBook = ConversationBook()
         let oldChat = oldBook.merge(.init(identity: service.first, title: "Old Book", isCanonical: true, persistence: .durable))
         oldBook.cache(.init(id: service.first.root.text, storedID: service.first.stored.text,
-            profileID: service.first.profile.text, messages: [superseded]), for: oldChat)
+            profileID: service.first.profile.text, messages: [superseded,
+                .init(id: "old-only", role: .assistant, text: "Superseded private needle\nMEDIA:/old-only-private.txt",
+                    timestamp: Date(timeIntervalSince1970: 9_999))]), for: oldChat)
         library.seed(book: oldBook, bots: service.profiles); await library.restore()
         #expect(LibrarySearchResults(query: "Superseded private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/superseded-private.txt" })
+        #expect(LibrarySearchResults(query: "Delayed private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+        #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/delayed-private.txt" })
         #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
         #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
         let peerAfterSeed = try #require(library.artifacts.first { $0.chat.identity == service.second })
@@ -109,11 +163,17 @@ import BottoCore
             let proven = ChatMessage(id: current.id, role: .assistant, text: "Trusted recovery needle\nMEDIA:/trusted.txt",
                 timestamp: Date(timeIntervalSince1970: 10_001))
             service.messages[service.first] = [proven]
-            let startedAt = ContinuousClock.now
-            let page = try await service.conversationHistory(service.first, offset: 0)
-            library.accept(identity: service.first, snapshot: .init(id: service.first.root.text, storedID: service.first.stored.text,
-                profileID: service.first.profile.text, messages: page.messages), title: "Trusted",
-                evidence: .read(startedAt: startedAt, observedSource: service.first, identityRead: try #require(page.identityRead)))
+            if interruption == .none || interruption == .delayedRead {
+                let startedAt = ContinuousClock.now
+                let page = try await service.conversationHistory(service.first, offset: 0)
+                library.accept(identity: service.first, snapshot: .init(id: service.first.root.text, storedID: service.first.stored.text,
+                    profileID: service.first.profile.text, messages: page.messages), title: "Trusted",
+                    evidence: .read(startedAt: startedAt, observedSource: service.first, identityRead: page.identityRead))
+            } else {
+                library.setOnline(true)
+                await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+                library.setOnline(false)
+            }
             let provenDeadline = ContinuousClock.now + .seconds(3)
             var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
             while !saved.contains(where: { $0.identity == service.first && $0.messages == [proven] }) || recovery.contains(service.first),
@@ -140,6 +200,19 @@ import BottoCore
             #expect(library.artifacts.contains { $0.chat.identity == service.second })
         }
         library.retire(); await cache.close()
+        if !trustedRead && interruption != .none && interruption != .delayedRead {
+            let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+            let cold = WorkspaceLibrary(service: service, cache: coldSession)
+            cold.seed(book: oldBook, bots: service.profiles); await cold.restore()
+            #expect(LibrarySearchResults(query: "Superseded private needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
+            #expect(!cold.artifacts.contains { $0.artifact.attachment?.path == "/old-only-private.txt" })
+            #expect(try await coldSession.loadChats().contains { $0.messages.contains { $0.id == "old-only" } } == false)
+            let coldPeer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
+            downloads = service.downloadCount
+            #expect(try await cold.download(coldPeer).data == Data("side".utf8))
+            #expect(service.downloadCount == downloads)
+            cold.retire(); await coldCache.close()
+        }
     }
 
     enum IndependentWindowSavedSource: CaseIterable, Sendable { case absent, sameTip, differentTip }
@@ -4946,6 +5019,7 @@ private actor NextLibraryProjectionPause {
     var messages: [SessionIdentity: [ChatMessage]] = [:]
     var previewEnabled = false
     var previewReadCount = 0
+    var previewBarrier: StoreTestBarrier?
     var previewHasEarlierMessages = false
     var failHistory = false
     var failingHistorySource: SessionIdentity?
@@ -5028,7 +5102,9 @@ private actor NextLibraryProjectionPause {
         guard previewEnabled else { return nil }
         previewReadCount += 1
         if failHistory { throw URLError(.cannotConnectToHost) }
-        return messages[identity].map { rows in
+        let capturedRows = messages[identity]
+        await previewBarrier?.wait()
+        return capturedRows.map { rows in
             let page = certifyingIdentity(.init(messages: rows, nextOffset: nil, isComplete: true,
                 sourceIDs: Set(rows.map { Data($0.id.utf8) })), identity: identity, offset: 0)
             return .init(messages: rows, hasEarlierMessages: previewHasEarlierMessages,

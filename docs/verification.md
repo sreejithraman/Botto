@@ -1215,7 +1215,47 @@ whose complete rows survive admission, releases that scope; later partial
 updates can then continue normally. The focused run passed nine functions,
 including both new cases. The five affected native suites passed all 248
 functions. App and test dependencies matched the run manifest; only proof prose
-changed during that run. Current UI/provider checks and pass-26 source review
-remain pending. Evidence: `unchecked-hold-{executed-red,fixture-diagnostic,controlled-red,green,final-native}*`
+changed during that run. On `dc4eb02`, all seven affected UI cases passed in one
+run and independent provider readback verified all 80 bytes and the expected
+digest (`hold-final-chat-export*`). All 486 tracked hashes matched before and
+after the run. Pass-26 Thermo and Adversarial reviews found the scan and freshness
+issues described below; the other two assessments were canceled before repair.
+That partial review round does not supply complete four-angle acceptance. Evidence: `unchecked-hold-{executed-red,fixture-diagnostic,controlled-red,green,final-native}*`
 under `/tmp/botto-pr-integration/`. Prior failed full-gate results and acceptance
 limits remain unchanged.
+
+
+Pass 26 found two further routes around a held scope: a Library scan could save
+unchecked data or use SQL absence to release the hold, and a delayed coherent
+read could lose its freshness fence after eviction. The expanded public-path
+regression covers failed and partial scans after storage recovery, a partial
+scan before recovery, a captured older inbox response delivered after a newer
+Library read and eviction, and the existing no-scan case. Each runs with and
+without a later trusted read. The scan cases cold reopen with a distinct-ID
+stale Book row and check Search, artifacts, SQL and offline captured peer bytes.
+The delayed response includes a removed recent row so it fits the budget and
+exposes a material failure. The final controlled red reported 34 issues across
+ten cases. Raw source/test controls are bound to the retained run manifests.
+An earlier attempt included unsupported cold assertions after a guard could not
+be written and no subsequent durable operation occurred. Another proved delayed
+admission but its old row did not fit the retention budget. Neither supplies the
+final delayed-content or recovered-scan acceptance evidence.
+
+Shared admission now checks held history reads, scoped loss times survive
+eviction, and the writer cannot clear a held scope's guard through an unchecked
+upsert. SQL absence keeps those holds. The first shared repair passed nine
+focused functions, including all ten new cases. A further positive control uses
+a complete Library scan to resolve the hold. It found one case where the scan
+left fresh metadata waiting for another restore. The scan now settles that
+metadata before its final save. That rerun found three cold privacy issues in
+the pre-recovery scan case. Source tracing linked these to withdrawal clearing
+an empty hint's dirty flag before its guard could be retried. Guard inventory
+now includes every held canonical scope, independently of dirty state. The final
+focused run passed all nine functions, including ten recovery cases. The five
+affected native suites passed all 248 functions. Runtime and test bytes matched
+the run manifest; only contract/proof prose changed during that run.
+Evidence: `scan-hold-{red,controlled-red,final-red,green}*`,
+`scan-settlement-{red,green}*` (green failed three assertions), and
+`scan-{guard-inventory-green,hold-final-native}*` under
+`/tmp/botto-pr-integration/`. Current UI/provider and fresh four-angle source
+review remain pending. Earlier full-gate failures and acceptance limits remain.
