@@ -223,19 +223,28 @@ import BottoCore
         get { access(keyPath: \.selectedBotID); return selectedBotStorage }
         set { selectBotID(newValue) }
     }
-    @discardableResult private func selectBotID(_ value: String?, while isCurrent: () -> Bool = { true }) -> Bool {
+    private enum SelectionPresentation {
+        case retire, preserveNavigation(NavigationClaim), attachmentCommit
+    }
+    @discardableResult private func selectBotID(_ value: String?, presentation: SelectionPresentation = .retire,
+                                               while isCurrent: () -> Bool = { true }) -> Bool {
         guard isCurrent() else { return false }
+        // Every write supersedes older ones, including a write that leaves the bytes unchanged.
+        let attempt = UUID(); selectionRevision = attempt
         guard selectedBotStorage.map({ Data($0.utf8) }) != value.map({ Data($0.utf8) }) else { return true }
-        let previous = selectionRevision
         return withMutation(keyPath: \.selectedBotID) {
             // Observation can synchronously replace navigation or recover the connection.
-            guard selectionRevision == previous, isCurrent() else { return false }
-            let installed = UUID(), workspace = chats
-            selectionRevision = installed; selectedBotStorage = value
+            guard selectionRevision == attempt, isCurrent() else { return false }
+            let workspace = chats
+            selectedBotStorage = value
             retireArtifactPresentation()
-            guard selectionRevision == installed, isCurrent() else { return false }
-            workspace.retirePresentation()
-            return selectionRevision == installed && isCurrent()
+            guard selectionRevision == attempt, isCurrent() else { return false }
+            switch presentation {
+            case .retire: workspace.retirePresentation()
+            case .preserveNavigation(let claim): workspace.retirePresentation(preserving: claim)
+            case .attachmentCommit: break
+            }
+            return selectionRevision == attempt && isCurrent()
         }
     }
     /// Also captured by rendered rows to reject a tap queued before retirement.
@@ -756,15 +765,20 @@ import BottoCore
         accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true }) async -> Bool {
         guard !Task.isCancelled, library.isCurrent(chat), bot(withID: chat.botID) != nil else { return false }
         let workspace = chats, sourceLibrary = library
+        let connection = generation, recovery = attachmentRecoveryGeneration
         let originalBot = selectedBotID.map { Data($0.utf8) }
-        guard let intent = workspace.beginLibraryOpening(chat.identity) else { return false }
+        guard let intent = workspace.beginLibraryOpening(chat.identity), workspace === chats,
+              generation == connection, attachmentRecoveryGeneration == recovery else { return false }
         let opened = await workspace.openLibraryChat(intent, accepts: accepts) { [self] identity in
             guard !Task.isCancelled, workspace === chats, sourceLibrary === library, !sourceLibrary.isRetired,
                   selectedBotID.map({ Data($0.utf8) }) == originalBot,
                   identity.profile == chat.identity.profile,
                   bot(withID: chat.botID) != nil, sourceLibrary.isCurrent(chat) else { return false }
-            selectedBotID = chat.botID
-            return true
+            return selectBotID(chat.botID, presentation: .attachmentCommit) {
+                !Task.isCancelled && workspace === chats && sourceLibrary === library && !sourceLibrary.isRetired &&
+                    generation == connection && attachmentRecoveryGeneration == recovery &&
+                    workspace.ownsLibraryOpening(intent) && sourceLibrary.isCurrent(chat)
+            }
         }
         return opened != nil
     }
@@ -876,9 +890,8 @@ import BottoCore
     }
 
     func open(_ bot: BotProfile) async {
-        pendingPushNotification = nil; selectedBotID = bot.id
-        guard let profile = try? ExactID(bot.id) else { return }
-        await chats.openBot(profile: profile)
+        guard let opening = prepareBotOpening(bot, attention: false, requirement: .explicit) else { return }
+        await openBot(opening)
     }
 
     private func bindPushNotifications() {
@@ -944,12 +957,17 @@ import BottoCore
             notice = "This notification no longer has a verified chat destination. Open your bot's chats to continue."
             return
         }
-        let workspace = chats
+        let workspace = chats, selection = selectionRevision
+        let connection = generation, recovery = attachmentRecoveryGeneration
         let opened = await workspace.openNotificationChat(.init(profile: profile, root: root, stored: stored, aliases: [])) { self.pendingPushNotification?.id == intent.id && self.push.authorizesNavigation(intent) }
         guard self.configuration?.id == configuration.id, chats === workspace,
               pendingPushNotification?.id == intent.id, push.authorizesNavigation(intent), !isDemo else { return }
         if opened {
-            selectedBotID = bot.id
+            guard selectionRevision == selection,
+                  selectBotID(bot.id, presentation: .attachmentCommit, while: {
+                      chats === workspace && generation == connection && attachmentRecoveryGeneration == recovery &&
+                          pendingPushNotification?.id == intent.id && push.authorizesNavigation(intent) && !isDemo
+                  }) else { return }
             pendingPushNotification = nil; notice = nil
             notificationNavigationRevision = UUID()
         } else {
@@ -1067,41 +1085,76 @@ import BottoCore
         library.reconcileOriginalConsumers()
     }
 
+    fileprivate struct BotNavigationAuthority: Sendable {
+        let workspace: ConversationWorkspace
+        let connection: UUID
+        let recovery: UUID
+        let claim: NavigationClaim
+    }
     struct BotCreationResult: Sendable {
         let bot: BotProfile
-        fileprivate let workspace: ConversationWorkspace
-        fileprivate let connection: UUID
-        fileprivate let recovery: UUID
+        fileprivate let authority: BotNavigationAuthority
     }
-    struct CreatedBotOpening: Sendable {
-        fileprivate let creation: BotCreationResult
+    fileprivate enum BotProfileRequirement: Sendable { case listed, explicit }
+    struct BotOpening: Sendable {
+        fileprivate let requirement: BotProfileRequirement
+        fileprivate let authority: BotNavigationAuthority
+        fileprivate let profile: ExactID
         fileprivate let intent: OpeningIntent
     }
-
-    func prepareCreatedBotOpening(_ creation: BotCreationResult) -> CreatedBotOpening? {
-        guard ownsCreation(creation), let profile = try? ExactID(creation.bot.id),
-              selectBotID(profile.text, while: { ownsCreation(creation) }),
-              let intent = creation.workspace.captureOpening(profile: profile) else { return nil }
-        let opening = CreatedBotOpening(creation: creation, intent: intent)
-        return canOpenCreatedBot(opening) ? opening : nil
+    private func captureBotAuthority() -> BotNavigationAuthority? {
+        let workspace = chats
+        guard !showsConnection, pendingConnectionInput == nil,
+              let claim = workspace.captureNavigationClaim() else { return nil }
+        return .init(workspace: workspace, connection: generation, recovery: attachmentRecoveryGeneration, claim: claim)
     }
-    private func ownsCreation(_ creation: BotCreationResult) -> Bool {
-        active && isConnected && !showsConnection && pendingConnectionInput == nil &&
-            chats === creation.workspace && generation == creation.connection &&
-            attachmentRecoveryGeneration == creation.recovery && bot(withID: creation.bot.id) != nil
+    private func isCurrentConnection(_ authority: BotNavigationAuthority) -> Bool {
+        chats === authority.workspace && generation == authority.connection &&
+            attachmentRecoveryGeneration == authority.recovery && !showsConnection && pendingConnectionInput == nil
     }
-    func canOpenCreatedBot(_ opening: CreatedBotOpening) -> Bool {
-        ownsCreation(opening.creation) &&
-            selectedBotID.map({ Data($0.utf8) }) == Data(opening.creation.bot.id.utf8)
+    private func ownsBotNavigation(_ authority: BotNavigationAuthority) -> Bool {
+        isCurrentConnection(authority) && authority.workspace.ownsNavigation(authority.claim)
     }
-    func openCreatedBot(_ opening: CreatedBotOpening) async {
-        guard canOpenCreatedBot(opening) else { return }
-        await opening.creation.workspace.open(opening.intent)
+    private func acceptsProfile(_ profile: ExactID, requirement: BotProfileRequirement) -> Bool {
+        if case .explicit = requirement { return true }
+        return bot(withID: profile.text) != nil
+    }
+    func prepareBotOpening(_ bot: BotProfile, attention: Bool = false) -> BotOpening? {
+        prepareBotOpening(bot, attention: attention, requirement: .listed)
+    }
+    private func prepareBotOpening(_ bot: BotProfile, attention: Bool, requirement: BotProfileRequirement) -> BotOpening? {
+        guard let profile = try? ExactID(bot.id), acceptsProfile(profile, requirement: requirement),
+              let authority = captureBotAuthority() else { return nil }
+        pendingPushNotification = nil
+        return prepareBotOpening(bot, authority: authority, attention: attention, requirement: requirement)
+    }
+    func prepareCreatedBotOpening(_ creation: BotCreationResult) -> BotOpening? {
+        guard active, isConnected else { return nil }
+        return prepareBotOpening(creation.bot, authority: creation.authority, attention: false, requirement: .listed)
+    }
+    private func prepareBotOpening(_ bot: BotProfile, authority: BotNavigationAuthority, attention: Bool, requirement: BotProfileRequirement) -> BotOpening? {
+        guard ownsBotNavigation(authority), let profile = try? ExactID(bot.id), acceptsProfile(profile, requirement: requirement),
+              selectBotID(profile.text, presentation: .preserveNavigation(authority.claim), while: {
+                  ownsBotNavigation(authority) && acceptsProfile(profile, requirement: requirement)
+              }), let intent = authority.workspace.captureOpening(profile: profile, attention: attention, claim: authority.claim) else { return nil }
+        let opening = BotOpening(requirement: requirement, authority: authority, profile: profile, intent: intent)
+        return canOpenBot(opening) ? opening : nil
+    }
+    func canOpenBot(_ opening: BotOpening) -> Bool {
+        ownsBotNavigation(opening.authority) && acceptsProfile(opening.profile, requirement: opening.requirement) &&
+            selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes
+    }
+    func openBot(_ opening: BotOpening) async {
+        guard canOpenBot(opening) else { return }
+        await opening.authority.workspace.open(opening.intent)
     }
 
     func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotCreationResult? {
         guard isConnected, !Task.isCancelled else { return nil }
-        let owner = generation, recovery = attachmentRecoveryGeneration, workspace = chats
+        guard let authority = captureBotAuthority() else { return nil }
+        let owner = authority.connection
+        pendingPushNotification = nil
+        guard isCurrentConnection(authority), isConnected, !Task.isCancelled else { return nil }
         do {
             let bot = try await service.createBot(draft)
             guard generation == owner, !Task.isCancelled else { return nil }
@@ -1112,7 +1165,7 @@ import BottoCore
                 onFailure?(HermesServiceError.partialCreation)
                 return nil
             }
-            return .init(bot: bot, workspace: workspace, connection: owner, recovery: recovery)
+            return .init(bot: bot, authority: authority)
         } catch {
             if generation == owner, !Task.isCancelled {
                 notice = error.localizedDescription

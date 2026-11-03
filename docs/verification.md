@@ -1559,3 +1559,23 @@ interruptions. Evidence: `arch23/{red,dismissal-red}*`, `authority-red5*` and
 copies. Failed compilation, an empty selection, and an earlier recursive test
 callback are excluded from proof. The first full-gate attempt was deliberately
 stopped before this repair; a complete gate on the repaired source remains pending.
+
+### Navigation ownership integration — 3 November 2026
+
+Bot entry, Library commits and creation now share one navigation claim taken
+before queued work or creation I/O. Callers honor a rejected selection, and
+attachment rechecks ownership after synchronous callbacks. Root always
+acknowledges a confirmed creation. A nested same-value or nil selection write
+now also supersedes an older in-flight selection.
+
+The ARCH29 control on the integrated source without that last change failed 4
+of 10 reentrancy cases (11 issues): raw same-value and nil writes during creation
+and ordinary opening. Real Inbox captures and byte-distinct Unicode writes already
+passed, as did the ordinary-opening controls. The final source passed 182 Swift
+Testing functions in AppStoreTests, AppStoreRefreshTests, AppStoreAvatarTests,
+ConversationWorkspaceTests, LibraryNavigationIntegrationTests,
+NotificationStoreTests and WorkspacePresentationTests, plus all six
+NewBotUITests, on an owned iPhone 17 Pro (iOS 27.0) simulator.
+`scripts/check-core.sh` passed. Evidence and source bindings:
+`/tmp/botto-ui-gate-repair/nav33/claude-final/`. The full gate on this source
+remains pending.

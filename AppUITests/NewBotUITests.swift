@@ -110,6 +110,12 @@ final class NewBotUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Connect Hermes"].exists)
         XCTAssertTrue(app.staticTexts["https://replacement.example"].exists)
         XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
+        app.buttons["Cancel"].tap()
+        let back = app.buttons["Back"]
+        if back.waitForExistence(timeout: 3) { back.tap() }
+        XCTAssertTrue(app.buttons["New bot"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Your bot was created."].waitForExistence(timeout: 3),
+                      "Confirmed creation stays acknowledged when the prepared opening retires.")
     }
 
     @MainActor func testSuccessfulCreationAcknowledgesAndOpensWhileSceneIsInactive() throws {

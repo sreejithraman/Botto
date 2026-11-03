@@ -17,7 +17,7 @@ struct RootView: View {
     }
     private enum Sheet: Equatable { case connection, settings, newBot }
     @State private var sheet: Sheet?
-    @State private var createdBotOpening: AppStore.CreatedBotOpening?
+    @State private var createdBotOpening: AppStore.BotOpening?
     @State private var deliberateSheet = false
     private var showsSheet: Binding<Bool> {
         let renderedSheet = sheet
@@ -51,7 +51,7 @@ struct RootView: View {
         guard sheet == .newBot, !store.showsConnection else { return }
         createdBotOpening = opening
         sheet = nil
-        if opening == nil { store.notice = "Your bot was created. Open it from the inbox." }
+        store.notice = "Your bot was created."
     }
 
     private func sheetDidDismiss() {
@@ -61,12 +61,12 @@ struct RootView: View {
         presentation.didChooseConversation()
         Task { @MainActor in
             guard mayOpenCreatedBot(opening) else { return }
-            await store.openCreatedBot(opening)
+            await store.openBot(opening)
         }
     }
 
-    private func mayOpenCreatedBot(_ opening: AppStore.CreatedBotOpening) -> Bool {
-        sheet == nil && store.canOpenCreatedBot(opening)
+    private func mayOpenCreatedBot(_ opening: AppStore.BotOpening) -> Bool {
+        sheet == nil && store.canOpenBot(opening)
     }
 
     var body: some View {

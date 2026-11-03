@@ -15,6 +15,10 @@ struct PresentationOwner: Hashable, Sendable {
     fileprivate let access: ConversationAccess?
     var epoch: UUID { presentation }
 }
+struct NavigationClaim: Sendable {
+    fileprivate let scope: WorkspaceScope
+    fileprivate let request: UUID
+}
 struct OpeningIntent: Sendable {
     fileprivate let scope: WorkspaceScope
     fileprivate let epoch: UUID
@@ -638,18 +642,29 @@ private struct ReadObservationKey: Hashable, Sendable {
         return .init(presentation: presentation, knownCount: knownCount, attentionChat: waiting)
     }
     /// Captured navigation claims its request before queued work or I/O begins.
+    func captureNavigationClaim() -> NavigationClaim? {
+        guard !retired else { return nil }
+        let request = UUID(); navigationRequest = request
+        return .init(scope: scope, request: request)
+    }
+    func ownsNavigation(_ claim: NavigationClaim) -> Bool {
+        !retired && claim.scope == scope && navigationRequest == claim.request
+    }
     func captureOpening(profile: ExactID, attention: Bool = false) -> OpeningIntent? {
-        guard !retired, book.preference(profile) != nil else { return nil }
-        let request = UUID()
-        navigationRequest = request
-        return .init(scope: scope, epoch: presentation, request: request, profile: profile, attention: attention)
+        guard !retired, book.preference(profile) != nil, let claim = captureNavigationClaim() else { return nil }
+        return captureOpening(profile: profile, attention: attention, claim: claim)
+    }
+    func captureOpening(profile: ExactID, attention: Bool = false, claim: NavigationClaim) -> OpeningIntent? {
+        guard ownsNavigation(claim) else { return nil }
+        if book.preference(profile) == nil { ensureProfile(profile) }
+        guard ownsNavigation(claim), book.preference(profile) != nil else { return nil }
+        return .init(scope: scope, epoch: presentation, request: claim.request, profile: profile, attention: attention)
     }
     func beginLibraryOpening(_ source: SessionIdentity) -> LibraryOpeningIntent? {
-        guard !retired, book.preference(source.profile) != nil else { return nil }
+        guard !retired, book.preference(source.profile) != nil, let claim = captureNavigationClaim() else { return nil }
         onUserNavigation?()
-        let request = UUID()
-        navigationRequest = request
-        return .init(scope: scope, request: request, source: source)
+        guard ownsNavigation(claim) else { return nil }
+        return .init(scope: scope, request: claim.request, source: source)
     }
     func openLibraryChat(_ intent: LibraryOpeningIntent,
                          accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
@@ -666,12 +681,12 @@ private struct ReadObservationKey: Hashable, Sendable {
                 guard ownsLibraryOpening(intent), online, recovery == connection,
                       selected == previousSelection else { return }
                 readAuthorityBlocked = true
-                await attach(previousSelection, libraryRequest: intent.request)
+                await attach(previousSelection, navigation: intent.request)
             }.value
         }
         return nil
     }
-    private func ownsLibraryOpening(_ intent: LibraryOpeningIntent) -> Bool {
+    func ownsLibraryOpening(_ intent: LibraryOpeningIntent) -> Bool {
         !retired && intent.scope == scope && navigationRequest == intent.request
     }
     private func performLibraryOpening(_ intent: LibraryOpeningIntent,
@@ -691,29 +706,33 @@ private struct ReadObservationKey: Hashable, Sendable {
                 guard matches.count == 1, let summary = matches.first else { return nil }
                 let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[source.profile]) }
                 availability[id] = true
-                return await attach(id, selectionCommit: .afterAttachment, libraryRequest: intent.request, accepts: accepts, commit: commit)
+                return await attach(id, selectionCommit: .afterAttachment, navigation: intent.request, accepts: accepts, commit: commit)
             } catch { return nil }
         } else if let id = book.matching(source), book.record(id)?.isUnverified == false {
-            return await attach(id, selectionCommit: .afterAttachment, libraryRequest: intent.request, accepts: accepts, commit: commit)
+            return await attach(id, selectionCommit: .afterAttachment, navigation: intent.request, accepts: accepts, commit: commit)
         }
         return nil
     }
     func open(_ intent: OpeningIntent) async {
         await open(intent, userInitiated: true)
     }
+    private func ownsOpening(_ intent: OpeningIntent) -> Bool {
+        !Task.isCancelled && !retired && intent.scope == scope && intent.epoch == presentation &&
+            navigationRequest == intent.request && book.preference(intent.profile) != nil
+    }
     private func open(_ intent: OpeningIntent, userInitiated: Bool) async {
-        guard !Task.isCancelled, !retired, intent.scope == scope, intent.epoch == presentation,
-              navigationRequest == intent.request,
-              book.preference(intent.profile) != nil else { return }
+        guard ownsOpening(intent) else { return }
+        defer { if navigationRequest == intent.request { navigationRequest = nil } }
         if userInitiated { onUserNavigation?() }
+        guard ownsOpening(intent) else { return }
         if intent.attention { await openAttention(profile: intent.profile, request: intent.request) }
-        else { await openBot(profile: intent.profile) }
+        else if let id = book.opening(intent.profile) { await attach(id, navigation: intent.request) }
     }
     func openBot(profile: ExactID) async {
         guard !retired else { return }
         ensureProfile(profile)
-        guard let id = book.opening(profile) else { return }
-        await attach(id)
+        guard let intent = captureOpening(profile: profile) else { return }
+        await open(intent, userInitiated: false)
     }
     @discardableResult func openNotificationChat(_ destination: SessionIdentity,
                                                   isCurrent: @MainActor () -> Bool) async -> Bool {
@@ -740,7 +759,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             availability[id] = true
             // A cold notification needs a local picker owner while its target remains uncommitted.
             if selected == nil { selected = book.opening(destination.profile) }
-            guard let accepted = await attach(id, selectionCommit: .afterAttachment, libraryRequest: request,
+            guard let accepted = await attach(id, selectionCommit: .afterAttachment, navigation: request,
                                              accepts: { _, _ in isCurrent() }) else { return false }
             return isCurrent() && !retired && recovery == connection && navigationRequest == request
                 && live?.identity == accepted
@@ -759,7 +778,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     private func openAttention(profile: ExactID, request: UUID) async {
         guard !retired, navigationRequest == request else { return }
         ensureProfile(profile)
-        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting); return }
+        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting, navigation: request); return }
         // Read inventory without first opening the preferred chat and marking it read.
         if selected == nil || selected.flatMap({ book.record($0)?.profile }) != profile {
             avatarActivity.retire()
@@ -769,7 +788,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard let screen = screen(profile: profile) else { return }
         await refreshDirectory(screen.owner)
         guard isCurrent(screen.owner), navigationRequest == request else { return }
-        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting) }
+        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting, navigation: request) }
         else { errors[screen.owner.chat] = "Botto couldn’t identify the waiting chat. Refresh the chat list." }
     }
     func captureSelection(_ chat: ChatID, owner: PresentationOwner) -> SelectionIntent? {
@@ -785,10 +804,11 @@ private struct ReadObservationKey: Hashable, Sendable {
         await attach(intent.target)
     }
     private enum SelectionCommit { case immediate, afterAttachment }
-    @discardableResult private func installTranscript(_ publication: OpenedConversation, for id: ChatID, title: String) -> Bool {
+    @discardableResult private func installTranscript(_ publication: OpenedConversation, for id: ChatID, title: String, navigation request: UUID? = nil) -> Bool {
         let connection = recovery, epoch = presentation, previous = live
         let ownsInstallation: @MainActor () -> Bool = {
             !self.retired && self.online && self.recovery == connection && self.presentation == epoch && self.selected == id
+                && (request == nil || self.navigationRequest == request)
         }
         let accepted = mutateBook { book -> OpenedConversation? in
             guard ownsInstallation() else { return nil }
@@ -812,11 +832,12 @@ private struct ReadObservationKey: Hashable, Sendable {
         return true
     }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
-                                          libraryRequest: UUID? = nil,
+                                          navigation request: UUID? = nil,
                                           accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
                                           commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> SessionIdentity? {
         guard !Task.isCancelled, !retired, let record = book.record(id),
-              libraryRequest == nil || navigationRequest == libraryRequest else { return nil }
+              request == nil || navigationRequest == request else { return nil }
+        let connection = recovery
         inboxHistoryReads.removeValue(forKey: id)?.task.cancel()
         let preserveSelection = selectionCommit == .afterAttachment
         if preserveSelection, record.isUnverified || availability[id] == false { return nil }
@@ -824,7 +845,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         avatarActivity.retire()
         live = nil; requestRows = []
         if preserveSelection && online { readAuthorityBlocked = true }
-        retirePresentation(preservingNavigation: libraryRequest)
+        retirePresentation(preservingNavigation: request)
         if !preserveSelection {
             selected = id
             mutateBook {
@@ -833,9 +854,17 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             rebuildRequests(); onDirty()
         }
-        guard !record.isUnverified, availability[id] != false else { return nil }
+        guard !Task.isCancelled, !retired, recovery == connection,
+              request == nil || navigationRequest == request,
+              !record.isUnverified, availability[id] != false else { return nil }
+        let epoch = presentation, pendingSelection = selected
+        let ownsAttachment: @MainActor () -> Bool = {
+            !Task.isCancelled && !self.retired && self.recovery == connection && self.presentation == epoch &&
+                self.selected == pendingSelection && (request == nil || self.navigationRequest == request)
+        }
         guard online else {
-            guard let identity = record.binding.identity, accepts(identity, record.transcript), commit(identity) else { return nil }
+            guard let identity = record.binding.identity, ownsAttachment(),
+                  accepts(identity, record.transcript), ownsAttachment(), commit(identity), ownsAttachment() else { return nil }
             if preserveSelection {
                 selected = id
                 mutateBook {
@@ -847,7 +876,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             return identity
         }
         let attempt = UUID(); opening = .init(id: attempt, chat: id)
-        let epoch = presentation, connection = recovery, pendingSelection = selected
         let initialMainBinding = initialMainBindings[record.profile]
         defer { if opening?.id == attempt { opening = nil } }
         let target: SessionTarget
@@ -860,7 +888,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             let opened = book.reconciled(try await service.openChat(target), for: id)
             guard !Task.isCancelled, !retired, recovery == connection, presentation == epoch,
                   selected == pendingSelection, opening?.id == attempt,
-                  libraryRequest == nil || navigationRequest == libraryRequest else {
+                  request == nil || navigationRequest == request else {
                 retiredRecoveryAccesses.insert(opened.access)
                 if !preserveSelection { return nil }
                 throw CancellationError()
@@ -873,7 +901,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             // App and workspace selection settle in this actor turn. A rejected
             // caller must not leave a committed hidden chat behind.
-            guard accepts(opened.identity, opened.snapshot), commit(opened.identity) else {
+            guard accepts(opened.identity, opened.snapshot), ownsAttachment(), opening?.id == attempt,
+                  commit(opened.identity), ownsAttachment(), opening?.id == attempt else {
                 retiredRecoveryAccesses.insert(opened.access)
                 throw CancellationError()
             }
@@ -888,12 +917,12 @@ private struct ReadObservationKey: Hashable, Sendable {
             if (staging[actual] ?? []).contains(where: { $0.source.stored != opened.identity.stored }) { invalidateStaging(actual) }
             retiredRecoveryAccesses.remove(opened.access)
             locallySelected = nil; readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
-            guard installTranscript(opened, for: actual, title: record.title) else { return nil }
+            guard installTranscript(opened, for: actual, title: record.title, navigation: request) else { return nil }
             return opened.identity
         } catch {
             guard !retired, recovery == connection, presentation == epoch,
                   selected == pendingSelection, opening?.id == attempt,
-                  libraryRequest == nil || navigationRequest == libraryRequest else { return nil }
+                  request == nil || navigationRequest == request else { return nil }
             if !preserveSelection {
                 errors[id] = error.localizedDescription
             }
@@ -1729,6 +1758,10 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     func retirePresentation() {
         retirePresentation(preservingNavigation: nil)
+    }
+    func retirePresentation(preserving claim: NavigationClaim) {
+        guard ownsNavigation(claim) else { return }
+        retirePresentation(preservingNavigation: claim.request)
     }
     private func retirePresentation(preservingNavigation request: UUID?) {
         if request == nil || navigationRequest != request { navigationRequest = nil }

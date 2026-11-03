@@ -80,8 +80,8 @@ import BottoCore
         if interruption == "dismissal" {
             let captured = try #require(opening)
             recover()
-            #expect(!store.canOpenCreatedBot(captured))
-            await store.openCreatedBot(captured)
+            #expect(!store.canOpenBot(captured))
+            await store.openBot(captured)
         } else {
             #expect(opening == nil, "Old creation authority cannot be recaptured after recovery.")
             #expect(store.selectedBotID == nil, "A reentrant recovery must retire selection before it commits.")
@@ -110,6 +110,198 @@ import BottoCore
         #expect(service.opens.isEmpty)
     }
 
+    @Test func creationCompletionCannotTakeANewerPendingLibraryRoute() async throws {
+        let service = try WorkspaceTestService()
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://creation-navigation.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let workspace = store.chats, probe = CreationObservation()
+        service.onCreate = {
+            probe.creates += 1
+            probe.library = workspace.beginLibraryOpening(service.summaries[1].identity)
+        }
+        let result = try #require(await store.create(.init(name: "Orbit")))
+        #expect(store.prepareCreatedBotOpening(result) == nil)
+        #expect(store.selectedBotID == nil)
+        let newer = try #require(probe.library)
+        let opened = await workspace.openLibraryChat(newer, commit: { _ in true })
+        #expect(opened?.profile == service.profile)
+        #expect(opened?.root == service.summaries[1].identity.root)
+        #expect(opened?.stored == service.summaries[1].identity.stored)
+        #expect(workspace.selection(profile: service.profile)?.identity?.root == service.summaries[1].identity.root)
+        #expect(workspace.selection(profile: service.profile)?.identity?.stored == service.summaries[1].identity.stored)
+        #expect(workspace.screen(profile: service.profile)?.canAct == true)
+        #expect(probe.creates == 1)
+    }
+
+    @Test func ordinaryBotEntryCannotReplaceReentrantNavigation() async throws {
+        let service = try WorkspaceTestService()
+        let scout = try ExactID("scout")
+        let scoutIdentity = SessionIdentity(profile: scout, root: try ExactID("scout-root"), stored: try ExactID("scout-tip"), aliases: [])
+        service.summaries.append(.init(identity: scoutIdentity, title: "Scout", isCanonical: true, persistence: .durable))
+        service.snapshots[scoutIdentity.root] = .init(id: "scout-runtime", storedID: scoutIdentity.stored.text, profileID: scout.text,
+            messages: [.init(id: "scout-message", role: .assistant, text: "Scout reply")])
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.text, name: "Scout")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://bot-entry-navigation.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let workspace = store.chats, probe = CreationObservation()
+        withObservationTracking { _ = store.selectedBotID } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.fired else { return }
+                probe.fired = true; store.selectedBotID = scout.text
+                probe.opening = workspace.captureOpening(profile: scout)
+            }
+        }
+        await store.open(try #require(store.bot(withID: service.profile.text)))
+        #expect(probe.fired && store.selectedBotID == scout.text)
+        #expect(service.opens.isEmpty)
+        await workspace.open(try #require(probe.opening))
+        #expect(workspace.selection(profile: scout)?.identity?.profile == scout)
+        #expect(workspace.selection(profile: scout)?.identity?.root == scoutIdentity.root)
+        #expect(workspace.selection(profile: scout)?.identity?.stored == scoutIdentity.stored)
+        #expect(service.opens == [scoutIdentity])
+        #expect(workspace.screen(profile: scout)?.canAct == true)
+    }
+
+    @Test func libraryCommitCannotReportSuccessAfterSelectionWasRejected() async throws {
+        let service = try WorkspaceTestService()
+        let scout = try ExactID("scout")
+        let scoutIdentity = SessionIdentity(profile: scout, root: try ExactID("scout-root"), stored: try ExactID("scout-tip"), aliases: [])
+        service.summaries.append(.init(identity: scoutIdentity, title: "Scout", isCanonical: true, persistence: .durable))
+        service.snapshots[scoutIdentity.root] = .init(id: "scout-runtime", storedID: scoutIdentity.stored.text, profileID: scout.text,
+            messages: [.init(id: "scout-message", role: .assistant, text: "Scout reply")])
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.text, name: "Scout")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://library-commit-navigation.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        await store.open(try #require(store.bot(withID: service.profile.text)))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !store.library.chats.contains(where: { $0.botID == service.profile.text }) && ContinuousClock.now < deadline { await Task.yield() }
+        let target = try #require(store.library.chats.first { $0.botID == service.profile.text })
+        store.selectedBotID = nil
+        let workspace = store.chats, probe = CreationObservation()
+        withObservationTracking { _ = store.selectedBotID } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.fired else { return }
+                probe.fired = true; store.selectedBotID = scout.text
+                probe.opening = workspace.captureOpening(profile: scout)
+            }
+        }
+        #expect(await !store.openLibraryChat(target))
+        #expect(probe.fired && store.selectedBotID == scout.text)
+        #expect(workspace.screen(profile: service.profile)?.canAct == false)
+        await workspace.open(try #require(probe.opening))
+        #expect(workspace.selection(profile: scout)?.identity?.profile == scout)
+        #expect(workspace.selection(profile: scout)?.identity?.root == scoutIdentity.root)
+        #expect(workspace.selection(profile: scout)?.identity?.stored == scoutIdentity.stored)
+        #expect(workspace.screen(profile: scout)?.canAct == true)
+    }
+
+    enum OlderSelection: CaseIterable { case creation, ordinary }
+    enum NewerSelection: CaseIterable {
+        case inboxSameBot, sameValue, retirement, inboxEquivalentBot, equivalentValue
+    }
+
+    @Test(arguments: OlderSelection.allCases, NewerSelection.allCases)
+    func olderSelectionYieldsToNewerIntentEvenWhenItsBytesAreUnchanged(older: OlderSelection, newer: NewerSelection) async throws {
+        let service = try WorkspaceTestService()
+        let composed = try addSelectionProfile("caf\u{e9}", to: service)
+        let decomposed = try addSelectionProfile("cafe\u{301}", to: service)
+        let scout = try addSelectionProfile("scout", to: service)
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo")] +
+            [scout, decomposed, composed].map { .init(id: $0.profile.text, name: $0.profile.text) }
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://selection-ordering.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let initial: SessionIdentity? = switch newer {
+        case .inboxSameBot, .sameValue: scout
+        case .retirement: nil
+        case .inboxEquivalentBot, .equivalentValue: decomposed
+        }
+        let expected: SessionIdentity? = switch newer {
+        case .inboxSameBot, .sameValue: scout
+        case .retirement: nil
+        case .inboxEquivalentBot, .equivalentValue: composed
+        }
+        if let initial {
+            await store.open(try #require(store.bot(withID: initial.profile.text)))
+            try #require(store.chats.screen(profile: initial.profile)?.canAct == true)
+        }
+        var creation: AppStore.BotCreationResult?
+        if older == .creation { creation = await store.create(.init(name: "Orbit")) }
+        let baseline = service.opens.count, probe = CreationObservation()
+        withObservationTracking { _ = store.selectedBotID } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.fired else { return }
+                probe.fired = true
+                switch newer {
+                case .inboxSameBot, .inboxEquivalentBot:
+                    probe.botOpening = store.prepareBotOpening(store.bot(withID: expected!.profile.text)!)
+                case .sameValue, .retirement, .equivalentValue:
+                    store.selectedBotID = expected?.profile.text
+                }
+            }
+        }
+        switch older {
+        case .creation:
+            let creation = try #require(creation)
+            #expect(store.prepareCreatedBotOpening(creation) == nil)
+        case .ordinary: await store.open(try #require(store.bot(withID: service.profile.text)))
+        }
+        #expect(probe.fired)
+        #expect(store.selectedBotID.map { Data($0.utf8) } == expected?.profile.bytes, "The newer selection intent must win.")
+        #expect(service.opens.count == baseline, "The superseded selection must not start an attachment.")
+        #expect(store.chats.screen(profile: service.profile)?.canAct != true)
+        if let initial, initial.profile == expected?.profile {
+            #expect(store.chats.screen(profile: initial.profile)?.canAct == true, "An unchanged selection keeps its presentation.")
+        }
+        guard let expected, newer == .inboxSameBot || newer == .inboxEquivalentBot else { return }
+        let opening = try #require(probe.botOpening)
+        #expect(store.canOpenBot(opening))
+        await store.openBot(opening)
+        let selection = store.chats.selection(profile: expected.profile)?.identity
+        #expect(selection?.profile == expected.profile)
+        #expect(selection?.root == expected.root)
+        #expect(selection?.stored == expected.stored)
+        #expect(store.chats.screen(profile: expected.profile)?.canAct == true)
+        #expect(service.opens.dropFirst(baseline).map(\.profile) == [expected.profile])
+    }
+
+    @Test(arguments: ["unselected", "same", "equivalent"])
+    func ordinaryOpeningSelectsAndAttachesTheExactProfile(_ initial: String) async throws {
+        let service = try WorkspaceTestService()
+        let composed = try addSelectionProfile("caf\u{e9}", to: service)
+        let decomposed = try addSelectionProfile("cafe\u{301}", to: service)
+        service.rosterProfiles = [decomposed, composed].map { .init(id: $0.profile.text, name: $0.profile.text) }
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://exact-selection.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        switch initial {
+        case "same": await store.open(try #require(store.bot(withID: composed.profile.text)))
+        case "equivalent": await store.open(try #require(store.bot(withID: decomposed.profile.text)))
+        default: break
+        }
+        let baseline = service.opens.count
+        let bot = try #require(store.bot(withID: composed.profile.text))
+        let opening = try #require(store.prepareBotOpening(bot))
+        #expect(store.canOpenBot(opening))
+        await store.openBot(opening)
+        #expect(store.selectedBotID.map { Data($0.utf8) } == composed.profile.bytes)
+        let selection = store.chats.selection(profile: composed.profile)?.identity
+        #expect(selection?.profile == composed.profile)
+        #expect(selection?.root == composed.root)
+        #expect(selection?.stored == composed.stored)
+        #expect(store.chats.screen(profile: composed.profile)?.canAct == true)
+        #expect(service.opens.dropFirst(baseline).map(\.profile) == [composed.profile])
+        if initial == "equivalent" { #expect(store.chats.screen(profile: decomposed.profile)?.canAct != true) }
+    }
+
     @Test func currentCreatedBotOpeningUsesItsPublishedProfile() async throws {
         let service = try WorkspaceTestService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot-control.invalid")!)
@@ -118,8 +310,8 @@ import BottoCore
         try #require(await store.connect(configuration))
         let creation = try #require(await store.create(.init(name: "Orbit")))
         let opening = try #require(store.prepareCreatedBotOpening(creation))
-        #expect(store.canOpenCreatedBot(opening))
-        await store.openCreatedBot(opening)
+        #expect(store.canOpenBot(opening))
+        await store.openBot(opening)
         #expect(service.opens == [service.summaries[0].identity])
         #expect(store.selectedBotID == creation.bot.id)
         #expect(store.conversation(for: creation.bot.id)?.storedID == service.summaries[0].identity.stored.text)
@@ -1043,4 +1235,19 @@ import BottoCore
     }
 }
 
-@MainActor private final class CreationObservation { var fired = false }
+@MainActor private final class CreationObservation {
+    var fired = false
+    var creates = 0
+    var library: LibraryOpeningIntent?
+    var opening: OpeningIntent?
+    var botOpening: AppStore.BotOpening?
+}
+
+@MainActor private func addSelectionProfile(_ text: String, to service: WorkspaceTestService) throws -> SessionIdentity {
+    let identity = SessionIdentity(profile: try ExactID(text), root: try ExactID(text + "-root"),
+                                   stored: try ExactID(text + "-tip"), aliases: [])
+    service.summaries.append(.init(identity: identity, title: text, isCanonical: true, persistence: .durable))
+    service.snapshots[identity.root] = .init(id: text + "-runtime", storedID: identity.stored.text, profileID: text,
+        messages: [.init(id: text + "-message", role: .assistant, text: text + " reply")])
+    return identity
+}

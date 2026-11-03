@@ -187,13 +187,10 @@ struct WorkspaceTabs: View {
     }
 
     private func openBot(_ bot: BotProfile) {
-        guard !rootCovered, !openingChat, store.bot(withID: bot.id) != nil,
-              let profile = try? ExactID(bot.id) else { return }
-        let workspace = store.chats
-        store.selectedBotID = bot.id
-        guard let intent = workspace.captureOpening(profile: profile) else { return }
+        guard !rootCovered, !openingChat, store.bot(withID: bot.id) != nil else { return }
+        guard let opening = store.prepareBotOpening(bot) else { return }
         presentation.didChooseConversation()
         selected = .bots
-        Task { await workspace.open(intent) }
+        Task { await store.openBot(opening) }
     }
 }

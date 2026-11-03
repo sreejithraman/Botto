@@ -85,12 +85,9 @@ struct InboxView: View {
         }
     }
     private func open(_ bot: BotProfile, attention: Bool = false) {
-        store.selectedBotID = bot.id
-        let workspace = store.chats
-        guard let profile = try? ExactID(bot.id),
-              let intent = workspace.captureOpening(profile: profile, attention: attention) else { return }
+        guard let opening = store.prepareBotOpening(bot, attention: attention) else { return }
         onOpened()
-        Task { await workspace.open(intent) }
+        Task { await store.openBot(opening) }
     }
 
     private func pinnedRail(_ pinned: [BotProfile]) -> some View {
