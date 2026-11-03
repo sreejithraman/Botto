@@ -1150,11 +1150,46 @@ presentation/save-ready result. Hints now rank after chat rows, and admission
 checks their actual retained source. The five focused functions passed all 12
 parameter cases, followed by all 246 functions in the five affected suites.
 All 486 tracked hashes stayed unchanged through the final native run; this proof
-wording changed afterward. Pass-24 source review and final UI/provider checks
-remain pending. Evidence: `hint-disposition-final-red*`, `hint-disposition-green*`,
+wording changed afterward. On `8a54e29`, all seven affected UI cases passed in
+one run and provider readback verified all 80 bytes and the expected digest
+(`admission-final-chat-export*`); all 486 hashes stayed unchanged. These selected
+results do not replace the failed full gate. Evidence: `hint-disposition-final-red*`, `hint-disposition-green*`,
 `hint-seeded-peer-red*`, `hint-disposition-final-native*` (failed),
 `hint-liveness-green*`, and `hint-admission-final-native*` under the same retained
 directory. The initial red attempts included an overstrict same-tip
 immediate-visibility assertion; independently persisted conflicting revisions
 correctly stay unverified until a fresh read. All privacy and peer controls remain.
 Earlier full-gate failures remain disclosed.
+
+
+Pass 24 found that a deferred oversized hint could still hold an unrelated partial
+inbox window behind the global recovery gate. The new public producer regression
+covers an absent saved row, a same-tip revision and a different older stored tip.
+All three publish before restoration, retry twice, check live visibility and
+persistence, publish another update without restoring again, and cold reopen with
+an offline captured peer. The different-tip case seeds an older Book and requires
+persisted retirement evidence. Four disputed IDs keep the unrelated hint larger
+than the three-slot budget; current row, retirement and peer fit within it.
+
+The final controlled regression failed with 26 issues across three cases. An
+initial fixture also had three invalid coverage assertions: an unchanged partial
+window correctly retained a complete Book's coverage. The corrected fixture starts
+with a partial Book. Reconciliation now records checked or deferred state per chat,
+with source, fence and canonical-content-version checks. Installed or absent saved
+metadata releases only that chat; subsequent updates retain its checked state.
+The first focused candidate passed the new cases but failed two unchanged
+fence-churn cases when retry withdrew a checked chat for its own pending save.
+Preserving the per-chat result fixed those cases; eight functions across 21
+parameter cases then passed. The first broader run executed 247 functions and
+found four issues in two legacy-tip compatibility functions. Per-chat settlement
+now preserves the established Book-versus-legacy-index tip choice and records the
+displaced tip. The four focused functions across nine cases passed. The final
+five-suite run passed all 247 functions. All 486 tracked hashes stayed unchanged
+through that run; this proof wording changed afterward. Pass-25 review and final
+UI/provider checks remain pending. Evidence under `/tmp/botto-pr-integration/`:
+`independent-window-{red,controlled-red,final-red,green}*` (green failed two cases),
+`scope-liveness-green*`, `scoped-recovery-final-native*` (failed),
+`scope-legacy-green*`, and `scope-settlement-verified-native*`. The earlier
+`scope-settlement-final-native` attempt refused an ended Simulator lease before
+executing tests. The replacement Pro Max failed to boot without host details;
+the advised retry on an iPhone 17 Pro booted and ran the verified suite.

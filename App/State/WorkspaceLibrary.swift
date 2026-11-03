@@ -362,6 +362,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private var dirtyVersions: [LibraryChat.ID: UUID] = [:]
     private enum MetadataAdmission: Equatable { case seed, passiveWindow, requiresGuard }
     private enum RecoveryHintAdmission { case installed(SessionIdentity), deferred }
+    private enum SavedScopeAdmission {
+        case deferred
+        case checked(source: SessionIdentity, since: AcceptanceFence.Stamp, content: UUID)
+    }
     private enum DiscardedEvidence: Equatable {
         case scoped(Set<Data>), all(UUID)
 
@@ -373,6 +377,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 let next = previous.union(sources)
                 self = next.count <= 1_000 ? .scoped(next) : .all(UUID())
             }
+        }
+        mutating func resolve(_ sources: Set<Data>) {
+            if case .scoped(let previous) = self { self = .scoped(previous.subtracting(sources)) }
         }
         func contains(profile: ExactID, root: ExactID) -> Bool {
             switch self {
@@ -492,8 +499,17 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             try await readMetadataRecovery()
             let discardedBefore = discardedEvidence, guardsBefore = metadataRecovery.invalidated
             var savedSources = Set<Data>()
-            var hintReceipts: [LibraryChat.ID: (source: SessionIdentity, stamp: AcceptanceFence.Stamp)] = [:]
-            var deferredHints = false
+            var scopeAdmissions: [LibraryChat.ID: SavedScopeAdmission] = [:]
+            @MainActor func recordChecked(_ source: SessionIdentity, since stamp: AcceptanceFence.Stamp) {
+                let id = key(for: source)
+                guard !isRetired, rosterRevision == roster, records[id]?.identity == source,
+                      acceptanceFence.permits(id, since: stamp), let content = projectionStates[id]?.version else {
+                    scopeAdmissions[id] = .deferred
+                    discardedEvidence.record([ArtifactMetadataRecovery.key(source)])
+                    return
+                }
+                scopeAdmissions[id] = .checked(source: source, since: stamp, content: content)
+            }
             @MainActor func restoreHint(_ hint: ArtifactMetadataHint) async {
                 savedSources.insert(ArtifactMetadataRecovery.key(hint.identity))
                 guard rosterPermits(hint.identity.profile), pendingRosterRestriction?.contains(hint.identity.profile) != false else { return }
@@ -502,16 +518,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     && self.acceptanceFence.permits(id, since: stamp) })
                 switch admission {
                 case .deferred:
-                    deferredHints = true
+                    scopeAdmissions[id] = .deferred
                     if records[id] == nil { discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)]) }
-                case .installed(let source):
-                    guard !isRetired, rosterRevision == roster, records[id]?.identity == source,
-                          acceptanceFence.permits(id, since: stamp) else {
-                        discardedEvidence.record([ArtifactMetadataRecovery.key(hint.identity)])
-                        deferredHints = true
-                        return
-                    }
-                    hintReceipts[id] = (source, stamp)
+                case .installed(let source): recordChecked(source, since: stamp)
                 }
             }
             withdrawUntrustedRestoration()
@@ -565,7 +574,24 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     scanNotice = .failure("Saved artifacts need a fresh history check. Pull to refresh to try again.")
                     continue
                 }
-                guard canRestore(row) else { continue }
+                if let current = records[id], initialSourceProofs[id] == current.identity.stored,
+                   current.identity.stored != row.identity.stored || row.directoryAbsent == true {
+                    await restoreHint(ArtifactMetadataHint(saved: row))
+                    continue
+                }
+                guard canRestore(row) else {
+                    if let current = records[id], unreconciledMetadata[id] == .seed,
+                       current.identity.stored != row.identity.stored {
+                        // The Book owns the cached tip when a legacy index has no retirement proof.
+                        let stamp = acceptanceFence.stamp
+                        var retired = row.retiredStoredIDs ?? []
+                        retired.insert(row.identity.stored.bytes)
+                        commitCanonical(prepareAdmission(source: current.identity, botName: current.botName, title: current.title,
+                            updatedAt: current.updatedAt, input: .seed(messages: [], exclusions: .init(retiredStored: retired))), target: id)
+                        recordChecked(current.identity, since: stamp)
+                    } else if unreconciledMetadata[id] != nil { scopeAdmissions[id] = .deferred }
+                    continue
+                }
                 // A checked saved row replaces the row-free hint left by a
                 // failed read. Keep its actual negative row evidence.
                 restorationHints.remove(id)
@@ -575,26 +601,47 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 if observations[id] == nil || observations[id]?.stored != row.identity.stored {
                     observe(row.identity, content: false, at: mountedAt)
                 }
+                let stamp = acceptanceFence.stamp
                 await installAsync(source: row.identity, botName: row.botName, title: row.title,
                     updatedAt: row.updatedAt, input: .restored(row), admittedBy: { canRestore(row) }, onCommit: {
-                        if self.unreconciledMetadata[id] == .seed { self.unreconciledMetadata[id] = nil }
+                        recordChecked(row.identity, since: stamp)
                     })
             }
             guard rosterRevision == roster else { return .needsRetry }
             if !metadataRecovery.all {
-                for id in restorationHints where records[id].map({ !savedSources.contains(ArtifactMetadataRecovery.key($0.identity)) }) == true
-                    && (unreconciledMetadata[id] == .requiresGuard || unreconciledMetadata[id] == .passiveWindow) {
-                    restorationHints.remove(id); markDirty(id)
+                for (id, admission) in unreconciledMetadata {
+                    guard let chat = records[id], !savedSources.contains(ArtifactMetadataRecovery.key(chat.identity)),
+                          rosterPermits(chat.identity.profile), pendingRosterRestriction?.contains(chat.identity.profile) != false else { continue }
+                    if admission == .seed && (metadataRecovery.contains(chat.identity)
+                        || discardedEvidence.contains(profile: id.profile, root: id.root)) { continue }
+                    restorationHints.remove(id)
+                    recordChecked(chat.identity, since: acceptanceFence.stamp)
                 }
             }
-            let staleHints = hintReceipts.filter { records[$0.key]?.identity != $0.value.source
-                || !acceptanceFence.permits($0.key, since: $0.value.stamp) }
-            discardedEvidence.record(Set(staleHints.keys.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
-            let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
-                || deferredHints || discardedEvidence != discardedBefore || !staleHints.isEmpty ? .needsRetry : .reconciled
-            if outcome == .reconciled {
-                unreconciledMetadata = [:]; unverifiedPersistenceChanges = false; discardedEvidence = .scoped([])
+            var checked = Set<LibraryChat.ID>(), deferred = Set<LibraryChat.ID>(), stale = Set<LibraryChat.ID>()
+            for (id, admission) in scopeAdmissions {
+                switch admission {
+                case .deferred: deferred.insert(id)
+                case .checked(let source, let stamp, let content):
+                    if records[id]?.identity == source, projectionStates[id]?.version == content,
+                       acceptanceFence.permits(id, since: stamp) { checked.insert(id) }
+                    else { deferred.insert(id); stale.insert(id) }
+                }
             }
+            discardedEvidence.record(Set(stale.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
+            let evidenceChanged = discardedEvidence != discardedBefore
+            if !metadataRecovery.all, guardAdmissionFailure == guardFailure {
+                for id in checked {
+                    guard let admission = unreconciledMetadata.removeValue(forKey: id) else { continue }
+                    if admission == .requiresGuard || !savedSources.contains(ArtifactMetadataRecovery.key(profile: id.profile, root: id.root)) {
+                        markDirty(id)
+                    }
+                }
+                discardedEvidence.resolve(Set(checked.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
+            }
+            let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
+                || !deferred.isEmpty || evidenceChanged || !unreconciledMetadata.isEmpty ? .needsRetry : .reconciled
+            if outcome == .reconciled { unverifiedPersistenceChanges = false; discardedEvidence = .scoped([]) }
             return outcome
         } catch {
             if !isRetired {
@@ -636,7 +683,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func withdrawUntrustedRestoration() {
         let unsafe = Set(records.values.filter {
-            (metadataRecovery.contains($0.identity) || pendingRosterRestriction?.contains($0.identity.profile) == false)
+            ((metadataRecovery.contains($0.identity) && !metadataIsReconciled($0.id))
+                || pendingRosterRestriction?.contains($0.identity.profile) == false)
                 && initialSourceProofs[$0.id] != $0.identity.stored
         }.map(\.id))
         guard let target = unsafe.first else { return }
@@ -703,6 +751,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func recordAcceptance(_ id: LibraryChat.ID) {
         acceptanceFence.record(id)
         indexingMetrics.retainedAcceptanceFences = acceptanceFence.count
+    }
+
+    private func metadataIsReconciled(_ id: LibraryChat.ID) -> Bool {
+        records[id] != nil && unreconciledMetadata[id] == nil
     }
 
     private func markDirty(_ id: LibraryChat.ID) {
@@ -891,7 +943,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 return sameSource || (previous == nil && observations[id] == nil)
             }
         }
-        if restoration.needsReconciliation {
+        if restoration.needsReconciliation && !metadataIsReconciled(id) {
             let previousAdmission = unreconciledMetadata[id]
             let hasPriorExclusions = previous.map {
                 !$0.unavailableMessageIDs.isEmpty || !$0.unverifiedMessageIDs.isEmpty
@@ -1593,7 +1645,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let retained = chat.retainedMessageIDs
         let unavailable = ids.intersection(retained)
         guard !unavailable.isSubset(of: chat.unavailableMessageIDs) else { return }
-        if restoration.needsReconciliation { unreconciledMetadata[id] = .requiresGuard }
+        if restoration.needsReconciliation && !metadataIsReconciled(id) { unreconciledMetadata[id] = .requiresGuard }
         commitCanonical(prepareAdmission(source: source, botName: chat.botName, title: chat.title,
             updatedAt: chat.updatedAt, input: .quarantine(unavailable: unavailable)), target: id)
     }
@@ -1631,7 +1683,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let messages = input.messages, unavailable = input.exclusions.unavailable, identityRead = input.identityRead
         guard rosterPermits(source.profile), admittedBy() else { return false }
         let target = key(for: source)
-        if restoration.needsReconciliation {
+        if restoration.needsReconciliation && !metadataIsReconciled(target) {
             switch input {
             case .accepted, .replacement, .partialHistory:
                 unreconciledMetadata[target] = .requiresGuard

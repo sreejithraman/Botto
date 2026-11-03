@@ -174,6 +174,16 @@ chat rows in the shared retention budget; a checked saved row can release its
 inert seed gate. Different-tip hints stay pending until current source
 proof preserves the old tip as retired. Retry treats discarded scopes as negative
 hints even when their earlier journal write failed, before admitting SQL bodies.
+Saved-state reconciliation settles each retained chat independently. Its checked
+result binds the source, acceptance stamp and canonical content version; a changed
+or evicted record must be checked again. An absent saved row or an installed row
+can release that chat's metadata gate while another hint stays deferred. A proven
+current tip first retires a different saved tip through negative-hint admission.
+Later updates and retries retain the checked chat's state until canonical eviction;
+they do not wait for unrelated chats or withdraw it for its own pending save.
+A legacy index without retirement proof retains the Book's cached tip choice and
+records the displaced saved tip as retired. Explicit saved retirement still
+outranks an inert older Book; fresh source proof keeps its separate precedence.
 
 Before attempting changed metadata rows, the cache atomically records their
 scoped invalidation hashes outside SQLite. A successful replacement clears its
