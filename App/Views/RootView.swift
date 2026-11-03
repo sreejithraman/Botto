@@ -73,7 +73,7 @@ struct RootView: View {
                         store.showsConnection = true
                     }, onLeaveDemo: onExitDemoPreview)
                 case .newBot:
-                    NewBotView(store: store)
+                    NewBotView(store: store, onOpened: { presentation.didChooseConversation() })
                 case nil:
                     EmptyView()
                 }

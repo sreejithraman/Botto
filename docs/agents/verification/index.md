@@ -20,6 +20,12 @@ checks now cover no-switch dragging, picker selection, draft restoration,
 creation and Back; complete recipe execution remains draft. See the
 [verification record](../../verification.md) for scope and limits.
 
+Avatar recipes now target the full pinned Open Bot Avatar engine: ten premade
+Hermes families and generated definitions share canonical volume/moods and native
+Canvas painting. Previous renderer observations do not establish this renderer's
+native parity, cold preparation, cue containment or lifecycle acceptance. Follow
+[the avatar recipe](features/avatars.md) and record current results separately.
+
 ## Capability inventory
 
 | Feature ID | Recipe | Workflows |
@@ -32,7 +38,7 @@ creation and Back; complete recipe execution remains draft. See the
 | `chat` | [Converse, keep drafts, and read history](features/chat.md) | `chat.send`, `chat.drafts`, `chat.history`, `chat.reading-position` |
 | `requests` | [Answer requests and stop work](features/requests.md) | `requests.approval`, `requests.question`, `requests.recovery`, `requests.stop` |
 | `bots` | [Create a bot and inspect its profile](features/bots.md) | `bots.create`, `bots.interruption`, `bots.profile` |
-| `avatars` | [Choose avatars and observe motion](features/avatars.md) | `avatars.edit`, `avatars.conflict`, `avatars.identity`, `avatars.images`, `avatars.motion`, `avatars.containment` |
+| `avatars` | [Choose avatars and observe motion](features/avatars.md) | `avatars.edit`, `avatars.generate`, `avatars.conflict`, `avatars.identity`, `avatars.images`, `avatars.motion`, `avatars.containment` |
 | `uploads` | [Attach files and photos](features/uploads.md) | `uploads.file`, `uploads.photo`, `uploads.budget`, `uploads.retirement` |
 | `rich` | [Read interactive replies and diagrams](features/rich.md) | `rich.read`, `rich.source-expand`, `rich.zoom`, `rich.boundaries`, `rich.scroll-lifetime`, `rich.cache` |
 | `artifacts` | [Preview, save, and share original files](features/artifacts.md) | `artifacts.preview`, `artifacts.save`, `artifacts.share`, `artifacts.recovery`, `artifacts.retirement` |

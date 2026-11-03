@@ -16,8 +16,7 @@ import BottoCore
     private struct Entry {
         let key: Key
         let checkedAt: Date
-        // Nil covers Desktop face copies, absent/invalid images and failed reads.
-        let image: UIImage?
+        let decoded: Decoded?
     }
     private struct Flight {
         let id: UUID
@@ -43,7 +42,13 @@ import BottoCore
 
     func image(for bot: BotProfile) -> UIImage? {
         guard bot.hasAvatar == true, let entry = entries[bot.id], entry.key == Key(bot) else { return nil }
-        return entry.image
+        return entry.decoded?.image
+    }
+
+    func isStaticPreview(for bot: BotProfile) -> Bool {
+        guard bot.hasAvatar == true, !isLoading(bot), let entry = entries[bot.id], entry.key == Key(bot),
+              case .staticPreview? = entry.decoded else { return false }
+        return true
     }
 
     func isLoading(_ bot: BotProfile) -> Bool {
@@ -93,9 +98,16 @@ import BottoCore
                 // at most once per minute per stable key, including failed image reads.
                 if age >= 0, age < 60 { continue }
             }
-            queued.append(bot.id)
+            enqueue(bot.id)
         }
         startQueuedReads()
+    }
+
+    private func enqueue(_ id: String) {
+        if let entry = entries[id], case .staticPreview? = entry.decoded {
+            entries[id] = Entry(key: entry.key, checkedAt: entry.checkedAt, decoded: nil)
+        }
+        queued.append(id)
     }
 
     private func startQueuedReads() {
@@ -116,7 +128,8 @@ import BottoCore
                 do {
                     let asset = try await service.avatarAsset(for: bot)
                     guard !Task.isCancelled else { return }
-                    let photo = bot.appearance?.imageKind == "photo"
+                    let appearance = bot.appearance
+                    let allowsLegacyFaceCopy = appearance?.imageKind != "photo" && appearance?.bottoPreviewSHA256 == nil
                     #if DEBUG
                     AvatarDecodeLedger.shared.mark(.queued, attempt)
                     let beforeDecode = self?.beforeDecode
@@ -127,11 +140,12 @@ import BottoCore
                         AvatarDecodeLedger.shared.mark(.body, attempt, cancelled: Task.isCancelled)
                         #endif
                         guard !Task.isCancelled else { return nil }
-                        let result = asset.flatMap { asset in
+                        let result: Decoded? = asset.flatMap { asset in
                             #if DEBUG
                             AvatarDecodeLedger.shared.mark(.sync, attempt)
                             #endif
-                            return Self.decode(asset, photo: photo)
+                            if asset.isStaticPreview(for: appearance) { return .staticPreview }
+                            return Self.decode(asset, allowsLegacyFaceCopy: allowsLegacyFaceCopy)
                         }
                         #if DEBUG
                         AvatarDecodeLedger.shared.mark(.finish, attempt, imageProduced: result?.image != nil)
@@ -154,29 +168,29 @@ import BottoCore
                     keyCurrent: self?.wanted[id].map(Key.init) == key))
                 #endif
                 guard !Task.isCancelled else { return }
-                self?.complete(id, attempt: attempt, owner: owner, key: key, image: decoded?.image)
+                self?.complete(id, attempt: attempt, owner: owner, key: key, decoded: decoded)
             }
         }
         loading = Set(queued).union(flights.keys)
     }
 
-    private func complete(_ id: String, attempt: UUID, owner: UUID, key: Key, image: UIImage?) {
+    private func complete(_ id: String, attempt: UUID, owner: UUID, key: Key, decoded: Decoded?) {
         guard generation == owner, flights[id]?.id == attempt, wanted[id].map(Key.init) == key else { return }
-        entries[id] = Entry(key: key, checkedAt: now(), image: image)
+        entries[id] = Entry(key: key, checkedAt: now(), decoded: decoded)
         #if DEBUG
         AvatarDecodeLedger.shared.mark(.published, attempt)
         #endif
         flights.removeValue(forKey: id)
-        if revalidateAfterFlight.remove(id) != nil { queued.append(id) }
+        if revalidateAfterFlight.remove(id) != nil { enqueue(id) }
         startQueuedReads()
     }
 
     private enum Decoded: Sendable {
-        case image(UIImage), faceCopy
+        case image(UIImage), faceCopy, staticPreview
         var image: UIImage? { if case .image(let image) = self { image } else { nil } }
     }
 
-    private nonisolated static func decode(_ asset: BotAvatarAsset, photo: Bool) -> Decoded? {
+    private nonisolated static func decode(_ asset: BotAvatarAsset, allowsLegacyFaceCopy: Bool) -> Decoded? {
         guard asset.data.count <= 2_000_000,
               let source = CGImageSourceCreateWithData(asset.data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let type = CGImageSourceGetType(source) as String?,
@@ -186,7 +200,7 @@ import BottoCore
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0,
               width <= 32_768, height <= 32_768, Int64(width) * Int64(height) <= 100_000_000 else { return nil }
-        if !photo, type == UTType.png.identifier, width == 160, height == 160 { return .faceCopy }
+        if allowsLegacyFaceCopy, type == UTType.png.identifier, width == 160, height == 160 { return .faceCopy }
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 192,
             kCGImageSourceShouldCacheImmediately: true]

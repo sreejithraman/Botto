@@ -5,7 +5,7 @@ import Foundation
 /// named-color whitelist. Hue units are deg, turn, rad, and grad. Finite channels clamp to CSS ranges.
 /// Inputs must be ASCII and at most 512 UTF-8 bytes; expressions, comments, and context-dependent
 /// colors such as currentColor are unsupported. Keep the original value for persistence.
-public enum BotAvatarColors {
+nonisolated public enum BotAvatarColors {
     public struct Preset: Identifiable, Equatable, Sendable {
         public let id: String
         public let shared: String

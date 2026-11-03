@@ -5,10 +5,11 @@ extension HermesBotService {
         guard edit.name != nil || edit.description != nil else { return bot }
         let name = edit.name?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard name?.isEmpty != true else { throw HermesServiceError.invalidProfileName }
-        guard Self.safeSegment(bot.id), !savingAvatars.contains(bot.id) else { throw HermesServiceError.profileConflict }
+        guard Self.safeSegment(bot.id), savingAvatars[bot.id] == nil else { throw HermesServiceError.profileConflict }
         let socket = try readyGateway(), owner = connectionGeneration
-        savingAvatars.insert(bot.id)
-        defer { if owner == connectionGeneration { savingAvatars.remove(bot.id) } }
+        let attempt = UUID()
+        savingAvatars[bot.id] = attempt
+        defer { if savingAvatars[bot.id] == attempt { savingAvatars[bot.id] = nil } }
         var row = try await appearanceRow(profile: bot.id, socket: socket, owner: owner)
         guard let fresh = Self.profile(row), let revision = Self.appearanceRevision(row) else { throw HermesServiceError.incompatible }
         guard edit.name == nil || fresh.name.utf8.elementsEqual(bot.name.utf8),

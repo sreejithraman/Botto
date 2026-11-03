@@ -2,6 +2,38 @@ import XCTest
 import BottoCore
 
 final class AvatarUITests: XCTestCase {
+    @MainActor func testCustomCharacterPreviewColorSaveAndCancel() {
+        let app = launch()
+        editMilo(in: app)
+        let generate = app.buttons["generate-avatar-character"]
+        reach(generate, in: app)
+        generate.tap()
+        let preview = app.descendants(matching: .any).matching(identifier: "bot-avatar-preview").firstMatch
+        let generated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (preview.value as? String)?.hasPrefix("Cat · ") == true
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [generated], timeout: 5), .completed)
+        let teal = app.buttons["avatar-color-teal"]
+        reach(teal, in: app); teal.tap()
+        XCTAssertTrue(avatarPreview("Cat · Teal", in: app, timeout: 3))
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Custom character preview and color"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.buttons["save-bot-profile"].tap()
+        let edit = app.buttons["bot-profile-edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        reach(edit, in: app); edit.tap()
+        XCTAssertTrue(avatarPreview("Cat · Teal", in: app, timeout: 3))
+        XCTAssertFalse(app.buttons["save-bot-profile"].isEnabled)
+        let circle = app.buttons["avatar-shape-circle"]
+        reach(circle, in: app); circle.tap()
+        XCTAssertTrue(avatarPreview("Circle · Teal", in: app, timeout: 3))
+        app.buttons["Cancel"].tap()
+        reach(edit, in: app); edit.tap()
+        XCTAssertTrue(avatarPreview("Cat · Teal", in: app, timeout: 3))
+    }
+
     @MainActor func testAvatarAndNameReopenProfileFromChat() {
         checkAvatarAndNameProfileTaps(inGrid: false)
     }
@@ -141,9 +173,10 @@ final class AvatarUITests: XCTestCase {
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 5), .completed)
         let grabber = app.buttons["Sheet Grabber"]
-        XCTAssertTrue(grabber.exists)
         func dismissSheet() {
-            grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let start = grabber.exists ? grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                : app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+            start
                 .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
         }
         dismissSheet()
@@ -513,7 +546,14 @@ final class AvatarUITests: XCTestCase {
         app.launch()
         let milo = app.buttons["bot-row-milo"]
         XCTAssertTrue(milo.waitForExistence(timeout: 5)); milo.tap()
+        XCTAssertTrue(app.textViews["chat-composer"].waitForExistence(timeout: 5))
+        let profile = app.buttons["bot-profile-button"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            profile.isEnabled && profile.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
         app.buttons["bot-profile-button"].tap()
+        XCTAssertTrue(app.buttons["bot-profile-done"].waitForExistence(timeout: 5))
         let change = app.buttons["bot-profile-edit"]
         reach(change, in: app); change.tap()
         chooseCustomAvatar(in: app)

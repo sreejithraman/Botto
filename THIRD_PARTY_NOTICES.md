@@ -1,8 +1,8 @@
 # Third-party notices
 
 Botto adapts native Hermes connection, gateway, profile creation, request parsing,
-transcript reconciliation, attachment preparation, shared avatar geometry, appearance,
-asset loading and sparse face motion algorithms from
+transcript reconciliation, attachment preparation, shared avatar identity, appearance and
+asset loading rules from
 [Hermex](https://github.com/uzairansaruzi/hermex), revision
 `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (2026-10-22).
 
@@ -30,21 +30,19 @@ Adapted source areas:
   validation and one-prompt attachment reference rules.
 - `Models/MessageAttachment.swift` and `HermesMobileTests/HermesChatAttachmentTests.swift`:
   read-only transcript reference extraction, display names and presentation fixtures.
-- `Features/Bots/BotProfileAppearance.swift`: shared eight-shape paths, palette,
-  profile-ID defaults, adaptive color contrast and static eye rendering.
+- `Features/Bots/BotProfileAppearance.swift`: shared palette, profile-ID defaults and adaptive color contrast.
 - `Features/Bots/BotAvatarStore.swift`: bounded thumbnails and the desktop face-copy rule.
 - `Features/Bots/BotProfileEditor.swift`: merge/CAS and explicit image-clear contracts.
-- `Features/Bots/BotFaceMotion.swift`: seeded blink edges, bounded working poses,
-  schedules and turn-owned beat lifetime. Interactive hero gestures were not copied.
 
 Botto's corresponding files are under `Sources/BottoCore`, `App/Design`, and
 `App/State`. No Hermex branding, plugins or third-party Swift packages were copied.
 
-The sixteen rest-expression eye geometries adapted through Hermex derive from
-[Bloub](https://github.com/jeremy-prt/bloub), by Jérémy Perret. Copyright (c) 2026
-Jérémy Perret. The complete MIT license is bundled in [LICENSES/Bloub.txt](LICENSES/Bloub.txt),
-verified against upstream revision `b4bb3c1b5f93c7b87a2e8d620f667c4093d97749`.
-Botto does not include Bloub's interactive hero repertoire or assets.
+The sixteen stored expression names retain compatibility with earlier Botto
+versions. The former eye geometries derived through Hermex from
+[Bloub](https://github.com/jeremy-prt/bloub), by Jérémy Perret, are no longer used
+by the renderer. Its historical MIT notice remains bundled in
+[LICENSES/Bloub.txt](LICENSES/Bloub.txt), copyright (c) 2026 Jérémy Perret,
+upstream revision `b4bb3c1b5f93c7b87a2e8d620f667c4093d97749`.
 
 Shared classic avatar identity and preset values follow Hermes Desktop's
 `apps/desktop/src/plugins/hermes-bots/avatar.tsx` and
@@ -56,6 +54,18 @@ selection, and color conversion from [Blobatar](https://github.com/Alain00/bloba
 package version **2.0.0**, copyright (c) 2026 Alain, under the MIT License.
 The full license is bundled in [LICENSES/Blobatar.txt](LICENSES/Blobatar.txt).
 Botto draws its own face and body rather than bundling Blobatar's renderer.
+
+All premade and custom drawn faces use [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar)
+v1, copyright (c) 2026 Dominik Scholz, revision
+`3a5119877844165eebafe57d3100da475f67d0a8`. Botto vendors its DOM-free validator,
+path/contour/volume code, motion, animator, renderer frame generation and canonical
+model-neutral prompt. JavaScriptCore executes the local bundle; a native Canvas
+paints the canonical frames with Botto's palette and status adaptations.
+The complete MIT notice is bundled in [LICENSES/OpenBotAvatar.txt](LICENSES/OpenBotAvatar.txt)
+and retained in [scripts/avatar-engine/upstream/LICENSE](scripts/avatar-engine/upstream/LICENSE).
+[UPSTREAM.json](scripts/avatar-engine/UPSTREAM.json) records source hashes and the
+pinned build tool. [build.py](scripts/avatar-engine/build.py) reproducibly builds
+the engine bundle and canonical resting previews. No engine code downloads at runtime.
 
 `Tests/BottoCoreTests/Fixtures/HermesAgent` contains sanitized captured fixtures
 copied from Hermex, retaining its manifest and embedded capture revisions:

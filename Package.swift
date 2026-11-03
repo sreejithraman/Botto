@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.iOS(.v18), .macOS(.v15)],
     products: [.library(name: "BottoCore", targets: ["BottoCore"])],
     targets: [
-        .target(name: "BottoCore"),
+        .target(name: "BottoCore", resources: [.process("Resources")]),
         .testTarget(name: "BottoCoreTests", dependencies: ["BottoCore"], resources: [.copy("Fixtures")])
     ]
 )

@@ -16,6 +16,7 @@ struct BotAvatarPicker: View {
     private var edit: BotAvatarEdit {
         switch selection {
         case .edit(let edit): return edit
+        case .geometry(_, let color): return BotAvatarEdit(color: color)
         case nil: return BotAvatarEdit()
         default: return BotAvatarEdit(shape: face.shape, color: colorOverride.map { .value($0) } ?? .automatic)
         }
@@ -36,7 +37,10 @@ struct BotAvatarPicker: View {
             if mode == .custom {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Shape").font(.subheadline.weight(.semibold))
-                    if appearance.rawShape != nil, appearance.shape == nil, !appearance.isGenerated {
+                    if let geometry = appearance.geometry {
+                        Text("\(geometry.name) · Choose a shape below to replace this character.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    } else if appearance.rawShape != nil, appearance.shape == nil, !appearance.isGenerated {
                         Text("This shape uses a local preview. Changing its color keeps the saved shape.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
@@ -145,6 +149,10 @@ struct BotAvatarPicker: View {
     }
 
     private func chooseColor(_ color: BotAvatarEdit.Color) {
+        if case .geometry(let geometry, _) = selection {
+            selection = .geometry(geometry, color: color)
+            return
+        }
         var changed = edit
         // Color edits deliberately leave Blobatar mode, as explained by the editor.
         if appearance.isGenerated { changed.shape = face.shape }

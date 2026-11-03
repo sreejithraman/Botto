@@ -88,7 +88,7 @@ private struct WorkspaceShell: View {
             // A foreground file has explicit Close/Bots; native fold feedback
             // cannot park or retire its reader.
             let accepted = sizeClass == .compact && observedLayout.compact && observedLayout == renderedLayout &&
-                presentation.revision == revision && presentation.artifact == nil
+                presentation.revision == revision && presentation.artifact == nil && !rootCovered
             guard accepted else { return }
             nativeCompactColumn = value
             if value == .sidebar, store.selectedBot != nil {

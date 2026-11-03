@@ -5,10 +5,18 @@ import json
 
 MODEL = "botto-local-deterministic"
 COMMAND = 'python3 -c "print(\'BOTTO_APPROVAL_OK\')"'
+AVATAR = {
+    "version": 1, "id": "cat", "name": "Cat",
+    "body": {"path": "M18 30 L18 14 Q18 10 24 14 L34 24 L66 24 L76 14 Q82 10 82 18 L82 72 Q82 86 68 86 L32 86 Q18 86 18 72 Z"},
+    "eyes": {"x": 50, "y": 48, "spacing": 16, "scale": 1},
+}
 
 
 def reply(body):
     messages = body.get("messages") or []
+    if any(m.get("role") == "system" and str(m.get("content", "")).startswith("Botto avatar geometry")
+           for m in messages):
+        return {"role": "assistant", "content": json.dumps(AVATAR, separators=(",", ":"))}, "stop"
     last = messages[-1] if messages else {}
     user = next((str(m.get("content", "")) for m in reversed(messages)
                  if m.get("role") == "user"), "")

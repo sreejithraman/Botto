@@ -255,6 +255,8 @@ public enum MessageDelivery: Equatable, Sendable {
     func createBot(_ draft: BotDraft) async throws -> BotProfile
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
+    /// Creates an unsaved drawing through Hermes routing without changing chat history.
+    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead
@@ -279,6 +281,9 @@ public enum MessageDelivery: Equatable, Sendable {
 }
 
 public extension BotService {
+    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
+        throw BotAvatarGenerationError.unsupportedHost
+    }
     func pushStatus(profileID: String) async throws -> PushHostStatus { throw PushError.unsupported }
     func enrollPushDevice(_ request: PushEnrollmentRequest, profileID: String) async throws -> PushEnrollment { throw PushError.unsupported }
     func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult { throw PushError.unsupported }
