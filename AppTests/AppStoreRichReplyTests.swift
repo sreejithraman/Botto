@@ -241,7 +241,7 @@ import WebKit
                 if activeResources {
                     let image = UIImage(cgImage: pixels)
                     var complete = false
-                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size),
+                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + .seconds(15),
                         isCurrent: { first.webView === original && first.state == .ready && original.window === window },
                         observe: { image, region in
                             let captured = try await RenderedTranscriptFile.observe(image, in: region)

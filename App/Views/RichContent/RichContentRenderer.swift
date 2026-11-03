@@ -7,7 +7,7 @@ import WebKit
 /// never receives the app's service, session, URL request, cookies or credentials.
 @MainActor @Observable
 final class RichContentRenderer: NSObject {
-    // Hosted WebKit launches can take over twenty seconds before trusted host commit.
+    // Hosted WebKit startup has reached the former fifteen-second pre-commit limit.
     private nonisolated static let hostStartupTimeout: Duration = .seconds(30)
     private nonisolated static let documentInitializationTimeout: Duration = .seconds(5)
     private nonisolated static let diagramCaptureTimeout: Duration = .seconds(5)

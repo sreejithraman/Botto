@@ -6,6 +6,45 @@ import BottoCore
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptContentTests {
+    @Test(arguments: [false, true])
+    func activePixelObservationReturnsBeforeBlockedRecognitionAndDiscardsLateResults(cancel: Bool) async throws {
+        let work = RichReplyFileGate()
+        var completed = false, resumed = false, wasCancelled = false
+        var admissionChecks = 0
+        var result: RenderedTranscriptFile.Observation?
+        let waiter = Task {
+            result = try await RenderedTranscriptFile.observeActive(UIImage(), in: .zero, until: .now + .seconds(1),
+                isCurrent: { admissionChecks += 1; return true }, observe: { _, _ in
+                    await work.wait()
+                    wasCancelled = Task.isCancelled
+                    resumed = true
+                    return .init(hasBars: true, text: ["Update preview", "Ready for review"])
+                })
+            completed = true
+        }
+        defer { work.release(); waiter.cancel() }
+        let entered = await pixelControlSettled { work.hasEntered }
+        #expect(entered, "Pixel recognition must start before its expiry or cancellation control")
+        if entered && cancel { waiter.cancel() }
+        let returnedBeforeRecognition = await pixelControlSettled { completed }
+        #expect(returnedBeforeRecognition, "The pixel observer must return before blocked recognition is released")
+        work.release()
+        let settled = await pixelControlSettled { completed && resumed }
+        #expect(settled, "Recognition must resume after the test releases its gate")
+        if completed { try await waiter.value }
+        #expect(wasCancelled, "Expired or cancelled recognition must resume cancelled")
+        #expect(result == nil, "Late pixels must not be admitted")
+        #expect(admissionChecks == 0, "Late recognition must not call the document admission callback")
+    }
+
+    private func pixelControlSettled(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
+
     @Test func actualCanvasGenerationAndSendKeepEveryHostedRowInsideItsNativeAllocation() async throws {
         let service = DemoBotService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-canvas.invalid")!)
@@ -160,7 +199,7 @@ import BottoCore
                 "image_size": NSCoder.string(for: image.size)]
             do {
                 let scope = cell.exposure
-                let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, isCurrent: {
+                let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, until: observationDeadline ?? readinessDeadline, isCurrent: {
                     scope?.isCurrent == true && cell.exposure === scope && document.scope === scope && document.window === window &&
                         renderer.webView === readyView && readyView.navigationDelegate === renderer && renderer.state == .ready &&
                         readyView.window === window && readyView.isDescendant(of: cell)

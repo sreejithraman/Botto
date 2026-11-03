@@ -70,7 +70,7 @@ import BottoCore
                     let oracleStart = CACurrentMediaTime()
                     let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
                     let revision = marker.revision
-                    let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, isCurrent: {
+                    let observation = try await RenderedTranscriptFile.observeActive(image, in: visible, until: deadline, isCurrent: {
                         host?.view === view && document.window === window && document.isDescendant(of: view) &&
                         meter.isReady(document) && meter.point(.block(Data(last.id.utf8), file.id)) === marker &&
                         marker.revision == revision && marker.viewport === viewport && marker.window === window &&
