@@ -13,7 +13,7 @@ import BottoCore
         var admissionChecks = 0
         var result: RenderedTranscriptFile.Observation?
         let waiter = Task {
-            result = try await RenderedTranscriptFile.observeActive(UIImage(), in: .zero, until: .now + .seconds(1),
+            result = try await RenderedTranscriptFile.observeActive(UIImage(), in: .zero, until: .now + (cancel ? .seconds(60) : .seconds(1)),
                 isCurrent: { admissionChecks += 1; return true }, observe: { _, _ in
                     await work.wait()
                     wasCancelled = Task.isCancelled
