@@ -122,7 +122,8 @@ struct ChatView: View {
             editing.cancel()
             discardPreviews()
             configurePreviewCapture()
-            showsProfile = false; dismissOverviewImmediately(); childModals = []
+            if profileDestination?.isCurrent(in: store) != true { showsProfile = false }
+            dismissOverviewImmediately(); childModals = []
             connectionRequested = false
         }
         .sheet(isPresented: $showsProfile) {
@@ -168,7 +169,6 @@ struct ChatView: View {
             ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
                            messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
-                           onConnectionRequired: { connectionRequested = true },
                            preview: transcriptPreview, topContentInset: toolbarVisible ? headerOverlap : 0,
                            bottomContentInset: composerHeight,
                            searchFocus: presentation.searchFocus.flatMap {
@@ -552,7 +552,6 @@ private struct ChatTranscript: View {
     let messageDisplayRevision: [NativeTranscriptRowValue]
     let isExposed: Bool
     let onOpenArtifact: (AppStore.ArtifactDestination) -> Void
-    var onConnectionRequired: () -> Void = {}
     var preview: NativeTranscriptPreview? = nil
     var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0

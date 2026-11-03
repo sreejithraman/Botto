@@ -16,6 +16,7 @@ import BottoCore
     var isCurrent: Bool { !model.isFinished && library.isCurrent(item) }
     var file: ArtifactPreviewFile? { isCurrent ? model.file : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
+    var requiresConnection: Bool { isCurrent && model.requiresConnection }
     var isLoading: Bool { isCurrent && model.isLoading }
     var canReload: Bool { isCurrent && item.artifact.attachment != nil }
     var title: String { item.artifact.title }

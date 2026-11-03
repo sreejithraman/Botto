@@ -199,6 +199,7 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
 
     var file: ArtifactPreviewFile? { isCurrent ? model.file : nil }
     var errorMessage: String? { isCurrent ? model.errorMessage : nil }
+    var requiresConnection: Bool { isCurrent && model.requiresConnection }
     var isLoading: Bool { isCurrent && model.isLoading }
     // Local captures follow semantic presentation; cache misses still require live access.
     var isCurrent: Bool {

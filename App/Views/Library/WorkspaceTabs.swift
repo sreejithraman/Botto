@@ -51,7 +51,9 @@ struct WorkspaceTabs: View {
                     .padding(.horizontal, 16).padding(.top, 12)
                     ArtifactPreview(session: session, isExpanded: true,
                                     onClose: { guard !session.isPresentingOutput else { return }; closeReader() },
-                                    onRetry: { session.retry() })
+                                    onRetry: { session.retry() },
+                                    connectionFeedback: session.requiresConnection && !store.isConnected
+                                        ? AnyView(ConnectionStatusView(store: store)) : nil)
                 }
                 .background(BottoTheme.paper)
                 .interactiveDismissDisabled(session.isPresentingOutput)

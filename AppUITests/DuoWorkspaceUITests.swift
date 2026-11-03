@@ -375,7 +375,7 @@ final class DuoWorkspaceUITests: XCTestCase {
         let card = app.buttons["Open \(name)"].firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 10))
         for _ in 0..<10 {
-            let viewport = transcript.frame
+            let viewport = fileCardViewport(transcript, app: app)
             guard !viewport.isNull && !viewport.isInfinite && viewport.width > 0 && viewport.height > 0 else {
                 XCTFail("File discovery requires an actual nonempty transcript viewport.")
                 return card
@@ -384,14 +384,15 @@ final class DuoWorkspaceUITests: XCTestCase {
             let measured = !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0
             // Offscreen virtual elements can have no valid activation point.
             // Require a complete visible card before asking for hit testing.
-            if measured && viewport.contains(frame) { break }
+            if measured && viewport.contains(frame) && card.isEnabled && card.isHittable { break }
             let towardNewer = measured && frame.maxY > viewport.maxY
             let distance = measured ? abs(frame.midY - viewport.midY) : viewport.height * 0.8
             let travel = min(viewport.height * 0.8, distance)
-            let startY: CGFloat = towardNewer ? 0.9 : 0.1
-            let endY = startY + (towardNewer ? -1 : 1) * travel / viewport.height
-            let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: startY))
-            let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: endY))
+            let startY = towardNewer ? viewport.maxY - 12 : viewport.minY + 12
+            let endY = startY + (towardNewer ? -1 : 1) * travel
+            let origin = transcript.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: 12, dy: startY - transcript.frame.minY))
+            let end = origin.withOffset(CGVector(dx: 12, dy: endY - transcript.frame.minY))
             // End a deliberate slow drag inside this small keyboard-sized
             // viewport instead of flinging past the card in both directions.
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
@@ -400,9 +401,20 @@ final class DuoWorkspaceUITests: XCTestCase {
             guard card.exists else { return false }
             let frame = card.frame
             return !frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0 &&
-                transcript.frame.contains(frame) && card.isEnabled && card.isHittable
+                self.fileCardViewport(transcript, app: app).contains(frame) && card.isEnabled && card.isHittable
         }
         return card
+    }
+
+    @MainActor private func fileCardViewport(_ transcript: XCUIElement, app: XCUIApplication) -> CGRect {
+        let bounds = transcript.frame.intersection(app.frame)
+        let profile = app.buttons["bot-profile-button"]
+        let headerBottom = max(app.navigationBars.firstMatch.frame.maxY,
+                               profile.exists ? profile.frame.maxY : bounds.minY)
+        let composer = app.descendants(matching: .any)["chat-composer"]
+        let bottom = composer.exists ? min(bounds.maxY, composer.frame.minY) : bounds.maxY
+        let top = max(bounds.minY, headerBottom) + 8
+        return CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bottom - top))
     }
 
     @MainActor private func transcript(_ app: XCUIApplication) -> XCUIElement {

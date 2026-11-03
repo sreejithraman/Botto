@@ -95,6 +95,11 @@ import BottoCore
         var pending: [UUID: CheckedContinuation<Bool, Never>] = [:]
     }
 
+    @MainActor private final class BotInvalidationRefresh {
+        var task: Task<Void, Never>?
+        var pending = false
+    }
+
     private struct ConnectionLifecycle {
         private enum Phase {
             case unconfigured, waiting, connecting(ConnectionConfiguration)
@@ -120,6 +125,7 @@ import BottoCore
             default: nil
             }
         }
+        var isSuspended: Bool { if case .waiting = phase { true } else { false } }
         func ownsAttempt(_ owner: UUID) -> Bool { generation == owner && candidate != nil }
 
         mutating func restore(hasSavedSetup: Bool) {
@@ -259,11 +265,16 @@ import BottoCore
     // Retain the replacement independently of the visible workspace and socket owner.
     @ObservationIgnored private var rotatedConfigurations: [UUID: ConnectionConfiguration] = [:]
     private var botRefresh: BotRefresh?
+    @ObservationIgnored private var botInvalidationRefresh: BotInvalidationRefresh?
+    @ObservationIgnored private let waitForBotInvalidationInterval: @MainActor () async throws -> Void
     private let avatars: BotAvatarStore
     @ObservationIgnored private var avatarSaves: [String: UUID] = [:]
 
     init(service: (any BotService)? = nil, persistence: ConnectionPersistence? = nil, push: PushCoordinator? = nil,
-         cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init) {
+         cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init,
+         waitForBotInvalidationInterval: @escaping @MainActor () async throws -> Void = {
+             try await Task.sleep(for: .seconds(1))
+         }) {
         let liveService = service ?? HermesBotService()
         self.artifactCache = artifactCache ?? (persistence == nil ? .shared : ArtifactCache(root: nil))
         self.liveService = liveService
@@ -272,6 +283,7 @@ import BottoCore
         self.chats = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: liveService, onDirty: {})
         self.persistence = persistence ?? .keychain
+        self.waitForBotInvalidationInterval = waitForBotInvalidationInterval
         if let push { self.push = push }
         else if persistence != nil {
             var savedPush = PushSavedState()
@@ -668,6 +680,34 @@ import BottoCore
         avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: Set(cachedBots.map(\.id)))
     }
 
+    private func refreshFromBotInvalidation() {
+        guard active, isConnected, !showsConnection else { return }
+        if let current = botInvalidationRefresh {
+            current.pending = true
+            return
+        }
+        let invalidation = BotInvalidationRefresh()
+        let owner = generation, recovery = attachmentRecoveryGeneration
+        botInvalidationRefresh = invalidation
+        invalidation.task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if botInvalidationRefresh === invalidation { botInvalidationRefresh = nil }
+            }
+            repeat {
+                guard !Task.isCancelled, botInvalidationRefresh === invalidation,
+                      active, isConnected, !showsConnection,
+                      generation == owner, attachmentRecoveryGeneration == recovery else { return }
+                invalidation.pending = false
+                await refresh()
+                guard !Task.isCancelled, botInvalidationRefresh === invalidation,
+                      generation == owner, attachmentRecoveryGeneration == recovery else { return }
+                do { try await waitForBotInvalidationInterval() }
+                catch { return }
+            } while invalidation.pending
+        }
+    }
+
     func refreshLibraryIfNeeded() async {
         let library = library
         library.seed(book: chats.persisted(), bots: cachedBots)
@@ -790,6 +830,9 @@ import BottoCore
     }
 
     private func retireRefresh() {
+        let invalidation = botInvalidationRefresh
+        botInvalidationRefresh = nil
+        invalidation?.task?.cancel()
         retireArtifactDownloads()
         avatarSaves = [:]
         avatars.cancel()
@@ -960,7 +1003,11 @@ import BottoCore
             messages: destination.conversation.messages, producingMessage: destination.producingMessage)
         guard isAuthorizedArtifactPresentation(destination) else { throw HermesServiceError.staleConversation }
         let download: @MainActor () async throws -> DownloadedArtifact = { [weak self] in
-            guard let self, self.isCurrentArtifactDestination(destination), let intent = destination.intent else {
+            guard let self, self.isAuthorizedArtifactPresentation(destination) else {
+                throw HermesServiceError.staleConversation
+            }
+            guard self.isConnected else { throw HermesServiceError.disconnected }
+            guard self.isCurrentArtifactDestination(destination), let intent = destination.intent else {
                 throw HermesServiceError.staleConversation
             }
             let artifact = try await destination.workspace.download(intent)
@@ -1016,7 +1063,10 @@ import BottoCore
     func setActive(_ value: Bool) async {
         active = value
         #if DEBUG
-        if value, isDemo, ProcessInfo.processInfo.arguments.contains("--demo-offline") { return }
+        if value, isDemo, ProcessInfo.processInfo.arguments.contains("--demo-offline") {
+            if connection.isSuspended { receive(.disconnected("The sample workspace is offline.")) }
+            return
+        }
         #endif
         if !value {
             push.deactivate()
@@ -1101,7 +1151,7 @@ import BottoCore
             Task { await refresh() }
         case .botsChanged:
             library.invalidateRevalidation()
-            Task { await refresh() }
+            refreshFromBotInvalidation()
         case .configuration(let updated):
             rotatedConfigurations[updated.id] = updated
             connection.updateCandidate(updated)

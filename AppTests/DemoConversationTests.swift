@@ -264,6 +264,72 @@ import BottoCore
         XCTAssertEqual(latest.messages.filter { $0.id.hasPrefix("performance-reply-") }.count, 2)
     }
 
+    func testPerformanceWorkloadPublishesEveryFragmentThroughStore() async throws {
+        let service = DemoBotService(performanceFixture: true)
+        let storage = MemoryConnectionStorage()
+        let store = AppStore(service: service, persistence: storage.persistence)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let connected = await store.connect(configuration)
+        XCTAssertTrue(connected)
+        XCTAssertEqual(store.bots.count, 205, "The workload includes all 200 additional profiles.")
+        let scout = try XCTUnwrap(store.bots.first { $0.id == "scout" })
+        await store.open(scout)
+        let initial = try XCTUnwrap(store.conversation(for: "scout"))
+        XCTAssertEqual(initial.messages.count, 400)
+        let profile = try ExactID("scout")
+        let owner = try XCTUnwrap(store.chats.screen(profile: profile)?.owner)
+        store.chats.editDraft("Stream the performance fixture", owner: owner)
+        let send = try XCTUnwrap(store.chats.captureSend(owner))
+
+        var fragmentCount = 0, advisoryInvalidations = 0, rosterReads = 0
+        var previousFragment: String?, receiveDuration = Duration.zero
+        let receiver = service.onEvent
+        service.onEvent = { event in
+            switch event {
+            case .botsChanged: advisoryInvalidations += 1
+            case .activityBatch: rosterReads += 1
+            case .conversation(let publication):
+                if let reply = publication.snapshot.messages.last,
+                   reply.id == "performance-reply-1", !reply.text.isEmpty,
+                   !reply.text.contains("Performance stream 1 complete."), reply.text != previousFragment {
+                    fragmentCount += 1
+                    previousFragment = reply.text
+                }
+            default: break
+            }
+            let entered = ContinuousClock.now
+            receiver?(event)
+            receiveDuration += entered.duration(to: .now)
+        }
+        let began = ContinuousClock.now
+        let deadline = began + .seconds(20)
+        await store.chats.send(send)
+        while store.conversation(for: "scout")?.isWorking == true, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let elapsed = began.duration(to: .now)
+        let final = try XCTUnwrap(store.conversation(for: "scout"))
+        let completed = final.isWorking == false
+            && final.messages.last?.text.hasSuffix("Performance stream 1 complete.") == true
+        let seconds: (Duration) -> Double = {
+            Double($0.components.seconds) + Double($0.components.attoseconds) / 1e18
+        }
+        let observation = "elapsed_seconds=\(seconds(elapsed)) fragments=\(fragmentCount) advisory_invalidations=\(advisoryInvalidations) roster_reads=\(rosterReads) synchronous_receive_seconds=\(seconds(receiveDuration)) completed=\(completed) history_messages=\(initial.messages.count) profiles=\(store.bots.count) mounted_ui=false ax_polling=false"
+        print("BOTTO_STORE_STREAM \(observation)")
+        let attachment = XCTAttachment(string: observation)
+        attachment.name = "Complete store stream workload"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(completed, "The unchanged 200-fragment, 20ms stream must finish inside the existing twenty-second budget.")
+        XCTAssertEqual(fragmentCount, 200)
+        XCTAssertEqual(previousFragment, (0..<200).map { "Word \($0). " }.joined())
+        XCTAssertEqual(Array(final.messages.prefix(400)), initial.messages)
+        XCTAssertEqual(final.messages.count, 402, "Keep all history, the admitted user message and the complete reply.")
+        XCTAssertTrue(final.queuedMessages.isEmpty)
+        XCTAssertEqual(store.chats.draft(try XCTUnwrap(store.chats.screen(profile: profile)?.owner)), "")
+    }
+
     func testReadEvidenceMatchesCompleteLocalReadsAndSelectedPublications() async throws {
         let service = try await connected()
         defer { service.disconnect() }

@@ -252,8 +252,9 @@ final class ConversationUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["You’re offline"].exists)
         card.tap()
         XCTAssertTrue(app.staticTexts["You’re offline"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["artifact-done"].exists)
+        XCTAssertTrue(app.buttons["artifact-done"].exists)
         XCTAssertTrue(app.buttons["Reconnect"].isHittable)
+        app.buttons["artifact-done"].tap()
         app.buttons["Add attachment"].tap()
         app.buttons["Choose a file"].tap()
         XCTAssertTrue(app.staticTexts["You’re offline"].exists)
@@ -724,7 +725,8 @@ final class ConversationUITests: XCTestCase {
         let streamStart = ContinuousClock.now
         let streamDeadline = streamStart + .seconds(20)
         app.buttons["Send message"].tap()
-        let finished = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
+        let reply = app.otherElements["transcript-message-performance-reply-1"]
+        let finished = reply.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
         let remaining = ContinuousClock.now.duration(to: streamDeadline)
         let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
         let firstCompleted = finished.waitForExistence(timeout: timeout)

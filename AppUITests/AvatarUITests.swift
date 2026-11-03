@@ -140,10 +140,11 @@ final class AvatarUITests: XCTestCase {
             FileManager.default.fileExists(atPath: directory.appendingPathComponent("avatar.started").path)
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 5), .completed)
-        let grabber = app.buttons["Sheet Grabber"]
-        XCTAssertTrue(grabber.exists)
         func dismissSheet() {
-            grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let action = save.exists ? "save-bot-profile" : "bot-profile-done"
+            let navigation = app.navigationBars.containing(.button, identifier: action).firstMatch
+            XCTAssertTrue(navigation.exists)
+            navigation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
         }
         dismissSheet()

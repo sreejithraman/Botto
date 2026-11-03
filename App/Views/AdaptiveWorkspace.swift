@@ -88,7 +88,7 @@ private struct WorkspaceShell: View {
             // A foreground file has explicit Close/Bots; native fold feedback
             // cannot park or retire its reader.
             let accepted = sizeClass == .compact && observedLayout.compact && observedLayout == renderedLayout &&
-                presentation.revision == revision && presentation.artifact == nil
+                presentation.revision == revision && presentation.artifact == nil && !rootCovered
             guard accepted else { return }
             nativeCompactColumn = value
             if value == .sidebar, store.selectedBot != nil {
@@ -220,12 +220,15 @@ private struct WorkspaceShell: View {
         .onChange(of: presentation.revision) { _, revision in
             if nativeNavigationRevision != revision { editing.cancel() }
             nativeNavigationRevision = nil
-            nativeCompactColumn = presentation.isBrowsingBots || store.selectedBot == nil ? .sidebar : .detail
+            if !rootCovered {
+                nativeCompactColumn = presentation.isBrowsingBots || store.selectedBot == nil ? .sidebar : .detail
+            }
             reconcileVisibility()
         }
         .onChange(of: store.selectedBotID) { _, _ in
             editing.cancel()
             chatCovered = false
+            guard !rootCovered else { return }
             nativeCompactColumn = store.selectedBot == nil ? .sidebar : .detail
             presentation.selectedBotChanged(store: store)
         }
@@ -269,7 +272,8 @@ private struct WorkspaceShell: View {
                 presentation.retryArtifact(id: session.id, revision: revision, canPresent: { artifactActionsAvailable })
             }, canPresentOutput: {
                 artifactActionsAvailable && presentation.acceptsArtifactCallback(id: session.id, revision: revision)
-            })
+            }, connectionFeedback: session.requiresConnection && !store.isConnected
+                ? AnyView(ConnectionStatusView(store: store)) : nil)
     }
 }
 

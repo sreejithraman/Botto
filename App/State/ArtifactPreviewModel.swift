@@ -6,6 +6,7 @@ import BottoCore
 @MainActor protocol ArtifactReadingSession: AnyObject {
     var file: ArtifactPreviewFile? { get }
     var errorMessage: String? { get }
+    var requiresConnection: Bool { get }
     var isCurrent: Bool { get }
     var isLoading: Bool { get }
     var canReload: Bool { get }
@@ -29,6 +30,7 @@ struct ArtifactOutput: Identifiable {
 }
 
 extension ArtifactReadingSession {
+    var requiresConnection: Bool { false }
     var previewBlock: ReplyContent.Block? { nil }
     var canReload: Bool { isCurrent }
     func endOutput(id: UUID) { endOutput(id: id, error: nil) }
@@ -92,7 +94,7 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
 
     private struct Content {
         var file: ArtifactPreviewFile?
-        var errorMessage: String?
+        var error: (any Error)?
     }
     private struct Attempt {
         let id: UUID
@@ -119,7 +121,8 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
     private var state: State = .idle(Content())
 
     var file: ArtifactPreviewFile? { state.content.file }
-    var errorMessage: String? { state.content.errorMessage }
+    var errorMessage: String? { state.content.error?.localizedDescription }
+    var requiresConnection: Bool { (state.content.error as? HermesServiceError) == .disconnected }
     var isLoading: Bool { state.attempt != nil }
     var isFinished: Bool { if case .finished = state { true } else { false } }
     var output: ArtifactOutput? { if case .output(let output, _) = state { output } else { nil } }
@@ -163,7 +166,7 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
             } catch {
                 guard state.attempt?.id == id else { return }
                 var content = previous
-                if !Task.isCancelled, isCurrent() { content.errorMessage = error.localizedDescription }
+                if !Task.isCancelled, isCurrent() { content.error = error }
                 state = .idle(content)
             }
         }

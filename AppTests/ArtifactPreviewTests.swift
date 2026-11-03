@@ -7,6 +7,28 @@ import UniformTypeIdentifiers
 @testable import Botto
 
 @MainActor struct ArtifactPreviewTests {
+    @Test func connectionFeedbackFollowsTheCurrentReadAndClearsAfterRetry() async throws {
+        let model = ArtifactPreviewModel()
+        defer { model.cancel() }
+        await model.load { throw HermesServiceError.disconnected }
+        #expect(model.requiresConnection)
+        #expect(model.errorMessage != nil)
+
+        let gate = ArtifactGate()
+        let retry = Task {
+            await model.load {
+                await gate.wait()
+                return DownloadedArtifact(data: Data("Original bytes".utf8), filename: "notes.txt", mimeType: "text/plain")
+            }
+        }
+        await gate.entered()
+        #expect(model.isLoading && !model.requiresConnection)
+        gate.release()
+        await retry.value
+        #expect(model.file?.data == Data("Original bytes".utf8))
+        #expect(model.errorMessage == nil && !model.requiresConnection)
+    }
+
     @Test(arguments: [UTType.pdf, .plainText, .png, .html, .data])
     func bytePreservingDocumentDeclaresConcreteExportTypes(type: UTType) {
         #expect(ArtifactDocument.writableContentTypes.contains(type),

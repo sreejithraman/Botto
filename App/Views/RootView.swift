@@ -16,7 +16,14 @@ struct RootView: View {
         }
     }
     private enum Sheet: Equatable { case connection, settings, newBot }
+    private struct CreatedBotOpening {
+        let profile: ExactID
+        let workspace: ConversationWorkspace
+        let intent: OpeningIntent
+        let connection: UUID
+    }
     @State private var sheet: Sheet?
+    @State private var createdBotOpening: CreatedBotOpening?
     @State private var deliberateSheet = false
     private var showsSheet: Binding<Bool> {
         let renderedSheet = sheet
@@ -30,6 +37,7 @@ struct RootView: View {
         })
     }
     private func presentSheet(_ destination: Sheet, deliberate: Bool = true) {
+        createdBotOpening = nil
         if destination == .connection, onExitDemoPreview != nil {
             store.showsConnection = false
             store.pendingConnectionInput = nil
@@ -43,6 +51,36 @@ struct RootView: View {
         sheet = destination
     }
 
+    private func createdBot(_ bot: BotProfile) {
+        guard sheet == .newBot, !store.showsConnection, store.isConnected, scenePhase == .active,
+              store.bot(withID: bot.id) != nil, let profile = try? ExactID(bot.id) else { return }
+        let workspace = store.chats
+        store.selectedBotID = profile.text
+        guard let intent = workspace.captureOpening(profile: profile) else { return }
+        createdBotOpening = CreatedBotOpening(profile: profile, workspace: workspace, intent: intent,
+            connection: store.connectionGeneration)
+        sheet = nil
+    }
+
+    private func sheetDidDismiss() {
+        guard let opening = createdBotOpening else { return }
+        createdBotOpening = nil
+        guard mayOpenCreatedBot(opening),
+              store.selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes else { return }
+        presentation.didChooseConversation()
+        Task { @MainActor in
+            guard mayOpenCreatedBot(opening),
+                  store.selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes else { return }
+            await opening.workspace.open(opening.intent)
+        }
+    }
+
+    private func mayOpenCreatedBot(_ opening: CreatedBotOpening) -> Bool {
+        sheet == nil && !store.showsConnection && store.pendingConnectionInput == nil &&
+            scenePhase == .active && store.isConnected && store.chats === opening.workspace &&
+            store.connectionGeneration == opening.connection && store.bot(withID: opening.profile.text) != nil
+    }
+
     var body: some View {
         Group {
             if store.configuration == nil {
@@ -53,14 +91,14 @@ struct RootView: View {
                 }
             } else {
                 WorkspaceTabs(store: store, presentation: presentation,
-                              rootCovered: sheet != nil || store.showsConnection,
+                              rootCovered: sheet != nil || createdBotOpening != nil || store.showsConnection,
                               onSettings: { presentSheet(.settings) },
                               onNewBot: { presentSheet(.newBot) })
             }
         }
         .tint(BottoTheme.action)
         .background(BottoTheme.paper.ignoresSafeArea())
-        .sheet(isPresented: showsSheet) {
+        .sheet(isPresented: showsSheet, onDismiss: sheetDidDismiss) {
             Group {
                 switch sheet {
                 case .connection:
@@ -73,7 +111,7 @@ struct RootView: View {
                         store.showsConnection = true
                     }, onLeaveDemo: onExitDemoPreview)
                 case .newBot:
-                    NewBotView(store: store)
+                    NewBotView(store: store, onCreated: createdBot)
                 case nil:
                     EmptyView()
                 }
@@ -84,15 +122,17 @@ struct RootView: View {
         .preferredColorScheme(preferredAppearance)
         .onChange(of: store.showsConnection, initial: true) { _, shown in
             if shown {
+                createdBotOpening = nil
                 if sheet != .connection { presentSheet(.connection, deliberate: false) }
             }
             else if sheet == .connection { sheet = nil }
         }
         .onChange(of: store.pendingConnectionInput, initial: true) { _, value in
-            if value != nil { store.showsConnection = true }
+            if value != nil { createdBotOpening = nil; store.showsConnection = true }
         }
         .onChange(of: store.artifactGeneration) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: store.notificationNavigationRevision) { _, _ in
+            createdBotOpening = nil
             sheet = nil
             presentation.didChooseConversation()
         }
