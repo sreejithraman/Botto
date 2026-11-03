@@ -160,8 +160,8 @@ revisions, producer changes and authoritative updates require a guard. Promoting
 admission to that state marks metadata dirty even when the canonical rows stay
 identical, so the guard reaches disk before retirement. Canonical retention records
 required guards before discarding rows or exclusions. Lost evidence also leaves
-bounded scope hashes until reconciliation; overflow withholds uncertain partial
-Library admissions across the scope. Chat history can still display its fetched
+bounded scope hashes until a complete source read checks the scope; overflow
+withholds uncertain partial Library admissions across the scope. Chat history can still display its fetched
 rows. Only a check of that exact scope releases its hold; completing restoration
 for other chats does not. An evicted scope with no saved row keeps Book seeds
 and partial publications gated. A coherent source read releases its scoped hold
@@ -172,7 +172,12 @@ shared admission path applies this check to Library scans. SQL absence alone
 cannot certify a held partial record. The writer journals held canonical scopes
 but keeps their guards until a qualifying check; directory observations and
 incomplete pages cannot clear them. A complete scan reconciles its checked
-metadata before finishing its save.
+metadata before finishing its save. Saved-row and negative-hint receipts cannot
+release a lost-scope hold, even when their source, fence and retained content
+match. They stay deferred until a qualifying source read releases that hold.
+Loss checks on incoming passive rows apply to producer publications and scan
+pages; rejecting an older SQL revision in favor of an accepted current row does
+not discard fresh evidence.
 Restoration rechecks saved rows against guards created during its own awaits and
 merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
 Accepted rows survive retry behind the visibility gate; a successful SQL read

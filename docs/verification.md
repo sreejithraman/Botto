@@ -1257,5 +1257,38 @@ the run manifest; only contract/proof prose changed during that run.
 Evidence: `scan-hold-{red,controlled-red,final-red,green}*`,
 `scan-settlement-{red,green}*` (green failed three assertions), and
 `scan-{guard-inventory-green,hold-final-native}*` under
-`/tmp/botto-pr-integration/`. Current UI/provider and fresh four-angle source
-review remain pending. Earlier full-gate failures and acceptance limits remain.
+`/tmp/botto-pr-integration/`. On `1b951a4`, all seven affected UI cases passed in
+one run and independent provider readback verified all 80 bytes and the expected
+digest (`scan-final-chat-export*`). All 486 tracked hashes matched before and
+after the run; provider bytes were retained on the host. All four pass-27
+assessments completed on that snapshot. Adversarial found the saved-hint issue
+below; the other three found no additional material issue. Earlier full-gate
+failures and acceptance limits remain.
+
+
+Pass 27 found that a saved-row hint could release a discarded-scope hold without
+a complete source read. The regression now shares one fixture across separate
+absent-row and saved-row tests. Each runs ten cases. The saved-row setup leaves
+room for the old SQL hint after failed guard admission and eviction, then covers
+failed/partial scans, distinct-ID Book reseeding, live/cold Search, artifacts,
+SQL and the offline captured peer. The controlled red recorded 30 issues in the
+saved-row test; all ten absent-row controls passed. Raw production and final test
+bytes are bound to that run's manifest.
+
+Saved-state receipts now defer held scopes both when recorded and after awaits.
+Only qualified complete producer/scan admission releases the hold. The first
+focused candidate passed the new cases but failed nine unchanged availability
+assertions in the independent same-tip partial-window test. Source tracing found
+that rejecting an older SQL revision was being classified as lost fresh history.
+That incoming-row loss check now applies only to producer rows; canonical
+retention still protects actual accepted rows and exclusions. The next focused
+candidate passed the availability control but missed one initial-window guard:
+the existing scan-read classifier excludes producer publications. A separate
+`hasProducerRows` classification covers publications plus complete/partial scan
+pages. The final focused run passed all ten functions, including both ten-case
+saved/absent matrices. All 249 functions passed in the five affected native
+suites. Runtime/test bytes matched the run manifest; only proof prose changed
+during the run. Evidence:
+`saved-hint-{red,green,admission-green,producer-guard-green,final-native}*`
+under `/tmp/botto-pr-integration/`; the first green label records a failed run.
+Current UI/provider and fresh four-angle source review remain pending.

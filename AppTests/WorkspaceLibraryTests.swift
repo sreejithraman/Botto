@@ -24,6 +24,15 @@ import BottoCore
 
     @Test(arguments: [false, true], HeldScopeInterruption.allCases)
     func discardedAbsentScopeRejectsALateBookUntilATrustedRead(trustedRead: Bool, interruption: HeldScopeInterruption) async throws {
+        try await checkDiscardedScopeRecovery(trustedRead: trustedRead, interruption: interruption, savedRowExists: false)
+    }
+
+    @Test(arguments: [false, true], HeldScopeInterruption.allCases)
+    func discardedSavedScopeRejectsALateBookUntilATrustedRead(trustedRead: Bool, interruption: HeldScopeInterruption) async throws {
+        try await checkDiscardedScopeRecovery(trustedRead: trustedRead, interruption: interruption, savedRowExists: true)
+    }
+
+    private func checkDiscardedScopeRecovery(trustedRead: Bool, interruption: HeldScopeInterruption, savedRowExists: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let service = LibraryTestService(secondBot: true)
@@ -55,6 +64,14 @@ import BottoCore
         try #require(!warmRecovery.contains(service.second))
         try #require(!warmRows.contains { $0.identity == service.first })
         warm.retire(); await warmCache.close()
+        if savedRowExists {
+            let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
+            try await fixture.upsert(.init(identity: service.first, botName: "Helper", title: "Saved",
+                messages: [.init(id: current.id, role: .assistant, text: "Saved older revision\nMEDIA:/saved-older.txt", timestamp: current.timestamp)],
+                updatedAt: current.timestamp, coverage: .complete, summary: nil, headFingerprint: nil))
+            try #require(await fixture.loadChats().contains { $0.identity == service.first })
+            await fixtureCache.close()
+        }
         let ledger = root.appendingPathComponent("metadata-recovery.plist"), unreadable = Data("temporarily unreadable recovery".utf8)
         try unreadable.write(to: ledger)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
@@ -128,6 +145,7 @@ import BottoCore
         }
         if interruption == .partialScanBeforeRecovery { await scanHeldScope(failing: false) }
         try FileManager.default.removeItem(at: ledger)
+        if savedRowExists { library.observeBots(service.profiles, evidence: .observed) }
         await library.restore(); await library.restore()
         if interruption == .failedScan || interruption == .partialScan {
             await scanHeldScope(failing: interruption == .failedScan)
@@ -135,7 +153,7 @@ import BottoCore
         let persistenceDeadline = ContinuousClock.now + .seconds(3)
         while library.isLoading, ContinuousClock.now < persistenceDeadline { await Task.yield() }
         #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
-        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
+        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == savedRowExists)
         let restoredPeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
         var downloads = service.downloadCount
         #expect(try await library.download(restoredPeer).data == Data("side".utf8))
@@ -151,10 +169,11 @@ import BottoCore
         library.seed(book: oldBook, bots: service.profiles); await library.restore()
         #expect(LibrarySearchResults(query: "Superseded private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/superseded-private.txt" })
+        #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/old-only-private.txt" })
         #expect(LibrarySearchResults(query: "Delayed private needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/delayed-private.txt" })
         #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
-        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == false)
+        #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == savedRowExists)
         let peerAfterSeed = try #require(library.artifacts.first { $0.chat.identity == service.second })
         downloads = service.downloadCount
         #expect(try await library.download(peerAfterSeed).data == Data("side".utf8))

@@ -175,6 +175,12 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             default: false
             }
         }
+        var hasProducerRows: Bool {
+            switch self {
+            case .accepted, .replacement, .partialHistory: true
+            default: false
+            }
+        }
         var isHistoryRead: Bool {
             switch self {
             case .replacement, .partialHistory: true
@@ -510,6 +516,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             var scopeAdmissions: [LibraryChat.ID: SavedScopeAdmission] = [:]
             @MainActor func recordChecked(_ source: SessionIdentity, since stamp: AcceptanceFence.Stamp) {
                 let id = key(for: source)
+                if discardedEvidence.contains(profile: source.profile, root: source.root) {
+                    scopeAdmissions[id] = .deferred
+                    return
+                }
                 guard !isRetired, rosterRevision == roster, records[id]?.identity == source,
                       acceptanceFence.permits(id, since: stamp), let content = projectionStates[id]?.version else {
                     scopeAdmissions[id] = .deferred
@@ -631,6 +641,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 switch admission {
                 case .deferred: deferred.insert(id)
                 case .checked(let source, let stamp, let content):
+                    if discardedEvidence.contains(profile: source.profile, root: source.root) {
+                        deferred.insert(id)
+                        continue
+                    }
                     if records[id]?.identity == source, projectionStates[id]?.version == content,
                        acceptanceFence.permits(id, since: stamp) { checked.insert(id) }
                     else { deferred.insert(id); stale.insert(id) }
@@ -645,7 +659,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         markDirty(id)
                     }
                 }
-                discardedEvidence.resolve(Set(checked.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) }))
             }
             let outcome: Restoration.Outcome = metadataRecovery.all || guardAdmissionFailure != guardFailure
                 || !deferred.isEmpty || evidenceChanged || !unreconciledMetadata.isEmpty ? .needsRetry : .reconciled
@@ -1457,7 +1470,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         switch unreconciledMetadata[key] {
         case .requiresGuard? where !retained.contains(where: { $0.id == key }):
             recoveryGuards = [key]
-        case .passiveWindow?:
+        case .passiveWindow? where input.hasProducerRows:
             let kept = Dictionary((retained.first { $0.id == key }?.messages ?? []).map {
                 (Data($0.id.utf8), $0)
             }, uniquingKeysWith: { first, _ in first })
