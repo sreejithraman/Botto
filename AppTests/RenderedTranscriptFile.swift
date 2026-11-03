@@ -22,7 +22,7 @@ nonisolated enum NativeTextRecognition {
 
 /// Test-only rendered-content oracle shared by admission and measurements.
 @MainActor enum RenderedTranscriptFile {
-    struct Observation {
+    struct Observation: Sendable {
         let hasBars: Bool
         let text: [String]
         var isComplete: Bool {
@@ -34,11 +34,16 @@ nonisolated enum NativeTextRecognition {
         guard hasFileBarPixels(image, in: rect) else { return .init(hasBars: false, text: []) }
         return .init(hasBars: true, text: try await recognizedText(image, in: rect))
     }
-    static func observeActive(_ image: UIImage, in rect: CGRect, isCurrent: @MainActor () -> Bool,
-                              observe: @MainActor (UIImage, CGRect) async throws -> Observation = {
+    static func observeActive(_ image: UIImage, in rect: CGRect, until deadline: ContinuousClock.Instant, isCurrent: @MainActor () -> Bool,
+                              observe: @escaping @MainActor (UIImage, CGRect) async throws -> Observation = {
                                   try await RenderedTranscriptFile.observe($0, in: $1)
                               }) async throws -> Observation? {
-        let observation = try await observe(image, rect)
+        let result: Result<Observation, Error>? = await NativeRecognitionDeadline.run(until: deadline) {
+            do { return .success(try await observe(image, rect)) }
+            catch { return .failure(error) }
+        }
+        guard let result else { return nil }
+        let observation = try result.get()
         return isCurrent() ? observation : nil
     }
     private static func recognizedText(_ image: UIImage, in rect: CGRect) async throws -> [String] {

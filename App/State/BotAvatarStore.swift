@@ -134,7 +134,7 @@ import BottoCore
                     AvatarDecodeLedger.shared.mark(.queued, attempt)
                     let beforeDecode = self?.beforeDecode
                     #endif
-                    let worker = Task.detached(priority: .utility) { () -> Decoded? in
+                    let worker = Task.detached(priority: Task.currentPriority) { () -> Decoded? in
                         #if DEBUG
                         await beforeDecode?()
                         AvatarDecodeLedger.shared.mark(.body, attempt, cancelled: Task.isCancelled)

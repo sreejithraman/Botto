@@ -89,6 +89,11 @@ shared browser storage, native app bridge, file access, or network access.
 Remote scripts, images, fonts, forms, links, and extra diagram engines cannot
 load. A failed or oversized preview leaves its source readable.
 
+An attached preview allows 30 seconds for WebKit to commit its trusted host.
+Hosted Simulator process launches can exceed 20 seconds. The untrusted document
+then has five seconds to initialize; the three-second heartbeat and five-second
+diagram capture limits remain separate. Source stays available throughout.
+
 HTML and SVG previews accept up to 128 KiB of UTF-8 source. Mermaid accepts
 16 KiB. Flowcharts and agentflows allow at most 100 edges; all diagram types
 also have source, output-size, and execution limits. Larger source blocks stay

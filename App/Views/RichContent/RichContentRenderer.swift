@@ -7,11 +7,22 @@ import WebKit
 /// never receives the app's service, session, URL request, cookies or credentials.
 @MainActor @Observable
 final class RichContentRenderer: NSObject {
+    // Hosted WebKit startup has reached the former fifteen-second pre-commit limit.
+    private nonisolated static let hostStartupTimeout: Duration = .seconds(30)
+    private nonisolated static let documentInitializationTimeout: Duration = .seconds(5)
+    private nonisolated static let diagramCaptureTimeout: Duration = .seconds(5)
+    nonisolated static var maximumAttachedLoadDuration: Duration {
+        hostStartupTimeout + documentInitializationTimeout + diagramCaptureTimeout
+    }
+
     enum State: Equatable { case idle, loading, deferred, ready, failed(String) }
     private(set) var state: State = .idle
     private(set) var height: CGFloat = 120
     private(set) var webView: WKWebView?
     private(set) var presentation: DiagramPresentation?
+    #if DEBUG
+    private(set) var lastWatchdogFailure: String?
+    #endif
     @ObservationIgnored private let isolatedScope = RichReplyPresentations()
     @ObservationIgnored private var ticket: DiagramRenderTicket?
     @ObservationIgnored private var pressureBlocked: Input?
@@ -122,6 +133,9 @@ final class RichContentRenderer: NSObject {
         case .render(let ticket): self.ticket = ticket
         }
         state = .loading
+        #if DEBUG
+        lastWatchdogFailure = nil
+        #endif
         do {
             let script = try RichContentDocument.bootstrap(block: block, generation: token,
                 dark: dark, reduceMotion: reduceMotion, bundle: bundle, diagramHeight: width == nil ? nil : (diagramViewportHeight ?? 480))
@@ -212,7 +226,7 @@ final class RichContentRenderer: NSObject {
         // any document. The trusted main-frame commit starts the shorter budget
         // before its document-end bootstrap can create the untrusted child.
         awaitingHostCommit = true
-        deadline = .now + .seconds(15)
+        deadline = .now + Self.hostStartupTimeout
         view.loadHTMLString(RichContentDocument.hostHTML, baseURL: nil)
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
@@ -222,6 +236,9 @@ final class RichContentRenderer: NSObject {
                 if (self.state == .loading && now > self.deadline) ||
                     (self.state == .ready && now > self.lastHeartbeat + .seconds(3)) ||
                     self.snapshotDeadline.map({ now > $0 }) == true {
+                    #if DEBUG
+                    self.lastWatchdogFailure = "state=\(self.state) awaitingHostCommit=\(self.awaitingHostCommit) loadingExpired=\(self.state == .loading && now > self.deadline) heartbeatExpired=\(self.state == .ready && now > self.lastHeartbeat + .seconds(3)) snapshotExpired=\(self.snapshotDeadline.map { now > $0 } ?? false) heartbeatAge=\(self.lastHeartbeat.duration(to: now))"
+                    #endif
                     self.fail("Preview stopped responding. Source is still available.")
                     return
                 }
@@ -285,7 +302,7 @@ final class RichContentRenderer: NSObject {
         awaitsInitialMeasurement = false
         state = .ready
         if input?.diagramWidth != nil, snapshotDeadline == nil {
-            snapshotDeadline = .now + .seconds(5)
+            snapshotDeadline = .now + Self.diagramCaptureTimeout
         }
         captureDiagramIfReady()
     }
@@ -316,7 +333,7 @@ final class RichContentRenderer: NSObject {
         }
         guard let capture = ticket, capture.startCapture() else { return }
         snapshotPending = true
-        if snapshotDeadline == nil { snapshotDeadline = .now + .seconds(5) }
+        if snapshotDeadline == nil { snapshotDeadline = .now + Self.diagramCaptureTimeout }
         let token = generation
         let size = view.bounds.size
         let configuration = WKSnapshotConfiguration()
@@ -385,7 +402,7 @@ extension RichContentRenderer: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard webView === self.webView, !generation.isEmpty, awaitingHostCommit else { return }
         awaitingHostCommit = false
-        deadline = .now + .seconds(5)
+        deadline = .now + Self.documentInitializationTimeout
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,

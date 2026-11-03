@@ -12,6 +12,27 @@ import UIKit
 /// observation require separate acceptance.
 @MainActor @Suite(.serialized, RichReplyRuntime())
 struct RichContentRendererTests {
+    @Test func delayedTrustedHostCommitDoesNotSpendTheDocumentBudget() async throws {
+        let renderer = makeRenderer()
+        await renderer.load(block("html", "<p>Content after a slow trusted host startup.</p>"))
+        let web = try #require(renderer.webView)
+        let navigation = DelayedHostNavigation(renderer: renderer)
+        web.navigationDelegate = navigation
+        defer { navigation.cancel(); renderer.stop() }
+        let window = try await attach(renderer)
+        defer { detach(window) }
+        let attached = ContinuousClock.now
+        try await wait { navigation.isHolding || renderer.webView == nil }
+        try #require(navigation.isHolding, "The real trusted-host navigation must reach its policy gate")
+        try await Task.sleep(until: attached + .seconds(21))
+        Attachment.record("elapsed=\(attached.duration(to: .now)) state=\(renderer.state) watchdog=\(renderer.lastWatchdogFailure ?? "<none>")",
+                          named: "delayed-trusted-host.txt")
+        try #require(renderer.state == .loading && renderer.webView === web,
+                     "A trusted host commit after twenty seconds must still be admitted")
+        navigation.release()
+        try await ready(renderer)
+    }
+
     @Test func requestedHTMLHeightSurvivesLoadingUntilContentMeasurement() async throws {
         let renderer = makeRenderer()
         await renderer.load(block("html", "<p>Measured content</p>"), initialHeight: 360)
@@ -541,7 +562,7 @@ struct RichContentRendererTests {
     }
 
     private func waitForFrame(_ web: WKWebView) async throws {
-        let deadline = ContinuousClock.now + .seconds(21)
+        let deadline = ContinuousClock.now + RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
         while ContinuousClock.now < deadline {
             do {
                 if try await evaluate(web, "document.querySelector('iframe') !== null") == "1" { return }
@@ -795,12 +816,47 @@ struct RichContentRendererTests {
         RichContentRenderer()
     }
 
+    @MainActor private final class DelayedHostNavigation: NSObject, WKNavigationDelegate {
+        private weak var renderer: RichContentRenderer?
+        private var pending: (@MainActor (WKNavigationActionPolicy) -> Void)?
+        private var heldHost = false
+        var isHolding: Bool { pending != nil }
+        init(renderer: RichContentRenderer) { self.renderer = renderer }
+        func release() { finish(.allow) }
+        func cancel() { finish(.cancel) }
+        private func finish(_ policy: WKNavigationActionPolicy) {
+            let decision = pending; pending = nil; decision?(policy)
+        }
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                     decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+            guard let renderer else { decisionHandler(.cancel); return }
+            renderer.webView(webView, decidePolicyFor: action) { policy in
+                if !self.heldHost && policy == .allow && action.targetFrame?.isMainFrame == true {
+                    self.heldHost = true
+                    self.pending = decisionHandler
+                } else { decisionHandler(policy) }
+            }
+        }
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            renderer?.webView(webView, didCommit: navigation)
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            renderer?.webView(webView, didFail: navigation, withError: error)
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            renderer?.webView(webView, didFailProvisionalNavigation: navigation, withError: error)
+        }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            renderer?.webViewWebContentProcessDidTerminate(webView)
+        }
+    }
+
     private func block(_ language: String, _ source: String) -> ReplyContent.Block {
         ReplyContent(assistantText: "```\(language)\n\(source)\n```").blocks[0]
     }
 
     private func wait(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(21)
+        let deadline = ContinuousClock.now + RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
         while !condition() && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(25))
         }

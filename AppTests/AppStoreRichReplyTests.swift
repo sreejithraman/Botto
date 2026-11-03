@@ -7,6 +7,86 @@ import WebKit
 @testable import Botto
 
 @MainActor @Suite(.serialized, RichReplyRuntime()) struct AppStoreRichReplyTests {
+    @Test func expiredRecognitionDoesNotStartWork() async {
+        await checkImmediateRecognition(until: .now - .seconds(1), expected: nil, expectStarted: false)
+    }
+
+    @Test func recognitionExpiryReturnsBeforeUncooperativeWorkAndIgnoresItsLateResult() async {
+        await checkRecognitionReturnsBeforeWorker(cancelWaiter: false)
+    }
+
+    @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
+        await checkRecognitionReturnsBeforeWorker(cancelWaiter: true)
+        await checkImmediateRecognition(until: .now + .seconds(5), expected: ["current recognition"], expectStarted: true)
+    }
+
+    private func checkImmediateRecognition(until deadline: ContinuousClock.Instant, expected: [String]?, expectStarted: Bool,
+                                           sourceLocation: SourceLocation = #_sourceLocation) async {
+        var started = false, completed = false
+        var result: [String]?
+        let waiter = Task {
+            result = await NativeRecognitionDeadline.run(until: deadline) {
+                started = true
+                return ["current recognition"]
+            }
+            completed = true
+        }
+        defer { waiter.cancel() }
+        let settled = await waitForRecognitionControl { completed }
+        #expect(settled, "Recognition must complete independently of the helper's own deadline", sourceLocation: sourceLocation)
+        if settled { await waiter.value }
+        #expect(result == expected, sourceLocation: sourceLocation)
+        #expect(started == expectStarted, sourceLocation: sourceLocation)
+    }
+
+    private func checkRecognitionReturnsBeforeWorker(cancelWaiter: Bool, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let work = RichReplyFileGate(), expiry = RichReplyFileGate()
+        let worker = Task { await work.wait(); return ["late recognition"] }
+        var result: [String]?, completed = false
+        var recognitionEntered = false, recognitionResumed = false
+        var recognitionWasCancelled = false, performedLateMutation = false
+        let waiter = Task {
+            result = await NativeRecognitionDeadline.run(expiration: { await expiry.wait() }) {
+                recognitionEntered = true
+                let words = await worker.value
+                recognitionWasCancelled = Task.isCancelled
+                if !recognitionWasCancelled { performedLateMutation = true }
+                recognitionResumed = true
+                return words
+            }
+            completed = true
+        }
+        defer { work.release(); expiry.release(); waiter.cancel() }
+        let entered = await waitForRecognitionControl { work.hasEntered && recognitionEntered && expiry.hasEntered }
+        #expect(entered, "Recognition and expiry must enter before the control fires", sourceLocation: sourceLocation)
+        if entered {
+            if cancelWaiter { waiter.cancel() } else { expiry.release() }
+        }
+        let returnedBeforeWork = entered ? await waitForRecognitionControl { completed } : false
+        #expect(returnedBeforeWork, "Recognition must return before its blocked worker is released", sourceLocation: sourceLocation)
+        work.release(); expiry.release()
+        waiter.cancel()
+        #expect(await worker.value == ["late recognition"], sourceLocation: sourceLocation)
+        _ = await waitForRecognitionControl { completed && recognitionResumed }
+        #expect(completed, "Recognition owner did not settle after all test gates were released", sourceLocation: sourceLocation)
+        #expect(recognitionResumed, "Recognition operation must resume after its producer is released", sourceLocation: sourceLocation)
+        if completed { await waiter.value }
+        if recognitionResumed {
+            #expect(recognitionWasCancelled, "Late recognition must resume cancelled", sourceLocation: sourceLocation)
+            #expect(!performedLateMutation, "Cancellation must prevent late lifecycle work", sourceLocation: sourceLocation)
+        }
+        #expect(result == nil, "Late recognition must not be admitted", sourceLocation: sourceLocation)
+        await Task.yield()
+    }
+
+    private func waitForRecognitionControl(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
+
     @Test func transientAttachmentsReadCurrentBytesAndOnlyIdentifiedRowsRetainCaptures() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -144,34 +224,40 @@ import WebKit
         host.view.addSubview(original)
         var didRetire = false
         func replaceDocument() async throws {
+            try Task.checkCancellation()
             didRetire = true
             first.stop()
             await replacement.load(block)
+            try Task.checkCancellation()
             let current = try #require(replacement.webView)
             current.frame = original.frame
             host.view.addSubview(current)
         }
-        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view) { pixels in
+        // This recognizer deliberately creates a second document before returning old pixels.
+        let observed = try await MountedReplyFileDocument.waitForText("Mounted observation", in: host.view,
+            observationBudget: RichContentRenderer.maximumAttachedLoadDuration + .seconds(30), recognize: { pixels in
             let words = try await NativeTextRecognition.recognize(pixels, languages: ["en-US"])
             if !didRetire && words.joined(separator: " ").localizedStandardContains("Mounted observation") {
                 if activeResources {
                     let image = UIImage(cgImage: pixels)
-                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size),
+                    var complete = false
+                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + .seconds(15),
                         isCurrent: { first.webView === original && first.state == .ready && original.window === window },
                         observe: { image, region in
                             let captured = try await RenderedTranscriptFile.observe(image, in: region)
-                            try #require(captured.isComplete, "The control must recognize genuine complete file pixels before retirement")
-                            try await replaceDocument()
+                            complete = captured.isComplete
+                            if complete { try await replaceDocument() }
                             return captured
                         })
+                    guard complete else { return [] }
                     #expect(active == nil, "Retired pixels must not admit a later active-resource sample")
                 } else { try await replaceDocument() }
             }
             return words
-        }
+        })
         let current = try #require(replacement.webView)
         #expect(didRetire)
-        #expect(observed === current, "Retired pixels must not certify the mounted replacement")
+        #expect(observed === current, "The same waiter must reject retired pixels and observe the replacement")
         #expect(current.window === window && original.superview == nil)
     }
 
@@ -546,45 +632,115 @@ import WebKit
 
 @MainActor final class RichReplyFileGate {
     private var continuation: CheckedContinuation<Void, Never>?
-    func wait() async { await withCheckedContinuation { continuation = $0 } }
-    func entered() async { while continuation == nil { await Task.yield() } }
-    func release() { continuation?.resume(); continuation = nil }
+    private(set) var hasEntered = false
+    private var released = false
+    func wait() async {
+        hasEntered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func entered() async { while !hasEntered { await Task.yield() } }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }
 
 /// Observes the document actually mounted by the native preview, independently
 /// of the direct-loader grants and the service's captured-byte count.
 @MainActor enum MountedReplyFileDocument {
+    private enum Stage: String {
+        case mounting, rendering, recognizing
+
+        func budget(observation: Duration) -> Duration {
+            switch self {
+            case .mounting: .seconds(30)
+            case .rendering: RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)
+            case .recognizing: observation
+            }
+        }
+    }
+
+    struct Observation {
+        let words: String?
+        let image: UIImage?
+        let isCurrent: Bool
+    }
+
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
-                            recognize: @MainActor (CGImage) async throws -> [String] = {
+                            phase: String = "initial document", observationBudget: Duration = .seconds(15),
+                            diagnostics: () -> String = { "" },
+                            recognize: @escaping @MainActor (CGImage) async throws -> [String] = {
                                 try await NativeTextRecognition.recognize($0, languages: ["en-US"])
                             }) async throws -> WKWebView {
-        // Match the renderer's fifteen-second cold startup plus document budget.
-        let deadline = ContinuousClock.now + .seconds(21)
-        var observed: (words: String?, image: UIImage?)?
+        let start = ContinuousClock.now
+        var stage = Stage.mounting
+        var deadline = start + stage.budget(observation: observationBudget)
+        var observation: Observation?
+        var rendererStates: [String] = []
+        var seenRenderers: [ObjectIdentifier: RichContentRenderer] = [:]
+        var lastPoll = start, maximumPollGap = Duration.zero
+        var polls = 0
         while ContinuousClock.now < deadline {
+            let now = ContinuousClock.now
+            maximumPollGap = max(maximumPollGap, lastPoll.duration(to: now))
+            lastPoll = now; polls += 1
+            rendererStates = []
             for web in webViews(in: root) where web !== previous && web.window != nil && web.bounds.width > 0 && web.bounds.height > 0 {
-                guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else { continue }
-                observed = await renderedText(in: web, recognize: recognize)
-                guard renderer.webView === web, web.navigationDelegate === renderer, renderer.state == .ready,
-                      web.window != nil, web.window === root.window, web.isDescendant(of: root),
-                      web.bounds.width > 0, web.bounds.height > 0, ContinuousClock.now < deadline else { continue }
-                if let words = observed?.words, words.localizedStandardContains(expected) { return web }
+                guard let renderer = web.navigationDelegate as? RichContentRenderer else { continue }
+                seenRenderers[ObjectIdentifier(renderer)] = renderer
+                if stage == .mounting {
+                    stage = .rendering
+                    // WebKit's own commit and document budgets begin after attachment.
+                    deadline = .now + stage.budget(observation: observationBudget)
+                }
+                rendererStates.append("\(ObjectIdentifier(web)): \(renderer.state)")
+                guard renderer.state == .ready else { continue }
+                if stage == .rendering {
+                    stage = .recognizing
+                    deadline = .now + stage.budget(observation: observationBudget)
+                }
+                observation = await observe(web, in: root, deadline: deadline, recognize: recognize)
+                guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
+                if let words = observation.words, words.localizedStandardContains(expected) { return web }
             }
             try await Task.sleep(for: .milliseconds(40))
         }
-        let diagnostic = FileManager.default.temporaryDirectory.appendingPathComponent("botto-mounted-\(UUID().uuidString).png")
-        if let image = observed?.image?.pngData() { try? image.write(to: diagnostic) }
-        print("BOTTO_MOUNTED_DOCUMENT stage=\(previous == nil ? "initial" : "replacement") views=\(webViews(in: root).count) root=\(root.bounds) words=\(observed?.words ?? "<none>") image=\(diagnostic.path)")
-        Issue.record("The actual mounted document did not render: \(expected)")
+        let details = """
+        phase=\(phase) stage=\(stage.rawValue) elapsed=\(start.duration(to: .now))
+        renderers=\(rendererStates.joined(separator: " | ")) views=\(webViews(in: root).count) root=\(root.bounds) attached=\(root.window != nil)
+        polls=\(polls) maximumPollGap=\(maximumPollGap)
+        observedRenderers=\(seenRenderers.map { "\($0.key): \($0.value.state) watchdog=\($0.value.lastWatchdogFailure ?? "<none>")" }.sorted().joined(separator: " | "))
+        words=\(observation?.words ?? "<none>") current=\(observation?.isCurrent ?? false)
+        \(diagnostics())
+        """
+        Attachment.record(details, named: "mounted-document-readiness.txt")
+        if let image = observation?.image { Attachment.record(image, named: "mounted-document.png", as: .png) }
+        if root.bounds.width > 0, root.bounds.height > 0 {
+            let image = UIGraphicsImageRenderer(bounds: root.bounds).image { _ in
+                root.drawHierarchy(in: root.bounds, afterScreenUpdates: false)
+            }
+            Attachment.record(image, named: "mounted-document-host.png", as: .png)
+        }
+        Issue.record("The actual mounted document did not render: \(expected) (\(phase), \(stage.rawValue))")
         throw DocumentFailure.notRendered
+    }
+
+    private static func observe(_ web: WKWebView, in root: UIView, deadline: ContinuousClock.Instant,
+                                recognize: @escaping @MainActor (CGImage) async throws -> [String]) async -> Observation {
+        guard let renderer = web.navigationDelegate as? RichContentRenderer, renderer.state == .ready else {
+            return Observation(words: nil, image: nil, isCurrent: false)
+        }
+        let result = await renderedText(in: web, deadline: deadline, recognize: recognize)
+        return Observation(words: result.words, image: result.image,
+            isCurrent: renderer.webView === web && web.navigationDelegate === renderer && renderer.state == .ready &&
+                web.window != nil && web.window === root.window && web.isDescendant(of: root) &&
+                web.bounds.width > 0 && web.bounds.height > 0)
     }
 
     private static func webViews(in view: UIView) -> [WKWebView] {
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap { webViews(in: $0) }
     }
 
-    private static func renderedText(in web: WKWebView,
-                                     recognize: @MainActor (CGImage) async throws -> [String]) async -> (words: String?, image: UIImage?) {
+    private static func renderedText(in web: WKWebView, deadline: ContinuousClock.Instant,
+                                     recognize: @escaping @MainActor (CGImage) async throws -> [String]) async -> (words: String?, image: UIImage?) {
         let image: UIImage? = await withCheckedContinuation { continuation in
             let pending = PendingSnapshot(continuation)
             let timeout = Task { @MainActor in
@@ -596,11 +752,8 @@ import WebKit
             }
         }
         guard let pixels = image?.cgImage else { return (nil, image) }
-        do {
-            let words = try await recognize(pixels)
-                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            return (words, image)
-        } catch { return (nil, image) }
+        let words = await NativeRecognitionDeadline.run(until: deadline) { try await recognize(pixels) }
+        return (words?.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " "), image)
     }
 
     private enum DocumentFailure: Error { case notRendered }
