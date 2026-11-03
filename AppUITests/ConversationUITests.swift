@@ -722,14 +722,27 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(composer.isEnabled)
         composer.tap()
         composer.typeText("Stream the performance fixture")
+        let completionMarker = directory.appendingPathComponent("performance-stream-1.completed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completionMarker.path))
         let streamStart = ContinuousClock.now
         let streamDeadline = streamStart + .seconds(20)
         app.buttons["Send message"].tap()
+        let producerCompleted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: completionMarker.path)
+        }, object: nil)
+        let producerRemaining = ContinuousClock.now.duration(to: streamDeadline)
+        let producerTimeout = max(0, Double(producerRemaining.components.seconds) + Double(producerRemaining.components.attoseconds) / 1e18)
+        let producerFinished = XCTWaiter.wait(for: [producerCompleted], timeout: producerTimeout) == .completed
+        if !producerFinished { captureReadingState(app, name: "Producer stream deadline") }
+        XCTAssertTrue(producerFinished, "The producer must finish within the shared stream budget.")
         let reply = app.otherElements["transcript-message-performance-reply-1"]
         let finished = reply.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
-        let remaining = ContinuousClock.now.duration(to: streamDeadline)
-        let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
-        let firstCompleted = finished.waitForExistence(timeout: timeout)
+        var firstCompleted = finished.exists
+        if !firstCompleted {
+            let remaining = ContinuousClock.now.duration(to: streamDeadline)
+            let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
+            firstCompleted = finished.waitForExistence(timeout: timeout)
+        }
         if !firstCompleted { captureReadingState(app, name: "First stream deadline") }
         XCTAssertTrue(firstCompleted)
         let streamElapsed = streamStart.duration(to: .now)

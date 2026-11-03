@@ -393,7 +393,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             return .init(activity: activity, enteredAt: facts?.phaseStartedAt ?? fallback.enteredAt,
                          workStartedAt: facts?.workStartedAt ?? fallback.workStartedAt)
         }
-        if scope == .profile, aggregate(profile: profile).status != .idle { return coarse }
+        if scope == .profile,
+           profileActivitySummary(profile: profile, records: book.ordered(profile)).presentation.currentStatus != .idle {
+            return coarse
+        }
         if let reaction = avatarActivity.reaction {
             return .init(activity: reaction.kind == .succeeded ? .finished : .failed,
                          enteredAt: reaction.occurredAt, reactionID: reaction.id)
@@ -401,7 +404,8 @@ private struct ReadObservationKey: Hashable, Sendable {
         return scope == .profile ? coarse : avatarActivity.chat(selected)
     }
     private func refreshAvatarProfile(_ profile: ExactID) {
-        let activity: BotMotionActivity = switch aggregate(profile: profile).activity {
+        let summary = profileActivitySummary(profile: profile, records: book.ordered(profile))
+        let activity: BotMotionActivity = switch summary.presentation {
         case .current(let status): .observed(status)
         case .unobserved, .historical: .idle
         case .unavailable: .unavailable
@@ -591,11 +595,22 @@ private struct ReadObservationKey: Hashable, Sendable {
         let openingChat = book.opening(profile).flatMap { id in records.first { $0.id == id } }
         let selectedChat = records.first { $0.id == selected }
             ?? book.opening(profile).flatMap { id in records.first { $0.id == id } }
-        var unreadCount = 0, knownCount = 0
+        let summary = profileActivitySummary(profile: profile, records: records)
+        return .init(count: records.count, unreadCount: records.reduce(0) { $0 + ($1.isUnread ? 1 : 0) },
+            selectedChatIsUnread: selectedChat?.isUnread ?? false, activity: summary.presentation,
+            hasUnknownActivity: summary.knownCount != records.count, directoryComplete: complete[profile] ?? false,
+            attentionChat: summary.attentionChat, preview: openingChat?.inboxMessage, hasHistory: openingChat?.hasInboxHistory ?? false)
+    }
+    private struct ProfileActivitySummary {
+        let presentation: ActivityPresentation
+        let knownCount: Int
+        let attentionChat: ChatID?
+    }
+    private func profileActivitySummary(profile: ExactID, records: [ChatRecord]) -> ProfileActivitySummary {
+        var knownCount = 0
         var waiting: ChatID?, working = false
         var historical: ActivityObservation?, unavailable = false
         for record in records {
-            if record.isUnread { unreadCount += 1 }
             guard let status = status(record.id) else {
                 if online, case .unknown = activity[record.id] { unavailable = true }
                 if let observation = record.lastKnownActivity, observation.isPreferredForDisplay(over: historical) {
@@ -620,10 +635,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let combined { presentation = .current(combined) }
         else if unavailable { presentation = .unavailable(lastKnown: historical) }
         else { presentation = historical.map(ActivityPresentation.historical) ?? .unobserved }
-        return .init(count: records.count, unreadCount: unreadCount,
-            selectedChatIsUnread: selectedChat?.isUnread ?? false, activity: presentation,
-            hasUnknownActivity: knownCount != records.count, directoryComplete: complete[profile] ?? false,
-            attentionChat: waiting, preview: openingChat?.inboxMessage, hasHistory: openingChat?.hasInboxHistory ?? false)
+        return .init(presentation: presentation, knownCount: knownCount, attentionChat: waiting)
     }
     /// Captured navigation claims its request before queued work or I/O begins.
     func captureOpening(profile: ExactID, attention: Bool = false) -> OpeningIntent? {
@@ -953,27 +965,40 @@ private struct ReadObservationKey: Hashable, Sendable {
         do {
             guard let result = try await read.task.value else { return }
             guard read.recovery == recovery, inboxHistoryReads[id]?.id == read.id else { return }
-            let applied: (publication: ChatTranscriptPublication, retained: Conversation)? = mutateBook { book in
-                // Observation callbacks run before this borrow and may retire the
-                // connection or publish a newer transcript.
+            func currentRecord(in book: ConversationBook) -> ChatRecord? {
                 guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
                       inboxProfiles.contains(profile), book.opening(profile) == id,
                       let current = book.record(id), current.binding.identity == identity,
                       current.summary == summary,
                       TranscriptContentRevision.sameSnapshotContent(current.transcript, transcript),
                       current.transcript?.hasEarlierMessages == transcript?.hasEarlierMessages,
-                      opening?.chat != id,
-                      selected != id || live == nil else { return nil }
-                book.cache(result, for: id)
-                guard let retained = book.record(id)?.transcript else { return nil }
+                      opening?.chat != id, selected != id || live == nil else { return nil }
+                return current
+            }
+            func publication(_ retained: Conversation, title: String) -> ChatTranscriptPublication {
                 var fetched = retained
                 fetched.messages = result.messages
                 fetched.hasEarlierMessages = result.hasEarlierMessages
-                return (.init(identity: identity, snapshot: fetched, title: current.title,
-                    evidence: .window(startedAt: read.startedAt, observedSource: identity, identityRead: result.identityRead)), retained)
+                return .init(identity: identity, snapshot: fetched, title: title,
+                    evidence: .window(startedAt: read.startedAt, observedSource: identity, identityRead: result.identityRead))
+            }
+            guard let current = currentRecord(in: book),
+                  let prepared = ConversationBook.cachedHistoryWindow(result, for: current) else { return }
+            let applied: (publication: ChatTranscriptPublication, retained: Conversation, changed: Bool)?
+            if prepared.matches(current) {
+                applied = (publication(prepared.transcript, title: current.title), prepared.transcript, false)
+            } else {
+                applied = mutateBook { book in
+                    // Recompute after Observation callbacks, against the current owner and content.
+                    guard let current = currentRecord(in: book),
+                          let prepared = ConversationBook.cachedHistoryWindow(result, for: current) else { return nil }
+                    let changed = !prepared.matches(current)
+                    if changed { book.update(id) { prepared.apply(to: &$0) } }
+                    return (publication(prepared.transcript, title: current.title), prepared.transcript, changed)
+                }
             }
             if let applied {
-                onDirty()
+                if applied.changed { onDirty() }
                 guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
                       inboxProfiles.contains(profile), book.opening(profile) == id,
                       let current = book.record(id), current.binding.identity == identity,

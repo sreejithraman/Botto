@@ -240,7 +240,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             self.candidates = candidates; self.limited = limited; self.recoveryGuards = recoveryGuards
         }
     }
-    private struct ProjectionState {
+    private struct ProjectionState: Equatable {
         let version: UUID
         var published: UUID?
         let tail: WorkingTail?
@@ -1347,6 +1347,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             guard newestFirst.count < count, cost <= bytes - usedBytes else { trimmed = true; continue }
             newestFirst.append(message); admitted.insert(id); usedBytes += cost
         }
+        // Replacement never edits a retained row. Preserve its storage when every row fits.
+        if policy == .replace, !trimmed, newestFirst.count == incoming.count { return (incoming, false) }
         return (Array(newestFirst.reversed()), trimmed)
     }
 
@@ -1585,6 +1587,16 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var retained: [LibraryChat.ID: Projection] = [:]
         for candidate in admission.candidates {
             guard let old = records[candidate.id], old.identity.stored == candidate.source.stored else { continue }
+            if sameMessages(old.messages, candidate.messages) {
+                let ids = Set(candidate.messages.map { Data($0.id.utf8) })
+                if old.discoveredArtifacts.allSatisfy({ ids.contains(Data($0.messageID.utf8)) }),
+                   old.sourceRevisions.keys.allSatisfy({ ids.contains($0) }),
+                   old.searchableText.keys.allSatisfy({ ids.contains($0) }) {
+                    retained[candidate.id] = Projection(artifacts: old.discoveredArtifacts,
+                        revisions: old.sourceRevisions, searchableText: old.searchableText)
+                    continue
+                }
+            }
             let prior = Dictionary(old.messages.map { (Data($0.id.utf8), $0) }, uniquingKeysWith: { first, _ in first })
             let stable = Set(candidate.messages.compactMap { message -> Data? in
                 let id = Data(message.id.utf8)

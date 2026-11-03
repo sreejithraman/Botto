@@ -88,8 +88,9 @@ struct WorkspaceTabs: View {
         let destination: Destination
         let revalidation: UUID
     }
-    private var refreshKey: RefreshKey {
-        .init(library: ObjectIdentifier(store.library), connected: store.isConnected,
+    private var refreshKey: RefreshKey? {
+        guard selected != .bots else { return nil }
+        return .init(library: ObjectIdentifier(store.library), connected: store.isConnected,
               destination: selected, revalidation: store.library.revalidationRevision)
     }
 

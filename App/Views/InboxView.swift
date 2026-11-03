@@ -13,7 +13,11 @@ struct InboxView: View {
     var body: some View {
         let entries = isExposed ? store.inbox : hiddenEntries
         let bots = entries.map(\.bot)
-        let pinned = bots.filter { store.isPinned($0) }
+        let pinned = bots.filter { store.isPinned($0) }.sorted {
+            let names = $0.name.localizedStandardCompare($1.name)
+            if names != .orderedSame { return names == .orderedAscending }
+            return Data($0.id.utf8).lexicographicallyPrecedes(Data($1.id.utf8))
+        }
         let lastBotID = entries.last?.id
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {

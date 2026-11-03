@@ -396,33 +396,58 @@ struct ConversationBook: Codable, Sendable {
             }
         }
     }
+    struct CachedHistoryWindow: Sendable {
+        let transcript: Conversation
+        let hasContentHistory: Bool?
+
+        func matches(_ record: ChatRecord) -> Bool {
+            guard let current = record.transcript else { return false }
+            return hasContentHistory == record.hasContentHistory && transcript == current
+                && TranscriptContentRevision.exact(transcript.id, current.id)
+                && TranscriptContentRevision.exact(transcript.storedID, current.storedID)
+                && TranscriptContentRevision.exact(transcript.profileID, current.profileID)
+                && TranscriptContentRevision.sameSnapshotContent(transcript, current)
+                && zip(transcript.messages, current.messages).allSatisfy { first, second in
+                    TranscriptContentRevision.exact(first.workDetailsID, second.workDetailsID)
+                }
+        }
+        func apply(to record: inout ChatRecord) {
+            record.transcript = transcript
+            record.hasContentHistory = hasContentHistory
+        }
+    }
+    static func cachedHistoryWindow(_ window: ConversationHistoryWindow, for record: ChatRecord) -> CachedHistoryWindow? {
+        guard let identity = record.binding.identity else { return nil }
+        let previous = record.transcript.flatMap {
+            Data($0.profileID.utf8) == identity.profile.bytes && Data($0.storedID.utf8) == identity.stored.bytes ? $0 : nil
+        }
+        var messages = window.messages
+        var hasEarlierMessages = window.hasEarlierMessages
+        if window.hasEarlierMessages,
+           let previous,
+           let first = messages.first, first.hasStableIdentity(storedID: identity.stored.text),
+           previous.unavailableMessageIDs?.contains(Data(first.id.utf8)) != true,
+           let anchor = previous.messages.firstIndex(where: { Data($0.id.utf8) == Data(first.id.utf8) }),
+           previous.messages.filter({ Data($0.id.utf8) == Data(first.id.utf8) }).count == 1,
+           Set(previous.messages[..<anchor].map { Data($0.id.utf8) })
+            .isDisjoint(with: messages.map { Data($0.id.utf8) }) {
+            // The fetched suffix replaces cached revisions and removals after its first row.
+            messages = Array(previous.messages[..<anchor]) + messages
+            hasEarlierMessages = previous.hasEarlierMessages
+        }
+        let hasContentHistory = !messages.isEmpty || record.transcript?.messages.isEmpty == false
+            ? true : record.hasContentHistory
+        let snapshot = Conversation(id: previous?.id ?? identity.stored.text, storedID: identity.stored.text,
+            profileID: identity.profile.text, messages: messages, queuedMessages: previous?.queuedMessages ?? [],
+            hasEarlierMessages: hasEarlierMessages)
+        let transcript = Self.reconciled(snapshot, previous: previous,
+            resolvingMessageIDs: window.hasEarlierMessages ? [] : Set(window.messages.map { Data($0.id.utf8) }),
+            retainEarlierMessages: window.hasEarlierMessages)
+        return .init(transcript: transcript, hasContentHistory: hasContentHistory)
+    }
     mutating func cache(_ window: ConversationHistoryWindow, for id: ChatID) {
         update(id) { record in
-            guard let identity = record.binding.identity else { return }
-            let previous = record.transcript.flatMap {
-                Data($0.profileID.utf8) == identity.profile.bytes && Data($0.storedID.utf8) == identity.stored.bytes ? $0 : nil
-            }
-            var messages = window.messages
-            var hasEarlierMessages = window.hasEarlierMessages
-            if window.hasEarlierMessages,
-               let previous,
-               let first = messages.first, first.hasStableIdentity(storedID: identity.stored.text),
-               previous.unavailableMessageIDs?.contains(Data(first.id.utf8)) != true,
-               let anchor = previous.messages.firstIndex(where: { Data($0.id.utf8) == Data(first.id.utf8) }),
-               previous.messages.filter({ Data($0.id.utf8) == Data(first.id.utf8) }).count == 1,
-               Set(previous.messages[..<anchor].map { Data($0.id.utf8) })
-                .isDisjoint(with: messages.map { Data($0.id.utf8) }) {
-                // The fetched suffix replaces cached revisions and removals after its first row.
-                messages = Array(previous.messages[..<anchor]) + messages
-                hasEarlierMessages = previous.hasEarlierMessages
-            }
-            if !messages.isEmpty || record.transcript?.messages.isEmpty == false { record.hasContentHistory = true }
-            let snapshot = Conversation(id: previous?.id ?? identity.stored.text, storedID: identity.stored.text,
-                profileID: identity.profile.text, messages: messages, queuedMessages: previous?.queuedMessages ?? [],
-                hasEarlierMessages: hasEarlierMessages)
-            record.transcript = Self.reconciled(snapshot, previous: previous,
-                resolvingMessageIDs: window.hasEarlierMessages ? [] : Set(window.messages.map { Data($0.id.utf8) }),
-                retainEarlierMessages: window.hasEarlierMessages)
+            Self.cachedHistoryWindow(window, for: record)?.apply(to: &record)
         }
     }
     static func inert(_ snapshot: Conversation) -> Conversation {

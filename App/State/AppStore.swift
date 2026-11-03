@@ -273,7 +273,7 @@ import BottoCore
     init(service: (any BotService)? = nil, persistence: ConnectionPersistence? = nil, push: PushCoordinator? = nil,
          cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init,
          waitForBotInvalidationInterval: @escaping @MainActor () async throws -> Void = {
-             try await Task.sleep(for: .seconds(1))
+             try await Task.sleep(for: .seconds(5))
          }) {
         let liveService = service ?? HermesBotService()
         self.artifactCache = artifactCache ?? (persistence == nil ? .shared : ArtifactCache(root: nil))

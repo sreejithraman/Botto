@@ -840,6 +840,9 @@ import BottoCore
               let messageIndex = current.messages.firstIndex(where: { $0.id == id }) else { return }
         current.messages[messageIndex].text += "\n\nPerformance stream \(number) complete."
         completeReply(current, key: key, source: source, lineage: lineage, succeeded: true)
+        if let gateDirectory {
+            try? Data().write(to: gateDirectory.appendingPathComponent("performance-stream-\(number).completed"))
+        }
     }
     #endif
 

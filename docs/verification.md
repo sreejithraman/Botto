@@ -1500,3 +1500,39 @@ These author-run before/after bindings do not constitute continuous filesystem
 monitoring. There is no full-suite, performance, live-host, physical-device,
 complete verification-map or release acceptance. Final PR preparation changes
 only this verification prose; runtime and test bytes retain those bindings.
+
+
+## Local chat UI gate repair — 3 November 2026
+
+The branch includes `main` at `9c7412f` and repairs native creation dismissal,
+offline file feedback, reconnect feedback, and shared cache publication. Bot
+inventory hints trigger a leading read and coalesce further reads through a
+fixed five-second cooldown. Explicit refreshes and live conversation publications
+bypass the cooldown. Inventory hints can wait five seconds plus read latency.
+
+The controlled store workload kept 205 profiles, 400 history messages, 200
+fragments, 20 ms sleeps, and all 203 advisory emissions. Single observations on
+the integrated source took 16.69 seconds before the cache/activity refinements and cooldown tuning
+and 13.65 seconds afterward; roster reads fell from 13 to 3. These are individual
+runs, not a statistical latency claim. Commands, logs, and full source bindings
+are retained under `/tmp/botto-ui-gate-repair/` (`integrated-control8` and
+`restored26`).
+
+A main-thread profile recorded 1,527 of 8,775 samples inside XCTest accessibility
+attribute queries. The performance helper now waits on a fixture completion
+signal, then checks the actual native reply within the original 20-second budget.
+The signal follows the unchanged 200-fragment sequence. A controlled
+mutant omitted only its final publication while still writing the signal; it
+failed at the native reply assertion (`missing-publication-mutant25`). Restoring
+the exact publisher passed both workflows at 19.59 and 18.51 seconds, including
+three reading-position and draft-preservation cycles. The same `restored26` run
+passed 261 Swift Testing tests in seven suites and its XCTest store measurement.
+
+One earlier control stopped before streaming after a Scout tap opened Iris.
+The pinned rail inherited the inbox's changing activity order; it now uses a
+stable name and exact-ID order. No frame trace established that ordering as the
+observed failure mechanism. The subsequent control reached and rejected the
+intended missing-publication mutation.
+
+The complete local gate is pending on this repaired source. Earlier partial UI
+runs and passing GitHub build checks do not establish that full-gate result.

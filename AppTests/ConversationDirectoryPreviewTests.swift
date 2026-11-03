@@ -556,3 +556,129 @@ import XCTest
         #expect(fixture(service, book: restored).aggregate(profile: service.profile).preview?.text == "A useful cached answer.")
     }
 }
+
+@MainActor private final class InboxWindowPublicationProbe {
+    var dirtyCount = 0
+    var displayChanges = 0
+    var enteredCallback = false
+    var publications: [ChatTranscriptPublication] = []
+}
+
+extension InboxMessagePreviewTests {
+    @Test func identicalHistoryWindowKeepsDisplayQuietAndPublishesFreshReadEvidence() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe()
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0])
+        let rowID = identity.stored.text + ":row:1"
+        let proof = ConversationIdentityRead(identity: identity, messageIDs: [Data(rowID.utf8)])
+        service.previewResult = .init(messages: [.init(id: rowID, role: .assistant, text: "Caf\u{e9}")],
+            hasEarlierMessages: false, identityRead: proof)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: { probe.dirtyCount += 1 })
+        workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
+        workspace.setOnline(true)
+        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        defer { workspace.retireWorkspace() }
+
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.dirtyCount == 1)
+        #expect(probe.publications.count == 1)
+        let first = try #require(probe.publications.first?.evidence.readContext)
+        withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
+            MainActor.assumeIsolated { probe.displayChanges += 1 }
+        }
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.displayChanges == 0)
+        #expect(probe.dirtyCount == 1)
+        #expect(service.previewReads.count == 2)
+        #expect(probe.publications.count == 2)
+        let secondPublication = try #require(probe.publications.last)
+        guard case .window(let startedAt, let source, let identityRead) = secondPublication.evidence else {
+            Issue.record("A repeated history read must still publish window evidence")
+            return
+        }
+        #expect(startedAt > first.startedAt)
+        #expect(source == service.previewReads.last)
+        #expect(identityRead?.matches(identity) == true)
+        #expect(identityRead?.messageIDs == proof.messageIDs)
+
+        service.previewResult = .init(messages: [.init(id: rowID, role: .assistant, text: "Cafe\u{301}")],
+            hasEarlierMessages: false, identityRead: proof)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.displayChanges == 1)
+        #expect(probe.dirtyCount == 2)
+        #expect(probe.publications.count == 3)
+        #expect(workspace.persisted().record(id)?.transcript?.messages.first.map { Data($0.text.utf8) }
+            == Data("Cafe\u{301}".utf8))
+    }
+
+    @Test func changedHistoryWindowPreservesCallbackDraftAndSiblingQueue() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let sibling = service.summaries[1].identity
+        let probe = InboxWindowPublicationProbe()
+        var book = ConversationBook()
+        for summary in service.summaries { _ = book.merge(summary) }
+        let mainID = try #require(book.matching(identity)), siblingID = try #require(book.matching(sibling))
+        book.updatePreference(service.profile) { $0.preferred = mainID }
+        book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [.init(id: "old", role: .assistant, text: "Old answer")]), for: mainID)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: {})
+        workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
+        workspace.setOnline(true)
+        defer { workspace.retireWorkspace() }
+        await workspace.openBot(profile: service.profile)
+        let mainOwner = try #require(workspace.screen(profile: service.profile)?.owner)
+        await workspace.select(try #require(workspace.captureSelection(siblingID, owner: mainOwner)))
+        let siblingOwner = try #require(workspace.screen(profile: service.profile)?.owner)
+        let queued = QueuedMessage(id: "queued", text: "Keep the sibling queue", canEdit: true)
+        service.snapshots[sibling.root]?.queuedMessages = [queued]
+        let siblingPublication = try service.publication(sibling)
+        service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "Fresh answer")], hasEarlierMessages: false)
+        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.enteredCallback else { return }
+                probe.enteredCallback = true
+                workspace.editDraft("Keep the callback draft", owner: siblingOwner)
+                workspace.receive(siblingPublication)
+            }
+        }
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.enteredCallback)
+        #expect(workspace.draft(siblingOwner) == "Keep the callback draft")
+        #expect(workspace.persisted().record(siblingID)?.transcript?.queuedMessages == [queued])
+        #expect(workspace.persisted().record(mainID)?.transcript?.messages.last?.text == "Fresh answer")
+        #expect(probe.publications.contains { $0.identity == service.previewReads.last && $0.snapshot.messages.last?.text == "Fresh answer" })
+    }
+
+    @Test func changedHistoryWindowCannotCrossCallbackRecovery() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe()
+        var book = ConversationBook()
+        let id = book.merge(service.summaries[0])
+        book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [.init(id: "old", role: .assistant, text: "Keep the original answer")]), for: id)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: { probe.dirtyCount += 1 })
+        workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
+        workspace.setOnline(true)
+        defer { workspace.retireWorkspace() }
+        service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "Retired read")], hasEarlierMessages: false)
+        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.enteredCallback else { return }
+                probe.enteredCallback = true
+                workspace.setOnline(false)
+                workspace.setOnline(true)
+            }
+        }
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.enteredCallback)
+        #expect(workspace.persisted().record(id)?.transcript?.messages.last?.text == "Keep the original answer")
+        #expect(probe.publications.isEmpty)
+        #expect(probe.dirtyCount == 0)
+    }
+}
