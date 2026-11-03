@@ -33,13 +33,13 @@ final class NewBotUITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
     }
 
-    @MainActor private func beginCreation(holding operation: String?) throws -> (XCUIApplication, URL) {
+    @MainActor private func beginCreation(holding operation: String?, sceneInactive: Bool = false) throws -> (XCUIApplication, URL) {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let operation { try Data().write(to: directory.appendingPathComponent("\(operation).hold")) }
         let app = XCUIApplication()
-        app.launchArguments = ["--demo"]
+        app.launchArguments = ["--demo"] + (sceneInactive ? ["--inactive-root-scene"] : [])
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock {
             app.terminate()
@@ -109,6 +109,17 @@ final class NewBotUITests: XCTestCase {
         waitForReturn("open", in: directory)
         XCTAssertTrue(app.navigationBars["Connect Hermes"].exists)
         XCTAssertTrue(app.staticTexts["https://replacement.example"].exists)
+        XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
+    }
+
+    @MainActor func testSuccessfulCreationAcknowledgesAndOpensWhileSceneIsInactive() throws {
+        let (app, directory) = try beginCreation(holding: "create", sceneInactive: true)
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("create.hold"))
+        waitForReturn("create", in: directory)
+        XCTAssertTrue(app.navigationBars["New bot"].waitForNonExistence(timeout: 5),
+                      "A completed creation must dismiss the submitted form even while inactive.")
+        XCTAssertTrue(app.buttons["Profile for Orbit"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Hi, I’m Orbit. What would you like to work on?"].exists)
         XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
     }
 

@@ -325,8 +325,8 @@ import BottoCore
         #expect(!invalidation.finished)
         #expect(store.bots.map(\.id) == [existing.id])
         if creation.finished, let premature = await creation.value() {
-            await store.open(premature)
-            #expect(store.selectedBot?.id == premature.id)
+            await store.open(premature.bot)
+            #expect(store.selectedBot?.id == premature.bot.id)
         }
 
         oldRead.release()
@@ -335,7 +335,7 @@ import BottoCore
         #expect(store.isRefreshing)
         freshRead.release()
         try await eventually { creation.finished && inbox.finished && invalidation.finished }
-        let bot = try #require(await creation.value())
+        let bot = try #require(await creation.value()).bot
         #expect(bot.id == "orbit")
         #expect(store.bots.contains { $0.id == bot.id })
         #expect(store.history.bots.contains { $0.id == bot.id })
@@ -460,7 +460,7 @@ import BottoCore
         try await eventually { callers.allSatisfy(\.started) }
         createdRead.release()
         try await eventually { futureRead.entered && creation.finished }
-        let created = try #require(await creation.value())
+        let created = try #require(await creation.value()).bot
         await store.open(created)
         #expect(store.selectedBot?.id == "orbit")
         #expect(!store.bots.contains { $0.id == "scout" })
@@ -572,7 +572,7 @@ import BottoCore
         canceled.cancel()
         #expect(await canceled.value() == nil)
         #expect(service.createdDrafts.isEmpty)
-        let created = try #require(await store.create(.init(name: "Orbit")))
+        let created = try #require(await store.create(.init(name: "Orbit"))).bot
         #expect(store.history.bots.contains { $0.id == created.id })
         await store.open(created)
         #expect(store.selectedBot?.name == "Orbit")

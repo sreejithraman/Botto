@@ -217,12 +217,25 @@ import BottoCore
         return selectedBotID
     }
     var uploading: Set<String> { chats.uploadingProfiles }
+    @ObservationIgnored private var selectedBotStorage: String?
+    @ObservationIgnored private var selectionRevision = UUID()
     var selectedBotID: String? {
-        didSet {
-            if selectedBotID.map({ Data($0.utf8) }) != oldValue.map({ Data($0.utf8) }) {
-                retireArtifactPresentation()
-                chats.retirePresentation()
-            }
+        get { access(keyPath: \.selectedBotID); return selectedBotStorage }
+        set { selectBotID(newValue) }
+    }
+    @discardableResult private func selectBotID(_ value: String?, while isCurrent: () -> Bool = { true }) -> Bool {
+        guard isCurrent() else { return false }
+        guard selectedBotStorage.map({ Data($0.utf8) }) != value.map({ Data($0.utf8) }) else { return true }
+        let previous = selectionRevision
+        return withMutation(keyPath: \.selectedBotID) {
+            // Observation can synchronously replace navigation or recover the connection.
+            guard selectionRevision == previous, isCurrent() else { return false }
+            let installed = UUID(), workspace = chats
+            selectionRevision = installed; selectedBotStorage = value
+            retireArtifactPresentation()
+            guard selectionRevision == installed, isCurrent() else { return false }
+            workspace.retirePresentation()
+            return selectionRevision == installed && isCurrent()
         }
     }
     /// Also captured by rendered rows to reject a tap queued before retirement.
@@ -1054,9 +1067,41 @@ import BottoCore
         library.reconcileOriginalConsumers()
     }
 
-    func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotProfile? {
+    struct BotCreationResult: Sendable {
+        let bot: BotProfile
+        fileprivate let workspace: ConversationWorkspace
+        fileprivate let connection: UUID
+        fileprivate let recovery: UUID
+    }
+    struct CreatedBotOpening: Sendable {
+        fileprivate let creation: BotCreationResult
+        fileprivate let intent: OpeningIntent
+    }
+
+    func prepareCreatedBotOpening(_ creation: BotCreationResult) -> CreatedBotOpening? {
+        guard ownsCreation(creation), let profile = try? ExactID(creation.bot.id),
+              selectBotID(profile.text, while: { ownsCreation(creation) }),
+              let intent = creation.workspace.captureOpening(profile: profile) else { return nil }
+        let opening = CreatedBotOpening(creation: creation, intent: intent)
+        return canOpenCreatedBot(opening) ? opening : nil
+    }
+    private func ownsCreation(_ creation: BotCreationResult) -> Bool {
+        active && isConnected && !showsConnection && pendingConnectionInput == nil &&
+            chats === creation.workspace && generation == creation.connection &&
+            attachmentRecoveryGeneration == creation.recovery && bot(withID: creation.bot.id) != nil
+    }
+    func canOpenCreatedBot(_ opening: CreatedBotOpening) -> Bool {
+        ownsCreation(opening.creation) &&
+            selectedBotID.map({ Data($0.utf8) }) == Data(opening.creation.bot.id.utf8)
+    }
+    func openCreatedBot(_ opening: CreatedBotOpening) async {
+        guard canOpenCreatedBot(opening) else { return }
+        await opening.creation.workspace.open(opening.intent)
+    }
+
+    func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotCreationResult? {
         guard isConnected, !Task.isCancelled else { return nil }
-        let owner = generation
+        let owner = generation, recovery = attachmentRecoveryGeneration, workspace = chats
         do {
             let bot = try await service.createBot(draft)
             guard generation == owner, !Task.isCancelled else { return nil }
@@ -1067,7 +1112,7 @@ import BottoCore
                 onFailure?(HermesServiceError.partialCreation)
                 return nil
             }
-            return bot
+            return .init(bot: bot, workspace: workspace, connection: owner, recovery: recovery)
         } catch {
             if generation == owner, !Task.isCancelled {
                 notice = error.localizedDescription

@@ -296,6 +296,12 @@ Creation keeps its separate mutation reservation: a newer navigation request
 does not undo an authorized creation or discard its valid receipt. Only its
 optional automatic opening requires the creation's navigation claim to remain
 current. An attention lookup likewise rechecks its claim before opening a chat.
+Bot creation returns its published profile with its original workspace, connection
+and socket-recovery lifetime. Its optional opening keeps that authority across
+selection callbacks and sheet dismissal. A transient inactive scene still
+acknowledges success without replaying creation. Ordinary bot entry resolves the
+current preferred or canonical chat; Library results retain their exact originating
+lineage contract.
 Foreground reconnect captures its restoration intent before refreshing the
 roster and directories. Its later restoration must still own that intent;
 it cannot replace a newer library lookup. If the newer lookup fails or is

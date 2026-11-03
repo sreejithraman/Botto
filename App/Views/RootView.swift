@@ -16,14 +16,8 @@ struct RootView: View {
         }
     }
     private enum Sheet: Equatable { case connection, settings, newBot }
-    private struct CreatedBotOpening {
-        let profile: ExactID
-        let workspace: ConversationWorkspace
-        let intent: OpeningIntent
-        let connection: UUID
-    }
     @State private var sheet: Sheet?
-    @State private var createdBotOpening: CreatedBotOpening?
+    @State private var createdBotOpening: AppStore.CreatedBotOpening?
     @State private var deliberateSheet = false
     private var showsSheet: Binding<Bool> {
         let renderedSheet = sheet
@@ -51,34 +45,28 @@ struct RootView: View {
         sheet = destination
     }
 
-    private func createdBot(_ bot: BotProfile) {
-        guard sheet == .newBot, !store.showsConnection, store.isConnected, scenePhase == .active,
-              store.bot(withID: bot.id) != nil, let profile = try? ExactID(bot.id) else { return }
-        let workspace = store.chats
-        store.selectedBotID = profile.text
-        guard let intent = workspace.captureOpening(profile: profile) else { return }
-        createdBotOpening = CreatedBotOpening(profile: profile, workspace: workspace, intent: intent,
-            connection: store.connectionGeneration)
+    private func createdBot(_ creation: AppStore.BotCreationResult) {
+        guard sheet == .newBot else { return }
+        let opening = store.prepareCreatedBotOpening(creation)
+        guard sheet == .newBot, !store.showsConnection else { return }
+        createdBotOpening = opening
         sheet = nil
+        if opening == nil { store.notice = "Your bot was created. Open it from the inbox." }
     }
 
     private func sheetDidDismiss() {
         guard let opening = createdBotOpening else { return }
         createdBotOpening = nil
-        guard mayOpenCreatedBot(opening),
-              store.selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes else { return }
+        guard mayOpenCreatedBot(opening) else { return }
         presentation.didChooseConversation()
         Task { @MainActor in
-            guard mayOpenCreatedBot(opening),
-                  store.selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes else { return }
-            await opening.workspace.open(opening.intent)
+            guard mayOpenCreatedBot(opening) else { return }
+            await store.openCreatedBot(opening)
         }
     }
 
-    private func mayOpenCreatedBot(_ opening: CreatedBotOpening) -> Bool {
-        sheet == nil && !store.showsConnection && store.pendingConnectionInput == nil &&
-            scenePhase == .active && store.isConnected && store.chats === opening.workspace &&
-            store.connectionGeneration == opening.connection && store.bot(withID: opening.profile.text) != nil
+    private func mayOpenCreatedBot(_ opening: AppStore.CreatedBotOpening) -> Bool {
+        sheet == nil && store.canOpenCreatedBot(opening)
     }
 
     var body: some View {

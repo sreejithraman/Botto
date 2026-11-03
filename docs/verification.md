@@ -1536,3 +1536,26 @@ intended missing-publication mutation.
 
 The complete local gate is pending on this repaired source. Earlier partial UI
 runs and passing GitHub build checks do not establish that full-gate result.
+
+
+The follow-up creation repair binds the published result to the workspace,
+connection and socket-recovery lifetime captured before creation. Selection
+revalidates inside the observable mutation, so a synchronous callback cannot
+replace newer navigation or acquire recovered authority. Root acknowledges a
+successful creation while inactive; an unavailable opening leaves a clear inbox
+notice rather than a submitted form inviting another create.
+
+A controlled Root scene-phase fixture reproduced both inactive failures:
+unchanged Root left the form open; removing only its first active-scene guard
+dismissed the form but failed to open Orbit. This injects the native environment
+value and does not claim an exercised Control Center interruption. The native
+handoff control with the former late-capture behavior failed seven assertions
+across creation, selection, dismissal and replacement-navigation cases; its
+normal-opening control passed. The repaired run passed all 95 functions in
+AppStoreTests, AppStoreRefreshTests and AppStoreAvatarTests, plus all six
+NewBotUITests, including the inactive case and create/refresh/open replacement
+interruptions. Evidence: `arch23/{red,dismissal-red}*`, `authority-red5*` and
+`authority-green2*` under `/tmp/botto-ui-gate-repair/`, with complete source
+copies. Failed compilation, an empty selection, and an earlier recursive test
+callback are excluded from proof. The first full-gate attempt was deliberately
+stopped before this repair; a complete gate on the repaired source remains pending.

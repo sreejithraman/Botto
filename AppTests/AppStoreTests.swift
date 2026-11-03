@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Observation
 import BottoCore
 @testable import Botto
 
@@ -54,12 +55,82 @@ import BottoCore
         }
     }
 
+    @Test(arguments: ["creation", "selection", "dismissal"])
+    func createdBotOpeningNeverAcquiresRecoveredAuthority(_ interruption: String) async throws {
+        let service = try WorkspaceTestService()
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let probe = CreationObservation()
+        let recover: @MainActor () -> Void = {
+            probe.fired = true
+            service.onEvent?(.disconnected("Creation interrupted"))
+            service.onEvent?(.connected(.init(version: "recovered")))
+        }
+        if interruption == "creation" { service.onCreate = recover }
+        let creation = try #require(await store.create(.init(name: "Orbit")))
+        service.onCreate = nil
+        if interruption == "selection" {
+            withObservationTracking { _ = store.selectedBotID } onChange: {
+                MainActor.assumeIsolated { recover() }
+            }
+        }
+        let opening = store.prepareCreatedBotOpening(creation)
+        if interruption == "dismissal" {
+            let captured = try #require(opening)
+            recover()
+            #expect(!store.canOpenCreatedBot(captured))
+            await store.openCreatedBot(captured)
+        } else {
+            #expect(opening == nil, "Old creation authority cannot be recaptured after recovery.")
+            #expect(store.selectedBotID == nil, "A reentrant recovery must retire selection before it commits.")
+        }
+        #expect(probe.fired && store.isConnected)
+        #expect(service.opens.isEmpty, "The old handoff must not start an attachment on recovered authority.")
+    }
+
+    @Test func createdBotOpeningCannotOverwriteReentrantNavigation() async throws {
+        let service = try WorkspaceTestService()
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: "scout", name: "Scout")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot-selection.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let creation = try #require(await store.create(.init(name: "Orbit")))
+        let probe = CreationObservation()
+        withObservationTracking { _ = store.selectedBotID } onChange: {
+            MainActor.assumeIsolated {
+                guard !probe.fired else { return }
+                probe.fired = true; store.selectedBotID = "scout"
+            }
+        }
+        #expect(store.prepareCreatedBotOpening(creation) == nil)
+        #expect(probe.fired && store.selectedBotID == "scout")
+        #expect(service.opens.isEmpty)
+    }
+
+    @Test func currentCreatedBotOpeningUsesItsPublishedProfile() async throws {
+        let service = try WorkspaceTestService()
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot-control.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        let creation = try #require(await store.create(.init(name: "Orbit")))
+        let opening = try #require(store.prepareCreatedBotOpening(creation))
+        #expect(store.canOpenCreatedBot(opening))
+        await store.openCreatedBot(opening)
+        #expect(service.opens == [service.summaries[0].identity])
+        #expect(store.selectedBotID == creation.bot.id)
+        #expect(store.conversation(for: creation.bot.id)?.storedID == service.summaries[0].identity.stored.text)
+    }
+
     @Test func demoCreationAndReconnectKeepTheBotAndWorkspace() async throws {
         let store = AppStore(persistence: MemoryConnectionStorage().persistence)
         await store.enterDemo()
         defer { store.leaveDemo() }
         let workspace = store.chats
-        let bot = try #require(await store.create(.init(name: "Fern", avatar: .shape(.drop))))
+        let bot = try #require(await store.create(.init(name: "Fern", avatar: .shape(.drop)))).bot
         #expect(store.bot(withID: bot.id)?.name == "Fern")
         await store.open(bot)
         #expect(store.selectedBotID == bot.id)
@@ -89,7 +160,7 @@ import BottoCore
         if retirement == "workspace" { service.profiles = []; #expect(await store.connect(replacement)) }
         barrier.release()
         let result = await creation.value
-        #expect(result?.id == (retirement == "current" ? bot.id : nil))
+        #expect(result?.bot.id == (retirement == "current" ? bot.id : nil))
         #expect(service.createCount == 1)
         #expect(store.selectedBotID == nil)
         if retirement == "background" { #expect(store.link == .connecting) }
@@ -971,3 +1042,5 @@ import BottoCore
         LocalHistory.remove(for: real.id)
     }
 }
+
+@MainActor private final class CreationObservation { var fired = false }

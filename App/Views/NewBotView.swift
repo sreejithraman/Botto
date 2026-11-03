@@ -3,7 +3,7 @@ import BottoCore
 
 struct NewBotView: View {
     let store: AppStore
-    let onCreated: (BotProfile) -> Void
+    let onCreated: (AppStore.BotCreationResult) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var name = ""

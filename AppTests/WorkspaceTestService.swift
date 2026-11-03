@@ -3,6 +3,7 @@ import BottoCore
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
+    var onCreate: (() -> Void)?
     var onOpen: (() -> Void)?
     var onDownload: (() -> Void)?
     var downloadData = Data("artifact".utf8)
@@ -116,7 +117,10 @@ import BottoCore
         if !rosterActivity.isEmpty { onEvent?(.activity(profile: profile, observations: rosterActivity)) }
         return rosterProfiles ?? [rosterBot ?? .init(id: profile.text, name: "Milo", status: rosterStatus)]
     }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { .init(id: profile.text, name: draft.name) }
+    func createBot(_ draft: BotDraft) async throws -> BotProfile {
+        onCreate?()
+        return .init(id: profile.text, name: draft.name)
+    }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
