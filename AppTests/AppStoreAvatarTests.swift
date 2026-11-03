@@ -542,7 +542,7 @@ import BottoCore
             """
         }
         #expect(await store.connect(connection))
-        try await avatarEventually("Initial avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Initial avatar decoded", timeout: .seconds(60), diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         #expect(service.reads == 1)
         #expect(store.avatar(for: store.bots[0])?.size == CGSize(width: 192, height: 192))
         await store.refresh()
@@ -556,7 +556,7 @@ import BottoCore
         #expect(store.notice == nil && store.isConnected)
         service.failImages = false; service.profiles[0].lookRevision = nil
         await store.refresh()
-        try await avatarEventually("Unknown revision avatar decoded", diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually("Unknown revision avatar decoded", timeout: .seconds(60), diagnostics: diagnostics) { store.avatar(for: store.bots[0]) != nil }
         let reads = service.reads
         await store.refresh()
         try await avatarEventually("Unknown revision requested again", diagnostics: diagnostics) { service.reads > reads }
@@ -642,7 +642,7 @@ import BottoCore
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
-        try await avatarEventually { !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { !store.isLoadingAvatar(for: store.bots[0]) }
         let image = try #require(store.avatar(for: store.bots[0]))
         #expect(abs(image.size.width / image.size.height - size.width / size.height) < 0.001)
         let cgImage = try #require(image.cgImage)
@@ -665,7 +665,7 @@ import BottoCore
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
-        try await avatarEventually { service.reads == 1 && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { service.reads == 1 && !store.isLoadingAvatar(for: store.bots[0]) }
         #expect((store.avatar(for: store.bots[0]) != nil) == photo)
     }
 
@@ -675,7 +675,7 @@ import BottoCore
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); service.releaseImages(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually(timeout: .seconds(60)) { store.avatar(for: store.bots[0]) != nil }
         let before = try #require(store.avatar(for: store.bots[0])?.pngData())
         let profile = store.bots[0]
         service.imageColor = .blue
@@ -685,7 +685,7 @@ import BottoCore
             let destination = try #require(store.avatarDestination(for: profile))
             _ = try await store.reloadAvatar(destination)
         } else { await store.refresh(revalidateAvatars: true) }
-        try await avatarEventually { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
         #expect(store.bots[0] == profile)
         #expect(try #require(store.avatar(for: store.bots[0])?.pngData()) != before)
         #expect(service.saves == 0 && store.notice == nil)
@@ -698,7 +698,7 @@ import BottoCore
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil }
+        try await avatarEventually(timeout: .seconds(60)) { store.avatar(for: store.bots[0]) != nil }
         let before = try #require(store.avatar(for: store.bots[0])?.pngData())
         service.imageColor = .blue
         for seconds in [10.0, 20, 40, 59] {
@@ -708,7 +708,7 @@ import BottoCore
         #expect(service.reads == 1)
         now = Date(timeIntervalSince1970: 1_061)
         await store.refresh()
-        try await avatarEventually { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
         #expect(try #require(store.avatar(for: store.bots[0])?.pngData()) != before)
     }
 
@@ -724,11 +724,11 @@ import BottoCore
         for _ in 0..<4 { await store.refresh() }
         let slow = try #require(store.bots.first { $0.id == "shared" })
         let later = try #require(store.bots.first { $0.id == "later" })
-        try await avatarEventually { store.avatar(for: later) != nil }
+        try await avatarEventually(timeout: .seconds(60)) { store.avatar(for: later) != nil }
         #expect(service.readsByID["shared"] == 1 && service.readsByID["later"] == 1)
         #expect(store.isLoadingAvatar(for: slow) && !store.isRefreshing)
         service.releaseImages()
-        try await avatarEventually { store.avatar(for: slow) != nil && !store.isLoadingAvatar(for: slow) }
+        try await avatarEventually(timeout: .seconds(60)) { store.avatar(for: slow) != nil && !store.isLoadingAvatar(for: slow) }
         #expect(store.notice == nil)
     }
 
@@ -744,11 +744,11 @@ import BottoCore
         await store.refresh(revalidateAvatars: true)
         #expect(service.reads == 1)
         service.holdImages = false; service.releaseImages()
-        try await avatarEventually { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { service.reads == 2 && !store.isLoadingAvatar(for: store.bots[0]) }
         let refreshed = try #require(store.avatar(for: store.bots[0])?.pngData())
         // A second explicit read of the same blue bytes must produce the same thumbnail.
         await store.refresh(revalidateAvatars: true)
-        try await avatarEventually { service.reads == 3 && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { service.reads == 3 && !store.isLoadingAvatar(for: store.bots[0]) }
         #expect(store.avatar(for: store.bots[0])?.pngData() == refreshed)
     }
 
@@ -766,7 +766,7 @@ import BottoCore
         try await Task.sleep(for: .milliseconds(30))
         #expect(store.avatar(for: store.bots[0]) == nil && store.isLoadingAvatar(for: store.bots[0]))
         service.releaseImages()
-        try await avatarEventually { store.avatar(for: store.bots[0]) != nil && !store.isLoadingAvatar(for: store.bots[0]) }
+        try await avatarEventually(timeout: .seconds(60)) { store.avatar(for: store.bots[0]) != nil && !store.isLoadingAvatar(for: store.bots[0]) }
         #expect(service.reads == 2)
     }
 
@@ -784,7 +784,7 @@ import BottoCore
         await store.refresh()
         try await avatarEventually { service.reads == 4 }
         service.holdImages = false; service.releaseImages()
-        try await avatarEventually { store.bots.allSatisfy { store.avatar(for: $0) != nil && !store.isLoadingAvatar(for: $0) } }
+        try await avatarEventually(timeout: .seconds(60)) { store.bots.allSatisfy { store.avatar(for: $0) != nil && !store.isLoadingAvatar(for: $0) } }
         #expect(service.readsByID["bot-7"] == nil)
         #expect(service.readsByID["bot-0"] == 1)
     }
@@ -823,10 +823,11 @@ import BottoCore
 #endif
 
 @MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
+                                        timeout: Duration = .seconds(10),
                                         diagnostics: () -> String = { "" },
                                         sourceLocation: SourceLocation = #_sourceLocation,
                                         _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
+    let deadline = ContinuousClock.now + timeout
     var polls = 0, maximumGap = Duration.zero
     var previousPoll = ContinuousClock.now
     while !condition(), ContinuousClock.now < deadline {

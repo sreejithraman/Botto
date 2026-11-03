@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		346154B95AE2F2B42415319B /* NativeRecognitionDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B63BDB8E74837D789CF314 /* NativeRecognitionDeadline.swift */; };
 		00811B4E703C19110595DA3D /* RichReplyCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20ACD1C13E79454A310F9B66 /* RichReplyCacheTests.swift */; };
 		0433733B880308D93ABFB0A4 /* pele-1.9.0.js in Resources */ = {isa = PBXBuildFile; fileRef = 305B8D79928E1B8851292B21 /* pele-1.9.0.js */; };
 		04D922EEE5813D9E016AC213 /* WorkspaceNativeDetailObservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 234770B3364D61B6D00A7704 /* WorkspaceNativeDetailObservationTests.swift */; };
@@ -237,6 +238,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		75B63BDB8E74837D789CF314 /* NativeRecognitionDeadline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeRecognitionDeadline.swift; sourceTree = "<group>"; };
 		007B67D6AF01D8B10CDBC52A /* NativeComposerEditorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeComposerEditorTests.swift; sourceTree = "<group>"; };
 		00C48F80E646575DD06B01C0 /* AppStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreTests.swift; sourceTree = "<group>"; };
 		017802F2470B30B03543F714 /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
@@ -697,6 +699,7 @@
 		BF98C5E650699749EEBEA236 /* AppTests */ = {
 			isa = PBXGroup;
 			children = (
+				75B63BDB8E74837D789CF314 /* NativeRecognitionDeadline.swift */,
 				D31C00BC17D53B458D6A9FCC /* LibraryNavigationIntegrationTests.swift */,
 				6FB8030902101B9C63BC3971 /* WorkspaceLibraryTests.swift */,
 				C44A2297591E146EBAC0A65D /* LibraryPreviewThumbnailTests.swift */,
@@ -1067,6 +1070,7 @@
 				28B8890D6A0C8B552AEDA282 /* AppStoreHistoryTests.swift in Sources */,
 				A32CAACE7A10BDA73271609F /* AppStoreRefreshTests.swift in Sources */,
 				8D837D1307DF4DF7159CA247 /* AppStoreRichReplyTests.swift in Sources */,
+				346154B95AE2F2B42415319B /* NativeRecognitionDeadline.swift in Sources */,
 				06B33485BBD04321D14D8B19 /* AppStoreTests.swift in Sources */,
 				945D1754184001135916C175 /* ArtifactPreviewTests.swift in Sources */,
 				4AD6E55CE76801A9C2D81D98 /* ArtifactTextReaderTests.swift in Sources */,

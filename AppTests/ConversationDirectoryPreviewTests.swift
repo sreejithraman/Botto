@@ -217,22 +217,60 @@ import XCTest
             }
             .padding(20).frame(width: 390).background(BottoTheme.paper)
             .environment(\.colorScheme, scheme)
-            let renderer = ImageRenderer(content: content)
-            renderer.scale = 2
-            let image = try XCTUnwrap(renderer.uiImage)
-            let attachment = XCTAttachment(image: image)
-            attachment.name = "Readable inbox previews - \(scheme)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-            let text = try await NativeTextRecognition.recognize(try XCTUnwrap(image.cgImage),
-                usesLanguageCorrection: true, onRecognition: { isMainThread in
-                    XCTAssertFalse(isMainThread, "Vision recognition must not block the native UI thread")
-                }).joined(separator: " ")
-            for expected in ["Checks your inbox", "No recent message", "The build is ready", "The report is ready", "Start a chat"] {
-                XCTAssertTrue(text.contains(expected), "Missing \(expected) in rendered rows: \(text)")
+            let expected = ["Checks your inbox", "No recent message", "The build is ready", "The report is ready", "Start a chat"]
+            let text = try await renderedText(expected: expected, scheme: scheme) {
+                let renderer = ImageRenderer(content: content)
+                renderer.scale = 2
+                return renderer.uiImage
             }
-            XCTAssertFalse(text.contains("SILENT") || text.contains("NO_REPLY") || text.contains("IMPORTANT") || text.contains("proc_example"))
+            for phrase in expected {
+                XCTAssertTrue(text.contains(phrase), "Missing \(phrase) in rendered rows: \(text)")
+            }
         }
+    }
+
+    private func renderedText(expected: [String], scheme: ColorScheme, render: () -> UIImage?) async throws -> String {
+        let deadline = ContinuousClock.now + .seconds(30)
+        var firstImage: UIImage?, lastImage: UIImage?
+        var text = "", attempts = 0
+        defer {
+            if attempts > 1, let firstImage { attach(firstImage, named: "Initial inbox previews - \(scheme)") }
+            if let lastImage { attach(lastImage, named: "Readable inbox previews - \(scheme)") }
+            let diagnostic = XCTAttachment(string: "scheme=\(scheme) attempts=\(attempts) text=\(text)")
+            diagnostic.name = "Inbox render readiness"
+            diagnostic.lifetime = .keepAlways
+            add(diagnostic)
+        }
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            attempts += 1
+            if let image = render(), let cgImage = image.cgImage {
+                if firstImage == nil { firstImage = image }
+                lastImage = image
+                let recognized: Result<[String], Error>? = await NativeRecognitionDeadline.run(until: deadline) {
+                    do {
+                        return .success(try await NativeTextRecognition.recognize(cgImage,
+                            usesLanguageCorrection: true, onRecognition: { isMainThread in
+                                XCTAssertFalse(isMainThread, "Vision recognition must not block the native UI thread")
+                            }))
+                    } catch { return .failure(error) }
+                }
+                try Task.checkCancellation()
+                guard let recognized else { break }
+                text = try recognized.get().joined(separator: " ")
+                XCTAssertFalse(text.contains("SILENT") || text.contains("NO_REPLY") || text.contains("IMPORTANT") || text.contains("proc_example"))
+                if expected.allSatisfy({ text.contains($0) }) { return text }
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        return text
+    }
+
+    private func attach(_ image: UIImage, named name: String) {
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }
 

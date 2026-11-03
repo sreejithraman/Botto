@@ -9,7 +9,9 @@ import BottoCore
     @Test func mountedFileBodyKeepsPendingSpaceWithoutRetainingTheDocumentAndAcceptsShorterReplacement() async throws {
         let fixture = try await fixture()
         defer { fixture.close() }
-        try await wait("actual tall HTML body") { fixture.state.size.height > 500 && fixture.webViews.count == 1 }
+        try await wait("actual tall HTML body", timeout: RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)) {
+            fixture.state.size.height > 500 && fixture.webViews.count == 1
+        }
         let initial = fixture.state.size.height
         let source = fixture.service.summaries[0].identity
         let access = try #require(fixture.service.completedOpens.last?.access)
@@ -33,7 +35,7 @@ import BottoCore
         #expect(abs(fixture.state.size.height - initial) < 2)
         gate.release()
         fixture.service.downloadGate = nil
-        try await wait("shorter resolved HTML takes natural height") {
+        try await wait("shorter resolved HTML takes natural height", timeout: RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)) {
             fixture.webViews.count == 1 && fixture.state.size.height > 70 && fixture.state.size.height < initial - 150
         }
         #expect(fixture.service.downloads == 2, "Settled work must refresh once without a separate reader Reload")
@@ -48,7 +50,9 @@ import BottoCore
     @Test func pendingWidthChangeClearsTheOldReservationBeforeReturningToTheOriginalWidth() async throws {
         let fixture = try await fixture()
         defer { fixture.close() }
-        try await wait("actual tall HTML body") { fixture.state.size.height > 500 && fixture.webViews.count == 1 }
+        try await wait("actual tall HTML body", timeout: RichContentRenderer.maximumAttachedLoadDuration + .seconds(1)) {
+            fixture.state.size.height > 500 && fixture.webViews.count == 1
+        }
         fixture.state.settled = false
         try await wait("document withdrawn") { fixture.webViews.isEmpty }
         fixture.state.width = 601
@@ -62,10 +66,9 @@ import BottoCore
         #expect(fixture.service.downloads == 1)
     }
 
-    private func wait(_ label: String, until condition: () -> Bool) async throws {
-        // Allow the renderer's fifteen-second cold startup and five-second document budget.
-        let deadline = ContinuousClock.now + .seconds(21)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+    private func wait(_ label: String, timeout: Duration = .seconds(21), until condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "Timed out: \(label)")
     }
     private func fixture() async throws -> Fixture {
