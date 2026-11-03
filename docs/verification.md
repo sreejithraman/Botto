@@ -1576,6 +1576,34 @@ Testing functions in AppStoreTests, AppStoreRefreshTests, AppStoreAvatarTests,
 ConversationWorkspaceTests, LibraryNavigationIntegrationTests,
 NotificationStoreTests and WorkspacePresentationTests, plus all six
 NewBotUITests, on an owned iPhone 17 Pro (iOS 27.0) simulator.
-`scripts/check-core.sh` passed. Evidence and source bindings:
-`/tmp/botto-ui-gate-repair/nav33/claude-final/`. The full gate on this source
-remains pending.
+`scripts/check-core.sh` passed. Those source bindings and logs were stored at
+`/tmp/botto-ui-gate-repair/nav33/claude-final/` and were lost in the 3 November
+host reboot. This entry records the earlier reported result; it no longer has
+its original raw evidence. The full gate on this source remains pending.
+
+### Notification and Library ordering — 3 November 2026
+
+A notification tap now takes its navigation order at admission, and notification
+and Library openings settle bot selection inside their attachment commit. Picker
+and chat-creation captures and direct selection writes cancel a retained tap. A
+pending Library selection yields to any newer selection write.
+
+On exact `75c8cff` production, 24 of 34 new cases failed: all 8 where older
+creation, opening or Library navigation beat a held tap, plus 12 notification and
+4 Library cases with a newer same-value or nil write. Positive controls and the
+real Inbox route passed. Five repeats failed the same 175 sites each time. The
+first red run, before a host reboot and macOS upgrade, recorded 174 issues in the
+same 24 cases. The one known difference: production's held Library opening in the
+status case now also reports success. Its cause was not isolated.
+
+The same source bytes then passed the seven suites above (185 Swift Testing
+functions) and all six NewBotUITests on an owned iPhone 17 Pro (iOS 27.0) simulator,
+under macOS 27.2 and Xcode 27.1. All 34 new cases also passed 20 further iterations
+with a host load average above 150. A supplementary run of the whole BottoTests
+bundle had no failures: 930 passed and two transcript measurement tests skipped.
+Core code did not change, and `scripts/check-core.sh` was not rerun. The new
+post-reboot evidence and source bindings are preserved at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/nav34/`.
+The reboot also removed the earlier `/tmp/botto-*` logs and review archives;
+their recorded results remain historical claims. Fresh review of the combined
+change and the full gate on this source remain pending.

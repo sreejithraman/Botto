@@ -201,6 +201,79 @@ import BottoCore
         #expect(workspace.screen(profile: scout)?.canAct == true)
     }
 
+    enum LibraryBoundary: CaseIterable { case directory, attachment }
+    enum LibraryNewerIntent: CaseIterable { case none, sameValue, nilValue, inboxRoute }
+
+    @Test(arguments: LibraryBoundary.allCases, LibraryNewerIntent.allCases)
+    func aPendingLibraryOpeningYieldsToANewerSelectionWrite(boundary: LibraryBoundary, newer: LibraryNewerIntent) async throws {
+        let service = try WorkspaceTestService()
+        let scout = try addSelectionProfile("scout", to: service)
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.profile.text, name: "Scout")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://library-selection-ordering.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try #require(await store.connect(configuration))
+        await store.open(try #require(store.bot(withID: scout.profile.text)))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !store.library.chats.contains(where: { $0.botID == scout.profile.text }) && ContinuousClock.now < deadline { await Task.yield() }
+        let target = try #require(store.library.chats.first { $0.botID == scout.profile.text })
+        let milo = try #require(store.bot(withID: service.profile.text))
+        await store.open(milo)
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep Milo's draft", owner: original.owner)
+        // The nil shape starts from the inbox while Milo's chat stays the workspace selection.
+        if newer == .nilValue { store.selectedBotID = nil }
+        let selected = store.selectedBotID
+        let miloPreference = store.history.book.preference(service.profile)?.lastSelected
+        let scoutPreference = store.history.book.preference(scout.profile)?.lastSelected
+        let scoutOpens = service.opens.filter { $0.profile == scout.profile }.count
+        let gate = WorkspaceGate()
+        switch boundary {
+        case .directory: service.directoryGate = gate; service.directoryGatedProfile = scout.profile
+        case .attachment: service.openGate = gate; service.openGatedProfile = scout.profile
+        }
+        let opening = Task { await store.openLibraryChat(target) }
+        await gate.entered()
+        var inbox: AppStore.BotOpening?
+        switch newer {
+        case .none: break
+        case .sameValue, .nilValue: store.selectedBotID = selected
+        case .inboxRoute: inbox = store.prepareBotOpening(milo)
+        }
+        service.directoryGate = nil; service.openGate = nil; gate.release()
+        let opened = await opening.value
+        if let inbox { await store.openBot(inbox) }
+
+        #expect(opened == (newer == .none), "An older Library result cannot report success over a newer intent.")
+        if newer == .none {
+            #expect(store.selectedBotID == scout.profile.text)
+            let selection = store.chats.selection(profile: scout.profile)?.identity
+            #expect(selection?.root == target.identity.root)
+            #expect(selection?.stored == target.identity.stored)
+            #expect(store.chats.screen(profile: scout.profile)?.canAct == true)
+        } else {
+            #expect(store.selectedBotID.map { Data($0.utf8) } == selected.map { Data($0.utf8) }, "The newer intent wins.")
+            let retained = try #require(store.chats.screen(profile: service.profile))
+            #expect(retained.owner.chat == original.owner.chat)
+            #expect(store.chats.isCurrent(retained.owner))
+            #expect(retained.canEditDraft)
+            #expect(store.chats.draft(retained.owner) == "Keep Milo's draft")
+            store.chats.editDraft("Still editable", owner: retained.owner)
+            #expect(store.chats.draft(retained.owner) == "Still editable")
+            if newer != .nilValue { #expect(retained.canAct, "The visible chat keeps or freshly regains its actions.") }
+            #expect(store.history.book.preference(service.profile)?.lastSelected == miloPreference)
+            #expect(store.history.book.preference(scout.profile)?.lastSelected == scoutPreference)
+            #expect(store.chats.screen(profile: scout.profile)?.canAct != true)
+            if let late = service.completedOpens.last(where: { $0.identity.profile == scout.profile }) {
+                service.onEvent?(.conversation(late))
+                #expect(store.chats.screen(profile: scout.profile)?.canAct != true, "The rejected grant stays retired.")
+            }
+        }
+        #expect(service.opens.filter { $0.profile == scout.profile }.count
+            == scoutOpens + (boundary == .attachment || newer == .none ? 1 : 0))
+        #expect(service.sends.isEmpty && service.creates.isEmpty && service.responses.isEmpty)
+    }
+
     enum OlderSelection: CaseIterable { case creation, ordinary }
     enum NewerSelection: CaseIterable {
         case inboxSameBot, sameValue, retirement, inboxEquivalentBot, equivalentValue

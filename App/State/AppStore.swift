@@ -202,7 +202,12 @@ import BottoCore
     private(set) var chats: ConversationWorkspace
     let push: PushCoordinator
     private(set) var notificationNavigationRevision = UUID()
-    @ObservationIgnored private var pendingPushNotification: PushNavigationIntent?
+    /// An authenticated tap outlives connection and workspace lifetimes; its workspace claim does not.
+    private struct PendingPushNavigation {
+        var intent: PushNavigationIntent
+        var claim: NavigationClaim?
+    }
+    @ObservationIgnored private var pendingPushNotification: PendingPushNavigation?
     @ObservationIgnored private var notificationRouting: UUID?
     private(set) var library: WorkspaceLibrary
     private(set) var cacheLoadFailed = false
@@ -221,7 +226,11 @@ import BottoCore
     @ObservationIgnored private var selectionRevision = UUID()
     var selectedBotID: String? {
         get { access(keyPath: \.selectedBotID); return selectedBotStorage }
-        set { selectBotID(newValue) }
+        set {
+            // A direct write is the newest selection intent, so a retained tap cannot navigate over it later.
+            pendingPushNotification = nil
+            selectBotID(newValue)
+        }
     }
     private enum SelectionPresentation {
         case retire, preserveNavigation(NavigationClaim), attachmentCommit
@@ -712,7 +721,7 @@ import BottoCore
     func refresh(revalidateAvatars: Bool = false) async {
         let owner = generation, recovery = attachmentRecoveryGeneration
         guard await refreshBots(), generation == owner, !Task.isCancelled, isConnected else { return }
-        pendingPushNotification?.recoveryRevision = UUID()
+        pendingPushNotification?.intent.recoveryRevision = UUID()
         await resumePushNavigation()
         guard revalidateAvatars, !Task.isCancelled, isConnected,
               generation == owner, attachmentRecoveryGeneration == recovery, let id = configuration?.id else { return }
@@ -766,19 +775,19 @@ import BottoCore
         guard !Task.isCancelled, library.isCurrent(chat), bot(withID: chat.botID) != nil else { return false }
         let workspace = chats, sourceLibrary = library
         let connection = generation, recovery = attachmentRecoveryGeneration
-        let originalBot = selectedBotID.map { Data($0.utf8) }
+        // The Library selection stays pending until commit. Any newer write supersedes it,
+        // including one that leaves the selected bytes unchanged or writes nil.
+        let selection = selectionRevision
         guard let intent = workspace.beginLibraryOpening(chat.identity), workspace === chats,
               generation == connection, attachmentRecoveryGeneration == recovery else { return false }
-        let opened = await workspace.openLibraryChat(intent, accepts: accepts) { [self] identity in
-            guard !Task.isCancelled, workspace === chats, sourceLibrary === library, !sourceLibrary.isRetired,
-                  selectedBotID.map({ Data($0.utf8) }) == originalBot,
-                  identity.profile == chat.identity.profile,
-                  bot(withID: chat.botID) != nil, sourceLibrary.isCurrent(chat) else { return false }
-            return selectBotID(chat.botID, presentation: .attachmentCommit) {
-                !Task.isCancelled && workspace === chats && sourceLibrary === library && !sourceLibrary.isRetired &&
-                    generation == connection && attachmentRecoveryGeneration == recovery &&
-                    workspace.ownsLibraryOpening(intent) && sourceLibrary.isCurrent(chat)
-            }
+        let authority = BotNavigationAuthority(workspace: workspace, connection: connection, recovery: recovery, claim: intent.claim)
+        let ownsLibrary: @MainActor () -> Bool = { [self] in
+            !Task.isCancelled && sourceLibrary === library && !sourceLibrary.isRetired && sourceLibrary.isCurrent(chat)
+        }
+        let ownsSelection: @MainActor () -> Bool = { [self] in selectionRevision == selection && ownsLibrary() }
+        let opened = await workspace.openLibraryChat(intent, isCurrent: ownsSelection, accepts: accepts) { [self] identity in
+            identity.profile == chat.identity.profile && ownsSelection() &&
+                commitAttachedSelection(chat.identity.profile, authority: authority, while: ownsLibrary)
         }
         return opened != nil
     }
@@ -920,17 +929,27 @@ import BottoCore
             notice = "This notification no longer has a verified chat destination. Open your bot's chats to continue."
             return
         }
-        pendingPushNotification = intent
+        // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
+        pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim())
         await resumePushNavigation()
     }
+    /// Recovery can retire the admitted claim without retiring the tap. A retained tap may then claim
+    /// again, because every newer navigation intent cancels the tap when it is admitted.
+    private func pushNavigationClaim(for intent: PushNavigationIntent) -> NavigationClaim? {
+        guard var pending = pendingPushNotification, pending.intent.id == intent.id else { return nil }
+        if let claim = pending.claim, chats.ownsNavigation(claim) { return claim }
+        pending.claim = chats.captureNavigationClaim()
+        pendingPushNotification = pending
+        return pending.claim
+    }
     private func resumePushNavigation() async {
-        guard active, notificationRouting == nil, let intent = pendingPushNotification,
+        guard active, notificationRouting == nil, let intent = pendingPushNotification?.intent,
               !isDemo, let configuration else { return }
         let attempt = UUID(); notificationRouting = attempt
         defer {
             if notificationRouting == attempt {
                 notificationRouting = nil
-                if pendingPushNotification != nil, pendingPushNotification != intent {
+                if let pending = pendingPushNotification?.intent, pending != intent {
                     Task { [weak self] in await self?.resumePushNavigation() }
                 }
             }
@@ -947,27 +966,29 @@ import BottoCore
         }
         bindPushNotifications()
         let readiness = await push.navigationReadiness(intent)
-        guard !isDemo, self.configuration?.id == configuration.id, pendingPushNotification?.id == intent.id else { return }
+        guard !isDemo, self.configuration?.id == configuration.id, pendingPushNotification?.intent.id == intent.id else { return }
         if readiness == .unavailable { notice = "Reconnect to your Hermes host to open the notification's chat."; return }
         let destination = intent.destination
-        guard readiness == .current, push.authorizesNavigation(intent), let bot = bot(withID: destination.profileID),
+        guard readiness == .current, push.authorizesNavigation(intent), bot(withID: destination.profileID) != nil,
               let profile = try? ExactID(destination.profileID),
               let root = try? ExactID(destination.rootID), let stored = try? ExactID(destination.storedID) else {
             pendingPushNotification = nil
             notice = "This notification no longer has a verified chat destination. Open your bot's chats to continue."
             return
         }
-        let workspace = chats, selection = selectionRevision
-        let connection = generation, recovery = attachmentRecoveryGeneration
-        let opened = await workspace.openNotificationChat(.init(profile: profile, root: root, stored: stored, aliases: [])) { self.pendingPushNotification?.id == intent.id && self.push.authorizesNavigation(intent) }
-        guard self.configuration?.id == configuration.id, chats === workspace,
-              pendingPushNotification?.id == intent.id, push.authorizesNavigation(intent), !isDemo else { return }
+        let workspace = chats
+        guard let claim = pushNavigationClaim(for: intent) else { return }
+        let authority = BotNavigationAuthority(workspace: workspace, connection: generation,
+                                               recovery: attachmentRecoveryGeneration, claim: claim)
+        let ownsTap: @MainActor () -> Bool = { [self] in
+            pendingPushNotification?.intent.id == intent.id && push.authorizesNavigation(intent) && !isDemo
+        }
+        let opened = await workspace.openNotificationChat(.init(profile: profile, root: root, stored: stored, aliases: []),
+                                                          claim: claim, isCurrent: ownsTap) { [self] _ in
+            commitAttachedSelection(profile, authority: authority, while: ownsTap)
+        }
+        guard self.configuration?.id == configuration.id, chats === workspace, ownsTap() else { return }
         if opened {
-            guard selectionRevision == selection,
-                  selectBotID(bot.id, presentation: .attachmentCommit, while: {
-                      chats === workspace && generation == connection && attachmentRecoveryGeneration == recovery &&
-                          pendingPushNotification?.id == intent.id && push.authorizesNavigation(intent) && !isDemo
-                  }) else { return }
             pendingPushNotification = nil; notice = nil
             notificationNavigationRevision = UUID()
         } else {
@@ -1102,18 +1123,31 @@ import BottoCore
         fileprivate let profile: ExactID
         fileprivate let intent: OpeningIntent
     }
+    /// A newer bot intent supersedes older navigation, including a retained notification tap.
     private func captureBotAuthority() -> BotNavigationAuthority? {
         let workspace = chats
         guard !showsConnection, pendingConnectionInput == nil,
               let claim = workspace.captureNavigationClaim() else { return nil }
+        pendingPushNotification = nil
         return .init(workspace: workspace, connection: generation, recovery: attachmentRecoveryGeneration, claim: claim)
     }
+    private func isCurrentLifetime(_ authority: BotNavigationAuthority) -> Bool {
+        chats === authority.workspace && generation == authority.connection && attachmentRecoveryGeneration == authority.recovery
+    }
     private func isCurrentConnection(_ authority: BotNavigationAuthority) -> Bool {
-        chats === authority.workspace && generation == authority.connection &&
-            attachmentRecoveryGeneration == authority.recovery && !showsConnection && pendingConnectionInput == nil
+        isCurrentLifetime(authority) && !showsConnection && pendingConnectionInput == nil
     }
     private func ownsBotNavigation(_ authority: BotNavigationAuthority) -> Bool {
         isCurrentConnection(authority) && authority.workspace.ownsNavigation(authority.claim)
+    }
+    /// Library and notification attachments settle app selection inside their workspace commit,
+    /// before the workspace publishes the chat, its saved selection or its grant.
+    private func commitAttachedSelection(_ profile: ExactID, authority: BotNavigationAuthority,
+                                         while isCurrent: () -> Bool) -> Bool {
+        selectBotID(profile.text, presentation: .attachmentCommit) {
+            isCurrentLifetime(authority) && authority.workspace.ownsNavigation(authority.claim) &&
+                acceptsProfile(profile, requirement: .listed) && isCurrent()
+        }
     }
     private func acceptsProfile(_ profile: ExactID, requirement: BotProfileRequirement) -> Bool {
         if case .explicit = requirement { return true }
@@ -1125,7 +1159,6 @@ import BottoCore
     private func prepareBotOpening(_ bot: BotProfile, attention: Bool, requirement: BotProfileRequirement) -> BotOpening? {
         guard let profile = try? ExactID(bot.id), acceptsProfile(profile, requirement: requirement),
               let authority = captureBotAuthority() else { return nil }
-        pendingPushNotification = nil
         return prepareBotOpening(bot, authority: authority, attention: attention, requirement: requirement)
     }
     func prepareCreatedBotOpening(_ creation: BotCreationResult) -> BotOpening? {
@@ -1153,7 +1186,6 @@ import BottoCore
         guard isConnected, !Task.isCancelled else { return nil }
         guard let authority = captureBotAuthority() else { return nil }
         let owner = authority.connection
-        pendingPushNotification = nil
         guard isCurrentConnection(authority), isConnected, !Task.isCancelled else { return nil }
         do {
             let bot = try await service.createBot(draft)

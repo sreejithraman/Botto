@@ -39,6 +39,8 @@ import BottoCore
     var replacements: [(QueuedMessage, String, SessionIdentity, UUID)] = []
     var sendGate: WorkspaceGate?
     var createGate: WorkspaceGate?
+    var botCreationGate: WorkspaceGate?
+    var createdBot: BotProfile?
     var openGate: WorkspaceGate?
     var openGatedProfile: ExactID?
     var directoryGate: WorkspaceGate?
@@ -119,7 +121,8 @@ import BottoCore
     }
     func createBot(_ draft: BotDraft) async throws -> BotProfile {
         onCreate?()
-        return .init(id: profile.text, name: draft.name)
+        await botCreationGate?.wait()
+        return createdBot ?? .init(id: profile.text, name: draft.name)
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }

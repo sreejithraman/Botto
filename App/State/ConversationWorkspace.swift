@@ -27,8 +27,7 @@ struct OpeningIntent: Sendable {
     fileprivate let attention: Bool
 }
 struct LibraryOpeningIntent: Sendable {
-    fileprivate let scope: WorkspaceScope
-    fileprivate let request: UUID
+    let claim: NavigationClaim
     fileprivate let source: SessionIdentity
 }
 struct SelectionIntent {
@@ -664,40 +663,42 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard !retired, book.preference(source.profile) != nil, let claim = captureNavigationClaim() else { return nil }
         onUserNavigation?()
         guard ownsNavigation(claim) else { return nil }
-        return .init(scope: scope, request: claim.request, source: source)
+        return .init(claim: claim, source: source)
     }
+    /// `isCurrent` lets the caller's own ordering retire a pending lookup before it touches the attachment.
     func openLibraryChat(_ intent: LibraryOpeningIntent,
+                         isCurrent: @MainActor () -> Bool = { true },
                          accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
                          commit: @MainActor (SessionIdentity) -> Bool) async -> SessionIdentity? {
-        guard ownsLibraryOpening(intent) else { return nil }
-        let previousSelection = selected, connection = recovery
-        defer { if navigationRequest == intent.request { navigationRequest = nil } }
-        if let opened = await performLibraryOpening(intent, accepts: accepts, commit: commit) { return opened }
-        if ownsLibraryOpening(intent), online, recovery == connection, selected == previousSelection,
+        guard ownsNavigation(intent.claim), isCurrent() else { return nil }
+        let request = intent.claim.request, previousSelection = selected, connection = recovery
+        defer { if navigationRequest == request { navigationRequest = nil } }
+        if let opened = await performLibraryOpening(intent, isCurrent: isCurrent, accepts: accepts, commit: commit) {
+            return opened
+        }
+        if ownsNavigation(intent.claim), online, recovery == connection, selected == previousSelection,
            live == nil, let previousSelection {
             // Recovery belongs to the whole request, including directory lookup.
             // It must outlive cancellation without overriding a newer request.
             await Task { @MainActor in
-                guard ownsLibraryOpening(intent), online, recovery == connection,
+                guard ownsNavigation(intent.claim), online, recovery == connection,
                       selected == previousSelection else { return }
                 readAuthorityBlocked = true
-                await attach(previousSelection, navigation: intent.request)
+                await attach(previousSelection, navigation: request)
             }.value
         }
         return nil
     }
-    func ownsLibraryOpening(_ intent: LibraryOpeningIntent) -> Bool {
-        !retired && intent.scope == scope && navigationRequest == intent.request
-    }
     private func performLibraryOpening(_ intent: LibraryOpeningIntent,
+                                       isCurrent: @MainActor () -> Bool,
                                        accepts: @MainActor (SessionIdentity, Conversation?) -> Bool,
                                        commit: @MainActor (SessionIdentity) -> Bool) async -> SessionIdentity? {
-        guard !Task.isCancelled, ownsLibraryOpening(intent) else { return nil }
-        let source = intent.source, connection = recovery
+        guard !Task.isCancelled, ownsNavigation(intent.claim) else { return nil }
+        let source = intent.source, request = intent.claim.request, connection = recovery
         if online {
             do {
                 let directory = try await service.conversations(profile: source.profile)
-                guard !Task.isCancelled, ownsLibraryOpening(intent), connection == recovery, online else { return nil }
+                guard !Task.isCancelled, ownsNavigation(intent.claim), isCurrent(), connection == recovery, online else { return nil }
                 let matches = directory.summaries.filter {
                     $0.identity.profile == source.profile &&
                         ($0.identity.root == source.root ||
@@ -706,10 +707,10 @@ private struct ReadObservationKey: Hashable, Sendable {
                 guard matches.count == 1, let summary = matches.first else { return nil }
                 let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[source.profile]) }
                 availability[id] = true
-                return await attach(id, selectionCommit: .afterAttachment, navigation: intent.request, accepts: accepts, commit: commit)
+                return await attach(id, selectionCommit: .afterAttachment, navigation: request, accepts: accepts, commit: commit)
             } catch { return nil }
         } else if let id = book.matching(source), book.record(id)?.isUnverified == false {
-            return await attach(id, selectionCommit: .afterAttachment, navigation: intent.request, accepts: accepts, commit: commit)
+            return await attach(id, selectionCommit: .afterAttachment, navigation: request, accepts: accepts, commit: commit)
         }
         return nil
     }
@@ -736,9 +737,15 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @discardableResult func openNotificationChat(_ destination: SessionIdentity,
                                                   isCurrent: @MainActor () -> Bool) async -> Bool {
-        guard isCurrent(), online, !retired, !Task.isCancelled else { return false }
-        let request = UUID(), connection = recovery
-        navigationRequest = request
+        guard isCurrent(), online, !retired, !Task.isCancelled, let claim = captureNavigationClaim() else { return false }
+        return await openNotificationChat(destination, claim: claim, isCurrent: isCurrent)
+    }
+    /// `commit` settles the caller's selection before this chat, its saved selection or its grant is published.
+    @discardableResult func openNotificationChat(_ destination: SessionIdentity, claim: NavigationClaim,
+                                                  isCurrent: @MainActor () -> Bool,
+                                                  commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> Bool {
+        guard isCurrent(), online, ownsNavigation(claim), !Task.isCancelled else { return false }
+        let request = claim.request, connection = recovery
         defer {
             if navigationRequest == request {
                 if selected != nil && live == nil { readAuthorityBlocked = true }
@@ -747,8 +754,8 @@ private struct ReadObservationKey: Hashable, Sendable {
         }
         do {
             let directory = try await service.conversations(profile: destination.profile)
-            guard isCurrent(), online, !retired, !Task.isCancelled,
-                  recovery == connection, navigationRequest == request else { return false }
+            guard isCurrent(), online, !Task.isCancelled,
+                  recovery == connection, ownsNavigation(claim) else { return false }
             let matches = directory.summaries.filter { summary in
                 summary.identity.profile == destination.profile
                     && (summary.identity.root == destination.root || summary.identity.aliases.contains(destination.root))
@@ -760,9 +767,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             // A cold notification needs a local picker owner while its target remains uncommitted.
             if selected == nil { selected = book.opening(destination.profile) }
             guard let accepted = await attach(id, selectionCommit: .afterAttachment, navigation: request,
-                                             accepts: { _, _ in isCurrent() }) else { return false }
-            return isCurrent() && !retired && recovery == connection && navigationRequest == request
-                && live?.identity == accepted
+                                             accepts: { _, _ in isCurrent() }, commit: commit) else { return false }
+            return isCurrent() && recovery == connection && ownsNavigation(claim) && live?.identity == accepted
         } catch { return false }
     }
     func restoreAttachment(_ intent: OpeningIntent) async {
@@ -795,12 +801,13 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard isCurrent(owner), book.record(chat)?.profile == book.record(owner.chat)?.profile else { return nil }
         let request = UUID()
         navigationRequest = request
+        // A choice supersedes older intents when captured, not when its queued task runs.
+        onUserNavigation?()
         return .init(owner: owner, target: chat, request: request)
     }
     func select(_ intent: SelectionIntent) async {
         guard !Task.isCancelled, isCurrent(intent.owner), navigationRequest == intent.request,
               book.record(intent.target)?.profile == book.record(intent.owner.chat)?.profile else { return }
-        onUserNavigation?()
         await attach(intent.target)
     }
     private enum SelectionCommit { case immediate, afterAttachment }
@@ -1263,6 +1270,7 @@ private struct ReadObservationKey: Hashable, Sendable {
               creations[profile] == nil, !uncertainCreation.contains(profile) else { return nil }
         let operation = UUID(); creations[profile] = operation
         navigationRequest = operation
+        onUserNavigation?()
         return .init(owner: owner, operation: operation, reservation: reserveOperation(operation, chat: owner.chat))
     }
     func create(_ intent: CreationIntent) async {
@@ -1270,7 +1278,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         defer { withExtendedLifetime(intent.reservation) { finishOperation(intent.operation) } }
         guard let profile = book.record(intent.owner.chat)?.profile, creations[profile] == intent.operation else { return }
         guard !Task.isCancelled, canCreateFrom(intent.owner) else { return }
-        if navigationRequest == intent.operation { onUserNavigation?() }
         dispatched.insert(intent.operation)
         defer { if creations[profile] == intent.operation { creations[profile] = nil } }
         do {

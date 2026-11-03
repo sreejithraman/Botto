@@ -299,6 +299,16 @@ current. An attention lookup likewise rechecks its claim before opening a chat.
 Every bot selection write supersedes older in-flight writes, even when it leaves
 the exact bytes unchanged or writes nil. An unchanged selection keeps its
 presentation; canonically equivalent but byte-distinct IDs are different bots.
+A pending Library selection yields to any newer selection write.
+An authenticated notification tap claims navigation when admitted, before any
+reconnect, roster or status wait, so older navigation that finishes during those
+waits cannot replace it. The tap outlives connection and workspace changes; if
+recovery retires its claim, the retained tap claims again. Every newer intent
+cancels the tap when admitted: bot entry, creation, picker and chat-creation
+captures, and direct selection writes. Notification opening settles bot selection
+inside its attachment commit, before the chat, its saved selection or its grant
+is published. A superseded or failed tap keeps the prior chat and draft editable
+without reviving a retired grant.
 Bot creation returns its published profile with its original workspace, connection
 and socket-recovery lifetime. Its optional opening keeps that authority across
 selection callbacks and sheet dismissal. A transient inactive scene still

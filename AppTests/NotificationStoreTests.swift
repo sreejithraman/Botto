@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Observation
 import Testing
 import BottoCore
 @testable import Botto
@@ -448,6 +449,217 @@ import BottoCore
         #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
     }
 
+    enum OlderNavigation: CaseIterable { case botCreation, ordinaryOpening, libraryOpening, chatCreation }
+    enum TapPreflight: CaseIterable { case roster, status }
+
+    @Test(arguments: OlderNavigation.allCases, TapPreflight.allCases)
+    func aNewerTapOutranksOlderNavigationThatFinishesDuringItsPreflight(older: OlderNavigation, preflight: TapPreflight) async throws {
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        defer { LocalHistory.remove(for: configuration.id) }
+        let scout = try addNotificationProfile("scout", to: service)
+        let orbit = try addNotificationProfile("orbit", to: service)
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.profile.text, name: "Scout")]
+        #expect(await store.connect(configuration))
+        var libraryChat: LibraryChat?
+        if older == .libraryOpening {
+            await store.open(try #require(store.bot(withID: scout.profile.text)))
+            for _ in 0..<1_000 where !store.library.chats.contains(where: { $0.botID == scout.profile.text }) { await Task.yield() }
+            libraryChat = store.library.chats.first { $0.botID == scout.profile.text }
+        }
+        await store.open(try #require(store.bot(withID: service.profile.text)))
+        // Let the connection's background push refresh finish before any gate is installed.
+        for _ in 0..<100 { await Task.yield() }
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep Milo's draft", owner: original.owner)
+        let target = service.summaries[1].identity
+        let revision = store.notificationNavigationRevision, opens = service.opens.count
+        // Bot creation shares the roster read with the tap; it holds the active read while the tap waits for the next.
+        let olderGate = WorkspaceGate(), sharesRoster = older == .botCreation && preflight == .roster
+        let tapGate = sharesRoster ? olderGate : WorkspaceGate()
+        let probe = OlderNavigationProbe()
+        var olderTask: Task<Void, Never>?
+        switch older {
+        case .botCreation:
+            service.createdBot = .init(id: orbit.profile.text, name: "Orbit")
+            service.onCreate = {
+                probe.creations += 1
+                service.rosterProfiles?.append(.init(id: orbit.profile.text, name: "Orbit"))
+            }
+            if sharesRoster { service.rosterGate = olderGate } else { service.botCreationGate = olderGate }
+            olderTask = Task { probe.creation = await store.create(.init(name: "Orbit")) }
+        case .ordinaryOpening:
+            probe.opening = store.prepareBotOpening(try #require(store.bot(withID: scout.profile.text)))
+        case .libraryOpening:
+            let chat = try #require(libraryChat)
+            service.directoryGate = olderGate; service.directoryGatedProfile = scout.profile
+            olderTask = Task { probe.libraryOpened = await store.openLibraryChat(chat) }
+        case .chatCreation:
+            service.createGate = olderGate
+            let creation = try #require(store.chats.captureCreation(original.owner))
+            olderTask = Task { await store.chats.create(creation) }
+        }
+        if older != .ordinaryOpening { await olderGate.entered() }
+        if preflight == .status { service.pushStatusGate = tapGate; service.pushStatusGatedProfileID = service.profile.text }
+        else if !sharesRoster { service.rosterGate = tapGate }
+        let envelope = try notification(target, pairing: #require(vault.saved.pairings.first))
+        let tap = Task { await store.openPushNotification(envelope) }
+        if sharesRoster {
+            for _ in 0..<100 { await Task.yield() }
+            let reads = service.rosterCalls
+            olderGate.release()
+            for _ in 0..<1_000 where service.rosterCalls == reads { await Task.yield() }
+            #expect(service.rosterCalls == reads + 1, "The tap's own roster read is still held.")
+        } else {
+            await tapGate.entered()
+            service.directoryGate = nil
+            olderGate.release()
+        }
+        await olderTask?.value
+        switch older {
+        case .botCreation:
+            let creation = try #require(probe.creation, "A confirmed creation still returns its receipt.")
+            #expect(store.bot(withID: orbit.profile.text) != nil)
+            // Root opens a prepared creation after dismissing its form.
+            if let opening = store.prepareCreatedBotOpening(creation) { await store.openBot(opening) }
+        case .ordinaryOpening: await store.openBot(try #require(probe.opening))
+        case .libraryOpening: #expect(probe.libraryOpened == false)
+        case .chatCreation: #expect(store.chats.persisted().records.contains { $0.binding.identity?.root.text.hasPrefix("created-") == true })
+        }
+        service.rosterGate = nil; service.pushStatusGate = nil
+        tapGate.release(); await tap.value
+
+        #expect(store.selectedBotID == service.profile.text, "The newer tap's destination wins.")
+        let selection = store.chats.selection(profile: service.profile)?.identity
+        #expect(selection?.root == target.root)
+        #expect(selection?.stored == target.stored)
+        #expect(store.chats.screen(profile: service.profile)?.canAct == true)
+        #expect(store.notificationNavigationRevision != revision)
+        #expect(service.opens.dropFirst(opens).map(\.root) == [target.root], "The older navigation must not attach.")
+        #expect(store.chats.persisted().record(original.owner.chat)?.draft.text == "Keep Milo's draft")
+        #expect(probe.creations == (older == .botCreation ? 1 : 0))
+        #expect(service.creates.count == (older == .chatCreation ? 1 : 0))
+        #expect(service.sends.isEmpty && service.responses.isEmpty)
+    }
+
+    enum PendingTapBoundary: CaseIterable { case directory, open, selection }
+    enum NewerSelectionWrite: CaseIterable { case none, sameValue, nilValue }
+
+    @Test(arguments: PendingTapBoundary.allCases, NewerSelectionWrite.allCases.flatMap { write in
+        ["connected", "reconnect"].map { (write, $0) }
+    })
+    func aNewerSelectionWriteSupersedesAPendingCrossProfileTap(boundary: PendingTapBoundary, control: (NewerSelectionWrite, String)) async throws {
+        let (write, entry) = control
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        defer { LocalHistory.remove(for: configuration.id) }
+        let target = try addNotificationProfile("scout", to: service), scout = target.profile
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.text, name: "Scout")]
+        var pairing = try #require(vault.saved.pairings.first)
+        pairing.host = try #require(PushHostBinding(configuration, profileID: scout.text))
+        pairing.deviceID = String(repeating: "d", count: 32)
+        vault.saved.pairings.append(pairing)
+        store.push.retryStorage()
+        service.pushStatusResult = .init(pluginVersion: "fixture", supported: true, installationID: pairing.installationID,
+            devices: vault.saved.pairings.map { .init(deviceID: $0.deviceID, generation: 1, active: true, state: .active) })
+        #expect(await store.connect(configuration))
+        await store.open(try #require(store.bot(withID: service.profile.text)))
+        await store.push.selectProfile(scout.text)
+        for _ in 0..<100 { await Task.yield() }
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep Milo's draft", owner: original.owner)
+        // The nil shape starts from the inbox while Milo's chat stays the workspace selection.
+        if write == .nilValue { store.selectedBotID = nil }
+        let selected = store.selectedBotID
+        let miloPreference = store.history.book.preference(service.profile)?.lastSelected
+        let scoutPreference = store.history.book.preference(scout)?.lastSelected
+        let revision = store.notificationNavigationRevision
+        let envelope = try notification(target, pairing: pairing)
+        if entry == "reconnect" {
+            service.onEvent?(.disconnected("Temporary outage"))
+            service.connectError = HermesServiceError.disconnected
+            await store.openPushNotification(envelope)
+            service.connectError = nil
+        }
+        let gate = WorkspaceGate(), checkpoint = WorkspaceGate(), probe = OlderNavigationProbe()
+        service.directoryGatedProfile = scout; service.openGatedProfile = scout
+        // Reconnect rereads activity directories; hold the tap at its status read until those finish.
+        let checkpointed = boundary == .directory && entry == "reconnect"
+        switch boundary {
+        case .directory:
+            if checkpointed { service.pushStatusGate = checkpoint; service.pushStatusGatedProfileID = scout.text }
+            else { service.directoryGate = gate }
+        case .open: service.openGate = gate
+        case .selection:
+            // The write happens synchronously inside the tap's eventual app selection.
+            if write != .none {
+                withObservationTracking { _ = store.selectedBotID } onChange: {
+                    MainActor.assumeIsolated { probe.fired = true; store.selectedBotID = selected }
+                }
+            }
+        }
+        let tap = Task {
+            if entry == "reconnect" { #expect(await store.connect(configuration)) }
+            else { await store.openPushNotification(envelope) }
+        }
+        if boundary != .selection {
+            if checkpointed {
+                await checkpoint.entered()
+                service.directoryGate = gate
+                service.pushStatusGate = nil; checkpoint.release()
+            }
+            await gate.entered()
+            if write != .none { store.selectedBotID = selected }
+            service.directoryGate = nil; service.openGate = nil; gate.release()
+        }
+        await tap.value
+
+        if write == .none {
+            #expect(store.selectedBotID == scout.text)
+            let selection = store.chats.selection(profile: scout)?.identity
+            #expect(selection?.root == target.root)
+            #expect(selection?.stored == target.stored)
+            #expect(store.chats.screen(profile: scout)?.canAct == true)
+            #expect(store.notificationNavigationRevision != revision)
+            #expect(store.notice == nil)
+            #expect(store.chats.persisted().record(original.owner.chat)?.draft.text == "Keep Milo's draft")
+        } else {
+            if boundary == .selection { #expect(probe.fired) }
+            #expect(store.selectedBotID.map { Data($0.utf8) } == selected.map { Data($0.utf8) }, "The newer selection write wins.")
+            let retained = try #require(store.chats.screen(profile: service.profile))
+            #expect(retained.owner.chat == original.owner.chat)
+            #expect(store.chats.isCurrent(retained.owner), "No hidden target may replace the prior chat.")
+            #expect(retained.canEditDraft)
+            #expect(store.chats.draft(retained.owner) == "Keep Milo's draft")
+            store.chats.editDraft("Still editable", owner: retained.owner)
+            #expect(store.chats.draft(retained.owner) == "Still editable")
+            if boundary == .directory && write == .sameValue && entry == "connected" {
+                #expect(retained.canAct, "An unchanged selection keeps its presentation.")
+            }
+            #expect(store.history.book.preference(service.profile)?.lastSelected == miloPreference)
+            #expect(store.history.book.preference(scout)?.lastSelected == scoutPreference)
+            #expect(store.chats.screen(profile: scout)?.canAct != true)
+            #expect(store.notificationNavigationRevision == revision, "A superseded tap never reports success.")
+            #expect(store.notice?.contains("Reconnect and try again") != true, "Supersession is not an open failure.")
+            let scoutOpens = service.opens.filter { $0.profile == scout }.count
+            #expect(scoutOpens == (boundary == .directory ? 0 : 1))
+            if let late = service.completedOpens.last(where: { $0.identity.profile == scout }) {
+                service.onEvent?(.conversation(late))
+                #expect(store.chats.screen(profile: scout)?.canAct != true, "The rejected grant stays retired.")
+                #expect(store.chats.isCurrent(try #require(store.chats.screen(profile: service.profile)).owner))
+            }
+            // The newer write cancels the retained tap, so ordinary recovery cannot navigate later.
+            await store.refresh()
+            for _ in 0..<100 { await Task.yield() }
+            #expect(store.selectedBotID.map { Data($0.utf8) } == selected.map { Data($0.utf8) })
+            #expect(service.opens.filter { $0.profile == scout }.count == scoutOpens)
+            await store.open(try #require(store.bot(withID: scout.text)))
+            #expect(store.selectedBotID == scout.text)
+            #expect(store.chats.screen(profile: scout)?.canAct == true)
+        }
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
+    }
+
     @Test(arguments: ["cold", "other-profile"], ["current", "removed", "failure"])
     func notificationRoutingWaitsForItsOwnAuthoritativePairing(entry: String, authority: String) async throws {
         var clock = Date(timeIntervalSince1970: 1_900_000_000)
@@ -751,4 +963,21 @@ import BottoCore
         #expect(try await reopened.original(for: key) == nil)
         await reopenedCache.close()
     }
+}
+
+@MainActor private final class OlderNavigationProbe {
+    var fired = false
+    var creations = 0
+    var creation: AppStore.BotCreationResult?
+    var opening: AppStore.BotOpening?
+    var libraryOpened: Bool?
+}
+
+@MainActor private func addNotificationProfile(_ text: String, to service: WorkspaceTestService) throws -> SessionIdentity {
+    let identity = SessionIdentity(profile: try ExactID(text), root: try ExactID(text + "-main"),
+                                   stored: try ExactID(text + "-tip"), aliases: [])
+    service.summaries.append(.init(identity: identity, title: text + " chat", isCanonical: true, persistence: .durable))
+    service.snapshots[identity.root] = .init(id: identity.root.text, storedID: identity.stored.text, profileID: text,
+        messages: [.init(id: text + "-reply", role: .assistant, text: text + " reply")])
+    return identity
 }
