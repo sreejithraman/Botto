@@ -135,7 +135,7 @@ func contractFixture(_ name: String) throws -> HermesJSON {
 
 let readinessDeadline: Duration = .seconds(3)
 
-@MainActor private func poll(within timeout: Duration, until predicate: () -> Bool) async throws {
+@MainActor func poll(within timeout: Duration, until predicate: () -> Bool) async throws {
     let until = ContinuousClock.now + timeout
     while !predicate(), ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(5)) }
 }
@@ -146,7 +146,7 @@ let readinessDeadline: Duration = .seconds(3)
 }
 
 /// Ends the test at a missed deadline, for waits whose later steps cannot run safely without it.
-@MainActor func requireEventually(within timeout: Duration = readinessDeadline, _ comment: Comment,
+@MainActor func requireEventually(within timeout: Duration, _ comment: Comment,
     sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
     try await poll(within: timeout, until: predicate)
     try #require(predicate(), comment, sourceLocation: sourceLocation)
