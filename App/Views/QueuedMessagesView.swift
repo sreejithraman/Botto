@@ -35,8 +35,8 @@ struct QueuedMessagesView: View {
                 VStack(spacing: 0) {
                     Button { isExpanded.toggle() } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: containsOnlyBackgroundEvents ? "bell.badge" : "text.badge.plus")
-                            Text("\(containsOnlyBackgroundEvents ? "Updates" : "Queued") · \(messages.count)").monospacedDigit()
+                            Image(systemName: "text.badge.plus")
+                            Text("Queued · \(messages.count)").monospacedDigit()
                             Spacer()
                             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                 .foregroundStyle(.secondary)
@@ -46,9 +46,7 @@ struct QueuedMessagesView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(containsOnlyBackgroundEvents
-                        ? (messages.count == 1 ? "1 queued background event" : "\(messages.count) queued background events")
-                        : (messages.count == 1 ? "1 queued message" : "\(messages.count) queued messages"))
+                    .accessibilityLabel(messages.count == 1 ? "1 queued message" : "\(messages.count) queued messages")
                     .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
                     .accessibilityHint("Double tap to \(isExpanded ? "hide" : "show") queued messages.")
                     .accessibilityIdentifier("queued-messages-toggle")
