@@ -410,6 +410,7 @@ import BottoCore
             library.accept(publication)
             library.reconcileOriginalConsumers()
         }
+        library.onDisputesResolved = { [weak chats] in chats?.resolveDisputes($0, on: $1) }
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
         var chatWasVisible = false

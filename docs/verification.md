@@ -1665,7 +1665,8 @@ the previous Boolean and passed on the token.
 
 One run on `0329509` plus the eight-file repair passed 265 native functions in
 seven suites and all nine NewBot UI tests, with no failures or skips. All 555
-tracked file hashes match the submitted source. Evidence is at
+tracked hashes matched before later edits to `docs/core-integration.md` and
+this verification record; compiled inputs match the submitted source. Evidence is at
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repairs-35/availability/arch35/notification-control/tab-repair/`.
 
 The Artifacts-tab control is retained and passes for both profiles. Its latest
@@ -1674,3 +1675,37 @@ not establish a measured improvement. Notification delivery uses a sealed fake
 envelope in a hosted window; the real app scene and an open Library reader are
 not exercised together. Reader cancellation has model-level coverage. The full
 local gate remains pending.
+
+### Dispute ordering through reseed and live publication
+
+The older-dispute control reproduced valid Search and artifact results being
+withdrawn after a newer coherent read, ordinary reseed and cold launch. A second
+control showed that a live snapshot could repeat the resolved claim. Library now
+orders both paths against the original read and sends resolved IDs back to Book.
+Newer disputes still withdraw immediately and survive cold launch. The final
+repair passed 358 native functions across ten suites. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-36/live-followup/`.
+The attached chat keeps its conservative ambiguity until its next read, and a
+crash before Book's normal save can retain that ambiguity. A narrow restoration
+retry interleaving remains source-inferred and unexecuted for independent review.
+
+### Completed gate and observer repairs
+
+The unfiltered run on `61b721f` completed with exit 65: 1,063 Xcode test functions
+passed, nine failed and 18 were explicitly skipped. One failure was a native
+recovery case; eight were UI cases. Native Save and Files reopen passed, and
+independent provider readback matched all 80 original bytes and their digest.
+This is a failed full gate. Evidence is under
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/full-gate35/`.
+
+Two UI failures were traced to the observer: a transient invalid activation
+point during opening and repeated accessibility queries consuming the long-chat
+budget. One snapshot per poll and an OCR crop at the message end preserve the
+ten-second deadline, 400-message workload, native hit tests and visible-text
+assertion. Waiting for stable card geometry preserves the offline interaction
+assertions. Four fixed-source runs passed both cases, and three nearby tests
+passed. Wrong OCR text, an absent message and a missing card each failed their
+control. Raw evidence is retained under
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/ui-gate36/`.
+Loaded-suite proof on the repaired source and the other gate failures remain
+pending; these selected results do not establish a passing full gate.

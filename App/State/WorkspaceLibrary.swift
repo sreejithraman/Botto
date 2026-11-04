@@ -299,6 +299,15 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let contentAt: ContinuousClock.Instant?
     }
     private var observations: [LibraryChat.ID: SourceObservation] = [:]
+    /// The newest coherent scan of a stored tip. It outranks disputes from reads started before it.
+    private struct IdentityResolution {
+        let stored: ExactID
+        let startedAt: ContinuousClock.Instant
+        var messageIDs: Set<Data>
+    }
+    @ObservationIgnored private var identityResolutions: [LibraryChat.ID: IdentityResolution] = [:]
+    /// Book retains its own copy of disputes for chat display, seeding and cold reopen.
+    @ObservationIgnored var onDisputesResolved: (@MainActor (Set<Data>, SessionIdentity) -> Void)?
     private struct InitialReadRows {
         let stored: ExactID
         var accepted = Set<Data>()
@@ -906,9 +915,37 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         accept(identity: publication.identity, snapshot: publication.snapshot, title: publication.title, evidence: publication.evidence)
     }
 
+    /// The one ordering between disputes and coherent reads. Without a read start, as in a seed or a
+    /// live publication, a dispute predates the resolution: a newer read has already reopened what it names.
+    private func standingDisputes(_ disputes: Set<Data>, on source: SessionIdentity,
+                                  startedAt: ContinuousClock.Instant? = nil) -> Set<Data> {
+        guard let resolution = identityResolutions[key(for: source)], resolution.stored == source.stored,
+              startedAt.map({ $0 < resolution.startedAt }) != false else { return disputes }
+        return disputes.subtracting(resolution.messageIDs)
+    }
+
+    private func recordResolution(_ proof: ConversationIdentityRead, messages: [ChatMessage], startedAt: ContinuousClock.Instant,
+                                  source: SessionIdentity) {
+        let id = key(for: source)
+        guard let chat = records[id], chat.identity.stored == source.stored else { return }
+        let resolved = proof.messageIDs.intersection(messages.map { Data($0.id.utf8) }).subtracting(chat.unavailableMessageIDs)
+        identityResolutions[id] = .init(stored: source.stored, startedAt: startedAt, messageIDs: resolved)
+        onDisputesResolved?(resolved, source)
+    }
+
     func accept(identity source: SessionIdentity, snapshot: Conversation, title: String, evidence: ChatTranscriptPublication.Evidence) {
         guard !isRetired else { return }
+        var snapshot = snapshot
         let read = evidence.readContext
+        if let disputes = snapshot.unavailableMessageIDs, !disputes.isEmpty {
+            let standing = standingDisputes(disputes, on: source, startedAt: read?.startedAt)
+            let resolved = disputes.subtracting(standing)
+            if !resolved.isEmpty { onDisputesResolved?(resolved, source) }
+            if evidence.isDispute, standing.isEmpty { return }
+            // Core repeats its last read's disputes on every live publication. Only a read observes them.
+            if read != nil { identityResolutions[key(for: source)]?.messageIDs.subtract(standing) }
+            snapshot.unavailableMessageIDs = standing.isEmpty ? nil : standing
+        }
         if let rosterReadFloors {
             guard let floor = rosterReadFloors[source.profile] else { return }
             if let read { guard read.startedAt >= floor else { return } }
@@ -922,7 +959,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 $0.profile == source.profile && $0.root == source.root && $0.stored == source.stored
             } == true
             let floor = observation?.contentAt ?? mountedAt
-            guard read.startedAt >= floor,
+            // Newer content without identity proof leaves a dispute standing.
+            guard evidence.isDispute || read.startedAt >= floor,
                   (records[id]?.directoryAbsent != true && !restorationHints.contains(id)) || provesSource,
                   expected == nil || expected == source.stored || (
                     read.startedAt >= (observation?.sourceAt ?? mountedAt) && provesSource) else { return }
@@ -1186,9 +1224,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     if transcript.isWorking, let tail = transcript.messages.last, tail.role == .assistant {
                         unsettledTail[id] = WorkingTail(stored: source.stored, messageID: Data(tail.id.utf8)); markDirty(id)
                     }
+                    let disputes = standingDisputes(transcript.unavailableMessageIDs ?? [], on: source)
+                    // Book's claims carry disputes. A row it repeats without one was resolved after that read,
+                    // and its cached copies can neither dispute that nor choose a revision.
+                    let resolvedCopies = duplicateMessageIDs(transcript.messages).subtracting(disputes)
                     await installAsync(source: records[id]?.identity ?? source, botName: name, title: record.title,
                         updatedAt: newest(record.updatedAt, transcript.messages.last?.timestamp),
-                        input: .seed(messages: transcript.messages, exclusions: .init(unavailable: transcript.unavailableMessageIDs ?? [])),
+                        input: .seed(messages: transcript.messages.filter { !resolvedCopies.contains(Data($0.id.utf8)) },
+                            exclusions: .init(unavailable: disputes)),
                         admittedBy: { !self.isRetired && !Task.isCancelled && self.seedVersion == seed.request
                             && self.rosterRevision == seed.roster && self.rosterPermits(source.profile)
                             && self.pendingRosterRestriction?.contains(source.profile) != false
@@ -1215,7 +1258,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         persistenceTask?.cancel(); transcriptTask?.cancel(); pendingTranscripts = [:]; originals = [:]
         cancelOperations()
         acceptanceFence = AcceptanceFence(capacity: acceptanceFence.capacity); indexingMetrics.retainedAcceptanceFences = 0
-        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadata = [:]; dirtyVersions = [:]; discardedEvidence = .scoped([:])
+        records = [:]; coverage = [:]; scanNotice = nil; observations = [:]; initialReadRows = [:]; initialSourceProofs = [:]; projectionStates = [:]; restorationHints = []; unreconciledMetadata = [:]; dirtyVersions = [:]; discardedEvidence = .scoped([:]); identityResolutions = [:]
         reconcileProjectionWaiters()
     }
     private func cancelOperations() {
@@ -1549,6 +1592,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             result[entry.key] = rows
         }
         initialSourceProofs = initialSourceProofs.filter { next[$0.key]?.identity.stored == $0.value }
+        identityResolutions = identityResolutions.filter { next[$0.key]?.identity.stored == $0.value.stored }
         reconcileOriginalConsumers()
         summaries = summaries.filter { next[$0.key] != nil }; heads = heads.filter { next[$0.key] != nil }
     }
@@ -1755,6 +1799,9 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         commitCanonical(prepareAdmission(source: source, botName: botName, title: title,
             updatedAt: updatedAt, input: input), target: target,
             projectionOwner: .caller, persistedRead: input.persistedRead)
+        if let identityRead, let readStartedAt {
+            recordResolution(identityRead, messages: messages, startedAt: readStartedAt, source: source)
+        }
         if checksHold, records[target]?.identity == source, sameMessages(records[target]?.messages ?? [], messages) {
             discardedEvidence.resolve([ArtifactMetadataRecovery.key(source)])
         }

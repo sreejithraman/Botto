@@ -50,6 +50,10 @@ A rejected window still publishes any duplicate raw IDs it observed for that
 exact source. Book retains those disputes, and Library withdraws the affected
 Search results and artifacts. This negative evidence cannot adopt a new tip or
 resolve an existing dispute; ordinary read failures preserve cached content.
+Library orders disputes against coherent identity reads for the exact stored
+tip. A newer proof clears only its named IDs in both Library and Book, so later
+seeds and live repetitions cannot restore an older claim. Live publications
+repeat their last read's claims; they observe no new duplicate identities.
 
 A bounded window replaces the cached suffix when its first stable message
 uniquely anchors in the same stored transcript and is not quarantined.
@@ -541,6 +545,10 @@ revision can supersede the former, while the latter needs identity evidence.
 Exact stored-tip binding and existing freshness fences apply to both. The saved
 index preserves these sets separately. Its legacy unavailable field encodes their
 union so older app versions continue to withhold uncertain rows.
+Seeds omit repeated Book rows without a standing dispute instead of deriving a
+new claim from them. Book corrections use the normal save path; a crash before
+that flush can conservatively retain a dispute. Attached chat display retains
+its last read's ambiguity until its next read, independently of Library results.
 
 Cache admission uses typed inputs for accepted transcripts, complete replacements,
 partial history, inert seeds, checked saved rows, recovery hints, quarantine,

@@ -811,4 +811,52 @@ extension InboxMessagePreviewTests {
         #expect(disputes.isEmpty)
         #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == nil)
     }
+
+    @Test(arguments: ["profile", "root", "tip"])
+    func coherentProofResolvesOnlyTheNamedDisputesOfItsExactSource(foreign: String) async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8), other = Data("other".utf8)
+        let (workspace, chat) = disputedFixture(service, probe: probe)
+        defer { workspace.retireWorkspace() }
+        service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [disputed, other])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        let outsider = try ExactID("foreign"), dirty = probe.dirtyCount
+        let elsewhere: SessionIdentity = switch foreign {
+        case "profile": .init(profile: outsider, root: identity.root, stored: identity.stored, aliases: [])
+        case "root": .init(profile: identity.profile, root: outsider, stored: identity.stored, aliases: [])
+        default: .init(profile: identity.profile, root: identity.root, stored: outsider, aliases: [])
+        }
+        workspace.resolveDisputes([disputed, other], on: elsewhere)
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == [disputed, other])
+        #expect(probe.dirtyCount == dirty, "Another source's proof writes nothing")
+        workspace.resolveDisputes([disputed], on: identity)
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == [other])
+        #expect(probe.dirtyCount == dirty + 1)
+        workspace.resolveDisputes([other], on: identity)
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == nil)
+    }
+
+    @Test func resolvingADisputeLeavesDraftReadStateAndChatAccessAlone() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8)
+        let (workspace, chat) = disputedFixture(service, probe: probe)
+        defer { workspace.retireWorkspace() }
+        service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [disputed])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        await workspace.openBot(profile: service.profile)
+        let owner = try #require(workspace.screen(profile: service.profile)?.owner)
+        workspace.displayed(owner); workspace.editDraft("Keep this draft", owner: owner)
+        let before = try #require(workspace.persisted().record(chat))
+        try #require(before.transcript?.unavailableMessageIDs == [disputed] && before.seen != nil)
+        let opens = service.opens.count
+
+        workspace.resolveDisputes([disputed], on: identity)
+        let after = try #require(workspace.persisted().record(chat))
+        #expect(after.transcript?.unavailableMessageIDs == nil)
+        #expect(after.draft.text == "Keep this draft" && after.draft.revision == before.draft.revision)
+        #expect(after.seen?.observedAt == before.seen?.observedAt && after.seen?.content == before.seen?.content)
+        #expect(workspace.isCurrent(owner), "Cache evidence retires no live access")
+        #expect(workspace.screen(profile: service.profile)?.canAct == true)
+        #expect(service.opens.count == opens)
+    }
 }

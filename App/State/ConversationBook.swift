@@ -462,6 +462,22 @@ struct ConversationBook: Codable, Sendable {
         update(id) { $0.transcript?.unavailableMessageIDs = (transcript.unavailableMessageIDs ?? []).union(messageIDs) }
         return true
     }
+    /// The chat still retaining one of these disputes on this exact cached tip.
+    func chat(disputing messageIDs: Set<Data>, on source: SessionIdentity) -> ChatID? {
+        records.first { record in
+            guard let transcript = record.transcript, transcript.unavailableMessageIDs?.isDisjoint(with: messageIDs) == false,
+                  let identity = record.binding.identity else { return false }
+            return SearchMessageTarget.sameSource(identity, source)
+                && Data(transcript.profileID.utf8) == source.profile.bytes
+                && Data(transcript.storedID.utf8) == source.stored.bytes
+        }?.id
+    }
+    mutating func resolveDisputes(_ messageIDs: Set<Data>, in id: ChatID) {
+        update(id) { record in
+            let remaining = record.transcript?.unavailableMessageIDs?.subtracting(messageIDs) ?? []
+            record.transcript?.unavailableMessageIDs = remaining.isEmpty ? nil : remaining
+        }
+    }
     mutating func cache(_ window: ConversationHistoryWindow, for id: ChatID) {
         update(id) { record in
             Self.cachedHistoryWindow(window, for: record)?.apply(to: &record)

@@ -1072,6 +1072,13 @@ private struct ReadObservationKey: Hashable, Sendable {
         onAcceptedTranscript?(.init(identity: source.identity, snapshot: snapshot, title: source.title,
             evidence: .disputed(startedAt: read.startedAt)))
     }
+    /// Library reads run beside this workspace. Its coherent proof reaches Book here,
+    /// before a later seed or cold reopen could repeat what it resolved.
+    func resolveDisputes(_ messageIDs: Set<Data>, on source: SessionIdentity) {
+        guard !retired, let id = book.chat(disputing: messageIDs, on: source) else { return }
+        mutateBook { $0.resolveDisputes(messageIDs, in: id) }
+        onDirty()
+    }
     func invalidateActivityDirectory(_ profile: ExactID) {
         guard online, !retired else { return }
         activityDirectories.remove(profile); complete[profile] = false
