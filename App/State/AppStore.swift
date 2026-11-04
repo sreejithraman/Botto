@@ -202,6 +202,20 @@ import BottoCore
     private(set) var chats: ConversationWorkspace
     let push: PushCoordinator
     private(set) var notificationNavigationRevision = UUID()
+    /// A scene's receipt for presenting accepted notifications. Only the receipt keeps it alive,
+    /// so a replaced scene can drop its own without detaching its successor.
+    @MainActor final class NotificationPresentation {
+        fileprivate let present: @MainActor () -> Void
+        fileprivate init(present: @escaping @MainActor () -> Void) { self.present = present }
+    }
+    @ObservationIgnored private weak var notificationPresentation: NotificationPresentation?
+    /// `present` runs in the actor turn that accepts a tap. A compact column changed later
+    /// from `onChange` can miss the native split view and leave the chat behind the Inbox.
+    func bindNotificationPresentation(_ present: @escaping @MainActor () -> Void) -> NotificationPresentation {
+        let presentation = NotificationPresentation(present: present)
+        notificationPresentation = presentation
+        return presentation
+    }
     /// An authenticated tap outlives connection and workspace lifetimes; its workspace claim does not.
     private struct PendingPushNavigation {
         var intent: PushNavigationIntent
@@ -274,12 +288,24 @@ import BottoCore
         }
     }
     var connectionError: String? { connection.errorMessage }
-    var pendingConnectionInput: String?
+    var pendingConnectionInput: String? {
+        didSet { if pendingConnectionInput != nil { acceptConnectionChoice() } }
+    }
     var showsConnection = false {
         didSet {
-            if showsConnection && !oldValue { retireArtifactPresentation(); chats.retirePresentation() }
+            if showsConnection && !oldValue {
+                acceptConnectionChoice()
+                retireArtifactPresentation(); chats.retirePresentation()
+            }
             else if !showsConnection && oldValue { reconcileArtifactPresentation() }
         }
+    }
+
+    /// Names the connection sheet an attempt may close: reopening it is a newer choice.
+    @ObservationIgnored private var connectionChoice = UUID()
+    private func acceptConnectionChoice() {
+        connectionChoice = UUID()
+        retireHeldNotification()
     }
 
     @ObservationIgnored private var service: any BotService
@@ -606,6 +632,7 @@ import BottoCore
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
         guard isDemo || !savedSetupLoadFailed else { return false }
+        let closesConnection = showsConnection ? connectionChoice : nil
         let candidate = rotatedConfigurations[candidate.id].flatMap {
             $0.serverURL == candidate.serverURL ? $0 : nil
         } ?? candidate
@@ -690,7 +717,7 @@ import BottoCore
                 await self.push.resume()
             }
             onConnected?()
-            showsConnection = false
+            if connectionChoice == closesConnection { showsConnection = false }
             if let restoration, workspace === chats {
                 await workspace.restoreAttachment(restoration)
                 settleInterruptedOpening()
@@ -1001,10 +1028,24 @@ import BottoCore
         guard self.configuration?.id == configuration.id, chats === workspace, ownsTap() else { return }
         if opened {
             pendingPushNotification = nil; notice = nil; settleOpeningInterruption()
-            notificationNavigationRevision = UUID()
+            presentAcceptedNotification()
         } else {
             notice = "Botto couldn’t open this notification's chat. Reconnect and try again."
         }
+    }
+
+    /// The tap is newer than any cover still up, and every cover it lifts settles with its chat.
+    private func presentAcceptedNotification() {
+        if showsConnection { showsConnection = false }
+        if pendingConnectionInput != nil { pendingConnectionInput = nil }
+        notificationPresentation?.present()
+        notificationNavigationRevision = UUID()
+    }
+    /// A root cover chosen after a tap outranks it: the tap can neither close it nor navigate beneath it.
+    func retireHeldNotification() {
+        guard pendingPushNotification != nil else { return }
+        interruptSupersededOpening()
+        pendingPushNotification = nil
     }
 
     private var hasUnsettledOpening: Bool {

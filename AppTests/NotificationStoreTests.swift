@@ -118,6 +118,36 @@ import BottoCore
         #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
     }
 
+    @Test func acceptedTapsPresentOnlyThroughTheCurrentReceiptAcrossAutomaticRecovery() async throws {
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        defer { LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration))
+        await store.open(try #require(store.bots.first))
+        let target = service.summaries[1].identity
+        let pairing = try #require(vault.saved.pairings.first)
+        var presented: [String] = []
+        var replaced: AppStore.NotificationPresentation? = store.bindNotificationPresentation { presented.append("replaced") }
+        var current: AppStore.NotificationPresentation? = store.bindNotificationPresentation {
+            presented.append(store.isConnected ? "current" : "offline")
+        }
+
+        service.onEvent?(.disconnected("Temporary outage"))
+        await store.openPushNotification(try notification(target, pairing: pairing))
+        #expect(presented == ["current"], "Automatic recovery keeps the original tap.")
+
+        withExtendedLifetime(replaced) { replaced = nil }
+        await store.openPushNotification(try notification(target, pairing: pairing))
+        #expect(presented == ["current", "current"], "A replaced receipt cannot detach its successor.")
+
+        withExtendedLifetime(current) { current = nil }
+        let before = store.notificationNavigationRevision
+        await store.openPushNotification(try notification(target, pairing: pairing))
+        #expect(presented.count == 2)
+        #expect(store.notificationNavigationRevision != before, "The model outcome needs no scene.")
+        #expect(store.chats.selection(profile: service.profile)?.identity?.root == target.root)
+    }
+
     @Test func coldStartTapReconnectsAndOpensTheVerifiedChatWithoutSending() async throws {
         let (store, service, connection, vault) = try fixture()
         defer { if let id = connection.saved?.id { LocalHistory.remove(for: id) } }

@@ -19,6 +19,7 @@ struct RootView: View {
     @State private var sheet: Sheet?
     @State private var createdBotOpening: AppStore.BotOpening?
     @State private var deliberateSheet = false
+    @State private var notificationPresentation: AppStore.NotificationPresentation?
     private var showsSheet: Binding<Bool> {
         let renderedSheet = sheet
         return Binding(get: { sheet != nil }, set: { shown in
@@ -32,6 +33,7 @@ struct RootView: View {
     }
     private func presentSheet(_ destination: Sheet, deliberate: Bool = true) {
         createdBotOpening = nil
+        if deliberate { store.retireHeldNotification() }
         if destination == .connection, onExitDemoPreview != nil {
             store.showsConnection = false
             store.pendingConnectionInput = nil
@@ -84,6 +86,15 @@ struct RootView: View {
                               onNewBot: { presentSheet(.newBot) })
             }
         }
+        // Captures only what it settles: holding `self` would keep this receipt alive through its own state.
+        .onAppear {
+            notificationPresentation = store.bindNotificationPresentation {
+                [presentation, sheet = $sheet, createdBotOpening = $createdBotOpening] in
+                createdBotOpening.wrappedValue = nil
+                sheet.wrappedValue = nil
+                presentation.didChooseConversation()
+            }
+        }
         .tint(BottoTheme.action)
         .background(BottoTheme.paper.ignoresSafeArea())
         .sheet(isPresented: showsSheet, onDismiss: sheetDidDismiss) {
@@ -119,11 +130,6 @@ struct RootView: View {
             if value != nil { createdBotOpening = nil; store.showsConnection = true }
         }
         .onChange(of: store.artifactGeneration) { _, _ in presentation.reconcile(store: store) }
-        .onChange(of: store.notificationNavigationRevision) { _, _ in
-            createdBotOpening = nil
-            sheet = nil
-            presentation.didChooseConversation()
-        }
         .onChange(of: store.selectedBotID) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: ObjectIdentifier(store.chats)) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: scenePhase) { _, _ in presentation.reconcile(store: store) }

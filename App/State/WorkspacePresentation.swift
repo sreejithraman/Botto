@@ -50,6 +50,8 @@ enum SearchMessageOpeningResult {
 }
 enum SearchFocusResult { case revealed, unavailable, cancelled }
 
+enum WorkspaceDestination: Hashable { case bots, artifacts, search }
+
 /// Scene-owned task presentation. Native hosts project this state; they never
 /// create a second destination or own a download's lifetime.
 @MainActor @Observable final class WorkspacePresentation {
@@ -63,6 +65,10 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
     }
     private var surface: Surface = .reading(.chat)
     private(set) var revision = UUID()
+    var destination = WorkspaceDestination.bots
+    var libraryReader: LibraryArtifactPreviewSession?
+    var libraryOpening: Task<Void, Never>?
+    private var chatAfterReaderDismissal: LibraryChat?
     private(set) var searchFocus: SearchMessageFocus?
     var searchError: String?
 
@@ -99,6 +105,22 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
         session.retry()
     }
 
+    func cancelLibraryOpening() {
+        chatAfterReaderDismissal = nil
+        libraryOpening?.cancel(); libraryOpening = nil
+    }
+
+    func closeLibraryReader(opening chat: LibraryChat? = nil) {
+        chatAfterReaderDismissal = chat
+        libraryReader?.finish()
+        libraryReader = nil
+    }
+
+    func takeChatAfterReaderDismissal() -> LibraryChat? {
+        defer { chatAfterReaderDismissal = nil }
+        return chatAfterReaderDismissal
+    }
+
     func browseBots() {
         guard !isBrowsingBots, artifact?.isPresentingOutput != true else { return }
         searchFocus = nil
@@ -110,8 +132,12 @@ enum SearchFocusResult { case revealed, unavailable, cancelled }
         surface = .reading(target); revision = UUID()
     }
 
+    /// Settles the whole destination at once: a tab or reader left for a later update
+    /// still covers the workspace, and its compact column can then miss the native split view.
     func didChooseConversation() {
         searchFocus = nil; searchError = nil
+        cancelLibraryOpening(); closeLibraryReader()
+        destination = .bots
         let previous = artifact
         surface = .reading(.chat); revision = UUID()
         previous?.finish()

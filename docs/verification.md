@@ -1652,3 +1652,25 @@ Back and Retry use the actual native interface. The saved retry-row screenshot
 was inspected in light mode at default text size. Evidence is at
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repairs-35/availability/arch35/`.
 These focused results do not establish a full gate or a measured flake rate.
+
+### Notification presentation transaction
+
+The hosted Root controls exposed a second navigation failure: a notification
+selected its exact chat while the native stack stayed on Inbox. Moving the
+accepted presentation into the store's actor turn fixed the retained controls.
+WorkspacePresentation now settles the tab, Library reader, pending opening and
+chat surface together. A connection-choice token also prevents an older attempt
+from dismissing a reopened connection sheet; that control failed six times on
+the previous Boolean and passed on the token.
+
+One run on `0329509` plus the eight-file repair passed 265 native functions in
+seven suites and all nine NewBot UI tests, with no failures or skips. All 555
+tracked file hashes match the submitted source. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repairs-35/availability/arch35/notification-control/tab-repair/`.
+
+The Artifacts-tab control is retained and passes for both profiles. Its latest
+red comparison did not reproduce the earlier intermittent failure, so it does
+not establish a measured improvement. Notification delivery uses a sealed fake
+envelope in a hosted window; the real app scene and an open Library reader are
+not exercised together. Reader cancellation has model-level coverage. The full
+local gate remains pending.

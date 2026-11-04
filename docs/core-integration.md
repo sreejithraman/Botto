@@ -324,6 +324,11 @@ lineage contract.
 Compact navigation derives its column from the current task presentation and
 live selection in the same update. A root cover retains the native column;
 uncovering projects the current task without waiting for an attachment update.
+Accepted notifications settle the scene's tab, reader, pending Library opening,
+root cover and chat surface in the accepting actor turn. Root owns the weakly
+registered presentation receipt. A newer deliberate sheet or connection choice
+cancels a held tap; closing that sheet does not replay it. A connection attempt
+can dismiss only the connection choice it started from.
 Foreground reconnect captures its restoration intent before refreshing the
 roster and directories. Its later restoration must still own that intent;
 it cannot replace a newer library lookup. If the newer lookup fails or is

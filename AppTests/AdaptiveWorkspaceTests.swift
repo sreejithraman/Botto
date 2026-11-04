@@ -3,6 +3,7 @@ import UIKit
 import QuickLook
 import Observation
 import Foundation
+import CryptoKit
 import Testing
 import BottoCore
 @testable import Botto
@@ -463,6 +464,213 @@ import BottoCore
         Attachment.record(diagnostics(), named: "native-back-returned.txt")
         #expect(store.chats.draft(owner) == "  Native Back keeps this draft\n")
         #expect(store.chats.isCurrent(owner) && store.artifactGeneration == generation)
+    }
+
+    @Test(arguments: [false, true])
+    func anAuthenticatedTapFromTheNativeInboxShowsItsChat(crossProfile: Bool) async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: crossProfile)
+        defer { fixture.finish() }
+        let window = try await attach(RootView(store: fixture.store), compact: true)
+        defer { window.close() }
+        let draftOwner = try await browseTheNativeInbox(fixture, in: window)
+        await fixture.tap()
+        try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
+    }
+
+    /// The tap is newer than the cover, so it reaches its chat in the update that lifts the cover.
+    @Test(arguments: [RootCover.settings, .connection])
+    func anAuthenticatedTapLiftsAnOlderRootCover(cover: RootCover) async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: true)
+        defer { fixture.finish() }
+        let window = try await attach(RootView(store: fixture.store), compact: true)
+        defer { window.close() }
+        let draftOwner = try await browseTheNativeInbox(fixture, in: window)
+        try await raise(cover, over: window, store: fixture.store)
+        await fixture.tap()
+        #expect(!fixture.store.showsConnection)
+        try await waitUntil("The tap lifted the root cover", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+            window.rootViewController?.presentedViewController == nil
+        }
+        try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
+    }
+
+    @Test(arguments: [RootCover.settings, .connection])
+    func aNewerRootChoiceKeepsItsCoverOverAHeldTap(cover: RootCover) async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: true)
+        defer { fixture.finish() }
+        let (store, service) = (fixture.store, fixture.service)
+        let window = try await attach(RootView(store: store), compact: true)
+        defer { window.close() }
+        let draftOwner = try await browseTheNativeInbox(fixture, in: window)
+        let selected = store.selectedBotID, revision = store.notificationNavigationRevision, opens = service.opens.count
+        let gate = WorkspaceGate()
+        service.directoryGate = gate; service.directoryGatedProfile = fixture.scout.profile
+        let tap = Task { await fixture.tap() }
+        await gate.entered()
+        try await raise(cover, over: window, store: store)
+        service.directoryGate = nil
+        gate.release()
+        await tap.value
+        // Several presentation updates, so a late dismissal would be visible.
+        for _ in 0..<20 { try await Task.sleep(for: .milliseconds(10)) }
+        let keptCover = window.rootViewController?.presentedViewController
+        #expect(keptCover != nil && keptCover?.isBeingDismissed == false, "The newer cover stays up.")
+        #expect(store.showsConnection == (cover == .connection))
+        #expect(store.selectedBotID == selected && store.notificationNavigationRevision == revision)
+        #expect(service.opens.count == opens)
+
+        try await lift(cover, over: window, store: store)
+        #expect(settledDetailNavigation(in: window) == nil, "The tap cannot navigate after the cover lifts.")
+        #expect(store.selectedBotID == selected)
+        #expect(store.chats.persisted().record(draftOwner.chat)?.draft.text == "Keep Milo's draft")
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
+    }
+
+    @Test func aConnectionChoiceSurvivesTheTapsAutomaticReconnection() async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: true)
+        defer { fixture.finish() }
+        let (store, service) = (fixture.store, fixture.service)
+        let window = try await attach(RootView(store: store), compact: true)
+        defer { window.close() }
+        _ = try await browseTheNativeInbox(fixture, in: window)
+        let selected = store.selectedBotID
+        service.onEvent?(.disconnected("Temporary outage"))
+        let gate = WorkspaceGate()
+        service.rosterGate = gate
+        let tap = Task { await fixture.tap() }
+        await gate.entered()
+        try await raise(.connection, over: window, store: store)
+        service.rosterGate = nil
+        gate.release()
+        await tap.value
+        #expect(store.isConnected)
+        #expect(store.showsConnection && window.rootViewController?.presentedViewController != nil)
+        #expect(store.selectedBotID == selected)
+    }
+
+    @Test(arguments: [false, true])
+    func aTapFromAnotherTabShowsItsChatInBots(crossProfile: Bool) async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: crossProfile)
+        defer { fixture.finish() }
+        let window = try await attach(RootView(store: fixture.store), compact: true)
+        defer { window.close() }
+        let draftOwner = try await browseTheNativeInbox(fixture, in: window)
+        let tabs = try #require(window.rootViewController.flatMap(tabController))
+        try activateNativeControl("Artifacts", in: window)
+        try await waitUntil("The Artifacts tab is selected", timeout: .seconds(5), diagnostics: {
+            "selected=\(tabs.selectedIndex) \(nativeStacks(in: window))"
+        }) { tabs.selectedIndex == 1 }
+        await fixture.tap()
+        try await waitUntil("The tap returned to Bots", timeout: .seconds(5)) { tabs.selectedIndex == 0 }
+        try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
+    }
+
+    private func tabController(in controller: UIViewController) -> UITabBarController? {
+        controller as? UITabBarController ?? controller.children.lazy.compactMap { tabController(in: $0) }.first
+    }
+
+    @Test func aRecreatedRootTakesOverTheNotificationPresentation() async throws {
+        let fixture = try await NotificationTapFixture(crossProfile: false)
+        defer { fixture.finish() }
+        let replaced = try await attach(RootView(store: fixture.store), compact: true)
+        replaced.close()
+        let window = try await attach(RootView(store: fixture.store), compact: true)
+        defer { window.close() }
+        let draftOwner = try await browseTheNativeInbox(fixture, in: window)
+        await fixture.tap()
+        try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
+    }
+
+    /// Opens the fixture's first chat with a draft, then leaves it through native Back.
+    private func browseTheNativeInbox(_ fixture: NotificationTapFixture, in window: WorkspaceTestWindow) async throws -> PresentationOwner {
+        let (store, service) = (fixture.store, fixture.service)
+        let diagnostics = { "selected=\(store.selectedBotID ?? "nil") \(nativeStacks(in: window))" }
+        await store.open(try #require(store.bots.first { $0.id == service.profile.text }))
+        try await waitUntil("The first chat entered native detail", diagnostics: diagnostics) { settledDetailNavigation(in: window) != nil }
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep Milo's draft", owner: original.owner)
+        let composer = try #require(nativeTextViews(in: window).compactMap { $0 as? NativeComposerTextView }.first)
+        try await waitUntil("The first composer is ready before Back", diagnostics: diagnostics) {
+            composer.isEditable && composer.window === window
+        }
+        let navigation = try #require(settledDetailNavigation(in: window))
+        _ = try #require(navigation.popViewController(animated: false))
+        // RootView owns its presentation: the composer leaving editing is the visible proof browsing was accepted.
+        try await waitUntil("Native Back reached the Inbox", diagnostics: diagnostics) {
+            navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil &&
+                !nativeTextViews(in: window).contains { $0 is NativeComposerTextView && $0.isEditable && $0.window === window }
+        }
+        #expect(store.selectedBotID == service.profile.text)
+        return original.owner
+    }
+
+    private func expectTheTappedChat(_ fixture: NotificationTapFixture, keeping draftOwner: PresentationOwner,
+                                     in window: WorkspaceTestWindow, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        let (store, service, target) = (fixture.store, fixture.service, fixture.target)
+        #expect(store.notificationNavigationRevision != fixture.revision, Comment(rawValue: store.notice ?? "No notice"), sourceLocation: sourceLocation)
+        let diagnostics = { "selected=\(store.selectedBotID ?? "nil") \(nativeStacks(in: window))" }
+        try await waitUntil("The tap's chat entered native detail", timeout: .seconds(5), diagnostics: diagnostics, sourceLocation: sourceLocation) {
+            settledDetailNavigation(in: window) != nil
+        }
+        #expect(store.selectedBotID == target.profile.text, sourceLocation: sourceLocation)
+        let selection = try #require(store.chats.selection(profile: target.profile), sourceLocation: sourceLocation)
+        #expect(selection.identity?.root == target.root && selection.identity?.stored == target.stored, sourceLocation: sourceLocation)
+        let screen = try #require(store.chats.screen(profile: target.profile), sourceLocation: sourceLocation)
+        #expect(store.chats.isCurrent(screen.owner) && screen.canAct && screen.canEditDraft, sourceLocation: sourceLocation)
+        try await waitUntil("The tap's composer accepts native input", diagnostics: diagnostics, sourceLocation: sourceLocation) {
+            nativeTextViews(in: window).contains { $0 is NativeComposerTextView && $0.isEditable && $0.window === window }
+        }
+        let editor = try #require(nativeTextViews(in: window).compactMap { $0 as? NativeComposerTextView }.first { $0.isEditable }, sourceLocation: sourceLocation)
+        editor.text = "Reply from the notification"
+        editor.textViewDidChange(editor)
+        #expect(store.chats.draft(screen.owner) == "Reply from the notification", sourceLocation: sourceLocation)
+        #expect(store.chats.persisted().record(draftOwner.chat)?.draft.text == "Keep Milo's draft", sourceLocation: sourceLocation)
+        #expect(service.opens.dropFirst(fixture.opensBeforeTap).map(\.root) == [target.root], sourceLocation: sourceLocation)
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty, sourceLocation: sourceLocation)
+
+        let detail = try #require(settledDetailNavigation(in: window), sourceLocation: sourceLocation)
+        _ = try #require(detail.popViewController(animated: false), sourceLocation: sourceLocation)
+        try await waitUntil("Native Back still leaves the tap's chat", diagnostics: diagnostics, sourceLocation: sourceLocation) {
+            detail.viewControllers.count == 1 && detail.transitionCoordinator == nil
+        }
+        #expect(store.selectedBotID == target.profile.text, sourceLocation: sourceLocation)
+    }
+
+    enum RootCover: Sendable { case settings, connection }
+
+    private func raise(_ cover: RootCover, over window: WorkspaceTestWindow, store: AppStore) async throws {
+        switch cover {
+        case .connection: store.showsConnection = true
+        case .settings:
+            try activateNativeControl("Settings", in: window)
+        }
+        try await waitUntil("The root cover is up", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+            let sheet = window.rootViewController?.presentedViewController
+            return sheet != nil && sheet?.isBeingPresented == false
+        }
+    }
+
+    private func activateNativeControl(_ label: String, in window: UIWindow) throws {
+        func labeled(_ view: UIView) -> [UIView] {
+            (view.accessibilityLabel == label ? [view] : []) + view.subviews.flatMap(labeled)
+        }
+        func control(_ view: UIView) -> UIControl? { view as? UIControl ?? view.superview.flatMap(control) }
+        try #require(labeled(window).compactMap(control).first).sendActions(for: .touchUpInside)
+    }
+
+    private func lift(_ cover: RootCover, over window: WorkspaceTestWindow, store: AppStore) async throws {
+        switch cover {
+        case .connection: store.showsConnection = false
+        case .settings: window.rootViewController?.presentedViewController?.dismiss(animated: false)
+        }
+        try await waitUntil("The root cover lifted", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+            window.rootViewController?.presentedViewController == nil
+        }
+    }
+
+    private func nativeStacks(in window: UIWindow) -> String {
+        let stacks = navigationControllers(in: window.rootViewController!).map(\.viewControllers.count)
+        return "stacks=\(stacks) presented=\(String(describing: window.rootViewController?.presentedViewController))\n" + nativeTransitionProgress(in: window)
     }
 
     private func settledDetailNavigation(in window: UIWindow) -> UINavigationController? {
@@ -968,6 +1176,71 @@ import BottoCore
         try #require(condition(), Comment(rawValue: message), sourceLocation: sourceLocation)
     }
 
+}
+
+@MainActor private final class NotificationTapVault {
+    var saved = PushSavedState()
+}
+
+/// A paired compact workspace whose fake tap carries a sealed envelope for one exact chat.
+@MainActor private final class NotificationTapFixture {
+    let service: WorkspaceTestService
+    let store: AppStore
+    let scout: SessionIdentity
+    let target: SessionIdentity
+    private(set) var revision = UUID()
+    private(set) var opensBeforeTap = 0
+    private let vault = NotificationTapVault()
+    private let configuration: ConnectionConfiguration
+
+    init(crossProfile: Bool) async throws {
+        let service = try WorkspaceTestService()
+        let scout = SessionIdentity(profile: try ExactID("scout"), root: try ExactID("scout-main"), stored: try ExactID("scout-tip"), aliases: [])
+        service.summaries.append(.init(identity: scout, title: "Scout chat", isCanonical: true, persistence: .durable))
+        service.snapshots[scout.root] = .init(id: scout.root.text, storedID: scout.stored.text, profileID: scout.profile.text)
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scout.profile.text, name: "Scout")]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-notification.invalid")!,
+                                                    username: "owner", installID: "fixture-install")
+        let installation = String(repeating: "a", count: 64)
+        vault.saved.pairings = try [(service.profile, "b"), (scout.profile, "d")].map { profile, device in
+            .init(host: try #require(PushHostBinding(configuration, profileID: profile.text)), installationID: installation,
+                  deviceID: String(repeating: device, count: 32), generation: 1, key: Data(repeating: 7, count: 32),
+                  preferences: .init(), pendingEnrollment: nil, remoteConfirmed: true, lastEnrollment: nil)
+        }
+        service.pushStatusResult = .init(pluginVersion: "fixture", supported: true, installationID: installation,
+            devices: vault.saved.pairings.map { .init(deviceID: $0.deviceID, generation: 1, active: true, state: .active) })
+        let vault = vault
+        let push = PushCoordinator(persistence: .init(load: { vault.saved }, save: { vault.saved = $0 }),
+            authorization: .init(requestPermission: { false }, deviceToken: { throw PushError.tokenUnavailable }))
+        self.service = service
+        self.scout = scout
+        self.configuration = configuration
+        target = crossProfile ? scout : service.summaries[1].identity
+        store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence, push: push)
+        #expect(await store.connect(configuration))
+        if crossProfile { await store.push.selectProfile(scout.profile.text) }
+    }
+
+    func tap() async {
+        revision = store.notificationNavigationRevision
+        opensBeforeTap = service.opens.count
+        await store.openPushNotification(try! envelope())
+    }
+
+    private func envelope() throws -> PushEnvelope {
+        let pairing = try #require(vault.saved.pairings.first { $0.host.profileID == target.profile.text })
+        let installation = try #require(pairing.installationID), event = String(repeating: "c", count: 64)
+        let aad = "botto-push:v1\n\(installation)\n\(pairing.deviceID)\n1\n\(event)"
+        let preview = PushPreview(title: "Reply", body: "A meaningful reply", destination: .init(identity: target))
+        let box = try AES.GCM.seal(JSONEncoder().encode(preview), using: SymmetricKey(data: pairing.key), authenticating: Data(aad.utf8))
+        return .init(installationID: installation, deviceID: pairing.deviceID, generation: 1, eventID: event, kind: .reply,
+                     expiresAt: Int(Date().timeIntervalSince1970) + 300, sealed: try #require(box.combined).base64EncodedString())
+    }
+
+    func finish() {
+        store.forgetConnection()
+        LocalHistory.remove(for: configuration.id)
+    }
 }
 
 @MainActor @Observable private final class ChatCoverageFixture {

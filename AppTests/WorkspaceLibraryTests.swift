@@ -3681,6 +3681,37 @@ import BottoCore
         #expect(service.downloadCount == 2)
     }
 
+    @Test func choosingAConversationSettlesTheTabReaderAndLibraryOpeningTogether() async throws {
+        let service = LibraryTestService()
+        service.messages[service.first] = [ChatMessage(id: "main:row:7", role: .assistant, text: "Report ready\nMEDIA:/report.txt",
+                                                       timestamp: Date(timeIntervalSince1970: 1))]
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence, artifactCache: ArtifactCache(root: nil))
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://library.example")!)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration)); await store.open(service.profiles[0]); await store.refreshLibrary()
+        let item = try #require(store.library.artifacts.first)
+        let presentation = WorkspacePresentation()
+
+        presentation.destination = .artifacts
+        let reader = LibraryArtifactPreviewSession(item: item, library: store.library)
+        presentation.libraryReader = reader
+        presentation.didChooseConversation()
+        #expect(presentation.destination == .bots)
+        #expect(presentation.libraryReader == nil && !reader.isCurrent)
+
+        presentation.destination = .search
+        presentation.closeLibraryReader(opening: item.chat)
+        presentation.didChooseConversation()
+        #expect(presentation.takeChatAfterReaderDismissal() == nil, "A superseded reader cannot reopen its chat.")
+
+        presentation.destination = .search
+        let opening = Task { while !Task.isCancelled { await Task.yield() } }
+        presentation.libraryOpening = opening
+        presentation.didChooseConversation()
+        await opening.value
+        #expect(presentation.libraryOpening == nil && presentation.destination == .bots)
+    }
+
     @Test(arguments: [false, true])
     func aShorterAcceptedRevisionRemovesItsDeletedOutputAndSearchText(timestampChanges: Bool) async throws {
         let service = LibraryTestService()

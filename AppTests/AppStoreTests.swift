@@ -1294,6 +1294,28 @@ import BottoCore
         #expect(service.connectCount == 0)
     }
 
+    @Test func aHeldConnectionAttemptClosesOnlyTheSheetItBelongsTo() async throws {
+        let service = try WorkspaceTestService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://connection-choice.invalid")!)
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let gate = WorkspaceGate()
+        service.rosterGate = gate
+        store.showsConnection = true
+        let attempt = Task { await store.connect(configuration) }
+        await gate.entered()
+
+        store.showsConnection = false
+        store.showsConnection = true
+        service.rosterGate = nil
+        gate.release()
+
+        #expect(await attempt.value)
+        #expect(store.showsConnection, "The older attempt cannot close the reopened sheet.")
+        #expect(await store.connect(configuration))
+        #expect(!store.showsConnection, "An attempt started from the sheet still closes it.")
+    }
+
     @Test func connectingFromDemoUsesTheRealServiceAndSavesTheRealHost() async throws {
         let storage = MemoryConnectionStorage()
         let service = StoreTestService()
