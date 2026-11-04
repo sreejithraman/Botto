@@ -899,6 +899,21 @@ import BottoCore
         #expect(try await second.loadChats().first?.messages == record.messages)
     }
 
+    @Test func rejectedProjectedChatLeavesOtherRetainedChats() async throws {
+        var limits = ArtifactCache.Limits(); limits.textBytes = 10
+        let (cache, scope, key) = try fixture(limits: limits)
+        let session = cache.session(scope: scope)
+        let kept = chatRecord(key, [ChatMessage(id: "1", role: .assistant, text: "four")])
+        try await session.upsert(kept)
+        let otherRoot = try ExactID("other")
+        let otherKey = ArtifactOriginalKey(identity: SessionIdentity(profile: key.identity.profile, root: otherRoot, stored: otherRoot, aliases: [otherRoot]),
+            messageID: key.messageID, path: key.path, sourceRevision: key.sourceRevision)
+        // Display text alone fits; admitting the row would let the shared eviction scan drop the older chat too.
+        let oversized = ChatMessage(id: "2", role: .assistant, text: "four", canonicalText: "eight by")
+        await #expect(throws: ArtifactCacheError.quota) { try await session.upsert(chatRecord(otherKey, [oversized])) }
+        #expect(try await session.loadChats().map(\.messages) == [kept.messages])
+    }
+
     @Test func payloadCeilingStillRejectsCanonicalBytesBelowTheTextBudget() async throws {
         var limits = ArtifactCache.Limits(); limits.metadataBytes = 4_000
         let (cache, scope, key) = try fixture(limits: limits)
