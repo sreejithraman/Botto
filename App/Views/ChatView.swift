@@ -926,7 +926,9 @@ private struct ChatTranscript: View {
         }
         if workActivity == .working && activeWorkDetailsID == nil { WorkingIndicator(botName: bot.name) }
         if workActivity == .typing { TypingIndicator(botName: bot.name) }
-        Color.clear.frame(height: 1).id(Anchor.latest).accessibilityHidden(true)
+        Color.clear.frame(height: 1)
+            .background { if TranscriptMeasurements.current != nil { TranscriptMeasurementPoint(point: .terminal) } }
+            .id(Anchor.latest).accessibilityHidden(true)
     }
 
     @ViewBuilder private func messageLayout(_ message: ChatMessage, in chat: Conversation) -> some View {

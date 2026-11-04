@@ -189,9 +189,73 @@ func fixture(_ name: String) throws -> HermesJSON {
     #expect(throws: HermesServiceError.invalidAddress) { try HermesHTTPConnection(configuration: configuration, transport: transport) }
 }
 
+@MainActor private final class ConnectHold {
+    private(set) var reached = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    var isHolding: Bool { waiter != nil }
+
+    func hold() async {
+        reached = true
+        if !released { await withCheckedContinuation { waiter = $0 } }
+    }
+
+    /// Stays open, so a step arriving after a failed readiness wait cannot block.
+    func release() {
+        released = true
+        waiter?.resume(); waiter = nil
+    }
+}
+
+@MainActor private final class FirstConnect {
+    let start = ConnectHold(), refresh = ConnectHold()
+    var finished = false
+
+    init(delayedStart: Bool = false) {
+        if !delayedStart { start.release() }
+    }
+}
+
+private let refreshReadiness: Comment = "Refresh must reach its hold before retirement"
+private let connectCleanup: Comment = "A released connect must finish"
+
 @MainActor @Test func retiringDuringRefreshStillPersistsRotationBeforeReplacementSignsIn() async throws {
+    try await retireDuringRefresh(FirstConnect())
+}
+
+@MainActor @Test func failedRefreshReadinessReleasesLateRefreshAndKeepsItsFailure() async throws {
+    let firstConnect = FirstConnect()
+    try await withKnownIssue {
+        try await retireDuringRefresh(firstConnect, readinessTimeout: .zero)
+    } matching: { $0.comments.contains(refreshReadiness) }
+    #expect(firstConnect.refresh.reached)
+    #expect(!firstConnect.refresh.isHolding)
+    #expect(firstConnect.finished)
+}
+
+@MainActor @Test func cancelledReadinessFinishesFirstConnectBeforeReturning() async {
+    let firstConnect = FirstConnect()
+    let scenario = Task { try await retireDuringRefresh(firstConnect) }
+    scenario.cancel()
+    await #expect(throws: CancellationError.self) { try await scenario.value }
+    #expect(firstConnect.finished)
+    #expect(!firstConnect.refresh.isHolding)
+}
+
+@MainActor @Test func expiredCleanupStopsDelayedFirstConnectFromStarting() async throws {
+    let firstConnect = FirstConnect(delayedStart: true)
+    try await withKnownIssue {
+        try await retireDuringRefresh(firstConnect, readinessTimeout: .zero, cleanupTimeout: .zero)
+    } matching: { $0.comments.contains(refreshReadiness) || $0.comments.contains(connectCleanup) }
+    #expect(!firstConnect.finished)
+    firstConnect.start.release()
+    try await eventually { firstConnect.finished }
+    #expect(!firstConnect.refresh.reached)
+}
+
+@MainActor private func retireDuringRefresh(_ firstConnect: FirstConnect, readinessTimeout: Duration = readinessDeadline,
+    cleanupTimeout: Duration = .seconds(30)) async throws {
     let host = try HermesTestHost()
-    var refreshWaiter: CheckedContinuation<Void, Never>?
     var refreshes: [String] = []
     host.transport.asyncHandler = { request in
         switch request.url!.path {
@@ -199,7 +263,7 @@ func fixture(_ name: String) throws -> HermesJSON {
         case "/auth/native/refresh":
             let token = try HermesJSON.decode(request.httpBody!)["refresh_token"].text!
             refreshes.append(token)
-            if refreshes.count == 1 { await withCheckedContinuation { refreshWaiter = $0 } }
+            if refreshes.count == 1 { await firstConnect.refresh.hold() }
             return .object(["access_token": .string("access"), "refresh_token": .string(token == "initial" ? "rotated-once" : "rotated-twice"),
                 "provider": .string("basic"), "user_id": .string("alice")])
         case "/api/auth/me": return .object(["provider": .string("basic"), "user_id": .string("alice")])
@@ -212,13 +276,27 @@ func fixture(_ name: String) throws -> HermesJSON {
     configuration.password = ""; configuration.nativeCredential = NativeCredential(refreshToken: "initial", provider: "basic")
     var saved: [String] = []
     service.onEvent = { if case .configuration(let value) = $0 { saved.append(value.nativeCredential!.refreshToken) } }
-    let first = Task { try await service.connect(configuration: configuration) }
-    try await eventually { refreshWaiter != nil }
+    let first = Task {
+        defer { firstConnect.finished = true }
+        await firstConnect.start.hold()
+        try Task.checkCancellation()
+        return try await service.connect(configuration: configuration)
+    }
+    do {
+        try await requireEventually(within: readinessTimeout, refreshReadiness) { firstConnect.refresh.isHolding }
+    } catch {
+        firstConnect.refresh.release()
+        // Its own task keeps waiting after this test is cancelled.
+        await Task { try? await poll(within: cleanupTimeout) { firstConnect.finished } }.value
+        first.cancel()
+        #expect(firstConnect.finished, connectCleanup)
+        throw error
+    }
     service.disconnect()
     let second = Task { try await service.connect(configuration: configuration) }
     await Task.yield()
     #expect(refreshes == ["initial"])
-    refreshWaiter?.resume(); refreshWaiter = nil
+    firstConnect.refresh.release()
     _ = try? await first.value
     _ = try await second.value
     #expect(refreshes == ["initial", "rotated-once"])

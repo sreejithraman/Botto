@@ -8,6 +8,23 @@ import Darwin
 import BottoCore
 @testable import Botto
 
+/// A written record is evidence of any run; only a rendered endpoint makes it a benchmark result.
+enum ActiveRichMeasurementRecord {
+    struct RenderedEndpointRejected: Error, Equatable, CustomStringConvertible {
+        let output: String
+        var description: String { "rendered_endpoint_success is not true; rejected measurement retained at \(output)" }
+    }
+    static func write(_ result: [String: Any], to output: String) throws {
+        try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
+    }
+    static func accept(_ result: [String: Any], at output: String) throws {
+        try write(result, to: output)
+        let rendered = result["rendered_endpoint_success"] as? Bool == true
+        print("ACTIVE_RICH_MEASUREMENT \(output) rendered=\(rendered)")
+        guard rendered else { throw RenderedEndpointRejected(output: output) }
+    }
+}
+
 /// An opt-in rich-content workload, separate from the baseline transcript measurements.
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct TranscriptActiveRichMeasurementTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["BOTTO_TRANSCRIPT_ACTIVE_RICH"] == "1"))
@@ -100,6 +117,11 @@ import BottoCore
             "measurement_limits": "Endpoint latency includes window snapshot/OCR work, measured separately. No pure layout-latency or unfiltered hitch-rate claim. External RSS sample is outside timed endpoint; app physical footprint and process RSS remain separate units."]
         result["memory_before_pixel_oracle"] = memoryBeforePixelOracle ?? [:]
         result["memory_cost_limits"] = "Use pre-oracle app footprint only for completed endpoints; post-validation app memory includes Vision and snapshot caches. External WebContent RSS is sampled after completed validation and excludes the app OCR process."
+        result["endpoint_gates_at_deadline"] = ["terminal_visible": meter.terminalVisible(), "final_row_visible": meter.visible(.row(Data(last.id.utf8))),
+            "file_marker_attached": meter.point(.block(Data(last.id.utf8), file.id)) != nil]
+        result["transcript_scroll_at_deadline"] = host.flatMap { scrollViews($0.view).first }.map(scrollGeometry) ?? [:]
+        // External gates below can fail after the endpoint verdict is known.
+        try ActiveRichMeasurementRecord.write(result, to: output)
         if let gate = env["BOTTO_TRANSCRIPT_RSS_GATE"] {
             let ready: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "count": count,
                 "rendered_endpoint": complete, "phase": "active", "counts": initialCounts]
@@ -113,8 +135,24 @@ import BottoCore
             try JSONSerialization.data(withJSONObject: ["pid": ProcessInfo.processInfo.processIdentifier, "phase": "teardown"]).write(to: URL(fileURLWithPath: gate + ".teardown.ready"))
             try await externalCapture(gate + ".teardown")
         }
-        try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
-        print("ACTIVE_RICH_MEASUREMENT \(output) rendered=\(complete)")
+        try ActiveRichMeasurementRecord.accept(result, at: output)
+    }
+    @Test func falseRenderedEndpointIsRejectedAfterItsEvidenceIsWritten() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let failed = directory.appendingPathComponent("failed.json").path
+        #expect(throws: ActiveRichMeasurementRecord.RenderedEndpointRejected(output: failed)) {
+            try ActiveRichMeasurementRecord.accept(["rendered_endpoint_success": false, "oracle_samples": 0], at: failed)
+        }
+        let retained = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: failed))) as? [String: Any])
+        #expect(retained["rendered_endpoint_success"] as? Bool == false)
+        #expect(retained["oracle_samples"] as? Int == 0)
+        let incomplete = directory.appendingPathComponent("incomplete.json").path
+        #expect(throws: ActiveRichMeasurementRecord.RenderedEndpointRejected(output: incomplete)) {
+            try ActiveRichMeasurementRecord.accept(["oracle_samples": 0], at: incomplete)
+        }
+        try ActiveRichMeasurementRecord.accept(["rendered_endpoint_success": true], at: directory.appendingPathComponent("rendered.json").path)
     }
     @Test func sharedFactoryPreservesTheFrozenOriginal100MessageCorpus() async throws {
         let demo = DemoBotService()
@@ -147,6 +185,11 @@ import BottoCore
         try #require(FileManager.default.fileExists(atPath: path), "owned external RSS capture must release its fixture")
     }
     private func webViews(_ view: UIView) -> [WKWebView] { (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews) }
+    private func scrollViews(_ view: UIView) -> [UIScrollView] { (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews) }
+    private func scrollGeometry(_ scroll: UIScrollView) -> [String: String] {
+        ["content_offset": NSCoder.string(for: scroll.contentOffset), "content_size": NSCoder.string(for: scroll.contentSize),
+         "bounds_size": NSCoder.string(for: scroll.bounds.size)]
+    }
     private func milliseconds(since start: ContinuousClock.Instant) -> Double {
         let value = start.duration(to: .now).components
         return Double(value.seconds) * 1000 + Double(value.attoseconds) / 1e15
