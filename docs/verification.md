@@ -8,21 +8,29 @@ the checked source and workflows, not every supported device or server.
 
 `rendered_endpoint_success=false` now fails
 `TranscriptActiveRichMeasurementTests.actualVisibleFileAtTheEndOfMixedHistory`
-after writing its JSON. Before the guard, legacy100 exited 0 with a false
-endpoint. With the guard, the same workload failed with exit 65 and kept its JSON.
-A deterministic test covers false and missing values.
+after writing its JSON. Before the guard, a blank legacy100 run reported test
+success with a false endpoint. The guarded run also had a false endpoint and
+failed while keeping its JSON. The corpus hashes match, but the runs used
+different selectors: the blank run selected the measurement alone; the guarded
+run selected the suite, included temporary diagnostics, and displayed the file.
+A deterministic test covers false and missing endpoint values.
 
-Legacy100 could not reach its endpoint because only the native transcript emitted
-the terminal marker. One run showed the complete file on screen while
+Only the native transcript emitted the terminal marker required by the endpoint
+check. The guarded legacy run showed the complete file on screen while
 `terminal_visible` stayed false. After adding the marker to the Debug legacy path,
-legacy100 passed its OCR endpoint with the same snapshot hash as native100.
+one legacy100 suite run passed its OCR endpoint with the same snapshot hash as
+native100. This confirms the marker repair; it does not explain the blank state.
 
 These runs used an iPhone 17 Pro Simulator on iOS 27.0 under severe host load, so
-their timings are not comparisons. Native100 passed before the guard and was not
-repeated after it. One earlier legacy run stayed blank with no attached rows,
-download or WKWebView. That state remains unexplained; a repeat now fails and
-records its endpoint gates and scroll geometry. `matchedMixedRichHistory` still
-does not fail on a false endpoint, and this work did not run it.
+their timings are not comparisons. Native100 passed before the guard and again
+at committed head `b1dc1f8`, where all three suite tests passed and the JSON
+reported a successful endpoint. One legacy run here stayed blank with no
+attached rows, downloads or WKWebViews. The source chore also reports a
+2 November run with no OCR samples or WKWebView allocation; those earlier
+artifacts were not rechecked here. The blank state remains unexplained, and the
+single-test selector was not repeated. A false endpoint now fails and records
+its endpoint gates and scroll geometry. `matchedMixedRichHistory` still does not
+fail on a false endpoint, and this work did not run it.
 
 ## Static custom avatar compatibility (3 November 2026)
 
