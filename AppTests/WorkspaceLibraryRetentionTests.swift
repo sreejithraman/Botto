@@ -2389,6 +2389,16 @@ import BottoCore
         let projectedItem = try #require(library.artifacts.first)
         let projectedKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [projected]))
         #expect(projectedKey != legacyKey)
+
+        // Offline before that download, the current row has no capture; the old one survives under its own key.
+        library.setOnline(false)
+        await #expect(throws: HermesServiceError.disconnected) {
+            try await library.original(for: projectedKey) { throw HermesServiceError.rejected(500) }
+        }
+        #expect(try await library.original(for: legacyKey) { throw HermesServiceError.rejected(500) }.data == service.downloadedBytes)
+        #expect(service.downloadCount == 1)
+        library.setOnline(true)
+
         #expect(try await library.download(projectedItem).data == service.downloadedBytes)
         #expect(service.downloadCount == 2)
 
