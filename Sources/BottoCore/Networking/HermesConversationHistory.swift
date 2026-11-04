@@ -50,20 +50,13 @@ extension HermesBotService {
                   id >= 0 else { throw malformedPage() }
             ids.insert(id)
         }
-        let projected = rows.map { raw -> HermesJSON in
-            guard raw["display_content"] != .null else { return raw }
-            var display = raw
-            display["content"] = raw["display_content"]
-            display["text"] = .null
-            return display
-        }
         let hasMore = rows.count == 100
         let nextOffset = hasMore && offset < 100_000 ? offset + 100 : nil
         let complete = unavailable.isEmpty && page["messages_omitted"].flag != true
             && !rows.contains { $0["archived_truncated"].flag == true }
             && (adapter == .authority || identity.root == identity.stored)
             && !(hasMore && nextOffset == nil)
-        let messages = HermesConversationState.messages(projected, stored: identity.stored.text)
+        let messages = HermesConversationState.messages(rows, stored: identity.stored.text)
         let identityRead = offset == 0 && nextOffset == nil && complete
             ? ConversationIdentityRead(identity: identity, messageIDs: Set(messages.compactMap { message in
                 message.hasStableIdentity(storedID: identity.stored.text) ? Data(message.id.utf8) : nil

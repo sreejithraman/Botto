@@ -1,0 +1,185 @@
+import Foundation
+import Testing
+@testable import BottoCore
+
+// Source-backed wire fixtures, not captured traffic. Hermes 4a0eaf79
+// hermes_cli/web_routers/sessions.py:_project_for_display keeps physical rows in `content` and
+// adds `display_content`; tests/hermes_cli/test_sessions_rest_scaffold_notices.py pins that shape.
+// ca678285 emits the compaction case only.
+private let summary = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted."
+private let recoveredAsk = "Can you check the parser?"
+private let compactionCarrier = "[PRIOR CONTEXT — for reference only; not a new message]\n\(recoveredAsk)\n\n"
+    + "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\(summary)"
+private let steerWords = "focus on the parser bug"
+private let steerCarrier = "[OUT-OF-BAND USER MESSAGE]\n\(steerWords)\n[/OUT-OF-BAND USER MESSAGE]"
+private let image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+private let imagePart: HermesJSON = .object(["type": .string("image_url"), "image_url": .object(["url": .string(image)])])
+
+private func row(_ id: Int, _ role: String, _ content: HermesJSON, display: HermesJSON? = nil,
+                 kind: String? = nil, extra: [String: HermesJSON] = [:]) -> HermesJSON {
+    var fields = extra
+    fields["id"] = .number(Double(id)); fields["role"] = .string(role); fields["content"] = content
+    if let display { fields["display_content"] = display }
+    if let kind { fields["display_kind"] = .string(kind) }
+    return .object(fields)
+}
+
+private func message(_ row: HermesJSON) throws -> ChatMessage {
+    try #require(HermesConversationState.messages([row], stored: "chat").first)
+}
+
+@Test func recoveredDisplayReplacesScaffoldingWhereverTheMessageIsRead() throws {
+    let ask = try message(row(1, "user", .string(compactionCarrier), display: .string(recoveredAsk)))
+    #expect(ask.text == recoveredAsk)
+    #expect(ask.role == .user && ask.isOutgoingUserMessage && ask.isVisible)
+    #expect(AttachmentPresentation.display(ask).text == recoveredAsk)
+    #expect(ConversationPreview(message: ask)?.text == recoveredAsk)
+
+    let steer = try message(row(2, "user", .string(steerCarrier), display: .string(steerWords), kind: "steer"))
+    #expect(steer.text == steerWords)
+    #expect(steer.displayKind == "steer")
+
+    let reply = try message(row(3, "assistant", .string(compactionCarrier), display: .string(recoveredAsk)))
+    #expect(ReplyContent(message: reply).canonicalText == recoveredAsk)
+}
+
+@Test func displayContentOutranksBothCanonicalFields() throws {
+    let projected = try message(row(1, "user", .string(compactionCarrier), display: .string(recoveredAsk),
+                                    extra: ["text": .string(compactionCarrier)]))
+    #expect(projected.text == recoveredAsk)
+}
+
+@Test func ordinaryRowsKeepTheirCanonicalTextAndMetadata() throws {
+    #expect(try message(row(1, "user", .string("Plain words"))).text == "Plain words")
+    #expect(try message(row(2, "assistant", .string("From content"), extra: ["text": .string("From text")])).text == "From text")
+    #expect(try message(row(3, "assistant", .array([.object(["type": .string("text"), "text": .string("Part")])]))).text == "Part")
+    // `display_text` titles a notification; it stays separate from the row's visible text.
+    let notice = try message(row(4, "user", .string("Raw job output"), kind: "process_complete",
+        extra: ["display_metadata": .object(["display_text": .string("Background process finished")])]))
+    #expect(notice.text == "Raw job output")
+    #expect(notice.displayText == "Background process finished")
+    let ask = try message(row(5, "user", .string(compactionCarrier), display: .string(recoveredAsk)))
+    #expect(ask.displayText == nil)
+}
+
+@Test func displayContentKeepsAttachmentsAndIdentityFromTheCanonicalRow() throws {
+    let content: HermesJSON = .array([.object(["type": .string("text"), "text": .string(steerCarrier)]), imagePart])
+    let canonical = try message(row(7, "user", content))
+    let projected = try message(row(7, "user", content, display: .string(steerWords), kind: "steer"))
+    #expect(projected.id == "chat:row:7")
+    #expect(projected.id == canonical.id)
+    #expect(projected.text == steerWords)
+    #expect(projected.attachments.count == 1)
+    #expect(projected.attachments == canonical.attachments)
+    #expect(projected.attachments.first?.path == "chat:row:7:image:1")
+}
+
+@Test func structuredDisplayContentOmitsItsImageParts() throws {
+    // ca678285 has no inline_images projection, so a merged carrier's display view keeps its list shape.
+    let content: HermesJSON = .array([imagePart, .object(["type": .string("text"), "text": .string(compactionCarrier)])])
+    let display: HermesJSON = .array([imagePart, .object(["type": .string("text"), "text": .string(recoveredAsk)])])
+    let projected = try message(row(7, "user", content, display: display))
+    #expect(projected.text == recoveredAsk)
+    #expect(projected.attachments.first?.path == "chat:row:7:image:0")
+}
+
+@Test func toolResultsStayCanonicalBecauseHermesProjectsOnlyChatRows() throws {
+    // 4a0eaf79 Desktop hydration reads stored tool rows before it considers display_content.
+    let result = try message(row(4, "tool", .string("{\"ok\":true}"), display: .string("Summary")))
+    #expect(result.text == "{\"ok\":true}")
+}
+
+@Test func displayContentNeverRevealsAHiddenOrModelOnlyRow() {
+    let hidden = row(1, "user", .string(summary), display: .string("Hidden words"), kind: "hidden")
+    let modelOnly = row(2, "user", .string(summary), display: .string("Merged words"),
+                        extra: ["display_metadata": .object(["model_only": .bool(true)])])
+    #expect(HermesConversationState.messages([hidden, modelOnly], stored: "chat").isEmpty)
+}
+
+@Test func emptyDisplayContentIsHonoredRatherThanFallingBackToScaffolding() throws {
+    let toolCall = row(1, "assistant", .string(summary), display: .string(""), extra: ["tool_calls": .array([])])
+    #expect(HermesConversationState.messages([toolCall], stored: "chat").isEmpty)
+    let empty = try message(row(2, "assistant", .string(summary), display: .string("")))
+    #expect(empty.text.isEmpty)
+    let photo = try message(row(3, "user", .array([imagePart]), display: .string("")))
+    #expect(photo.text.isEmpty && photo.attachments.count == 1)
+}
+
+@Test func replyClassificationFollowsTheVisibleText() throws {
+    let silent = try message(row(1, "assistant", .string("Provider commentary"), display: .string("[SILENT]")))
+    #expect(silent.isSilent == true && !silent.isVisible)
+    let spoken = try message(row(2, "assistant", .string("[SILENT]"), display: .string("Visible reply")))
+    #expect(spoken.isSilent == false && spoken.isVisible)
+    let failed = try message(row(3, "assistant", .string(summary), display: .string("Partial reply"),
+                                 extra: ["status": .string("failed")]))
+    #expect(failed.displayKind == "failed_turn" && failed.text == "Partial reply")
+}
+
+private func recoveredRows() -> [HermesJSON] {
+    [row(1, "user", .string("First words")),
+     row(2, "user", .string(summary), kind: "hidden"),
+     row(3, "user", .string(compactionCarrier), display: .string(recoveredAsk)),
+     row(4, "user", .string(steerCarrier), display: .string(steerWords), kind: "steer"),
+     row(5, "user", .string(summary), extra: ["display_metadata": .object(["model_only": .bool(true)])]),
+     row(6, "assistant", .string("Latest reply"))]
+}
+
+private func expectRecoveredTranscript(_ chat: Conversation?) {
+    #expect(chat?.messages.map(\.id) == [1, 3, 4, 6].map { "\(chat?.storedID ?? ""):row:\($0)" })
+    #expect(chat?.messages.map(\.text) == ["First words", recoveredAsk, steerWords, "Latest reply"])
+    #expect(chat?.messages.map(\.role) == [.user, .user, .user, .assistant])
+    #expect(chat?.messages[2].displayKind == "steer")
+}
+
+@MainActor @Test(arguments: [false, true])
+func restoredTranscriptUsesRestDisplayContentAcrossReconnect(authority: Bool) async throws {
+    let host = try HermesTestHost(authority: authority), service = host.service()
+    defer { service.disconnect() }
+    // The sidecar always reads REST; authority does when its snapshot withholds rows.
+    host.snapshot["messages_omitted"] = .bool(true)
+    host.snapshot["messages"] = .array([])
+    let original = host.transport.handler
+    var historyReads = 0
+    host.transport.handler = { request in
+        guard request.url?.path == "/api/sessions/\(host.root)/messages" else { return try original?(request) ?? .object([:]) }
+        historyReads += 1
+        return .object(["session_id": .string(host.root), "profile": .string(host.bot.id), "messages": .array(recoveredRows())])
+    }
+    var latest: Conversation?
+    var recovered = false
+    service.onEvent = {
+        if case .conversation(let publication) = $0 { let chat = publication.snapshot; latest = chat }
+        if case .connected = $0 { recovered = true }
+    }
+    _ = try await service.connect(configuration: host.configuration)
+    let chat = try await service.openChat(.canonical(profile: try ExactID(host.bot.id), expectedRoot: nil))
+    expectRecoveredTranscript(chat.snapshot)
+    #expect(historyReads == 1)
+
+    host.sockets[0].close()
+    try await eventually { recovered && historyReads == 2 }
+    try await eventually { latest?.messages.count == 4 }
+    expectRecoveredTranscript(latest)
+}
+
+@MainActor @Test func everyHistoryReadProjectsTheSameRowTheSameWay() async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let stored = identity.stored.text
+    let content: HermesJSON = .array([.object(["type": .string("text"), "text": .string(steerCarrier)]), imagePart])
+    let steer = row(9, "user", content, display: .string(steerWords), kind: "steer")
+    let expected = try #require(HermesConversationState.messages([steer], stored: stored).first)
+    #expect(expected.attachments.count == 1)
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        guard request.url?.path.hasSuffix("/messages") == true else { return try original?(request) ?? .object([:]) }
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+        let limit = Double(query.first { $0.name == "limit" }!.value!)!
+        return .object(["session_id": .string(stored), "profile": .string(identity.profile.text), "messages": .array([steer]),
+            "pagination": .object(["limit": .number(limit), "offset": .number(0), "order": .string("latest"), "returned": .number(1)])])
+    }
+    #expect(try await service.conversationHistory(identity, offset: 0).messages == [expected])
+    #expect(try await service.recentConversationHistory(identity)?.messages == [expected])
+}
