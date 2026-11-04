@@ -1819,3 +1819,27 @@ screen, whose event timing is uncertain by about 0.3 seconds. These selected
 runs used an older isolated checkout with matching rich-content inputs; the
 combined parent still needs review and a fresh full gate. Evidence is at
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/rich-ui39/outputs/`.
+
+### Retired-tip evidence after roster changes and eviction
+
+The final bounded cache comparison used identical corrected Library test bytes
+on old production and the candidate. Old production passed 161 and failed 14
+test functions, covering 18 failing argument cases. The candidate passed all
+175 Library functions (314 cases), 62 retention functions (98 cases), and 42
+cache functions (64 cases), once each. The four corrected fixtures now establish
+their prerequisite event order before testing withdrawal, persistence and
+startup proof. Earlier failures from those invalid setups are not repair proof.
+The repeated-seed clock case passed and failed on old production; it remains a
+positive control, not a demonstrated production red.
+
+The tests cover roster-floor disputes, absence, count/byte/chat eviction,
+retired-tip return and cold reopen. Cold and retryable overflow checks already
+passed on old production. The same-launch control exposes a gap after
+reconciliation, but does not isolate overflow from the original retirement loss.
+The budget check demonstrates the candidate hold, without independently proving
+its exact cutoff. Recovery rereads with a budget hold and an unreadable ledger
+carrying retirement evidence remain source-traced, without dedicated runs.
+These checks used an isolated older checkout; all owned source and test bytes
+were stable, but the combined parent still needs independent review and its full
+gate. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-39-40/outputs/phase-b-final/`.

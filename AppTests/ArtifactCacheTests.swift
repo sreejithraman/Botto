@@ -593,6 +593,78 @@ import BottoCore
         }
     }
 
+    /// What a version 2 ledger reader decodes. It has no field for retirements.
+    private struct OlderLedger: Decodable {
+        struct Entry: Decodable { let configuration: UUID; let namespace: Data; let chat: Data }
+        let version: Int; let all: Bool; let entries: [Entry]
+    }
+
+    private func retirementSource(_ id: String) throws -> SessionIdentity {
+        let exact = try ExactID(id)
+        return .init(profile: try ExactID("bot"), root: exact, stored: exact, aliases: [exact])
+    }
+
+    private func retirementRow(_ source: SessionIdentity, retiring: Set<Data>?) -> CachedArtifactChat {
+        .init(identity: source, botName: "Bot", title: "Chat", messages: [], updatedAt: nil, coverage: .partial,
+            summary: nil, headFingerprint: nil, retiredStoredIDs: retiring)
+    }
+
+    @Test func retiredTipsOutliveTheirRowOnItsGuard() async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1
+            let (cache, scope, _) = try fixture(root: root, limits: limits)
+            _ = own(cache)
+            let session = cache.session(scope: scope), retired = Data("old-tip".utf8)
+            let first = try retirementSource("first"), key = ArtifactMetadataRecovery.key(first)
+            try await session.upsert(retirementRow(first, retiring: [retired]))
+            #expect(try await session.metadataRecovery().retiredStored.isEmpty, "The row owns them")
+
+            // The row budget evicts the older row, so only its guard can remember them.
+            try await session.upsert(retirementRow(try retirementSource("second"), retiring: nil))
+            await cache.close()
+            let url = root.appendingPathComponent("metadata-recovery.plist"), written = try Data(contentsOf: url)
+            let olderRead = try PropertyListDecoder().decode(OlderLedger.self, from: written)
+            #expect(olderRead.version == 2 && olderRead.entries.count == 1, "An older reader skips the new field")
+
+            var olderLedger = try PropertyListSerialization.propertyList(from: written, format: nil) as? [String: Any] ?? [:]
+            let hadRetirements = olderLedger.removeValue(forKey: "retirements") != nil
+            #expect(hadRetirements)
+            try PropertyListSerialization.data(fromPropertyList: olderLedger, format: .binary, options: 0).write(to: url)
+            let olderCache = own(ArtifactCache(root: root, limits: limits))
+            let recovered = try await olderCache.session(scope: scope).metadataRecovery()
+            #expect(recovered.contains(first) && recovered.retiredStored.isEmpty && !recovered.all, "Older bytes keep their guard")
+            await olderCache.close()
+
+            try written.write(to: url)
+            let reopened = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
+            #expect(try await reopened.metadataRecovery().retiredStored == [key: [retired]])
+            try await reopened.upsert(retirementRow(first, retiring: [retired]))
+            #expect(try await reopened.metadataRecovery().retiredStored[key] == nil, "The saved row carries them again")
+        }
+    }
+
+    @Test func overflowLeavesADurableMarkerForTheRetirementsItDrops() async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1
+            let (cache, scope, _) = try fixture(root: root, limits: limits)
+            _ = own(cache)
+            let session = cache.session(scope: scope), first = try retirementSource("first")
+            try await session.upsert(retirementRow(first, retiring: [Data("old-tip".utf8)]))
+            try await session.upsert(retirementRow(try retirementSource("second"), retiring: nil))
+            #expect(try await !session.metadataRecovery().all)
+            let guards: [(profile: ExactID, root: ExactID)] = try (0..<3).map { (first.profile, try ExactID("guard-\($0)")) }
+            #expect(throws: (any Error).self) { try session.invalidateMetadata(guards) }
+            await cache.close()
+
+            let coldCache = own(ArtifactCache(root: root, limits: limits))
+            let cold = try await coldCache.session(scope: scope).metadataRecovery()
+            #expect(cold.all && cold.retiredStored.isEmpty)
+            let peerScope = ArtifactCacheScope(configurationID: scope.configurationID, serverURL: scope.serverURL,
+                installationID: scope.installationID, username: Data("another-account".utf8), provider: scope.provider)
+            #expect(try await !coldCache.session(scope: peerScope).metadataRecovery().all, "Other scopes keep first use")
+        }
+    }
+
     @Test func replacementRejectedByRowOverheadReportsQuotaAfterRemovingTheOldRow() async throws {
         try await withCacheRoot { root, own in
             let chat = try ExactID("chat")

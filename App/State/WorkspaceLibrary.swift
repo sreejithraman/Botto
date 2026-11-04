@@ -233,13 +233,23 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let revisions: [Data: Data]
         var searchableText: [Data: [String]] = [:]
     }
+    /// Evidence a dropped record cannot be read back for.
+    private struct LostEvidence: Sendable {
+        let source: SessionIdentity
+        let retiredStored: Set<Data>
+        /// Disputes left with the record, so its scope waits for a coherent read.
+        let holdsScope: Bool
+    }
     private struct Admission: Sendable {
         let candidates: [Candidate]
         let limited: Bool
         let recoveryGuards: Set<LibraryChat.ID>
+        let lostEvidence: [LostEvidence]
 
-        init(candidates: [Candidate], limited: Bool, recoveryGuards: Set<LibraryChat.ID> = []) {
+        init(candidates: [Candidate], limited: Bool, recoveryGuards: Set<LibraryChat.ID> = [],
+             lostEvidence: [LostEvidence] = []) {
             self.candidates = candidates; self.limited = limited; self.recoveryGuards = recoveryGuards
+            self.lostEvidence = lostEvidence
         }
     }
     private struct ProjectionState: Equatable {
@@ -315,6 +325,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var accepted = Set<Data>()
         var resolved = Set<Data>()
         var hasCoherentRead = false
+        /// One read's proof named exactly its rows. `hasCoherentRead` needs only a proof of this tip.
+        var provedTip = false
     }
     private var initialReadRows: [LibraryChat.ID: InitialReadRows] = [:]
     private var initialSourceProofs: [LibraryChat.ID: ExactID] = [:]
@@ -407,10 +419,12 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
         }
         func contains(profile: ExactID, root: ExactID) -> Bool {
+            contains(ArtifactMetadataRecovery.key(profile: profile, root: root))
+        }
+        func contains(_ scope: Data) -> Bool {
             switch self {
             case .all: true
-            case .scoped(let sources):
-                sources[ArtifactMetadataRecovery.key(profile: profile, root: root)] != nil
+            case .scoped(let sources): sources[scope] != nil
             }
         }
     }
@@ -556,6 +570,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 }
             }
             withdrawUntrustedRestoration()
+            // A read can beat this restoration, before it could see what an evicted row retired.
+            for chat in records.values {
+                let retired = metadataRecovery.retiredStored[ArtifactMetadataRecovery.key(chat.identity)] ?? []
+                guard !retired.isSubset(of: chat.retiredStoredIDs) else { continue }
+                commitCanonical(prepareAdmission(source: chat.identity, botName: chat.botName, title: chat.title,
+                    updatedAt: chat.updatedAt, input: .seed(messages: [], exclusions: .init(retiredStored: retired))), target: chat.id)
+            }
             if metadataRecovery.hasInvalidations {
                 for hint in try await cache.metadataRecoveryHints() {
                     await restoreHint(hint)
@@ -706,13 +727,33 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func readMetadataRecovery() async throws {
         guard let cache else { return }
         do {
-            metadataRecovery = try await cache.metadataRecovery()
+            var recovery = try await cache.metadataRecovery()
+            let saved = recovery.retiredStored
+            recovery.retiredStored = metadataRecovery.retiredStored
+            metadataRecovery = recovery
+            keepRetirements(saved)
             if metadataRecovery.needsHistoryCheck {
                 scanNotice = .failure("Saved artifacts need a fresh history check. Pull to refresh to try again.")
             }
         } catch {
-            metadataRecovery = ArtifactMetadataRecovery(all: true)
+            metadataRecovery = ArtifactMetadataRecovery(all: true, retiredStored: metadataRecovery.retiredStored)
             throw error
+        }
+    }
+
+    /// What this launch knows about departed tips. A recovery read replaces guards but not this, because overflow
+    /// or a failed write can drop the saved copy. It keeps to the evidence budget: a scope past that holds for proof.
+    private func keepRetirements(_ retired: [Data: Set<Data>]) {
+        for (scope, storedIDs) in retired {
+            let kept = metadataRecovery.retiredStored.values.joined()
+            let added = storedIDs.subtracting(metadataRecovery.retiredStored[scope] ?? [])
+            guard !added.isEmpty else { continue }
+            if kept.count + added.count <= limits.messageCount,
+               kept.reduce(0, { $0 + $1.count }) + added.reduce(0, { $0 + $1.count }) <= limits.textBytes {
+                metadataRecovery.retiredStored[scope, default: []].formUnion(added)
+            } else if !discardedEvidence.contains(scope) {
+                discardedEvidence.record([scope])
+            }
         }
     }
 
@@ -806,7 +847,17 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         })
     }
 
-    private func invalidateMetadata(_ ids: Set<LibraryChat.ID>) -> Bool {
+    private func invalidateMetadata(_ ids: Set<LibraryChat.ID>, retiring lost: [LostEvidence] = []) -> Bool {
+        var ids = ids, retiring: [Data: Set<Data>] = [:]
+        for loss in lost {
+            let scope = ArtifactMetadataRecovery.key(loss.source)
+            guard !loss.retiredStored.isSubset(of: metadataRecovery.retiredStored[scope] ?? []) else { continue }
+            keepRetirements([scope: loss.retiredStored])
+            retiring[scope] = loss.retiredStored
+            let id = key(for: loss.source)
+            // A queued write of the old row must not finish this guard.
+            dirtyVersions[id] = UUID(); ids.insert(id)
+        }
         guard let cache else { return true }
         for id in ids where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
         indexingMetrics.pendingMetadataIdentities = dirtyVersions.count
@@ -815,7 +866,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             let needsGuard = ids.filter {
                 inFlightUpsert?.id != $0 || inFlightUpsert?.revision != dirtyVersions[$0]
             }
-            try cache.invalidateMetadata(needsGuard.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) })
+            try cache.invalidateMetadata(needsGuard.map { (profile: $0.profile, root: $0.root, revision: dirtyVersions[$0]!) },
+                retiring: retiring)
             metadataRecovery.invalidated.formUnion(needsGuard.map { ArtifactMetadataRecovery.key(profile: $0.profile, root: $0.root) })
             return true
         } catch {
@@ -861,6 +913,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     persistedIDs.insert(id)
                     if dirtyVersions[id] == revision, let current = cachedChat(id), sameCachedChat(current, row) {
                         metadataRecovery.invalidated.remove(ArtifactMetadataRecovery.key(row.identity))
+                        metadataRecovery.retiredStored[ArtifactMetadataRecovery.key(row.identity)] = nil
                         dirtyChats.remove(id); dirtyVersions[id] = nil
                     }
                 }
@@ -913,6 +966,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         revalidationRevision = UUID()
     }
 
+    /// A tip that left its chat needs its own coherent read before it can show rows again.
+    private func tipAwaitsProof(_ source: SessionIdentity) -> Bool {
+        let retired = records[key(for: source)]?.retiredStoredIDs
+            ?? metadataRecovery.retiredStored[ArtifactMetadataRecovery.key(source)] ?? []
+        return retired.contains(source.stored.bytes)
+            || discardedEvidence.contains(profile: source.profile, root: source.root)
+    }
+
     func accept(_ publication: ChatTranscriptPublication) {
         accept(identity: publication.identity, snapshot: publication.snapshot, title: publication.title, evidence: publication.evidence)
     }
@@ -948,37 +1009,38 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             if read != nil { identityResolutions[key(for: source)]?.messageIDs.subtract(standing) }
             snapshot.unavailableMessageIDs = standing.isEmpty ? nil : standing
         }
+        let provesSource = read?.observedSource.map {
+            $0.profile == source.profile && $0.root == source.root && $0.stored == source.stored
+        } == true
+        // A floor or hold bars a read's rows and source, never the disputes it names on this exact source.
+        func keepDisputes() {
+            if let read, read.observedSource == nil || provesSource,
+               let disputes = snapshot.unavailableMessageIDs, !disputes.isEmpty { withhold(disputes, source: source) }
+        }
         if let rosterReadFloors {
             guard let floor = rosterReadFloors[source.profile] else { return }
-            if let read { guard read.startedAt >= floor else { return } }
+            if let read { guard read.startedAt >= floor else { keepDisputes(); return } }
             else { guard floor == mountedAt || observations[key(for: source)] != nil else { return } }
         }
         let id = key(for: source), observation = observations[id]
         let expected = observation?.stored ?? records[id]?.identity.stored
         let withheld = records[id]?.directoryAbsent == true || restorationHints.contains(id)
-        let provesSource: Bool
         if let read {
-            provesSource = read.observedSource.map {
-                $0.profile == source.profile && $0.root == source.root && $0.stored == source.stored
-            } == true
             let floor = observation?.contentAt ?? mountedAt
             // Newer content without identity proof leaves a dispute standing.
             guard evidence.isDispute || read.startedAt >= floor,
                   expected == nil || expected == source.stored || (
                     read.startedAt >= (observation?.sourceAt ?? mountedAt) && provesSource) else { return }
         } else {
-            provesSource = false
             guard !withheld, expected == nil || expected == source.stored else { return }
         }
-        let checksDiscardedScope = discardedEvidence.contains(profile: source.profile, root: source.root)
-        let coherentRead = checksDiscardedScope && provesSource && !snapshot.hasEarlierMessages
+        let checksHold = tipAwaitsProof(source)
+        let coherentRead = checksHold && provesSource && !snapshot.hasEarlierMessages
             && read.map { discardedEvidence.permitsRead(profile: source.profile, root: source.root, startedAt: $0.startedAt) } == true
             && coherentlyChecks(source, messages: snapshot.messages, unavailable: snapshot.unavailableMessageIDs ?? [], proof: read?.identityRead)
         // A hold withholds rows. A dispute adds none, so it can always narrow what remains.
-        guard (!withheld || provesSource) && (!checksDiscardedScope || evidence.isDispute || coherentRead) else {
-            if let read, read.observedSource == nil || provesSource,
-               let disputes = snapshot.unavailableMessageIDs, !disputes.isEmpty { withhold(disputes, source: source) }
-            return
+        guard (!withheld || provesSource) && (!checksHold || evidence.isDispute || coherentRead) else {
+            keepDisputes(); return
         }
         restorationHints.remove(id)
         indexingMetrics.acceptedSnapshots += 1
@@ -1046,7 +1108,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             updatedAt: newest(previous?.updatedAt, messages.last?.timestamp),
             input: .accepted(messages: messages, unavailable: unavailable, identityRead: identityRead))
         commitCanonical(admission, target: id, projectionOwner: .caller)
-        if checksDiscardedScope, coherentRead, records[id]?.identity == source,
+        if checksHold, coherentRead, records[id]?.identity == source,
            sameMessages(records[id]?.messages ?? [], snapshot.messages) {
             discardedEvidence.resolve([ArtifactMetadataRecovery.key(source)])
         }
@@ -1083,6 +1145,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             rows.hasCoherentRead = true
             rows.resolved.formUnion(identityRead.messageIDs.intersection(admitted))
         }
+        if coherentlyChecks(source, messages: messages, unavailable: unavailable, proof: identityRead) { rows.provedTip = true }
         rows.accepted.subtract(unavailable); rows.resolved.subtract(unavailable)
         rows.accepted.formIntersection(retained); rows.resolved.formIntersection(retained)
         initialReadRows[id] = rows
@@ -1210,8 +1273,14 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     let id = key(for: source)
                     guard rosterPermits(source.profile),
                           !discardedEvidence.contains(profile: source.profile, root: source.root) else { continue }
-                    guard acceptanceFence.permits(id, since: seed.accepted), records[id]?.directoryAbsent != true,
+                    guard acceptanceFence.permits(id, since: seed.accepted),
                           records[id] == nil || records[id]?.identity.stored == source.stored else { continue }
+                    if let chat = records[id], chat.directoryAbsent {
+                        // Absence bars Book's rows, not its disputes.
+                        let disputes = standingDisputes(transcript.unavailableMessageIDs ?? [], on: source)
+                        if !disputes.isSubset(of: chat.unavailableMessageIDs) { withhold(disputes, source: source) }
+                        continue
+                    }
                     if metadataRecovery.withholdsBookSeed(source) || pendingRosterRestriction?.contains(source.profile) == false {
                         if restoration.needsReconciliation, records[id] == nil, metadataRecovery.contains(source) {
                             let hint = ArtifactMetadataHint(identity: source, botName: name, title: record.title, updatedAt: record.updatedAt,
@@ -1413,14 +1482,20 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         var unavailable = sameTip ? previous?.unavailableMessageIDs ?? [] : []
         var unverified = sameTip ? previous?.unverifiedMessageIDs ?? [] : []
         var removed = sameTip ? previous?.removedMessageIDs ?? [] : []
-        var retired = previous?.retiredStoredIDs ?? []
+        var retired = previous?.retiredStoredIDs ?? metadataRecovery.retiredStored[ArtifactMetadataRecovery.key(source)] ?? []
         if let previous, !sameTip {
             switch input {
             case .accepted, .replacement, .observedSource: retired.insert(previous.identity.stored.bytes)
             default: break
             }
         }
-        retired.formUnion(exclusions.retiredStored); retired.remove(source.stored.bytes)
+        retired.formUnion(exclusions.retiredStored)
+        // A coherent read this launch outranks saved evidence about its own tip.
+        let provedTip = initialReadRows[key].map { $0.provedTip && $0.stored == source.stored } == true
+        if provedTip || coherentlyChecks(source, messages: messages, unavailable: exclusions.unavailable, proof: input.identityRead) {
+            retired.remove(source.stored.bytes)
+        }
+        let awaitsProof = retired.contains(source.stored.bytes)
         let incomingIDs = Set(messages.map { Data($0.id.utf8) })
         switch input {
         case .replacement:
@@ -1464,19 +1539,19 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         unavailable.formUnion(duplicateMessageIDs(messages).subtracting(resolved))
         unavailable.formUnion(messages.lazy.filter { !$0.hasStableIdentity(storedID: source.stored.text) }.map { Data($0.id.utf8) })
         removed.formUnion(exclusions.removed.subtracting(protected))
-        let absent = directoryAbsent
-        let existing = sameTip && !absent ? previous?.messages ?? [] : []
+        let absent = directoryAbsent, withheld = absent || awaitsProof
+        let existing = sameTip && !withheld ? previous?.messages ?? [] : []
         let incoming: [ChatMessage]
         if input.isSeed, sameTip, coverage[key] == .complete {
             let retainedIDs = Set(existing.map { Data($0.id.utf8) })
             unverified.formUnion(incomingIDs.subtracting(retainedIDs).subtracting(removed))
             incoming = messages.filter { retainedIDs.contains(Data($0.id.utf8)) }
-        } else { incoming = absent ? [] : messages }
+        } else { incoming = withheld ? [] : messages }
         let local = boundedMessages(incoming, existing: existing, policy: input.merge,
             count: limits.messageCount, bytes: limits.textBytes, excluding: unavailable.union(unverified).union(removed))
         let sourceCoverage: Coverage
         let hasLiveTail = !absent && workingTail(in: source) != nil
-        if !unavailable.isEmpty || !unverified.isEmpty { sourceCoverage = .partial }
+        if !unavailable.isEmpty || !unverified.isEmpty || awaitsProof { sourceCoverage = .partial }
         else if (input.isSeed || input.isRestoration || input.merge == .acceptedRevisions), sameTip, coverage[key] == .complete,
            sameMessages(local.messages, previous?.messages ?? []), !local.trimmed, !hasLiveTail {
             sourceCoverage = .complete
@@ -1536,7 +1611,18 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             } ? [key] : []
         default: recoveryGuards = []
         }
-        return Admission(candidates: retained, limited: limited, recoveryGuards: recoveryGuards)
+        let kept = Set(retained.map(\.id))
+        let lostEvidence = candidates.compactMap { candidate -> LostEvidence? in
+            guard !kept.contains(candidate.id) else { return nil }
+            let disputed = !candidate.unavailableMessageIDs.isEmpty
+            let retiredStored = disputed ? candidate.retiredStoredIDs.union([candidate.source.stored.bytes]) : candidate.retiredStoredIDs
+            guard !retiredStored.isEmpty else { return nil }
+            // Retrying saved evidence repeats a loss its scope already holds.
+            let retried = restorationHints.contains(candidate.id) || (candidate.id == key && input.isRestoration)
+            return LostEvidence(source: candidate.source, retiredStored: retiredStored, holdsScope: disputed
+                && (!retried || !discardedEvidence.contains(profile: candidate.source.profile, root: candidate.source.root)))
+        }
+        return Admission(candidates: retained, limited: limited, recoveryGuards: recoveryGuards, lostEvidence: lostEvidence)
     }
 
     nonisolated static func project(_ messages: [ChatMessage], streamingMessage: ChatMessage?) async -> Projection {
@@ -1634,6 +1720,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 // Retention may remove both the rows and their ordinary persistence owner.
                 _ = invalidateMetadata(guards)
             }
+        }
+        if !admission.lostEvidence.isEmpty {
+            // Unlike a row, this cannot be read back later: disputes hold their scope for a coherent read of
+            // this tip, and retired tips move to the guard that outlives the record.
+            let holding = admission.lostEvidence.filter(\.holdsScope)
+            discardedEvidence.record(Set(holding.map { ArtifactMetadataRecovery.key($0.source) }))
+            _ = invalidateMetadata(Set(holding.map { key(for: $0.source) }), retiring: admission.lostEvidence)
         }
         let savedBefore = cachedChat(target), wasDirty = dirtyChats.contains(target)
         let previousVersions = projectionStates.mapValues(\.version)
@@ -1798,7 +1891,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let messages = input.messages, unavailable = input.exclusions.unavailable, identityRead = input.identityRead
         guard rosterPermits(source.profile), admittedBy() else { return false }
         let target = key(for: source)
-        let held = discardedEvidence.contains(profile: source.profile, root: source.root)
+        let held = tipAwaitsProof(source)
         let checksHold = held && input.isHistoryRead
         if checksHold {
             guard let readStartedAt,
