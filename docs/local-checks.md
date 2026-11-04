@@ -68,10 +68,11 @@ in the `.xcresult`.
 
 Xcode's filtered inventory lists an exact parameterized selection as `(disabled)`,
 even when `-only-testing` runs it, so the runner accepts that listed identifier
-and relies on the `.xcresult`. A direct Xcode 27.2 macOS probe ran every argument
-case this way. No hosted iOS Simulator run has confirmed it. If a focused method
-executes nothing, the runner fails and names the enclosing suite. Suite selection
-is the proven fallback: hosted
+and relies on the `.xcresult`. Hosted
+[run 41789426696](https://github.com/sreejithraman/Botto/actions/runs/41789426696)
+ran both arguments of a parameterized method this way on Xcode 27.1 with an iOS
+27.0 Simulator. If a focused method executes nothing, the runner fails and names
+the enclosing suite. Suite selection is the proven fallback: hosted
 [run 41338950508](https://github.com/sreejithraman/Botto/actions/runs/41338950508)
 ran both arguments of a parameterized method. Confirm that the intended cases
 executed.
