@@ -951,6 +951,152 @@ import BottoCore
         }
     }
 
+    @Test(arguments: ["tagged", "absent", "empty"])
+    func persistedScopeChatAndGuardBytesKeepTheirEstablishedFormat(shape: String) async throws {
+        let format = persistedFormat(shape)
+        let root = try ExactID("cafe\u{301}"), identity = SessionIdentity(profile: try ExactID("bót"), root: root, stored: root, aliases: [])
+        let chat = hex("""
+            0000000000000004 62c3b374
+            0000000000000006 63616665cc81
+            """)
+        let chatDigest = hex("30216996d68e57e6c533ad6ba80e445c8b8eec59edf4663e6e854b5cc52470c2")
+        let original = "1-" + format.digest + "-845e91831319e89c4d656bdb80c278ac09a7230d61e5dfd2e1b1fbb436ac8917"
+        #expect(ArtifactMetadataRecovery.key(identity) == chatDigest)
+        try await withCacheRoot { directory, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1
+            let cache = own(ArtifactCache(root: directory, limits: limits)), session = cache.session(scope: format.scope)
+            try await session.upsert(savedChat(identity))
+            let key = ArtifactOriginalKey(identity: identity, messageID: Data("message".utf8), path: Data("/report".utf8), sourceRevision: Data("r1".utf8))
+            try await session.retainOriginal(bytes, for: key)
+            let rows = try savedChatRows(in: directory)
+            #expect(rows.map(\.scope) == [format.namespace])
+            #expect(rows.map(\.configuration) == [Data("12345678-ABCD-4EF0-8123-456789ABCDEF".utf8)])
+            #expect(rows.map(\.key) == [chat])
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent(original).path))
+
+            let peer = ArtifactCacheScope(configurationID: UUID(), serverURL: format.scope.serverURL, installationID: format.scope.installationID, username: format.scope.username, provider: format.scope.provider)
+            try await cache.session(scope: peer).upsert(savedChat(identity))
+            let entries = try #require(try recoveryLedger(in: directory)["entries"] as? [[String: Any]])
+            #expect(entries.count == 1)
+            #expect(entries.first?["configuration"] as? String == "12345678-ABCD-4EF0-8123-456789ABCDEF")
+            #expect(entries.first?["namespace"] as? Data == hex(format.digest))
+            #expect(entries.first?["chat"] as? Data == chatDigest)
+            try session.restrictMetadata(to: [identity.profile])
+            let namespaces = try #require(try recoveryLedger(in: directory)["namespaces"] as? [[String: Any]])
+            #expect(namespaces.map { $0["namespace"] as? Data } == [hex(format.digest)])
+            await cache.close()
+            #expect(try await own(ArtifactCache(root: directory)).session(scope: format.scope).metadataRecovery().invalidated == [chatDigest])
+        }
+    }
+
+    @Test(arguments: ["configuration", "server", "installation", "absent installation", "empty installation", "username", "provider", "absent provider", "empty provider", "unicode", "field boundary"], [false, true])
+    func scopeComponentsKeepEvictionAndRosterGuardsPrivateAcrossReopen(component: String, swapped: Bool) async throws {
+        let scopes = scopesDiffering(in: component), (evicted, survivor) = swapped ? (scopes.1, scopes.0) : (scopes.0, scopes.1)
+        let (_, _, key) = try fixture(), identity = key.identity
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.chatCount = 1
+            let writer = own(ArtifactCache(root: root, limits: limits))
+            try await writer.session(scope: evicted).upsert(savedChat(identity))
+            try await writer.session(scope: survivor).upsert(savedChat(identity))
+            await writer.close()
+
+            let reopened = own(ArtifactCache(root: root))
+            #expect(try await reopened.session(scope: evicted).loadChats().isEmpty)
+            #expect(try await reopened.session(scope: survivor).loadChats().map(\.identity) == [identity])
+            #expect(try await reopened.session(scope: evicted).metadataRecovery().contains(identity))
+            #expect(try await !reopened.session(scope: survivor).metadataRecovery().contains(identity))
+            try await reopened.session(scope: survivor).upsert(savedChat(identity))
+            try reopened.session(scope: survivor).restrictMetadata(to: [])
+            await reopened.close()
+
+            let cold = own(ArtifactCache(root: root))
+            let evictedRecovery = try await cold.session(scope: evicted).metadataRecovery()
+            let survivorRecovery = try await cold.session(scope: survivor).metadataRecovery()
+            #expect(evictedRecovery.invalidated == [ArtifactMetadataRecovery.key(identity)])
+            #expect(evictedRecovery.allowedProfiles == nil)
+            #expect(survivorRecovery.invalidated.isEmpty)
+            #expect(survivorRecovery.allowedProfiles == [])
+        }
+    }
+
+    private func scopesDiffering(in component: String) -> (ArtifactCacheScope, ArtifactCacheScope) {
+        let configuration = UUID()
+        func scope(configuration otherConfiguration: UUID? = nil, server: String = "https://cache.example", installation: Data? = Data("install".utf8),
+                   username: String = "user", provider: Data? = Data("native".utf8)) -> ArtifactCacheScope {
+            ArtifactCacheScope(configurationID: otherConfiguration ?? configuration, serverURL: Data(server.utf8), installationID: installation, username: Data(username.utf8), provider: provider)
+        }
+        switch component {
+        case "configuration": return (scope(), scope(configuration: UUID()))
+        case "server": return (scope(), scope(server: "https://other.example"))
+        case "installation": return (scope(), scope(installation: Data("other".utf8)))
+        case "absent installation": return (scope(installation: nil), scope(installation: Data([0])))
+        case "empty installation": return (scope(installation: nil), scope(installation: Data()))
+        case "username": return (scope(), scope(username: "other"))
+        case "provider": return (scope(), scope(provider: Data("other".utf8)))
+        case "absent provider": return (scope(provider: nil), scope(provider: Data([0])))
+        case "empty provider": return (scope(provider: nil), scope(provider: Data()))
+        case "unicode": return (scope(server: "https://é.example"), scope(server: "https://e\u{301}.example"))
+        default: return (scope(installation: Data("installuser".utf8), username: ""), scope())
+        }
+    }
+
+    // Derived without the app's encoder. A change strands every saved cache row and recovery guard.
+    private func persistedFormat(_ shape: String) -> (scope: ArtifactCacheScope, namespace: Data, digest: String) {
+        let configuration = UUID(uuidString: "12345678-ABCD-4EF0-8123-456789ABCDEF")!
+        switch shape {
+        case "tagged":
+            return (ArtifactCacheScope(configurationID: configuration, serverURL: Data("https://é.example".utf8), installationID: Data("install".utf8), username: Data([0xFF, 0x00]) + Data("user".utf8), provider: Data("native".utf8)),
+                    hex("""
+                        0000000000000024 31323334353637382d414243442d344546302d383132332d343536373839414243444546
+                        0000000000000012 68747470733a2f2fc3a92e6578616d706c65
+                        0000000000000008 01696e7374616c6c
+                        0000000000000006 ff0075736572
+                        0000000000000007 016e6174697665
+                        """),
+                    "26db3b5c3ab9765bebc814f437f047e317681c97565e9f12abf60aed9d9be2d7")
+        case "absent":
+            return (ArtifactCacheScope(configurationID: configuration, serverURL: Data("https://cache.example".utf8), installationID: nil, username: Data(), provider: nil),
+                    hex("""
+                        0000000000000024 31323334353637382d414243442d344546302d383132332d343536373839414243444546
+                        0000000000000015 68747470733a2f2f63616368652e6578616d706c65
+                        0000000000000001 00
+                        0000000000000000
+                        0000000000000001 00
+                        """),
+                    "8f9661b7a6d54f64c6541a56fafe07b325d458177a1680b04c365ebdfaa12fc0")
+        default:
+            return (ArtifactCacheScope(configurationID: configuration, serverURL: Data("https://cache.example".utf8), installationID: Data(), username: Data(), provider: Data()),
+                    hex("""
+                        0000000000000024 31323334353637382d414243442d344546302d383132332d343536373839414243444546
+                        0000000000000015 68747470733a2f2f63616368652e6578616d706c65
+                        0000000000000001 01
+                        0000000000000000
+                        0000000000000001 01
+                        """),
+                    "be983f58d153729d1890cd7abdd8707e462bdd657fa9b25456d6f8959821089c")
+        }
+    }
+    private func hex(_ text: String) -> Data {
+        let digits = text.compactMap(\.hexDigitValue)
+        return Data(stride(from: 0, to: digits.count, by: 2).map { UInt8(digits[$0] << 4 | digits[$0 + 1]) })
+    }
+    private func savedChat(_ identity: SessionIdentity) -> CachedArtifactChat {
+        CachedArtifactChat(identity: identity, botName: "Bot", title: "Main", messages: [], updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil)
+    }
+    private func savedChatRows(in root: URL) throws -> [(scope: Data, configuration: Data, key: Data)] {
+        var handle: OpaquePointer?, statement: OpaquePointer?
+        defer { sqlite3_finalize(statement); sqlite3_close(handle) }
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        try #require(sqlite3_prepare_v2(handle, "SELECT scope,configuration,key FROM entries WHERE kind=0", -1, &statement, nil) == SQLITE_OK)
+        func blob(_ column: Int32) -> Data { Data(bytes: sqlite3_column_blob(statement, column), count: Int(sqlite3_column_bytes(statement, column))) }
+        var rows: [(scope: Data, configuration: Data, key: Data)] = []
+        while sqlite3_step(statement) == SQLITE_ROW { rows.append((blob(0), blob(1), blob(2))) }
+        return rows
+    }
+    private func recoveryLedger(in root: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: root.appendingPathComponent("metadata-recovery.plist"))
+        return try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+    }
     private func withCacheRoot(_ operation: @MainActor (URL, @MainActor (ArtifactCache) -> ArtifactCache) async throws -> Void) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         var owned: [ArtifactCache] = []

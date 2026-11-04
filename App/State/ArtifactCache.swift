@@ -12,6 +12,9 @@ nonisolated private func artifactCacheFields(_ fields: [Data]) -> Data {
     }
     return result
 }
+nonisolated private func artifactChatKey(profile: ExactID, root: ExactID) -> Data {
+    artifactCacheFields([profile.bytes, root.bytes])
+}
 
 nonisolated struct ArtifactMetadataRecovery: Sendable {
     var invalidated = Set<Data>()
@@ -22,7 +25,7 @@ nonisolated struct ArtifactMetadataRecovery: Sendable {
     var needsHistoryCheck: Bool { all || !invalidated.isEmpty }
     static func key(_ identity: SessionIdentity) -> Data { key(profile: identity.profile, root: identity.root) }
     static func key(profile: ExactID, root: ExactID) -> Data {
-        Data(SHA256.hash(data: artifactCacheFields([profile.bytes, root.bytes])))
+        Data(SHA256.hash(data: artifactChatKey(profile: profile, root: root)))
     }
     func excludes(_ profile: ExactID) -> Bool {
         allowedProfiles.map { !$0.contains(Data(SHA256.hash(data: profile.bytes))) } == true
@@ -127,6 +130,13 @@ nonisolated struct ArtifactCacheScope: Hashable, Codable, Sendable {
     let installationID: Data?
     let username: Data
     let provider: Data?
+
+    // Existing rows, blobs and recovery guards are addressed by these exact bytes.
+    fileprivate var namespace: Data {
+        artifactCacheFields([Data(configurationID.uuidString.utf8), serverURL,
+            installationID.map { Data([1]) + $0 } ?? Data([0]), username,
+            provider.map { Data([1]) + $0 } ?? Data([0])])
+    }
 }
 nonisolated enum ArtifactCacheCoverage: String, Codable, Sendable { case complete, partial }
 nonisolated struct CachedArtifactChat: Codable, Sendable {
@@ -298,14 +308,6 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     }
     func close() { lock.withLock { closed = true } }
     private func hash(_ data: Data) -> Data { Data(SHA256.hash(data: data)) }
-    private func namespace(_ scope: ArtifactCacheScope) -> Data {
-        artifactCacheFields([Data(scope.configurationID.uuidString.utf8), scope.serverURL,
-            scope.installationID.map { Data([1]) + $0 } ?? Data([0]), scope.username,
-            scope.provider.map { Data([1]) + $0 } ?? Data([0])])
-    }
-    private func chatKey(_ profile: ExactID, _ root: ExactID) -> Data {
-        artifactCacheFields([profile.bytes, root.bytes])
-    }
     private var recoveryBudget: Int { max(256, min(256 * 1_024, limits.metadataBytes / 4)) }
     private var recoveryCountLimit: Int {
         // A retained roster can replace a disjoint saved roster in one pass.
@@ -347,8 +349,8 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         }
     }
     private func invalidation(scope: ArtifactCacheScope, profile: ExactID, root: ExactID) -> MetadataInvalidation {
-        MetadataInvalidation(configuration: scope.configurationID, namespace: hash(namespace(scope)),
-            chat: hash(chatKey(profile, root)))
+        MetadataInvalidation(configuration: scope.configurationID, namespace: hash(scope.namespace),
+            chat: hash(artifactChatKey(profile: profile, root: root)))
     }
     private func hasCapacity(_ value: MetadataLedger) -> Bool {
         var chats = Set(value.entries.map(\.key))
@@ -432,7 +434,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     func restrictMetadata(to profiles: Set<ExactID>, scope: ArtifactCacheScope, state: ArtifactCacheLeaseState) throws {
         try lock.withLock {
             guard !closed, state.isActive else { throw ArtifactCacheError.retired }
-            let scopeKey = hash(namespace(scope)), observed = Set(profiles.map { hash($0.bytes) })
+            let scopeKey = hash(scope.namespace), observed = Set(profiles.map { hash($0.bytes) })
             var ledger = try writableLedger(configuration: scope.configurationID, namespace: scopeKey)
             var allowed = observed, replacements = Set<CheckedReplacement>()
             if let prior = ledger.namespaces?.first(where: { $0.namespace == scopeKey }),
@@ -520,7 +522,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     func recovery(scope: ArtifactCacheScope) throws -> ArtifactMetadataRecovery {
         try lock.withLock {
             guard !closed else { throw ArtifactCacheError.unavailable }
-            let ledger = try metadataLedger().value, scopeKey = hash(namespace(scope))
+            let ledger = try metadataLedger().value, scopeKey = hash(scope.namespace)
             var result = ArtifactMetadataRecovery(invalidated: Set(ledger.entries.filter {
                 $0.configuration == scope.configurationID && $0.namespace == scopeKey
             }.map(\.chat)), all: ledger.all || ledger.blockedConfigurations.contains(scope.configurationID))
@@ -842,20 +844,11 @@ fileprivate actor ArtifactCacheBackend {
         do { try cleanup() }
         catch { database = nil; throw error }
     }
-    private func pack(_ fields: [Data]) -> Data {
-        artifactCacheFields(fields)
-    }
-    private func namespace(_ scope: ArtifactCacheScope) -> Data {
-        pack([Data(scope.configurationID.uuidString.utf8), scope.serverURL,
-              scope.installationID.map { Data([1]) + $0 } ?? Data([0]), scope.username,
-              scope.provider.map { Data([1]) + $0 } ?? Data([0])])
-    }
-    private func chatKey(_ profile: ExactID, _ root: ExactID) -> Data { pack([profile.bytes, root.bytes]) }
     private func originalKey(_ key: ArtifactOriginalKey) -> Data {
         key.persistenceKey
     }
     private func thumbnailKey(_ key: ArtifactThumbnailKey) -> Data {
-        pack([key.originalDigest, Data(String(key.maximumPixels).utf8), Data(String(key.decoderVersion).utf8)])
+        artifactCacheFields([key.originalDigest, Data(String(key.maximumPixels).utf8), Data(String(key.decoderVersion).utf8)])
     }
     private var recoveryBudget: Int { max(256, min(256 * 1_024, limits.metadataBytes / 4)) }
     private var metadataCapacity: Int { max(0, limits.metadataBytes - recoveryBudget) }
@@ -865,11 +858,11 @@ fileprivate actor ArtifactCacheBackend {
     }
     private func hash(_ data: Data) -> Data { Data(SHA256.hash(data: data)) }
     private func filename(scope: ArtifactCacheScope, digest: Data, kind: Int) -> String {
-        "\(kind)-" + hash(namespace(scope)).map { String(format: "%02x", $0) }.joined() + "-" + digest.map { String(format: "%02x", $0) }.joined()
+        "\(kind)-" + hash(scope.namespace).map { String(format: "%02x", $0) }.joined() + "-" + digest.map { String(format: "%02x", $0) }.joined()
     }
     private func row(scope: ArtifactCacheScope, kind: Int, key: Data) throws -> [SQLiteValue]? {
         guard let database else { throw ArtifactCacheError.unavailable }
-        let bindings: [SQLiteValue] = [.data(namespace(scope)), .integer(kind), .data(key)]
+        let bindings: [SQLiteValue] = [.data(scope.namespace), .integer(kind), .data(key)]
         let row = try database.rows("SELECT payload,blob,size FROM entries WHERE scope=? AND kind=? AND key=?", bindings).first
         if row != nil { try database.execute("UPDATE entries SET accessed=? WHERE scope=? AND kind=? AND key=?", [.real(Date().timeIntervalSince1970)] + bindings) }
         return row
@@ -880,7 +873,7 @@ fileprivate actor ArtifactCacheBackend {
     }
     private func insert(scope: ArtifactCacheScope, kind: Int, key: Data, payload: Data, blob: String? = nil, size: Int) throws {
         guard let database else { throw ArtifactCacheError.unavailable }
-        try database.execute("INSERT OR REPLACE INTO entries VALUES(?,?,?,?,?,?,?,?)", [.data(namespace(scope)), .data(Data(scope.configurationID.uuidString.utf8)), .integer(kind), .data(key), .data(payload), blob.map(SQLiteValue.text) ?? .null, .integer(size), .real(Date().timeIntervalSince1970)])
+        try database.execute("INSERT OR REPLACE INTO entries VALUES(?,?,?,?,?,?,?,?)", [.data(scope.namespace), .data(Data(scope.configurationID.uuidString.utf8)), .integer(kind), .data(key), .data(payload), blob.map(SQLiteValue.text) ?? .null, .integer(size), .real(Date().timeIntervalSince1970)])
     }
     func loadChats(_ lease: UUID) throws -> [CachedArtifactChat] {
         let scope = try scope(lease)
@@ -892,7 +885,7 @@ fileprivate actor ArtifactCacheBackend {
     }
     private func savedChats(scope: ArtifactCacheScope) throws -> [CachedArtifactChat] {
         guard let database else { throw ArtifactCacheError.unavailable }
-        return try database.rows("SELECT payload FROM entries WHERE scope=? AND kind=0 ORDER BY accessed DESC", [.data(namespace(scope))]).compactMap { row in
+        return try database.rows("SELECT payload FROM entries WHERE scope=? AND kind=0 ORDER BY accessed DESC", [.data(scope.namespace)]).compactMap { row in
             guard let data = row.first?.data, let record = try? decoder.decode(CachedArtifactChat.self, from: data) else { return nil }
             return record
         }
@@ -912,11 +905,11 @@ fileprivate actor ArtifactCacheBackend {
         guard record.messages.count + record.retainedEvidenceCount <= limits.messageCount,
               record.messages.reduce(0, { $0 + $1.text.utf8.count }) + record.retainedEvidenceBytes <= limits.textBytes,
               payload.count <= metadataCapacity else {
-            try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(namespace(scope)), .data(chatKey(record.identity.profile, record.identity.root))])
+            try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(scope.namespace), .data(artifactChatKey(profile: record.identity.profile, root: record.identity.root))])
             throw ArtifactCacheError.quota
         }
-        try put(scope: scope, kind: 0, key: chatKey(record.identity.profile, record.identity.root), payload: payload, size: payload.count)
-        guard try row(scope: scope, kind: 0, key: chatKey(record.identity.profile, record.identity.root))?.first?.data == payload else {
+        try put(scope: scope, kind: 0, key: artifactChatKey(profile: record.identity.profile, root: record.identity.root), payload: payload, size: payload.count)
+        guard try row(scope: scope, kind: 0, key: artifactChatKey(profile: record.identity.profile, root: record.identity.root))?.first?.data == payload else {
             throw ArtifactCacheError.quota
         }
         try Task.checkCancellation(); _ = try self.scope(lease)
@@ -926,7 +919,7 @@ fileprivate actor ArtifactCacheBackend {
     func deleteChat(profile: ExactID, root: ExactID, lease: UUID) throws {
         let scope = try scope(lease)
         try journal.begin(scope: scope, profile: profile, root: root, revision: UUID())
-        try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(namespace(scope)), .data(chatKey(profile, root))])
+        try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(scope.namespace), .data(artifactChatKey(profile: profile, root: root))])
     }
     nonisolated private struct OriginalMetadata: Codable {
         let filename: String
