@@ -985,9 +985,36 @@ focused cache behavior, not a full-gate or live-host result.
 The full gate passed on `1a96dc0`. On `427e76e`, it failed only the expanded HTML
 update test; the other phases, including native Save/Files reopen and independent
 provider readback, passed. A loading-cover readiness repair subsequently passed a
-controlled reproduction and all five rich UI tests. None of those results proves
-the reduced source. Its independent assessment, full gate and original
-refresh-then-open demonstration remain pending.
+controlled reproduction and all five rich UI tests. Those earlier results do not prove the reduced source.
+
+The reduced source `2e08230` passed one unfiltered `scripts/check.sh` run on
+4 November 2026. All 558 tracked files matched its snapshot before and after:
+
+- Python tooling: 252 tests passed.
+- Core: 497 tests reported passed, with four opt-in skips and seven deliberate
+  known issues. The MainActor-default compatibility build passed.
+- Native and UI: 1,108 functions passed, none failed and 18 skipped. Native
+  contributed 989 passes and two opt-in measurement skips; UI contributed
+  119 passes and 16 explicit host, layout or opt-in skips. All 135 UI functions
+  were discovered, with no runner restarts or test-selection flags.
+- The rich HTML and long-chat cases passed on unchanged budgets.
+- Native Save/Files reopen and independent provider readback passed. The saved
+  original was byte-identical: 80 bytes, SHA-256
+  `ab2d37c15d4277807c8d7c9ac788d680ce95645b07a1d0e61ee34005a2b41cce`.
+- The held-attachment Inbox test passed inside that same run. Its screenshot
+  shows the full reply and editable draft before attachment returns; the
+  passing assertions also check draft/reply survival after release and no send.
+  This demonstrates the fixture-based native flow, not a real Hermes host.
+
+One independent assessment of the reduced boundary found no material issues.
+Full evidence, explicit skip conditions and the demonstration image are retained
+under `/Users/sree/.t3/userdata/verification/botto-chat-pr24/full-gate-reduced/`.
+There were no retries. Other leases overlapped the run; no failure or performance
+claim is attributed to host contention. This single pass does not measure an
+intermittent failure rate. Only this result record changed after verification;
+compiled source and tests are unchanged. The owned session was explicitly
+released after export, and the temporary host lease cap was restored to 60 minutes.
+Device capacity remains four.
 
 The detailed development chronology, including failed attempts, is preserved on
 `archive/pr24-durable-recovery-cf430b3` and in
