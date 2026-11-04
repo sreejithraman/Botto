@@ -1,8 +1,35 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Preserve retired-tip evidence when cached rows leave
+
+## Current decision
+
+On 4 November 2026 Sree narrowed PR 24 and moved this contract to a follow-up
+session. The decision below never landed on `main`. Its source stays on
+`archive/pr24-durable-recovery-cf430b3`.
+
+Negative evidence now lasts as long as its retained row, the existing restoration
+holds and Book's own claims. [Core integration](../core-integration.md) owns that
+contract. The removal also leaves Library free of indefinite proof-gated withholding
+and retired-stored-ID ledger state.
+
+These cases are deferred:
+
+- A dispute held only by an evicted Library row. Book's claim survives, but a row
+  budget that drops it leaves Library no record of the dispute.
+- Retired stored IDs after their row is evicted or storage fails.
+- A retired tip that returns, whether or not its row survived. It follows `main`'s
+  source rules and needs no separate identity proof. Its old disputes do not return
+  with it until a later Book seed.
+- A dispute that no longer fits after restoration finishes. It no longer holds its
+  scope.
+
+Sree accepted `main`'s behavior for these cases in this delivery. This records a
+scope choice. It measures no frequency and accepts no wider security claim.
+
+## Original decision
 
 Library rows are disposable. Identity disputes and retirement evidence constrain
 what later rows may become Search results or artifacts. Treating both as ordinary

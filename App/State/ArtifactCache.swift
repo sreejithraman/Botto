@@ -18,8 +18,6 @@ nonisolated struct ArtifactMetadataRecovery: Sendable {
     var all = false
     var allowedProfiles: Set<Data>?
     var checkedSavedChats = Set<Data>()
-    /// By `key`: raw stored IDs, as in `retiredStoredIDs`, retired by rows that no longer exist.
-    var retiredStored: [Data: Set<Data>] = [:]
     var hasInvalidations: Bool { all || !invalidated.isEmpty || allowedProfiles != nil }
     var needsHistoryCheck: Bool { all || !invalidated.isEmpty }
     static func key(_ identity: SessionIdentity) -> Data { key(profile: identity.profile, root: identity.root) }
@@ -241,23 +239,12 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         let chat: Data
         var key: MetadataKey { MetadataKey(configuration: configuration, namespace: namespace, chat: chat) }
     }
-    /// A row's retired tips once the row is gone, as raw `retiredStoredIDs` bytes. Each lives exactly as
-    /// long as its chat's guard, because the next saved row carries them again.
-    fileprivate struct MetadataRetirement: Codable, Hashable, Sendable {
-        let configuration: UUID
-        let namespace: Data
-        let chat: Data
-        let storedIDs: Set<Data>
-        var key: MetadataKey { MetadataKey(configuration: configuration, namespace: namespace, chat: chat) }
-    }
     fileprivate struct MetadataLedger: Codable, Sendable {
         var version = 2
         var all = false
         var entries = Set<MetadataInvalidation>()
         var blockedConfigurations = Set<UUID>()
         var namespaces: Set<NamespaceRecovery>?
-        // Optional under version 2: older readers ignore it, and older ledgers omit it.
-        var retirements: Set<MetadataRetirement>?
     }
     fileprivate struct CheckedReplacement: Codable, Hashable, Sendable {
         let profile: Data
@@ -332,7 +319,6 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
               let value = try? decoder.decode(MetadataLedger.self, from: Data(contentsOf: url)), [1, 2].contains(value.version),
               hasCapacity(value),
               value.entries.allSatisfy({ $0.namespace.count == 32 && $0.chat.count == 32 }),
-              (value.retirements ?? []).allSatisfy({ $0.namespace.count == 32 && $0.chat.count == 32 && !$0.storedIDs.isEmpty }),
               (value.namespaces ?? []).allSatisfy(validNamespace),
               Set((value.namespaces ?? []).map(\.namespace)).count == (value.namespaces?.count ?? 0) else {
             return (MetadataLedger(all: true), false)
@@ -352,9 +338,6 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private func saveMetadataLedger(_ value: MetadataLedger) throws {
         var value = value
         value.version = 2
-        let guarded = Set(value.entries.map(\.key))
-        value.retirements = value.retirements?.filter { guarded.contains($0.key) }
-        if value.retirements?.isEmpty == true { value.retirements = nil }
         let url = root.appendingPathComponent(metadataLedgerName)
         if value.entries.isEmpty, value.blockedConfigurations.isEmpty, value.namespaces?.isEmpty != false, !value.all {
             if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
@@ -425,30 +408,20 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         if saved.all { allVersion = UUID() }
         if overflow { throw ArtifactCacheError.quota }
     }
-    private func record(_ entries: [MetadataInvalidation], retiring retiredStored: [Data: Set<Data>] = [:],
-                        allowingQuarantine: Bool = true) throws {
+    private func record(_ entries: [MetadataInvalidation], allowingQuarantine: Bool = true) throws {
         guard let target = entries.first else { return }
         var ledger = try writableLedger(configuration: target.configuration, namespace: target.namespace)
-        let before = ledger
+        let before = ledger.entries
         ledger.entries.formUnion(entries)
-        for entry in entries {
-            guard let storedIDs = retiredStored[entry.chat], !storedIDs.isEmpty else { continue }
-            var retirements = ledger.retirements ?? []
-            let prior = retirements.first { $0.key == entry.key }
-            if let prior { retirements.remove(prior) }
-            retirements.insert(MetadataRetirement(configuration: entry.configuration, namespace: entry.namespace, chat: entry.chat,
-                storedIDs: storedIDs.union(prior?.storedIDs ?? [])))
-            ledger.retirements = retirements
-        }
-        guard ledger.entries != before.entries || ledger.retirements != before.retirements else { return }
+        guard ledger.entries != before else { return }
         try persist(ledger, configuration: target.configuration, namespace: target.namespace, allowingQuarantine: allowingQuarantine)
     }
-    func invalidate(_ chats: [(profile: ExactID, root: ExactID, revision: UUID)], retiring retiredStored: [Data: Set<Data>] = [:],
-                    scope: ArtifactCacheScope, state: ArtifactCacheLeaseState) throws {
+    func invalidate(_ chats: [(profile: ExactID, root: ExactID, revision: UUID)], scope: ArtifactCacheScope,
+                    state: ArtifactCacheLeaseState) throws {
         try lock.withLock {
             guard !closed, state.isActive else { throw ArtifactCacheError.retired }
             let entries = chats.map { invalidation(scope: scope, profile: $0.profile, root: $0.root) }
-            try record(entries, retiring: retiredStored)
+            try record(entries)
             // Repeated dirty versions share the durable identity guard. Their
             // clearing tokens remain runtime-only and need no extra file write.
             for (entry, chat) in zip(entries, chats) {
@@ -485,33 +458,27 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.superseded }
         }
     }
-    func begin(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID, retiredStored: Set<Data>) throws {
+    func begin(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
         try lock.withLock {
             guard !closed else { throw ArtifactCacheError.unavailable }
             let entry = invalidation(scope: scope, profile: profile, root: root)
             // An older queued SQL write cannot replace a newer runtime guard.
             let ledger = try metadataLedger()
             if ledger.value.entries.contains(entry) {
-                if !retiredStored.isEmpty { try record([entry], retiring: [entry.chat: retiredStored]) }
                 revisions[entry.key] = WriteRevision(id: revisions[entry.key]?.id ?? revision, profile: hash(profile.bytes))
                 return
             }
-            try record([entry], retiring: [entry.chat: retiredStored])
-            revisions[entry.key] = WriteRevision(id: revision, profile: hash(profile.bytes))
+            try record([entry]); revisions[entry.key] = WriteRevision(id: revision, profile: hash(profile.bytes))
         }
     }
-    func evict(configuration: UUID, namespace: Data, key: Data, provisional: Bool, retiredStored: Set<Data>) throws -> Eviction? {
+    func evict(configuration: UUID, namespace: Data, key: Data, provisional: Bool) throws -> Eviction? {
         try lock.withLock {
             guard !closed else { throw ArtifactCacheError.unavailable }
             let entry = MetadataInvalidation(configuration: configuration, namespace: hash(namespace), chat: hash(key))
-            let retiring = [entry.chat: retiredStored]
-            guard !(try metadataLedger().value.entries.contains(entry)) else {
-                if !retiredStored.isEmpty { try record([entry], retiring: retiring, allowingQuarantine: !provisional) }
-                return nil
-            }
+            guard !(try metadataLedger().value.entries.contains(entry)) else { return nil }
             // A speculative deletion can reject quota before changing SQL; it
             // must not quarantine a configuration that rollback will preserve.
-            try record([entry], retiring: retiring, allowingQuarantine: !provisional)
+            try record([entry], allowingQuarantine: !provisional)
             let revision = UUID(); revisions[entry.key] = WriteRevision(id: revision, profile: nil)
             return Eviction(configuration: entry.configuration, namespace: entry.namespace, chat: entry.chat, revision: revision)
         }
@@ -564,10 +531,6 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
                     result.allowedProfiles = profiles
                     result.checkedSavedChats = Set(replacements.map(\.chat))
                 }
-            }
-            for retirement in ledger.retirements ?? []
-            where retirement.configuration == scope.configurationID && retirement.namespace == scopeKey {
-                result.retiredStored[retirement.chat] = retirement.storedIDs
             }
             return result
         }
@@ -773,12 +736,11 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     func invalidateMetadata(_ chats: [(profile: ExactID, root: ExactID)]) throws {
         try invalidateMetadata(chats.map { ($0.profile, $0.root, UUID()) })
     }
-    func invalidateMetadata(_ chats: [(profile: ExactID, root: ExactID, revision: UUID)],
-                            retiring retiredStored: [Data: Set<Data>] = [:]) throws {
+    func invalidateMetadata(_ chats: [(profile: ExactID, root: ExactID, revision: UUID)]) throws {
         guard !isRetired else { throw ArtifactCacheError.retired }
         // Guards only withhold metadata. SQL reads/writes still await cleanup;
         // queued cleanup preserves guards recorded by a new active lease.
-        try journal.invalidate(chats, retiring: retiredStored, scope: metadataScope, state: leaseState)
+        try journal.invalidate(chats, scope: metadataScope, state: leaseState)
     }
     func restrictMetadata(to profiles: Set<ExactID>) throws {
         guard !isRetired else { throw ArtifactCacheError.retired }
@@ -961,14 +923,9 @@ fileprivate actor ArtifactCacheBackend {
         try journal.finish(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
         afterMetadataWrite?()
     }
-    private func retiredStored(in payload: Data?) -> Set<Data> {
-        payload.flatMap { try? decoder.decode(CachedArtifactChat.self, from: $0) }?.retiredStoredIDs ?? []
-    }
     func deleteChat(profile: ExactID, root: ExactID, lease: UUID) throws {
         let scope = try scope(lease)
-        let saved = try database?.rows("SELECT payload FROM entries WHERE scope=? AND kind=0 AND key=?",
-            [.data(namespace(scope)), .data(chatKey(profile, root))]).first?.first?.data
-        try journal.begin(scope: scope, profile: profile, root: root, revision: UUID(), retiredStored: retiredStored(in: saved))
+        try journal.begin(scope: scope, profile: profile, root: root, revision: UUID())
         try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(namespace(scope)), .data(chatKey(profile, root))])
     }
     nonisolated private struct OriginalMetadata: Codable {
@@ -1092,9 +1049,7 @@ fileprivate actor ArtifactCacheBackend {
         if row[1].integer == 0 {
             guard let configuration = row[2].data.flatMap({ UUID(uuidString: String(decoding: $0, as: UTF8.self)) }),
                   let namespace = row[3].data, let key = row[4].data else { throw ArtifactCacheError.unavailable }
-            let saved = try database.rows("SELECT payload FROM entries WHERE rowid=?", [.integer(id)]).first?.first?.data
-            if let eviction = try journal.evict(configuration: configuration, namespace: namespace, key: key,
-                                                provisional: onEviction != nil, retiredStored: retiredStored(in: saved)) {
+            if let eviction = try journal.evict(configuration: configuration, namespace: namespace, key: key, provisional: onEviction != nil) {
                 onEviction?(eviction)
             }
         }

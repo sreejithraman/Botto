@@ -1030,10 +1030,9 @@ import BottoCore
     }
 
     /// A cold launch restores both saved owners without a network read.
-    private func reopen(_ fixture: RetainedDispute, book: ConversationBook, limits: WorkspaceLibrary.Limits = .init()) async throws
-        -> (cache: ArtifactCache, library: WorkspaceLibrary) {
+    private func reopen(_ fixture: RetainedDispute, book: ConversationBook) async throws -> (cache: ArtifactCache, library: WorkspaceLibrary) {
         let cache = ArtifactCache(root: fixture.root)
-        let library = WorkspaceLibrary(service: fixture.service, limits: limits, cache: cache.session(scope: fixture.scope))
+        let library = WorkspaceLibrary(service: fixture.service, cache: cache.session(scope: fixture.scope))
         library.seed(book: try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(book)), bots: fixture.service.profiles)
         await library.restore()
         return (cache, library)
@@ -2140,336 +2139,9 @@ import BottoCore
         store.library.retire(); await connected.cache.close()
     }
 
-    enum RetentionPressure: CaseIterable, Sendable { case messageCount, textBytes, chatCount }
-
-    /// A small reconciled Library whose newer peers leave a disputed chat too little room to stay.
-    @MainActor private struct RetentionDispute {
-        let fixture: RetainedDispute, pressure: RetentionPressure, limits: WorkspaceLibrary.Limits
-        let cache: ArtifactCache, session: ArtifactCacheSession, library: WorkspaceLibrary, workspace: ConversationWorkspace
-        let chat: ChatID, peerSource: SessionIdentity
-        /// Outweighs the row beside it, so the byte budget can fit that row but not the dispute.
-        let unnamed = Data(repeating: 0x79, count: 64)
-        var service: LibraryTestService { fixture.service }
-        var subject: SessionIdentity { fixture.subject }
-        var disputes: Set<Data> { [fixture.disputedID, unnamed] }
-        var bookDisputes: Set<Data>? { workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs }
-
-        /// `AppStore.refreshLibrary`: Book seeds first, then the scan runs.
-        func refresh(with book: ConversationBook? = nil) async {
-            library.seed(book: book ?? workspace.persisted(), bots: service.profiles)
-            await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        }
-        func dispute() async {
-            service.previewFailure = ConversationHistoryPage.Failure(identity: subject, unavailableMessageIDs: disputes)
-            await workspace.refreshInboxHistory(profiles: [subject.profile])
-            service.previewFailure = nil
-        }
-        /// The chat returns newest and fits one disputed row, but two pages leave no response to prove it.
-        /// Only the chat-count budget has room for a sibling, so only it can show that the sibling waits too.
-        func returnWithoutProof(on source: SessionIdentity? = nil, with book: ConversationBook? = nil,
-                                at time: TimeInterval = 8_000_000_000) async {
-            let tip = source ?? subject
-            service.omitSecond = false
-            service.messages[tip] = [fixture.disputed]
-            service.historyPages[tip] = [
-                0: .init(messages: [fixture.disputed], nextOffset: 1, isComplete: true),
-                1: .init(messages: pressure == .chatCount ? [fixture.sibling] : [], nextOffset: nil, isComplete: true)]
-            if pressure == .chatCount { service.summaryDates[tip] = Date(timeIntervalSince1970: time) }
-            await refresh(with: book)
-        }
-        func close() async {
-            workspace.retireWorkspace(); library.retire(); await cache.close()
-        }
-    }
-
-    private func retentionDispute(_ pressure: RetentionPressure) async throws -> RetentionDispute {
-        let fixture = RetainedDispute(customChat: true), service = fixture.service, subject = fixture.subject
-        fixture.prepare()
-        service.messages[subject] = [fixture.disputed]
-        func peerRow(_ id: String, at time: Double) -> ChatMessage {
-            .init(id: id, role: .assistant, text: "Peer needle \(id)\nMEDIA:/\(id).txt", timestamp: Date(timeIntervalSince1970: time))
-        }
-        let limits: WorkspaceLibrary.Limits, peerSource: SessionIdentity
-        switch pressure {
-        case .messageCount, .textBytes:
-            // Directory absence stamps the current time, so these peers must stay newer than it.
-            let rows = [peerRow("peer-a", at: 4_000_000_000), peerRow("peer-b", at: 4_000_000_000)]
-            service.messages[service.first] = rows; peerSource = service.first
-            let peerBytes = rows.reduce(0) { $0 + $1.text.utf8.count }
-            limits = pressure == .messageCount ? .init(messageCount: 3)
-                : .init(textBytes: peerBytes + fixture.disputed.text.utf8.count + 5)
-        case .chatCount:
-            let created = SessionIdentity(profile: service.first.profile, root: try ExactID("created"), stored: try ExactID("created"), aliases: [])
-            service.createdIdentity = created; peerSource = created
-            service.messages[service.first] = [peerRow("peer-a", at: 10)]; service.messages[created] = [peerRow("peer-b", at: 10)]
-            service.summaryDates = [subject: Date(timeIntervalSince1970: 6_000_000_000),
-                service.first: Date(timeIntervalSince1970: 5_000_000_000), created: Date(timeIntervalSince1970: 1_000_000_000)]
-            limits = .init(chatCount: 2)
-        }
-        var book = savedBook(service)
-        let chat = try #require(book.records.first { $0.binding.identity == subject }?.id)
-        book.updatePreference(subject.profile) { $0.preferred = chat }
-        let cache = ArtifactCache(root: fixture.root), session = cache.session(scope: fixture.scope)
-        let library = WorkspaceLibrary(service: service, limits: limits, cache: session)
-        let workspace = dispute(on: fixture, library: library, book: book)
-        return .init(fixture: fixture, pressure: pressure, limits: limits, cache: cache, session: session,
-            library: library, workspace: workspace, chat: chat, peerSource: peerSource)
-    }
-
-    /// Retention drops the chat, then Book's next seed cannot bring its disputes back in either.
-    private func evict(_ setup: RetentionDispute, disputing: Bool = true) async throws {
-        let service = setup.service, library = setup.library
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        try #require(await eventually { artifact(setup.fixture.disputed.id, in: library) != nil })
-        switch setup.pressure {
-        case .messageCount, .textBytes:
-            service.omitSecond = true; await setup.refresh()
-            if disputing { await setup.dispute() }
-        case .chatCount:
-            if disputing { await setup.dispute() }
-            service.omitSecond = true; await setup.refresh()
-            service.summaryDates[setup.peerSource] = Date(timeIntervalSince1970: 7_000_000_000)
-            await setup.refresh()
-        }
-        if disputing { try #require(setup.bookDisputes == setup.disputes) }
-        try #require(!library.chats.contains { $0.identity.root == setup.subject.root })
-        await setup.refresh()
-    }
-
-    /// A lost dispute leaves no row ID to exclude, so the whole chat waits for proof. Its siblings wait
-    /// with it: that is the availability this hold costs. Other chats do not wait.
-    /// A coherent read of another tip checks the scope and clears its saved guard, so `guarded` is false after one.
-    private func expectWithheld(_ setup: RetentionDispute, guarded: Bool = true,
-                                sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        let library = setup.library, disputed = setup.fixture.disputed
-        #expect(!searchFinds("Disputed needle", in: library), sourceLocation: sourceLocation)
-        #expect(artifact(disputed.id, in: library) == nil, sourceLocation: sourceLocation)
-        #expect(!searchFinds("Sibling needle", in: library), sourceLocation: sourceLocation)
-        #expect(await eventually { searchFinds("Peer needle", in: library) }, "Other chats stay available", sourceLocation: sourceLocation)
-        let row = try await setup.session.loadChats().first { $0.identity.root == setup.subject.root }
-        #expect(row?.messages.contains { $0.id == disputed.id } != true, sourceLocation: sourceLocation)
-        if guarded {
-            #expect(try await setup.session.metadataRecovery().contains(setup.subject), "The hold outlives this launch", sourceLocation: sourceLocation)
-        }
-    }
-
-    @Test(arguments: RetentionPressure.allCases)
-    func evictedDisputeWithholdsAProoflessReturn(pressure: RetentionPressure) async throws {
-        let setup = try await retentionDispute(pressure)
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        try await evict(setup)
-        await setup.returnWithoutProof()
-        #expect(setup.bookDisputes == setup.disputes, "A multi-page read proves nothing")
-        try await expectWithheld(setup)
-
-        // Peers keep indexing while the disputed chat waits.
-        let fresh = ChatMessage(id: "peer-fresh", role: .assistant, text: "Fresh Peer needle", timestamp: Date(timeIntervalSince1970: 4_000_000_000))
-        setup.service.messages[setup.peerSource] = [fresh]
-        await setup.refresh()
-        #expect(await eventually { searchFinds("Fresh Peer needle", in: setup.library) })
-        try await expectWithheld(setup)
-
-        let book = setup.workspace.persisted()
-        await setup.close()
-        let reopened = try await reopen(setup.fixture, book: book, limits: setup.limits), library = reopened.library
-        #expect(!searchFinds("Disputed needle", in: library))
-        #expect(artifact(setup.fixture.disputed.id, in: library) == nil)
-        #expect(await eventually { searchFinds("Fresh Peer needle", in: library) })
-        #expect(try await reopened.cache.session(scope: setup.fixture.scope).metadataRecovery().contains(setup.subject))
-        library.retire(); await reopened.cache.close()
-    }
-
-    /// A single response from the disputed tip names its one row.
-    private func expectProofReleases(_ setup: RetentionDispute, sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        let library = setup.library, disputed = setup.fixture.disputed, subject = setup.subject
-        setup.service.historyPages[subject] = nil
-        await setup.refresh()
-        #expect(setup.bookDisputes == [setup.unnamed], "This read proves only the row it lists", sourceLocation: sourceLocation)
-        #expect(await eventually { artifact(disputed.id, in: library)?.chat.identity.stored == subject.stored }, sourceLocation: sourceLocation)
-        #expect(searchFinds("Disputed needle", in: library), sourceLocation: sourceLocation)
-        #expect(try await eventually {
-            let row = try await setup.session.loadChats().first { $0.identity == subject }
-            let recovery = try await setup.session.metadataRecovery()
-            return row?.messages.contains { $0.id == disputed.id } == true && !recovery.contains(subject)
-        }, "Proof releases the hold and its durable guard", sourceLocation: sourceLocation)
-    }
-
-    @Test func laterCoherentReadReleasesAnEvictedDisputeForOnlyWhatItNames() async throws {
-        let setup = try await retentionDispute(.messageCount)
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        try await evict(setup)
-        await setup.returnWithoutProof()
-        try await expectWithheld(setup)
-        try await expectProofReleases(setup)
-
-        // Book's other claim returns with the next seed, and the budget then favors it over the row.
-        await setup.refresh()
-        #expect(try await eventually {
-            try await setup.session.loadChats().first { $0.identity == setup.subject }?.unavailableMessageIDs == [setup.unnamed]
-        })
-        await setup.close()
-    }
-
     private func replacementTip(of source: SessionIdentity) throws -> SessionIdentity {
         let stored = try ExactID("replacement-tip")
         return SessionIdentity(profile: source.profile, root: source.root, stored: stored, aliases: [source.root, stored])
-    }
-
-    /// A directory report names a tip without reading it, so the replacement waits for its own proof.
-    /// That proof checks the scope, but the old tip can still return and it cannot answer for that tip.
-    @Test(arguments: [false, true])
-    func evictedDisputeOutlivesAReplacementTip(provesReplacement: Bool) async throws {
-        let setup = try await retentionDispute(.chatCount), library = setup.library, service = setup.service
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        let replacement = try replacementTip(of: setup.subject)
-        try await evict(setup)
-        service.replacementSecond = replacement
-        await setup.returnWithoutProof(on: replacement)
-        #expect(setup.bookDisputes == setup.disputes)
-        try await expectWithheld(setup)
-
-        if provesReplacement {
-            service.historyPages[replacement] = nil
-            await setup.refresh()
-            #expect(await eventually { artifact(setup.fixture.disputed.id, in: library)?.chat.identity.stored == replacement.stored },
-                "A new tip's own proof admits it")
-            #expect(setup.bookDisputes == setup.disputes, "Book's claim stays on its own tip")
-            #expect(try await eventually { try await !setup.session.metadataRecovery().contains(setup.subject) }, "The scope is checked")
-        }
-
-        service.replacementSecond = nil
-        await setup.returnWithoutProof()
-        #expect(setup.bookDisputes == setup.disputes)
-        try await expectWithheld(setup, guarded: !provesReplacement)
-        try await expectProofReleases(setup)
-        await setup.close()
-    }
-
-    /// Retired tips count as evidence, so this runs on the chat budget, where a row always fits beside them.
-    @Test func anotherTipsLostDisputeKeepsTheFirstTipWaiting() async throws {
-        let setup = try await retentionDispute(.chatCount), library = setup.library, service = setup.service
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        let replacement = try replacementTip(of: setup.subject), disputed = setup.fixture.disputed
-        func admittedOnReplacement() -> Bool { artifact(disputed.id, in: library)?.chat.identity.stored == replacement.stored }
-        try await evict(setup)
-        service.replacementSecond = replacement
-        await setup.returnWithoutProof(on: replacement)
-        service.historyPages[replacement] = nil
-        await setup.refresh()
-        try #require(await eventually { admittedOnReplacement() })
-
-        // This tip's disputes fit until two newer peers push its chat out.
-        var snapshot = Conversation(id: replacement.stored.text, storedID: replacement.stored.text,
-            profileID: replacement.profile.text, hasEarlierMessages: true)
-        snapshot.unavailableMessageIDs = setup.disputes
-        library.accept(identity: replacement, snapshot: snapshot, title: "Research notes", evidence: .disputed(startedAt: .now))
-        try #require(!searchFinds("Disputed needle", in: library))
-        service.summaryDates[service.first] = Date(timeIntervalSince1970: 9_000_000_000)
-        service.summaryDates[setup.peerSource] = Date(timeIntervalSince1970: 9_500_000_000)
-        // One scan admits the first peer. That evicts the second, whose fence keeps it out until the next scan.
-        await setup.refresh()
-        await setup.refresh()
-        try #require(!library.chats.contains { $0.identity.root == replacement.root })
-
-        service.summaryDates[replacement] = Date(timeIntervalSince1970: 10_000_000_000)
-        await setup.refresh()
-        #expect(await eventually { admittedOnReplacement() }, "Its own proof answers its own loss")
-
-        service.replacementSecond = nil
-        await setup.returnWithoutProof(at: 11_000_000_000)
-        #expect(setup.bookDisputes == setup.disputes)
-        try await expectWithheld(setup, guarded: false)
-        await setup.close()
-    }
-
-    /// No hold exists here: the dispute left with its tip, and Book's seed cannot reach another tip.
-    /// Retirement alone keeps the row out when that tip returns.
-    @Test func residentDisputeNeedsProofWhenItsTipReturns() async throws {
-        let fixture = RetainedDispute(customChat: true), service = fixture.service, subject = fixture.subject
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        fixture.prepare()
-        let connected = try await connect(fixture), store = connected.store, library = connected.store.library
-        defer { LocalHistory.remove(for: connected.configuration.id) }
-        await store.refreshLibrary(force: true)
-        try #require(await eventually { artifact(fixture.disputed.id, in: library) != nil })
-        service.previewFailure = fixture.failure
-        await store.chats.refreshInboxHistory(profiles: [subject.profile])
-        service.previewFailure = nil
-        try #require(connected.bookDisputes(fixture.disputedID))
-        try #require(artifact(fixture.disputed.id, in: library) == nil)
-
-        let replacement = try replacementTip(of: subject)
-        service.replacementSecond = replacement; service.messages[replacement] = service.messages[subject]
-        service.historyPages[replacement] = fixture.prooflessPages
-        await store.refreshLibrary(force: true)
-        #expect(await eventually { artifact(fixture.disputed.id, in: library)?.chat.identity.stored == replacement.stored },
-            "A tip's first use needs no proof")
-
-        service.replacementSecond = nil; service.historyPages[subject] = fixture.prooflessPages
-        await store.refreshLibrary(force: true)
-        #expect(!searchFinds("Disputed needle", in: library), "No seed can repair this before the next refresh")
-        #expect(artifact(fixture.disputed.id, in: library) == nil)
-        #expect(!searchFinds("Sibling needle", in: library), "Its siblings wait with it")
-        #expect(await eventually { searchFinds("Peer needle", in: library) }, "Other chats stay available")
-        #expect(try await eventually {
-            let row = try await connected.session.loadChats().first { $0.identity == subject }
-            return row?.messages.isEmpty == true && row?.retiredStoredIDs?.contains(subject.stored.bytes) == true
-        }, "The saved row still awaits proof")
-
-        service.historyPages[subject] = nil
-        await store.refreshLibrary(force: true)
-        #expect(await eventually { artifact(fixture.disputed.id, in: library)?.chat.identity.stored == subject.stored },
-            "Its own coherent read brings it back")
-        #expect(await eventually { artifact(fixture.sibling.id, in: library) != nil })
-        #expect(!connected.bookDisputes(fixture.disputedID), "That read named the row")
-        #expect(try await eventually {
-            let retired = try await connected.session.loadChats().first { $0.identity == subject }?.retiredStoredIDs
-            return retired == [replacement.stored.bytes]
-        }, "Only the tip it replaced stays retired")
-        store.library.retire(); await connected.cache.close()
-    }
-
-    /// Nothing but the proven tip's saved row remembers the old tip across this restart.
-    @Test func provenReplacementKeepsItsOldTipAcrossARestart() async throws {
-        let setup = try await retentionDispute(.chatCount), service = setup.service, subject = setup.subject
-        let fixture = setup.fixture
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let replacement = try replacementTip(of: subject)
-        try await evict(setup)
-        service.replacementSecond = replacement
-        await setup.returnWithoutProof(on: replacement)
-        service.historyPages[replacement] = nil
-        await setup.refresh()
-        #expect(await eventually { artifact(fixture.disputed.id, in: setup.library)?.chat.identity.stored == replacement.stored })
-        #expect(try await eventually {
-            let row = try await setup.session.loadChats().first { $0.identity == replacement }
-            return row?.retiredStoredIDs?.contains(subject.stored.bytes) == true
-        }, "The proven tip saves the tip it replaced")
-        let book = setup.workspace.persisted()
-        await setup.close()
-
-        service.replacementSecond = nil; service.messages[subject] = [fixture.disputed, fixture.sibling]
-        service.historyPages[subject] = fixture.prooflessPages
-        service.summaryDates[subject] = Date(timeIntervalSince1970: 8_000_000_000)
-        let reopened = try await reopen(fixture, book: book, limits: setup.limits), library = reopened.library
-        let session = reopened.cache.session(scope: fixture.scope)
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        #expect(!searchFinds("Disputed needle", in: library), "This scan runs after the launch's only seed")
-        #expect(artifact(fixture.disputed.id, in: library) == nil)
-        #expect(!searchFinds("Sibling needle", in: library))
-        #expect(await eventually { searchFinds("Peer needle", in: library) }, "Other chats stay available")
-
-        service.historyPages[subject] = nil
-        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        #expect(await eventually { artifact(fixture.disputed.id, in: library)?.chat.identity.stored == subject.stored })
-        #expect(await eventually { artifact(fixture.sibling.id, in: library) != nil })
-        #expect(try await eventually {
-            let row = try await session.loadChats().first { $0.identity == subject }
-            return row?.retiredStoredIDs?.contains(subject.stored.bytes) == false
-        }, "Its own coherent read clears only its own retirement")
-        library.retire(); await reopened.cache.close()
     }
 
     /// Overflow leaves no record of which tips left, so each chat in the scope needs its own proof.
@@ -2481,7 +2153,7 @@ import BottoCore
         let filling = ArtifactCache(root: fixture.root, limits: limits), session = filling.session(scope: fixture.scope)
         try await session.upsert(.init(identity: try replacementTip(of: subject), botName: "Helper", title: "Main", messages: [],
             updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil, retiredStoredIDs: [subject.stored.bytes]))
-        // The row budget moves that retirement to its guard. Overflow then replaces the guard.
+        // The row budget evicts that row and leaves its guard. Overflow then replaces the guard.
         try await session.upsert(.init(identity: service.second, botName: "Other", title: "Other", messages: [],
             updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil))
         let guards: [(profile: ExactID, root: ExactID)] = try (0..<3).map { (subject.profile, try ExactID("guard-\($0)")) }
@@ -2496,7 +2168,7 @@ import BottoCore
                                                 1: .init(messages: [], nextOffset: nil, isComplete: true)]
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(!searchFinds("Disputed needle", in: library), "A directory report releases nothing")
-        #expect(!searchFinds("Peer needle", in: library), "Nothing shows this chat was never retired")
+        #expect(!searchFinds("Peer needle", in: library), "Overflow names no chat, so this one waits too")
         #expect(library.statusAction == .retry)
 
         service.historyPages[subject] = nil
@@ -2513,20 +2185,8 @@ import BottoCore
         unrelated.retire(); library.retire(); await cache.close()
     }
 
-    private enum SameLaunchRestoration { case retryable, reconciled }
-
-    /// Another chat stays unchecked, so restoration keeps retrying.
+    /// Another chat stays unchecked, so restoration keeps retrying and the overflow marker holds a returning tip.
     @Test func overflowDuringRetryableRestorationKeepsARetiredTipWaiting() async throws {
-        try await expectRetiredTipWaitsThroughOverflow(restoration: .retryable)
-    }
-
-    /// Restoration has finished, so only `seed`, which every Library tab entry runs, reads recovery again.
-    @Test func overflowAfterReconciliationKeepsARetiredTipWaiting() async throws {
-        try await expectRetiredTipWaitsThroughOverflow(restoration: .reconciled)
-    }
-
-    /// Overflow replaces saved retirements with a marker while the launch that holds them keeps running.
-    private func expectRetiredTipWaitsThroughOverflow(restoration: SameLaunchRestoration) async throws {
         let fixture = RetainedDispute(customChat: true), service = fixture.service, subject = fixture.subject
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         fixture.prepare()
@@ -2534,9 +2194,8 @@ import BottoCore
         let replacementRow = ChatMessage(id: "replacement-row", role: .assistant, text: "Replacement needle", timestamp: Date(timeIntervalSince1970: 1))
         let unreadMain = SessionIdentity(profile: service.first.profile, root: service.first.root, stored: try ExactID("unread-main"),
             aliases: [service.first.root])
-        let main = restoration == .retryable ? unreadMain : service.first
         service.messages[replacement] = [replacementRow]; service.replacementSecond = replacement
-        service.summaryDates = [replacement: Date(timeIntervalSince1970: 1_000), main: Date(timeIntervalSince1970: 9_000_000_000)]
+        service.summaryDates = [replacement: Date(timeIntervalSince1970: 1_000), unreadMain: Date(timeIntervalSince1970: 9_000_000_000)]
 
         // Only two chats fit in the Library, and only four guards in the ledger.
         var cacheLimits = ArtifactCache.Limits(); cacheLimits.chatCount = 2
@@ -2552,26 +2211,23 @@ import BottoCore
             library.seed(book: book, bots: service.profiles)
             await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         }
-        if restoration == .retryable {
-            // This read names a tip the saved row doesn't, proves nothing, and its next read fails.
-            service.replacementFirst = unreadMain; service.messages[unreadMain] = [fixture.peer]
-            service.historyFailures[unreadMain] = HermesServiceError.disconnected
-            library.accept(identity: unreadMain, snapshot: .init(id: unreadMain.root.text, storedID: unreadMain.stored.text,
-                profileID: unreadMain.profile.text, messages: [fixture.peer]), title: "Main",
-                evidence: .read(startedAt: .now, observedSource: nil))
-        }
+        // This read names a tip the saved row doesn't, proves nothing, and its next read fails.
+        service.replacementFirst = unreadMain; service.messages[unreadMain] = [fixture.peer]
+        service.historyFailures[unreadMain] = HermesServiceError.disconnected
+        library.accept(identity: unreadMain, snapshot: .init(id: unreadMain.root.text, storedID: unreadMain.stored.text,
+            profileID: unreadMain.profile.text, messages: [fixture.peer]), title: "Main",
+            evidence: .read(startedAt: .now, observedSource: nil))
         library.setOnline(true)
         await enterLibrary()
         #expect(await eventually { searchFinds("Replacement needle", in: library) }, "This chat reconciled on its own")
-        #expect(library.chats.contains { $0.identity.root == main.root } == (restoration == .reconciled),
-            "Only `retryable` leaves another chat unchecked")
+        #expect(!library.chats.contains { $0.identity.root == unreadMain.root }, "Another chat stays unchecked")
 
-        // Newer chats push the reconciled chat out, so its retired tip has no row to live on.
-        // Each one that follows leaves a guard behind, until the ledger cannot hold them.
+        // Newer chats push the reconciled chat out. Each one that follows leaves a guard
+        // behind, until the ledger cannot hold them.
         service.omitSecond = true
         var overflowed = false
         for index in 0..<8 where !overflowed {
-            let created = SessionIdentity(profile: main.profile, root: try ExactID("created-\(index)"),
+            let created = SessionIdentity(profile: unreadMain.profile, root: try ExactID("created-\(index)"),
                 stored: try ExactID("created-\(index)"), aliases: [])
             service.createdIdentity = created
             service.summaryDates[created] = Date(timeIntervalSince1970: 5_000_000_000 + Double(index))
@@ -2592,110 +2248,6 @@ import BottoCore
         #expect(await eventually { searchFinds("Disputed needle", in: library) }, "Its own coherent read admits it")
         #expect(try await session.metadataRecovery().all, "A read cannot clear the marker")
         library.retire(); await cache.close()
-    }
-
-    /// A launch keeps retired tips only within the evidence budget. Past it, a chat waits for proof on any tip:
-    /// that costs availability on a tip nothing retired, and no evidence is lost.
-    @Test func retirementsPastTheEvidenceBudgetHoldTheirChat() async throws {
-        let fixture = RetainedDispute(customChat: true), service = fixture.service
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        func created(_ stored: String, root: String = "created") throws -> SessionIdentity {
-            SessionIdentity(profile: service.first.profile, root: try ExactID(root), stored: try ExactID(stored), aliases: [])
-        }
-        service.messages[service.first] = []; service.messages[service.second] = []
-        let cache = ArtifactCache(root: fixture.root), session = cache.session(scope: fixture.scope)
-        let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 1, chatCount: 1), cache: session)
-        func enter(_ source: SessionIdentity, at time: TimeInterval) async {
-            service.createdIdentity = source
-            service.summaryDates[source] = Date(timeIntervalSince1970: time)
-            await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        }
-        library.setOnline(true)
-
-        // The first chat's retired tip fills the budget when a newer chat pushes it out.
-        let moved = try replacementTip(of: service.second)
-        service.summaryDates = [service.first: Date(timeIntervalSince1970: 1_000), service.second: Date(timeIntervalSince1970: 6_000_000_000),
-            moved: Date(timeIntervalSince1970: 6_000_000_000)]
-        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        service.replacementSecond = moved; service.messages[moved] = []
-        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        service.omitSecond = true
-        await enter(try created("created-first"), at: 7_000_000_000)
-        try #require(!library.chats.contains { $0.identity.root == service.second.root })
-
-        // This chat's retired tip finds no room when the same thing happens to it.
-        await enter(try created("created-second"), at: 7_000_000_000)
-        await enter(try created("newest", root: "newest"), at: 8_000_000_000)
-        let returned = try created("created-third")
-        try #require(!library.chats.contains { $0.identity.root == returned.root })
-
-        // Nothing retired this tip, so only the hold can refuse it.
-        let row = ChatMessage(id: "returned-row", role: .assistant, text: "Returned needle", timestamp: Date(timeIntervalSince1970: 1))
-        service.messages[returned] = [row]
-        service.historyPages[returned] = [0: .init(messages: [row], nextOffset: 1, isComplete: true),
-                                          1: .init(messages: [], nextOffset: nil, isComplete: true)]
-        await enter(returned, at: 9_000_000_000)
-        #expect(!library.chats.contains { $0.identity.root == returned.root && !$0.messages.isEmpty }, "Its evidence didn't fit, so it holds")
-
-        service.historyPages[returned] = nil
-        await enter(returned, at: 9_000_000_000)
-        #expect(await eventually { searchFinds("Returned needle", in: library) }, "Its own coherent read lifts the hold")
-        library.retire(); await cache.close()
-    }
-
-    @Test func repeatedSeedsKeepAnEvictedDisputesLossTime() async throws {
-        let setup = try await retentionDispute(.messageCount), service = setup.service, library = setup.library
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        try await evict(setup)
-        let reading = StoreTestBarrier(); service.historyBarriers[setup.subject] = reading
-        defer { reading.release() }
-        service.omitSecond = false
-        let scanning = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
-        try #require(await reading.waitUntilEntered(timeout: .seconds(5)))
-
-        // This proof started after the loss. Replaying what was lost cannot make it look older.
-        for _ in 0..<2 {
-            library.seed(book: setup.workspace.persisted(), bots: service.profiles)
-            await library.restore()
-        }
-        service.historyBarriers[setup.subject] = nil; reading.release(); await scanning.value
-        #expect(setup.bookDisputes == [setup.unnamed])
-        #expect(await eventually { artifact(setup.fixture.disputed.id, in: library) != nil })
-        await setup.close()
-    }
-
-    @Test func evictionWithoutADisputeStaysOrdinaryContent() async throws {
-        let setup = try await retentionDispute(.chatCount), library = setup.library
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        try await evict(setup, disputing: false)
-        await setup.returnWithoutProof()
-        #expect(await eventually { artifact(setup.fixture.disputed.id, in: library) != nil }, "Nothing here needs proof")
-        #expect(await eventually { artifact(setup.fixture.sibling.id, in: library) != nil })
-        await setup.close()
-    }
-
-    @Test func bookOnlyDisputesThatCannotFitHoldAnAbsentChat() async throws {
-        let setup = try await retentionDispute(.messageCount), service = setup.service, library = setup.library
-        defer { try? FileManager.default.removeItem(at: setup.fixture.root) }
-        // A coherent first read would resolve one claim, and the other alone fits. This read's one row fits beside the peers.
-        service.historyPages[setup.subject] = [0: .init(messages: [setup.fixture.disputed], nextOffset: 1, isComplete: true),
-                                               1: .init(messages: [], nextOffset: nil, isComplete: true)]
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        try #require(await eventually { artifact(setup.fixture.disputed.id, in: library) != nil })
-        try #require(service.historyOffsets.contains(1), "A second page leaves no single response to prove identity")
-        service.omitSecond = true; await setup.refresh()
-        var book = setup.workspace.persisted()
-        let disputedBook = book.dispute(setup.disputes, from: setup.subject, in: setup.chat)
-        try #require(disputedBook)
-        try #require(book.record(setup.chat)?.transcript?.unavailableMessageIDs == setup.disputes)
-        let peerRows = service.messages[setup.peerSource]?.count ?? 0
-        try #require(peerRows + setup.disputes.count > setup.limits.messageCount, "Both claims cannot fit beside the peers")
-        await setup.refresh(with: book)
-
-        await setup.returnWithoutProof(with: book)
-        try await expectWithheld(setup)
-        await setup.close()
     }
 
     @Test func repeatedBookSeedsCannotFenceAnAbsentChatsReturn() async throws {
@@ -4888,7 +4440,7 @@ import BottoCore
         reopened.retire(); await reopenedCache.close()
     }
 
-    @Test(arguments: ["legacy", "retired", "fresh", "proofless"])
+    @Test(arguments: ["legacy", "retired", "fresh"])
     func cachedSuccessorRetirementOutranksOnlyAnInertOlderBook(proof: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -4903,11 +4455,10 @@ import BottoCore
         let id = book.merge(.init(identity: service.first, title: "Main", isCanonical: true, persistence: .durable))
         book.cache(snapshot, for: id)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        // These reads land after SQL returns the saved row and before the Library consumes it.
-        let readsBeforeLoad = proof == "fresh" || proof == "proofless"
+        // This read lands after SQL returns the saved row and before the Library consumes it.
         let loading = StoreTestBarrier(), loadPause = NextLibraryProjectionPause()
         defer { loading.release() }
-        if readsBeforeLoad { await loadPause.arm() }
+        if proof == "fresh" { await loadPause.arm() }
         let cache = ArtifactCache(root: root, afterChatLoad: { if await loadPause.take() { await loading.wait() } })
         let session = cache.session(scope: scope)
         try await session.upsert(.init(identity: successor, botName: "Helper", title: "Main", messages: [new], updatedAt: nil,
@@ -4915,29 +4466,15 @@ import BottoCore
             retiredStoredIDs: proof == "legacy" ? nil : [service.first.stored.bytes]))
         let library = WorkspaceLibrary(service: service, cache: session)
         library.seed(book: book, bots: service.profiles)
-        if readsBeforeLoad {
+        if proof == "fresh" {
             try #require(await loading.waitUntilEntered(timeout: .seconds(5)), "SQL returned the saved row")
             try #require(library.chats.isEmpty, "The Library hasn't consumed it")
-            // Seeing the source proves nothing about its rows. A proof must name them all.
-            let identityRead = proof == "fresh"
-                ? ConversationIdentityRead(identity: service.first, messageIDs: Set(snapshot.messages.map { Data($0.id.utf8) })) : nil
             library.accept(identity: service.first, snapshot: snapshot, title: "Main",
-                evidence: .read(startedAt: .now, observedSource: service.first, identityRead: identityRead))
+                evidence: .read(startedAt: .now, observedSource: service.first))
             try #require(library.indexingMetrics.acceptedSnapshots == 1, "The read landed first")
             loading.release()
         }
         await library.restore()
-        if proof == "proofless" {
-            #expect(try await eventually {
-                let saved = try await session.loadChats().first
-                return saved?.identity.stored == service.first.stored && saved?.messages.isEmpty == true
-                    && saved?.retiredStoredIDs?.contains(service.first.stored.bytes) == true
-            }, "The tip still awaits proof, and a restart keeps it waiting")
-            #expect(library.artifacts.isEmpty && library.chats.allSatisfy(\.messages.isEmpty))
-            #expect(service.historyOffsets.isEmpty && service.downloadCount == 0)
-            library.retire(); await cache.close()
-            return
-        }
         let expected = proof == "retired" ? successor : service.first
         if proof == "fresh" {
             let deadline = ContinuousClock.now + .seconds(5)

@@ -588,25 +588,19 @@ from the fresh read therefore survives persistence and a cold reopen.
 Legacy records without removal metadata carry no known removals. Seeds remain
 partial, and missing evidence cannot clear a known quarantine. Observed tip
 changes keep a bounded retired-stored-ID set, including through a failed history
-read and cold restore from an older chat book. Returning to a retired tip needs
-its own coherent identity read before Library admits rows. A coherent read made
-before restoration can outrank saved retirement of that same tip; a source
-observation or inherited snapshot cannot. Message exclusions and
+read and cold restore from an older chat book. A fresh service-proven source can
+restore a retired tip. Current network source proof outranks older persisted tip
+retirement during startup; an inherited snapshot does not. Message exclusions and
 retired stored IDs share the retained count and byte limits. Unrelated rows and
 captures remain available. Derived gallery provenance changes reconcile capture
 consumers in the same actor turn as canonical changes.
 
-Eviction transfers retired stored IDs to the chat's recovery guard, and the next
-saved row carries them again. This optional ledger field leaves SQLite unchanged;
-older ledgers still decode, but downgrading loses the new retirement guarantees.
-Recovery rereads retain retirement evidence already known in this launch.
-Its runtime mirror uses the existing evidence count and byte budgets; evidence
-that cannot fit leaves a bounded scope hold requiring a coherent read. Losing a
-disputed record records that hold after restoration as well as during startup.
-A returning long chat without an exhaustive identity response can stay out of
-Library indefinitely while fetched chat history remains usable. Failed journal
-writes provide no crash-durability guarantee. See
-[retired-tip evidence](adr/0012-retired-tip-evidence.md) for the trade-off.
+Negative evidence lasts as long as its retained row, the existing restoration
+holds and Book's own claims. Eviction or storage failure can lose a row's
+disputes and retired stored IDs. A tip that returns afterward follows the
+ordinary source rules above, and Library promises neither to remember it nor to
+withhold it until proof. The stronger contract is
+[deferred](adr/0012-retired-tip-evidence.md).
 
 The scene owns a short-lived focus receipt with the actual attached message
 revision. The native controller reveals a measured glyph range and retains its
