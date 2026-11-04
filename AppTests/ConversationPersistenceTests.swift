@@ -104,6 +104,22 @@ struct ConversationPersistenceTests {
         #expect(book.record(chat)?.transcript?.messages.first?.canonicalText.map { Data($0.utf8) } == Data(incoming.utf8))
     }
 
+    @Test func quietAppendCannotProveItselfBesideADisclosureRevision() throws {
+        var (book, chat, summary) = try projectedChat("stored")
+        var snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
+            messages: [.init(id: "stored:row:1", role: .user, text: "Asked", workDetailsID: "first")])
+        book.cache(snapshot, for: chat)
+        book.update(chat) { $0.displayed(snapshot, acknowledging: ChatSummaryEvidence(summary), at: .now) }
+        snapshot.messages.append(.init(id: "stored:row:2", role: .assistant, text: "Hidden", displayKind: "hidden"))
+        snapshot.messages[0].workDetailsID = "second"
+        let quiet = SessionSummary(identity: summary.identity, title: "Main", isCanonical: true, persistence: .durable,
+            preview: "Asked", messageCount: 2)
+        _ = book.merge(quiet)
+        book.cache(snapshot, for: chat, readEvidence: .init(summaryObservedBeforeRead: quiet))
+        #expect(book.record(chat)?.isUnread == true)
+        #expect(book.record(chat)?.transcript?.messages.first?.workDetailsID == "second")
+    }
+
     @Test func identityMatchingRequiresOneProfileOwnedLineage() throws {
         let profile = try ExactID("milo"), foreign = try ExactID("scout"), alias = try ExactID("shared-tip")
         let source = SessionIdentity(profile: profile, root: try ExactID("source"), stored: alias, aliases: [alias])
