@@ -16,14 +16,15 @@ DEVICE = "D631DAA3-17A3-44CD-B6E9-B66986AA7312"
 
 
 class NativeArtifactTests(unittest.TestCase):
-    def run_native(self, status, *, build_status=0, produces_result=True, build_produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, workflow_event=None, cancel_stage="", cancel_signal=signal.SIGTERM):
+    def run_native(self, status, *, build_status=0, produces_result=True, build_produces_result=True, parent_inside_package=False, finalization_failure=None, suite="", passed_tests=1, result_cases=(("FixtureTests/example()", "Passed"),), workflow_event=None, cancel_stage="", cancel_signal=signal.SIGTERM):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         base = Path(temporary.name).resolve()
         repo = base / "repo"
         (repo / "scripts").mkdir(parents=True)
         shutil.copy2(SCRIPT, repo / "scripts/check-native.sh")
-        shutil.copy2(SCRIPT.parent / "dev-process.py", repo / "scripts/dev-process.py")
+        for helper in ("dev-process.py", "native-selection.py"):
+            shutil.copy2(SCRIPT.parent / helper, repo / "scripts" / helper)
         tools = base / "bin"
         tools.mkdir()
         uuid = tools / "uuidgen"
@@ -66,8 +67,13 @@ def finish(status):
     sys.exit(status)
 if enumerating:
     assert (derived / "build-data").is_file()
-    Path(args[args.index("-test-enumeration-output-path") + 1]).write_text(
-        "BottoTests/FixtureTests/example()\\nBottoTests/OtherTests/unrelated()\\n")
+    selection = next(arg for arg in args if arg.startswith("-only-testing:")).removeprefix("-only-testing:")
+    # Xcode's -only-testing inventory marks an exact parameterized selection as disabled.
+    active = lambda test: test.startswith(selection + "/") or (test == selection and not test.endswith(":)"))
+    lines = ["\\t" + test + ("" if active(test) else " (disabled)") for test in (
+        "BottoTests/FixtureTests/example()", "BottoTests/FixtureTests/seeded(value1:)",
+        "BottoTests/OtherTests/unrelated()")]
+    Path(args[args.index("-test-enumeration-output-path") + 1]).write_text("\\n".join(["Plan Botto"] + lines) + "\\n")
     finish(0)
 if action == "test-without-building":
     if not (derived / "build-data").is_file():
@@ -85,8 +91,14 @@ finish(int(os.environ["CI_BUILD_STATUS"] if action == "build-for-testing" else o
         xcrun = tools / "xcrun"
         xcrun.write_text(f'''#!{sys.executable}
 import json, os, sys
-assert sys.argv[1:5] == ["xcresulttool", "get", "test-results", "summary"]
-print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTests": 0, "skippedTests": 0}}))
+assert sys.argv[1:4] == ["xcresulttool", "get", "test-results"]
+if sys.argv[4] == "summary":
+    print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTests": 0, "skippedTests": 0}}))
+else:
+    assert sys.argv[4] == "tests"
+    print(json.dumps({{"testNodes": [{{"nodeType": "Test Plan", "children": [
+        {{"nodeType": "Test Case", "nodeIdentifier": name, "result": result}}
+        for name, result in json.loads(os.environ["CI_RESULT_CASES"])]}}]}}))
 ''')
         xcrun.chmod(0o755)
         if finalization_failure:
@@ -101,7 +113,7 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                            RUNNER_TEMP=str(parent), BOTTO_TEST_DESTINATION=f"platform=iOS Simulator,id={DEVICE}",
                            GITHUB_OUTPUT=str(base / "github-output"),
                            CI_COMMAND_RECORD=str(record), CI_NATIVE_STATUS=str(status), CI_BUILD_STATUS=str(build_status),
-                           CI_PASSED_TESTS=str(passed_tests),
+                           CI_PASSED_TESTS=str(passed_tests), CI_RESULT_CASES=json.dumps(result_cases),
                            CI_CANCEL_STAGE=cancel_stage, CI_WRITER_RECORD=str(base / "writer.json"),
                            CI_PRODUCES_RESULT="1" if produces_result else "0",
                            CI_BUILD_PRODUCES_RESULT="1" if build_produces_result else "0")
@@ -335,7 +347,9 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                             for command in json.loads(record.read_text())))
 
     def test_invalid_selector_syntax_stops_before_xcode(self):
-        for suite in ("FixtureTests; touch other-data", "../FixtureTests"):
+        for suite in ("FixtureTests; touch other-data", "../FixtureTests", "FixtureTests/seeded(value1)",
+                      "FixtureTests/seeded(first:second)", "FixtureTests/seeded(:)", "FixtureTests(value1:)",
+                      "BottoTests/FixtureTests"):
             with self.subTest(suite=suite):
                 _, _, record, result = self.run_native(0, suite=suite)
                 self.assertNotEqual(result.returncode, 0)
@@ -351,6 +365,46 @@ print(json.dumps({{"passedTests": int(os.environ["CI_PASSED_TESTS"]), "failedTes
                                  ["build-for-testing", "enumerate"])
                 self.assertEqual((repo / ".artifacts/CIResults-Build-fixture-run.xcresult/retained-proof").read_text(),
                                  "build-for-testing proof")
+
+    def test_exact_parameterized_method_runs_when_its_result_bundle_shows_it_passed(self):
+        selector = "FixtureTests/seeded(value1:)"
+        _, _, record, result = self.run_native(0, suite=selector, result_cases=((selector, "Passed"),))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c["action"] for c in json.loads(record.read_text())],
+                         ["build-for-testing", "enumerate", "test-without-building"])
+        self.assertIn("result bundle must show it passed", result.stdout)
+        self.assertIn("Native results: 1 passed", result.stdout)
+
+    def test_empty_parameterized_run_fails_and_names_the_suite_fallback(self):
+        repo, _, _, result = self.run_native(0, suite="FixtureTests/seeded(value1:)", passed_tests=0, result_cases=())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("check-native.sh FixtureTests", result.stderr)
+        self.assertEqual((repo / ".artifacts/CIResults-fixture-run.xcresult/retained-proof").read_text(),
+                         "test-without-building proof")
+
+    def test_passing_run_must_contain_the_selected_method(self):
+        selector = "FixtureTests/seeded(value1:)"
+        for cases in (((selector, "Skipped"), ("FixtureTests/example()", "Passed")),
+                      (("FixtureTests/seeded(value2:)", "Passed"),),
+                      (("OtherTests/unrelated()", "Passed"),)):
+            with self.subTest(cases=cases):
+                _, _, _, result = self.run_native(0, suite=selector, result_cases=cases)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"no passing result for {selector}", result.stderr)
+
+    def test_passing_run_must_contain_the_selected_suite(self):
+        _, _, _, result = self.run_native(0, suite="FixtureTests", result_cases=(("OtherTests/unrelated()", "Passed"),))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no passing result for FixtureTests", result.stderr)
+
+    def test_unsigned_forms_of_a_parameterized_method_stop_after_discovery_and_name_its_identifier(self):
+        for selector in ("FixtureTests/seeded", "FixtureTests/seeded()"):
+            with self.subTest(selector=selector):
+                _, _, record, result = self.run_native(0, suite=selector)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([c["action"] for c in json.loads(record.read_text())],
+                                 ["build-for-testing", "enumerate"])
+                self.assertIn("FixtureTests/seeded(value1:)", result.stderr)
 
     def test_empty_success_cannot_claim_native_coverage_and_keeps_its_result(self):
         repo, parent, _, result = self.run_native(0, passed_tests=0)

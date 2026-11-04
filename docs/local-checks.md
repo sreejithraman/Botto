@@ -35,8 +35,14 @@ authorize TestFlight: delivery requires the full successful iOS **push** run
 for the exact current `main` revision.
 
 Public repositories run automatically; private repositories use manual dispatch.
-The split workflow needs fresh hosted verification. Existing native readiness
-failures remain under investigation; their tests stay in the main release gate.
+Hosted `verify` passed in
+[run 41128591325](https://github.com/sreejithraman/Botto/actions/runs/41128591325)
+on `e9e17b8` with the earlier single job. The split workflow passed in
+[run 41649696137](https://github.com/sreejithraman/Botto/actions/runs/41649696137)
+on `9c7412f`: 864 native tests passed and 2 were skipped. A hosted pass covers
+that revision's automated suites, not a product recipe. Existing native
+readiness failures remain under investigation; their tests stay in the main
+release gate.
 
 `./scripts/check-ci.sh` remains the full local sequence: core, tooling, then
 native checks. Native-only and focused diagnosis use
@@ -48,10 +54,30 @@ BOTTO_TEST_DESTINATION='platform=iOS Simulator,id=YOUR-SIMULATOR-UUID' \
 ```
 
 Omit the selector to run the full native suite. A selector may name a suite or
-an exact `Suite/testFunction(...)`; quote parentheses. The runner checks selector
-syntax before building, then uses Xcode's discovery of the built tests before
-executing a focused selection. A helper, wrong signature, or empty selection
-cannot claim a passing run. Discovered identifiers, build/test status and
+an exact method as Xcode lists it, without the `BottoTests/` prefix:
+`Suite/testFunction()` or `Suite/testFunction(label:)`. An XCTest method may also
+omit its parentheses. Quote parentheses.
+
+[native-selection.py](../scripts/native-selection.py) rejects malformed selectors
+before building, then checks Xcode's discovery of the built tests. A parameterized
+Swift Testing method needs its labels: Xcode runs nothing for
+`Suite/testFunction` or `Suite/testFunction()`, and the runner stops and names the
+listed identifier. A helper, wrong signature, or empty selection cannot claim a
+passing run: every focused run must also show a passing result for its selection
+in the `.xcresult`.
+
+Xcode's filtered inventory lists an exact parameterized selection as `(disabled)`,
+even when `-only-testing` runs it, so the runner accepts that listed identifier
+and relies on the `.xcresult`. Hosted
+[run 41789426696](https://github.com/sreejithraman/Botto/actions/runs/41789426696)
+ran both arguments of a parameterized method this way on Xcode 27.1 with an iOS
+27.0 Simulator. If a focused method executes nothing, the runner fails and names
+the enclosing suite. Suite selection is the proven fallback: hosted
+[run 41338950508](https://github.com/sreejithraman/Botto/actions/runs/41338950508)
+ran both arguments of a parameterized method. Confirm that the intended cases
+executed.
+
+Discovered identifiers, build/test status and
 `.xcresult` survive result finalization failures where possible. The hosted
 native job has a 45-minute budget for the build, Simulator startup, full suite,
 and result upload. It registers external result, discovery, and native-log paths
@@ -73,8 +99,6 @@ Focused manual runs report `diagnostic-result`, not the required `verify`, and
 cannot authorize TestFlight delivery. Check runs are independent, so a manual
 run cannot cancel the current `main` check. A focused
 pass proves only the selected cases; record the actual executed test count.
-If Xcode lists a requested method as disabled, select its enclosing suite and
-verify that the intended cases actually execute.
 
 Both native runners disable verbose Simulator failure diagnostics by default with
 `-collect-test-diagnostics never`. Test output and the `.xcresult` under
