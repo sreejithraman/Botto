@@ -1775,3 +1775,26 @@ startup budget, while a separate Simulator's runner also stalled. The shared
 cause is unestablished. No renderer code or budget changed, and a passing
 isolated run does not establish a whole-suite repair. Final integrated review
 and the unfiltered gate remain required.
+
+### Full gate and directory-absence quarantine
+
+The unfiltered `scripts/check.sh` run on `1a96dc0` passed: 497 Core tests,
+the MainActor build, and 1,095 native and UI test functions, with no failures.
+Four Core and 18 native/UI tests were skipped by explicit fixture, layout or
+measurement conditions. Seven Core known issues are deliberate failure controls
+matched by named comments. Python tooling passed 252 tests. Native Save and
+Files reopen passed, and independent provider readback matched all 80 original
+bytes. The long-chat and rich HTML cases passed with unchanged budgets. Other
+leases overlapped, so this was not a quiet-host measurement. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/full-gate37/`.
+
+The source review then identified a directory-absence gap outside that gate's
+coverage. Five regressions reproduced lost disputes and proofless re-exposure
+on unchanged production; the different-tip control passed. Preserving same-tip
+disputes through absence and restoration, while making quarantine leave
+directory presence unchanged, passed 157 Library and 62 retention tests.
+All three runs used identical test bytes. They ran on the isolated clone, which
+differs from the parent in other files. The parent renamed one older test to
+describe its retained-absence behavior; its assertions are unchanged. Evidence
+is at `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-38/outputs/`.
+Final integrated review and a full gate on this repair remain required.

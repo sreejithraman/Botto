@@ -194,6 +194,8 @@ can release them when it proves no saved source exists for their chat.
 A hold withholds a read's rows, never its disputes. A withheld dispute advances
 the chat's existing acceptance fence and retains quarantine without proving a
 source or lifting the hold. Older scans yield, and proofless reads cannot clear it.
+Directory absence removes rows while retaining same-tip disputes. Quarantine
+does not observe directory presence, so recording a dispute cannot reopen a chat.
 Hint admission reports either an installed source or a deferred result. Only
 installed sources receive restoration receipts. A deferred hint keeps its scope
 pending while independent saved peers continue loading. Hidden hints rank after

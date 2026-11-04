@@ -922,13 +922,25 @@ import BottoCore
     @MainActor private struct RetainedDispute {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let service = LibraryTestService(secondBot: true)
+        let service: LibraryTestService
+        /// The chat holding the disputed row. A custom chat can leave the directory while Main stays.
+        let subject: SessionIdentity
         let disputed = ChatMessage(id: "main-file", role: .assistant, text: "Disputed needle\nMEDIA:/disputed.txt", timestamp: Date(timeIntervalSince1970: 1))
         let sibling = ChatMessage(id: "main-sibling", role: .assistant, text: "Sibling needle\nMEDIA:/sibling.txt", timestamp: Date(timeIntervalSince1970: 2))
         let peer = ChatMessage(id: "side-file", role: .assistant, text: "Peer needle\nMEDIA:/peer.txt", timestamp: Date(timeIntervalSince1970: 3))
+        init(customChat: Bool = false) {
+            let service = LibraryTestService(secondBot: !customChat)
+            self.service = service
+            subject = customChat ? service.second : service.first
+        }
         var disputedID: Data { Data(disputed.id.utf8) }
         var failure: ConversationHistoryPage.Failure {
-            .init(identity: service.first, unavailableMessageIDs: [disputedID])
+            .init(identity: subject, unavailableMessageIDs: [disputedID])
+        }
+        /// A second page leaves no single response to prove identity, though the read completes the chat.
+        var prooflessPages: [Int: ConversationHistoryPage] {
+            [0: .init(messages: [disputed], nextOffset: 1, isComplete: true),
+             1: .init(messages: [sibling], nextOffset: nil, isComplete: true)]
         }
         /// Both shapes Core restores from repeated raw IDs. A hidden copy leaves one visible row.
         func repeatedRead(visibleCopies: Bool = false) -> LibraryTestService.RepeatedRead {
@@ -936,7 +948,8 @@ import BottoCore
             return .init(messageIDs: [disputedID], messages: visibleCopies ? [disputed, copy, sibling] : [disputed, sibling])
         }
         func prepare() {
-            service.messages[service.first] = [disputed, sibling]; service.messages[service.second] = [peer]
+            service.messages[subject] = [disputed, sibling]
+            service.messages[subject == service.first ? service.second : service.first] = [peer]
             service.previewEnabled = true; service.previewHasEarlierMessages = true
         }
         func originalKey() async throws -> ArtifactOriginalKey {
@@ -948,8 +961,8 @@ import BottoCore
     /// A saved chat and its Library rows behind a connected store.
     @MainActor private struct ConnectedDispute {
         let store: AppStore, cache: ArtifactCache, session: ArtifactCacheSession
-        let vault: MemoryConnectionStorage, configuration: ConnectionConfiguration
-        var chat: ChatID? { store.chats.persisted().records.first { $0.binding.identity?.root.text == "main" }?.id }
+        let vault: MemoryConnectionStorage, configuration: ConnectionConfiguration, subject: SessionIdentity
+        var chat: ChatID? { store.chats.persisted().records.first { $0.binding.identity?.root == subject.root }?.id }
         func bookDisputes(_ id: Data) -> Bool {
             guard let chat else { return false }
             return store.chats.persisted().record(chat)?.transcript?.unavailableMessageIDs?.contains(id) == true
@@ -960,13 +973,17 @@ import BottoCore
         let service = fixture.service
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://\(UUID()).example")!)
         var history = LocalHistory(); history.bots = service.profiles; history.book = savedBook(service)
+        if fixture.subject != service.first, let chat = history.book.records.first(where: { $0.binding.identity == fixture.subject })?.id {
+            history.book.updatePreference(fixture.subject.profile) { $0.preferred = chat }
+        }
         try history.save(for: configuration.id)
         let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: nil, username: Data(), provider: nil)
         let vault = MemoryConnectionStorage(saved: configuration), cache = ArtifactCache(root: fixture.root)
         let store = AppStore(service: service, persistence: vault.persistence, artifactCache: cache)
         try #require(await store.connect(configuration))
-        return .init(store: store, cache: cache, session: cache.session(scope: scope), vault: vault, configuration: configuration)
+        return .init(store: store, cache: cache, session: cache.session(scope: scope), vault: vault, configuration: configuration,
+            subject: fixture.subject)
     }
 
     /// Flushes both saved owners, then launches offline from them alone.
@@ -1031,7 +1048,7 @@ import BottoCore
 
     private func saved(_ fixture: RetainedDispute, in session: ArtifactCacheSession, disputedWithdrawn: Bool) async throws -> Bool {
         try await eventually {
-            let row = try await session.loadChats().first { $0.identity == fixture.service.first }
+            let row = try await session.loadChats().first { $0.identity == fixture.subject }
             return row != nil && (row?.unavailableMessageIDs?.contains(fixture.disputedID) == true) == disputedWithdrawn
         }
     }
@@ -1525,7 +1542,7 @@ import BottoCore
         try await checkDisputeBeatsAnOlderHeldScan(retrying: false)
     }
 
-    /// More than one page proves no identity, yet it does complete the chat and verify the rows it lists.
+    /// A proofless read still verifies the rows it lists, so only held evidence keeps the disputed one out.
     @Test func prooflessReadCannotShowAHiddenDispute() async throws {
         let fixture = RetainedDispute(), service = fixture.service
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1541,8 +1558,7 @@ import BottoCore
         await finishScan()
 
         try FileManager.default.removeItem(at: restoration.ledger)
-        service.historyPages[service.first] = [0: .init(messages: [fixture.disputed], nextOffset: 1, isComplete: true),
-                                               1: .init(messages: [fixture.sibling], nextOffset: nil, isComplete: true)]
+        service.historyPages[service.first] = fixture.prooflessPages
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(restoration.disputes(in: chat) == [fixture.disputedID])
         #expect(await eventually { artifact(fixture.sibling.id, in: library) != nil })
@@ -1773,7 +1789,7 @@ import BottoCore
         await cache.close()
     }
 
-    @Test func newerDisputeOutlivesLibraryLosingItsOwnCopy() async throws {
+    @Test func newerDisputeSurvivesDirectoryAbsenceAndFailedHistory() async throws {
         let fixture = RetainedDispute(), service = fixture.service
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         fixture.prepare()
@@ -1791,7 +1807,7 @@ import BottoCore
         library.accept(identity: service.second, snapshot: disputed, title: "Peer", evidence: .disputed(startedAt: .now))
         #expect(!searchFinds("Peer needle", in: library))
 
-        // Directory absence clears Library's evidence; the same tip then returns without a new read.
+        // The chat leaves the directory; the same tip then returns without a new read.
         service.omitSecond = true
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         service.omitSecond = false; service.failingHistorySource = service.second
@@ -1800,6 +1816,188 @@ import BottoCore
         await enterLibraryTab(library, book: book, service: service)
         #expect(!searchFinds("Peer needle", in: library), "Book's newer dispute stands against the older scan")
         await cache.close()
+    }
+
+    /// Leaves Book disputing a chat the directory no longer lists. By default the inbox
+    /// response stays held until the scan that omitted the chat has finished.
+    private func disputeAbsentChat(_ connected: ConnectedDispute, fixture: RetainedDispute,
+                                   failure: ConversationHistoryPage.Failure? = nil, responseFirst: Bool = false) async throws {
+        let service = fixture.service, store = connected.store, profiles: Set<ExactID> = [fixture.subject.profile]
+        await store.refreshLibrary(force: true)
+        try #require(await eventually { artifact(fixture.disputed.id, in: store.library) != nil })
+        service.previewFailure = failure ?? fixture.failure
+        if responseFirst {
+            await store.chats.refreshInboxHistory(profiles: profiles)
+            service.omitSecond = true
+            await store.refreshLibrary(force: true)
+        } else {
+            let response = StoreTestBarrier(); service.previewBarrier = response
+            defer { response.release() }
+            let reading = Task { await store.chats.refreshInboxHistory(profiles: profiles) }
+            try #require(await response.waitUntilEntered(timeout: .seconds(5)))
+            service.omitSecond = true
+            await store.refreshLibrary(force: true)
+            try #require(!store.library.chats.contains { $0.identity.root == fixture.subject.root }, "The omitting scan finishes first")
+            service.previewBarrier = nil; response.release(); await reading.value
+        }
+        #expect(connected.bookDisputes(fixture.disputedID))
+    }
+
+    /// Absence outranks a negative read: the chat stays hidden and its saved row keeps only these IDs.
+    private func expectAbsent(_ fixture: RetainedDispute, disputes: Set<Data>, in connected: ConnectedDispute,
+                              sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        let library = connected.store.library, root = fixture.subject.root
+        func savedRow() async throws -> CachedArtifactChat? {
+            try await connected.session.loadChats().first { $0.identity.root == root }
+        }
+        #expect(await eventually { searchFinds("Peer needle", in: library) }, "Other chats stay available", sourceLocation: sourceLocation)
+        #expect(!library.chats.contains { $0.identity.root == root }, sourceLocation: sourceLocation)
+        #expect(artifact(fixture.disputed.id, in: library) == nil, sourceLocation: sourceLocation)
+        #expect(artifact(fixture.sibling.id, in: library) == nil, sourceLocation: sourceLocation)
+        #expect(try await eventually { try await savedRow()?.unavailableMessageIDs == disputes },
+            "Absence keeps negative row evidence", sourceLocation: sourceLocation)
+        let row = try await savedRow()
+        #expect(row?.directoryAbsent == true, sourceLocation: sourceLocation)
+        #expect(row?.messages.isEmpty == true, sourceLocation: sourceLocation)
+    }
+
+    /// The same tip returns to the directory, and a multi-page read completes it without proof.
+    private func returnWithoutProof(_ connected: ConnectedDispute, fixture: RetainedDispute,
+                                    sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        let service = fixture.service, library = connected.store.library
+        service.omitSecond = false; service.historyPages[fixture.subject] = fixture.prooflessPages
+        await connected.store.refreshLibrary(force: true)
+        #expect(connected.bookDisputes(fixture.disputedID), "A multi-page read proves nothing", sourceLocation: sourceLocation)
+        #expect(await eventually { artifact(fixture.sibling.id, in: library) != nil }, sourceLocation: sourceLocation)
+        expectRows(of: fixture, in: library, disputedWithdrawn: true, sourceLocation: sourceLocation)
+        #expect(try await saved(fixture, in: connected.session, disputedWithdrawn: true), sourceLocation: sourceLocation)
+        let row = try await connected.session.loadChats().first { $0.identity == fixture.subject }
+        #expect(row?.messages.contains { $0.id == fixture.disputed.id } == false, sourceLocation: sourceLocation)
+    }
+
+    private func checkDisputeSurvivesAbsence(responseFirst: Bool) async throws {
+        let fixture = RetainedDispute(customChat: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let connected = try await connect(fixture), store = connected.store
+        defer { LocalHistory.remove(for: connected.configuration.id) }
+        try await disputeAbsentChat(connected, fixture: fixture, responseFirst: responseFirst)
+        try await expectAbsent(fixture, disputes: [fixture.disputedID], in: connected)
+        await store.refreshLibraryIfNeeded()
+        try await expectAbsent(fixture, disputes: [fixture.disputedID], in: connected)
+
+        try await returnWithoutProof(connected, fixture: fixture)
+        try await coldLaunch(connected, fixture: fixture, disputedWithdrawn: true)
+    }
+
+    @Test func lateDisputeSurvivesAbsenceAndAProoflessReturn() async throws {
+        try await checkDisputeSurvivesAbsence(responseFirst: false)
+    }
+
+    @Test func disputeBeforeAbsenceSurvivesAProoflessReturn() async throws {
+        try await checkDisputeSurvivesAbsence(responseFirst: true)
+    }
+
+    @Test func laterCoherentReadResolvesOnlyWhatItNamesAfterAbsence() async throws {
+        let fixture = RetainedDispute(customChat: true), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let connected = try await connect(fixture), store = connected.store
+        defer { LocalHistory.remove(for: connected.configuration.id) }
+        let unnamed = Data("unnamed-row".utf8)
+        try await disputeAbsentChat(connected, fixture: fixture,
+            failure: .init(identity: fixture.subject, unavailableMessageIDs: [fixture.disputedID, unnamed]))
+        try await returnWithoutProof(connected, fixture: fixture)
+
+        service.historyPages[fixture.subject] = nil
+        await store.refreshLibrary(force: true)
+        let chat = try #require(connected.chat)
+        #expect(store.chats.persisted().record(chat)?.transcript?.unavailableMessageIDs == [unnamed], "This read proves only the rows it lists")
+        #expect(await eventually { artifact(fixture.disputed.id, in: store.library) != nil })
+        expectRows(of: fixture, in: store.library, disputedWithdrawn: false)
+        #expect(try await saved(fixture, in: connected.session, disputedWithdrawn: false))
+        try await coldLaunch(connected, fixture: fixture, disputedWithdrawn: false)
+    }
+
+    @Test func absentChatsDisputeCannotQuarantineItsReplacementTip() async throws {
+        let fixture = RetainedDispute(customChat: true), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let connected = try await connect(fixture), store = connected.store
+        defer { LocalHistory.remove(for: connected.configuration.id) }
+        try await disputeAbsentChat(connected, fixture: fixture)
+
+        let replacement = SessionIdentity(profile: fixture.subject.profile, root: fixture.subject.root,
+            stored: try ExactID("replacement-tip"), aliases: [fixture.subject.root, try ExactID("replacement-tip")])
+        service.replacementSecond = replacement; service.omitSecond = false
+        service.messages[replacement] = [fixture.disputed, fixture.sibling]
+        service.historyPages[replacement] = fixture.prooflessPages
+        await store.refreshLibrary(force: true)
+        #expect(await eventually { artifact(fixture.disputed.id, in: store.library) != nil }, "A dispute names one exact tip")
+        expectRows(of: fixture, in: store.library, disputedWithdrawn: false)
+        await store.refreshLibraryIfNeeded()
+        expectRows(of: fixture, in: store.library, disputedWithdrawn: false)
+        #expect(connected.bookDisputes(fixture.disputedID), "Book's claim stays on its own tip")
+        store.library.retire(); await connected.cache.close()
+    }
+
+    @Test func absentChatsDisputeSurvivesARestart() async throws {
+        let fixture = RetainedDispute(customChat: true), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let connected = try await connect(fixture), store = connected.store
+        defer { LocalHistory.remove(for: connected.configuration.id) }
+        try await disputeAbsentChat(connected, fixture: fixture)
+        try await expectAbsent(fixture, disputes: [fixture.disputedID], in: connected)
+        try #require(store.flush())
+        store.library.retire(); await connected.cache.close()
+
+        let cache = ArtifactCache(root: fixture.root)
+        let cold = AppStore(service: service, persistence: connected.vault.persistence, artifactCache: cache)
+        await cold.refreshLibraryIfNeeded()
+        #expect(!cold.library.chats.contains { $0.identity.root == fixture.subject.root })
+
+        // No inbox read repeats the dispute here, so only saved evidence can hold it.
+        service.previewEnabled = false; service.omitSecond = false
+        service.historyPages[fixture.subject] = fixture.prooflessPages
+        try #require(await cold.connect(connected.configuration))
+        await cold.refreshLibrary(force: true)
+        #expect(await eventually { artifact(fixture.sibling.id, in: cold.library) != nil })
+        expectRows(of: fixture, in: cold.library, disputedWithdrawn: true)
+        cold.library.retire(); await cache.close()
+    }
+
+    /// Earlier builds saved a chat's absence without its disputes, so Book alone holds this one at launch.
+    @Test func restoredAbsenceKeepsTheDisputeBookSeeded() async throws {
+        let fixture = RetainedDispute(customChat: true), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        var book = savedBook(service)
+        let chat = try #require(book.records.first { $0.binding.identity == fixture.subject }?.id)
+        let disputedBook = book.dispute([fixture.disputedID], from: fixture.subject, in: chat)
+        try #require(disputedBook)
+        let warmCache = ArtifactCache(root: fixture.root), warmSession = warmCache.session(scope: fixture.scope)
+        let warm = WorkspaceLibrary(service: service, cache: warmSession)
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
+        service.omitSecond = true
+        await warm.refresh(evidence: .observed, bots: service.profiles, force: true)
+        let absenceSaved = try await eventually {
+            let row = try await warmSession.loadChats().first { $0.identity.root == fixture.subject.root }
+            return row?.directoryAbsent == true && row?.unavailableMessageIDs == nil
+        }
+        try #require(absenceSaved)
+        warm.retire(); await warmCache.close()
+
+        service.omitSecond = false; service.historyPages[fixture.subject] = fixture.prooflessPages
+        let reopened = try await reopen(fixture, book: book), library = reopened.library
+        defer { library.retire() }
+        #expect(!library.chats.contains { $0.identity.root == fixture.subject.root })
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { artifact(fixture.sibling.id, in: library) != nil })
+        expectRows(of: fixture, in: library, disputedWithdrawn: true)
+        #expect(try await saved(fixture, in: reopened.cache.session(scope: fixture.scope), disputedWithdrawn: true))
+        await reopened.cache.close()
     }
 
     @Test func disputeForAnOlderTipCannotQuarantineItsReplacement() async throws {
@@ -6182,6 +6380,7 @@ private actor NextLibraryProjectionPause {
     var gatedSource: SessionIdentity?
     var failingSource: SessionIdentity?
     var replacementFirst: SessionIdentity?
+    var replacementSecond: SessionIdentity?
     var omitSecond = false
     var hiddenFirstPage = false
     var historyOffsets: [Int] = []
@@ -6236,7 +6435,7 @@ private actor NextLibraryProjectionPause {
         if failDirectory { throw HermesServiceError.disconnected }
         var summaries: [SessionSummary] = [
             .init(identity: replacementFirst ?? first, title: "Main", isCanonical: true, persistence: .durable),
-            .init(identity: second, title: summaryTitle, isCanonical: second.profile != first.profile, persistence: .durable)
+            .init(identity: replacementSecond ?? second, title: summaryTitle, isCanonical: second.profile != first.profile, persistence: .durable)
         ]
         if omitSecond { summaries.removeAll { $0.identity.root == second.root } }
         if let createdIdentity { summaries.append(.init(identity: createdIdentity, title: "Created", isCanonical: false, persistence: .durable)) }

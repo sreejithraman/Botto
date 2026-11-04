@@ -187,10 +187,12 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             default: false
             }
         }
-        var directoryAbsent: Bool {
+        /// `nil` says nothing about the directory, so the chat keeps its presence.
+        var directoryAbsent: Bool? {
             switch self {
             case .absent: true
             case .restored(let row): row.directoryAbsent == true
+            case .quarantine: nil
             default: false
             }
         }
@@ -1403,10 +1405,11 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func prepareAdmission(source: SessionIdentity, botName: String, title: String,
                                   updatedAt: Date?, input: AdmissionInput) -> Admission {
         let messages = input.messages, exclusions = input.exclusions
-        let incomingCoverage = input.coverage, directoryAbsent = input.directoryAbsent
+        let incomingCoverage = input.coverage
         let resolvingMessageIDs = input.identityRead?.matches(source) == true ? input.identityRead?.messageIDs ?? [] : []
         let key = key(for: source), previous = records[key]
         let sameTip = previous?.identity.stored == source.stored
+        let directoryAbsent = input.directoryAbsent ?? (sameTip && previous?.directoryAbsent == true)
         var unavailable = sameTip ? previous?.unavailableMessageIDs ?? [] : []
         var unverified = sameTip ? previous?.unverifiedMessageIDs ?? [] : []
         var removed = sameTip ? previous?.removedMessageIDs ?? [] : []
@@ -1439,9 +1442,10 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                 }
             }
         case .seed, .quarantine, .observedSource: break
-        case .absent: unavailable = []; unverified = []; removed = []
+        // Absence drops rows and what qualified them. A dispute names an identity on this tip, so it stays.
+        case .absent: unverified = []; removed = []
         case .restored, .recoveryHint:
-            if directoryAbsent { unavailable = []; unverified = []; removed = []; break }
+            if directoryAbsent { unverified = []; removed = []; break }
             let protected = initialReadRows[key]?.accepted ?? []
             let saved = Dictionary((sameTip ? previous?.messages ?? [] : []).map { (Data($0.id.utf8), $0) }, uniquingKeysWith: { first, _ in first })
             // Independently persisted copies have no comparable revision order.
@@ -1749,7 +1753,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func withhold(_ disputes: Set<Data>, source: SessionIdentity) {
         let id = key(for: source)
         recordAcceptance(id)
-        guard let chat = records[id], chat.identity.stored == source.stored, !chat.directoryAbsent else { return }
+        guard let chat = records[id], chat.identity.stored == source.stored else { return }
         commitCanonical(prepareAdmission(source: chat.identity, botName: chat.botName, title: chat.title,
             updatedAt: chat.updatedAt, input: .quarantine(unavailable: disputes)), target: id)
     }
