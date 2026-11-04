@@ -298,15 +298,45 @@ import BottoCore
         let screen = try #require(workspace.screen(profile: service.profile))
         let preferred = screen.owner.chat
         workspace.editDraft("Keep this draft", owner: screen.owner)
-        await confirmation("A preference change reaches presentation and complete readers", expectedCount: 3) { changed in
+        await confirmation("A preference change reaches presentation and complete readers", expectedCount: 4) { changed in
             withObservationTracking { _ = workspace.screen(profile: service.profile) } onChange: { changed() }
             withObservationTracking { _ = workspace.draft(screen.owner) } onChange: { changed() }
             withObservationTracking { _ = workspace.persisted() } onChange: { changed() }
+            withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
             workspace.preferOpening(preferred, owner: screen.owner)
         }
         #expect(workspace.cards(profile: service.profile).first { $0.id == preferred }?.isPreferred == true)
         #expect(workspace.draft(screen.owner) == "Keep this draft")
         #expect(workspace.persisted().record(screen.owner.chat)?.draft.text == "Keep this draft")
+    }
+
+    @Test func openingDraftFollowsTheSavedChoiceInsteadOfTheSelectedChat() async throws {
+        let (workspace, service) = try fixture()
+        await workspace.openBot(profile: service.profile)
+        let main = try #require(workspace.screen(profile: service.profile))
+        await workspace.refreshDirectory(main.owner)
+        workspace.editDraft("Main draft", owner: main.owner)
+        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
+        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
+        let saved = try #require(workspace.screen(profile: service.profile))
+        workspace.preferOpening(other, owner: saved.owner)
+        await confirmation("A draft edit reaches the opening draft reader") { changed in
+            withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
+            workspace.editDraft("Saved choice draft", owner: saved.owner)
+        }
+
+        await workspace.select(try #require(workspace.captureSelection(main.owner.chat, owner: saved.owner)))
+        let selected = try #require(workspace.screen(profile: service.profile))
+        #expect(workspace.draft(selected.owner) == "Main draft")
+        #expect(workspace.openingDraft(profile: service.profile) == "Saved choice draft")
+
+        // Closing an unselected chat changes the opening choice without a presentation mutation.
+        let intent = try #require(workspace.captureClose(other, owner: selected.owner))
+        await confirmation("Closing the saved choice reaches the opening draft reader") { changed in
+            withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
+            #expect(workspace.close(intent)?.id == other)
+        }
+        #expect(workspace.openingDraft(profile: service.profile) == "Main draft")
     }
 
     @Test func generalBookMutationPreservesDraftWrittenDuringItsObservationCallback() async throws {

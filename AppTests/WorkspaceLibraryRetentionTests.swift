@@ -19,6 +19,15 @@ import BottoCore
         Attachment.record(state, named: "library-publication-readiness.txt")
     }
 
+    @Test func retirementEndsItsCacheSession() {
+        let session = ArtifactCache(root: nil).session(scope: .init(
+            configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil))
+        let library = WorkspaceLibrary(service: RetainedLibraryService(), cache: session)
+        #expect(!session.isRetired)
+        library.retire()
+        #expect(session.isRetired)
+    }
+
     @Test func retirementEndsAJoinedRestorationBeforeItsReadCompletes() async throws {
         let gate = StoreTestBarrier(), control = SavedIndexReadControl()
         control.fails = false; control.gate = gate
@@ -1380,6 +1389,24 @@ import BottoCore
         #expect(LibraryThumbnails.request(for: second, library: library).content == beforeSecond)
         #expect(beforeFirst.representsSameSource(as: afterFirst))
         #expect(!beforeSecond.representsSameSource(as: afterFirst))
+        library.retire()
+    }
+
+    @Test func forcedReloadReportsBytesTheCacheRefusesWhileOrdinaryReadStillReturnsThem() async throws {
+        let service = RetainedLibraryService(), source = service.source("main")
+        var limits = ArtifactCache.Limits()
+        limits.singleOriginalBytes = 4
+        let library = WorkspaceLibrary(service: service, cache: ArtifactCache(root: nil, limits: limits).session(scope: .init(
+            configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)))
+        service.summaries = [service.summary(source, at: 20)]
+        service.pages[source] = [0: .init(messages: [service.message("report", text: "MEDIA:/report.txt", at: 20)], nextOffset: nil, isComplete: true)]
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let item = try #require(library.artifacts.first)
+        service.downloadedBytes = Data("larger than the single original limit".utf8)
+
+        let failure = await #expect(throws: (any Error).self) { try await library.download(item, force: true) }
+        #expect(failure?.localizedDescription == "The refreshed file couldn’t be saved on this device. Try again.")
+        #expect(try await library.download(item).data == service.downloadedBytes)
         library.retire()
     }
 

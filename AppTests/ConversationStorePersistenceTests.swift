@@ -29,6 +29,43 @@ import BottoCore
         #expect(try Data(contentsOf: url) == raw)
     }
 
+    @Test func offlineDraftLookupFollowsTheSavedOpeningChoice() throws {
+        let profile = try ExactID("milo")
+        func summary(_ name: String, isCanonical: Bool = false) throws -> SessionSummary {
+            .init(identity: .init(profile: profile, root: try ExactID("\(name)-root"), stored: try ExactID("\(name)-tip"), aliases: []),
+                  title: name, isCanonical: isCanonical, persistence: .durable)
+        }
+        var history = LocalHistory()
+        history.bots = [.init(id: profile.text, name: "Milo")]
+        let main = history.book.merge(try summary("main", isCanonical: true))
+        let saved = history.book.merge(try summary("saved"))
+        let blank = history.book.merge(try summary("blank"))
+        history.book.update(main) { $0.draft = .init(text: " Main draft \n", revision: UUID()) }
+        history.book.update(saved) { $0.draft = .init(text: " Saved draft \t", revision: UUID()) }
+
+        func draft(for botID: String = "milo", preferred: ChatID?, lastSelected: ChatID?, closing closed: [ChatID] = []) throws -> String {
+            let configuration = ConnectionConfiguration(serverURL: URL(string: "https://saved.invalid")!, username: "alice", installID: "test-install")
+            defer { LocalHistory.remove(for: configuration.id) }
+            var scenario = history
+            scenario.book.updatePreference(profile) { $0.preferred = preferred; $0.lastSelected = lastSelected }
+            for id in closed { scenario.book.update(id) { $0.isClosedLocally = true } }
+            try scenario.save(for: configuration.id)
+            let store = AppStore(service: StoreTestService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
+            #expect(!store.isConnected)
+            return store.draft(for: botID)
+        }
+
+        #expect(try draft(preferred: saved, lastSelected: main) == " Saved draft \t")
+        #expect(try draft(preferred: nil, lastSelected: saved) == " Saved draft \t")
+        #expect(try draft(preferred: nil, lastSelected: nil) == " Main draft \n")
+        #expect(try draft(preferred: blank, lastSelected: saved, closing: [blank]) == " Saved draft \t")
+        #expect(try draft(preferred: saved, lastSelected: nil, closing: [saved]) == " Main draft \n")
+        #expect(try draft(preferred: saved, lastSelected: blank, closing: [saved, blank]) == " Main draft \n")
+        #expect(try draft(preferred: blank, lastSelected: saved) == "", "An empty opening chat never borrows a sibling's draft")
+        #expect(try draft(for: "unknown", preferred: saved, lastSelected: main) == "")
+        #expect(try draft(for: "", preferred: saved, lastSelected: main) == "")
+    }
+
     @Test func verifiedReauthenticationMovesAllChatUUIDsAndPreferencesBeforeKeychainCommit() async throws {
         let old = ConnectionConfiguration(serverURL: URL(string: "https://saved.invalid")!, username: "alice", installID: "test-install")
         let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new")

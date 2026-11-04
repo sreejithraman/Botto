@@ -318,7 +318,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
     private var initialReadRows: [LibraryChat.ID: InitialReadRows] = [:]
     private var initialSourceProofs: [LibraryChat.ID: ExactID] = [:]
-    @ObservationIgnored private let cache: ArtifactCacheSession?
+    @ObservationIgnored private let cache: ArtifactCacheSession
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
     private var inFlightUpsert: (id: LibraryChat.ID, revision: UUID)?
     private enum Restoration {
@@ -517,7 +517,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func readSavedIndex(retrying: Bool) async -> Restoration.Outcome {
-        guard let cache else { return .reconciled }
         let roster = rosterRevision, guardFailure = guardAdmissionFailure
         do {
             if retrying { try await cache.retryStorage() }
@@ -704,7 +703,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func readMetadataRecovery() async throws {
-        guard let cache else { return }
         do {
             metadataRecovery = try await cache.metadataRecovery()
             if metadataRecovery.needsHistoryCheck {
@@ -807,7 +805,6 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func invalidateMetadata(_ ids: Set<LibraryChat.ID>) -> Bool {
-        guard let cache else { return true }
         for id in ids where dirtyVersions[id] == nil { dirtyVersions[id] = UUID() }
         indexingMetrics.pendingMetadataIdentities = dirtyVersions.count
         do {
@@ -827,7 +824,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     private func schedulePersistence() {
-        guard let cache, !isRetired else { return }
+        guard !isRetired else { return }
         // Never-saved evictions need no recovery guard. Keep saved and in-flight
         // owners even when the journal is unavailable.
         dirtyChats = dirtyChats.filter { records[$0] != nil }
@@ -883,7 +880,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         if let restriction = pendingRosterRestriction {
             do {
-                try cache?.restrictMetadata(to: restriction)
+                try cache.restrictMetadata(to: restriction)
                 pendingRosterRestriction = nil
                 let previousRoster = rosterRevision
                 rosterRevision = UUID()
@@ -1267,7 +1264,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     func retire() {
         guard !isRetired else { return }
         isRetired = true; online = false
-        cache?.retire(); restoration.retire(); seedTask?.cancel(); pendingSeed = nil
+        cache.retire(); restoration.retire(); seedTask?.cancel(); pendingSeed = nil
         persistenceTask?.cancel(); transcriptTask?.cancel(); pendingTranscripts = [:]; originals = [:]
         cancelOperations()
         acceptanceFence = AcceptanceFence(capacity: acceptanceFence.capacity); indexingMetrics.retainedAcceptanceFences = 0
@@ -2173,7 +2170,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         guard !isRetired else { throw HermesServiceError.staleConversation }
         if !force {
             if let value = originals[key] { return value }
-            if let value = try? await cache?.original(for: key) {
+            if let value = try? await cache.original(for: key) {
                 try Task.checkCancellation()
                 guard !isRetired else { throw HermesServiceError.staleConversation }
                 originals = [key: value.artifact]
@@ -2230,7 +2227,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     guard let self, accepts(owner), let flight = flights[key], flight.id == flightID,
                           flight.consumers.values.contains(where: { $0.isCurrent() }) else { throw HermesServiceError.staleConversation }
                     do {
-                        let retained = try await cache?.retainOriginal(result, for: key, admission: admission)
+                        let retained = try await cache.retainOriginal(result, for: key, admission: admission)
                         if force, retained == nil { throw ArtifactCaptureFailure.notRetained }
                     } catch is CancellationError {
                         throw CancellationError()
@@ -2303,16 +2300,16 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                    render: @escaping @MainActor (Data) async -> Data?) async -> Data? {
         guard isCurrent(item), !Task.isCancelled else { return nil }
         if let original = originalKey(for: item), originals[original] == nil,
-           let digest = try? await cache?.originalDigest(for: original),
-           let saved = try? await cache?.thumbnail(for: .init(originalDigest: digest, maximumPixels: 400, decoderVersion: decoderVersion)),
+           let digest = try? await cache.originalDigest(for: original),
+           let saved = try? await cache.thumbnail(for: .init(originalDigest: digest, maximumPixels: 400, decoderVersion: decoderVersion)),
            isCurrent(item), !Task.isCancelled { return saved }
         guard let artifact = try? await capturedArtifact(item), isCurrent(item), !Task.isCancelled else { return nil }
         let digest = await Task.detached(priority: .utility) { Data(SHA256.hash(data: artifact.data)) }.value
         let key = ArtifactThumbnailKey(originalDigest: digest, maximumPixels: 400, decoderVersion: decoderVersion)
-        if let saved = try? await cache?.thumbnail(for: key), isCurrent(item) { return saved }
+        if let saved = try? await cache.thumbnail(for: key), isCurrent(item) { return saved }
         let rendered = await render(artifact.data)
         guard isCurrent(item), !Task.isCancelled, let rendered else { return nil }
-        try? await cache?.retainThumbnail(rendered, for: key)
+        try? await cache.retainThumbnail(rendered, for: key)
         return isCurrent(item) ? rendered : nil
     }
 
