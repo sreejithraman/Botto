@@ -1709,3 +1709,13 @@ control. Raw evidence is retained under
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/ui-gate36/`.
 Loaded-suite proof on the repaired source and the other gate failures remain
 pending; these selected results do not establish a passing full gate.
+
+The native recovery failure read Search after saving but before projection. A
+held-projector control reproduced only the two visibility assertions; releasing
+projection made both results available. The test and two equivalent sibling
+checks now await the projected artifact before checking Search. An unfiltered
+native run passed 967 functions, failed two renderer cases and skipped the two
+opt-in transcript measurements. Both renderer suites passed separate attribution
+runs, which does not establish a fix for their whole-suite watchdog failures.
+Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-36/gate-followup/outputs/`.

@@ -97,8 +97,8 @@ import BottoCore
         let restored = try #require(saved.first { $0.identity == current && $0.messages == [fresh] })
         #expect(restored.retiredStoredIDs?.contains(service.first.stored.bytes) == true)
         #expect(!recovery.contains(current))
+        #expect(await eventually { library.artifacts.contains { $0.chat.identity == current && $0.artifact.attachment?.path == "/fresh.txt" } })
         #expect(!LibrarySearchResults(query: "Fresh post-loss needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-        #expect(library.artifacts.contains { $0.chat.identity == current && $0.artifact.attachment?.path == "/fresh.txt" })
         let offlinePeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
         let downloads = service.downloadCount
         #expect(try await library.download(offlinePeer).data == Data("side".utf8))
@@ -132,7 +132,13 @@ import BottoCore
         try await checkDiscardedScopeRecovery(trustedRead: trustedRead, interruption: interruption, savedRowExists: true)
     }
 
-    private func checkDiscardedScopeRecovery(trustedRead: Bool, interruption: HeldScopeInterruption, savedRowExists: Bool) async throws {
+    @Test func savedWindowReachesSearchWhenItsProjectionLands() async throws {
+        try await checkDiscardedScopeRecovery(trustedRead: true, interruption: .partialScanBeforeRecovery, savedRowExists: true,
+            holdsFollowingProjection: true)
+    }
+
+    private func checkDiscardedScopeRecovery(trustedRead: Bool, interruption: HeldScopeInterruption, savedRowExists: Bool,
+                                             holdsFollowingProjection: Bool = false) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let service = LibraryTestService(secondBot: true)
@@ -175,7 +181,13 @@ import BottoCore
         let ledger = root.appendingPathComponent("metadata-recovery.plist"), unreadable = Data("temporarily unreadable recovery".utf8)
         try unreadable.write(to: ledger)
         let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
-        let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 3), cache: session)
+        let projection = StoreTestBarrier(), pause = NextLibraryProjectionPause()
+        if holdsFollowingProjection { await pause.arm() }
+        defer { projection.release() }
+        let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 3), cache: session, projector: { messages, tail in
+            if messages.contains(where: { $0.text.contains("Following partial window needle") }), await pause.take() { await projection.wait() }
+            return await WorkspaceLibrary.project(messages, streamingMessage: tail)
+        })
         defer { library.retire() }
         await library.restore()
         let peerReadStartedAt = ContinuousClock.now
@@ -312,8 +324,18 @@ import BottoCore
                 await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
             }
             #expect(service.previewReadCount == 2)
+            // Saving does not wait for projection, which alone feeds Search and artifacts.
+            func followingIsProjected() -> Bool {
+                library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/following.txt" }
+            }
+            if holdsFollowingProjection {
+                try #require(await projection.waitUntilEntered(timeout: .seconds(5)))
+                #expect(!followingIsProjected())
+                #expect(LibrarySearchResults(query: "Following partial window needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
+                projection.release()
+            }
+            #expect(await eventually { followingIsProjected() })
             #expect(!LibrarySearchResults(query: "Following partial window needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-            #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/following.txt" })
             #expect(saved.contains { $0.identity == service.first && $0.messages == [following] })
             #expect(!recovery.contains(service.first))
             #expect(library.artifacts.contains { $0.chat.identity == service.second })
@@ -429,8 +451,8 @@ import BottoCore
               ContinuousClock.now < deadline {
             await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
         }
+        #expect(await eventually { library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/independent.txt" } })
         #expect(!LibrarySearchResults(query: "Independent current needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-        #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/independent.txt" })
         #expect(saved.contains { $0.identity == service.first && $0.messages == [current] && $0.coverage == .partial })
         #expect(!recovery.contains(service.first) && recovery.contains(oversized))
         if savedSource == .differentTip {
