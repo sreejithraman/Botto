@@ -49,7 +49,7 @@ Workflow `bots.create`:
 Workflow `bots.interruption`:
 
 1. `.a1` Use existing DEBUG `BOTTO_UI_TEST_BOT_GATE` fixture through
-   [NewBotUITests](../../../../AppUITests/ConversationUITests.swift): separate
+   [NewBotUITests](../../../../AppUITests/NewBotUITests.swift): separate
    run-owned marker directory with `create.hold`, then `refresh.hold`, then
    `open.hold` on independent launches. Start Create via the UI and wait for
    `<operation>.started`; system-open the replacement Botto link in the same

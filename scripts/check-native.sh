@@ -15,13 +15,7 @@ if [ "$selector" = --build-only ]; then
 fi
 selection=BottoTests
 if [ -n "$selector" ]; then
-  python3 - "$selector" <<'PYTHON'
-import re
-import sys
-match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)(?:/([A-Za-z_][A-Za-z0-9_]*)(?:\([A-Za-z_:]*\))?)?", sys.argv[1])
-if not match:
-    sys.exit("Expected a native test suite or suite/test selector.")
-PYTHON
+  python3 scripts/native-selection.py validate "$selector"
   selection="BottoTests/$selector"
 fi
 
@@ -84,16 +78,7 @@ if [ "$native_status" -eq 0 ] && [ -n "$selector" ]; then
     -test-enumeration-style flat -test-enumeration-format text \
     -test-enumeration-output-path "$native_directory/selected-tests.txt" || native_status=$?
   if [ "$native_status" -eq 0 ]; then
-    python3 - "$selection" "$native_directory/selected-tests.txt" <<'PYTHON' || native_status=$?
-from pathlib import Path
-import sys
-requested = sys.argv[1].removesuffix("()")
-identifiers = [line.strip().removesuffix("()") for line in Path(sys.argv[2]).read_text().splitlines()]
-matches = [name for name in identifiers if name == requested or name.startswith(requested + "/")]
-if not matches:
-    sys.exit("The requested native test was not discovered by Xcode; no tests executed.")
-print("Xcode discovered %d matching test identifiers." % len(matches))
-PYTHON
+    python3 scripts/native-selection.py discovery "$selector" "$native_directory/selected-tests.txt" || native_status=$?
   fi
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
@@ -102,17 +87,7 @@ if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
     -resultBundlePath "$native_directory/$result_name" || native_status=$?
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = false ]; then
-  if ! xcrun xcresulttool get test-results summary --path "$native_directory/$result_name" | python3 -c '
-import json, sys
-summary = json.load(sys.stdin)
-passed = summary.get("passedTests")
-if not isinstance(passed, int) or passed < 1:
-    sys.exit("Native run reported success without executing any passing tests.")
-print("Native results: %s passed, %s failed, %s skipped" % (
-    passed, summary.get("failedTests"), summary.get("skippedTests")))
-'; then
-    native_status=1
-  fi
+  python3 scripts/native-selection.py results "$native_directory/$result_name" ${selector:+"$selector"} || native_status=$?
 fi
 if [ "$native_status" -eq 0 ] && [ "$build_only" = true ]; then
   printf 'Native tests were built but not executed (pull-request build check).\n'
