@@ -31,12 +31,23 @@ final class ArtifactExportUITests: XCTestCase {
         canvas.tap()
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
-        let card = app.buttons["Open " + filename].firstMatch
+        let cards = app.buttons.matching(NSPredicate(format: "label == %@", "Open " + filename))
+        let visibleCard = {
+            cards.allElementsBoundByIndex.first { $0.exists && $0.isEnabled && $0.isHittable }
+        }
         for _ in 0..<8 {
-            if card.exists && card.isHittable { break }
+            if visibleCard() != nil { break }
             transcript.swipeDown()
         }
-        XCTAssertTrue(card.exists && card.isHittable)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated { visibleCard() != nil }
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "The requested file card must be enabled and reachable after chat layout settles.")
+        guard let card = visibleCard() else {
+            XCTFail("The requested file card became unavailable before opening.")
+            return app
+        }
         card.tap()
         assertOutputActions(in: app)
         XCTAssertFalse(app.descendants(matching: .any)["artifact-error"].exists)

@@ -203,7 +203,7 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Profile for Milo"].waitForExistence(timeout: 5))
     }
 
-    @MainActor func testDraftingWorksWhileUncachedConversationOpens() throws {
+    @MainActor func testDraftingWorksWhileInboxHistoryAttaches() throws {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -214,8 +214,14 @@ final class ConversationUITests: XCTestCase {
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
         XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 5))
+        let fetched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["bot-row-milo"].label.contains("I also drafted a note")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [fetched], timeout: 10), .completed)
         app.buttons["pinned-bot-milo"].tap()
-        XCTAssertTrue(app.staticTexts["Opening your chat…"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+            "Take a look before it goes anywhere.")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Opening your chat…"].exists)
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Chat avatar while attachment is pending"
         capture.lifetime = .keepAlways
@@ -241,13 +247,17 @@ final class ConversationUITests: XCTestCase {
         app.buttons["pinned-bot-canvas"].tap()
         let card = app.buttons["Open notes.txt"].firstMatch
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
-        for _ in 0..<8 where !card.isHittable { transcript.swipeDown() }
+        for _ in 0..<8 {
+            guard let frame = settledFrame(of: card), !transcript.frame.contains(frame) else { break }
+            transcript.swipeDown()
+        }
         XCTAssertTrue(card.isEnabled && card.isHittable)
         XCTAssertFalse(app.staticTexts["You’re offline"].exists)
         card.tap()
         XCTAssertTrue(app.staticTexts["You’re offline"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["artifact-done"].exists)
+        XCTAssertTrue(app.buttons["artifact-done"].exists)
         XCTAssertTrue(app.buttons["Reconnect"].isHittable)
+        app.buttons["artifact-done"].tap()
         app.buttons["Add attachment"].tap()
         app.buttons["Choose a file"].tap()
         XCTAssertTrue(app.staticTexts["You’re offline"].exists)
@@ -663,13 +673,19 @@ final class ConversationUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["chat-composer"]
         let finalMessage = app.descendants(matching: .any)["transcript-message-performance-399"]
         let finalParagraph = finalMessage.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Paragraph 7.")).firstMatch
-        let transcript = app.descendants(matching: .any)["chat-transcript"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            composer.exists && composer.isEnabled && composer.isHittable &&
-                app.buttons["bot-profile-button"].label == "Profile for Scout" &&
-                finalParagraph.exists && finalParagraph.isHittable &&
-                finalParagraph.frame.maxY <= composer.frame.minY &&
-                RenderedTranscriptText.line("words arrive.", in: finalParagraph, viewport: transcript.frame, app: app) != nil
+            // The budget measures the app. Each element query rebuilds the hierarchy, so a busy host
+            // can spend the budget on the observer: read one snapshot per poll and OCR only the end.
+            guard let tree = try? app.snapshot(),
+                  let composerSnapshot = tree.first(where: { $0.identifier == "chat-composer" }), composerSnapshot.isEnabled,
+                  tree.first(where: { $0.identifier == "bot-profile-button" })?.label == "Profile for Scout",
+                  let message = tree.first(where: { $0.identifier == "transcript-message-performance-399" }),
+                  let paragraph = message.first(where: { $0.elementType == .staticText && $0.label.contains("Paragraph 7.") }),
+                  let viewport = tree.first(where: { $0.identifier == "chat-transcript" })?.frame,
+                  paragraph.frame.maxY <= composerSnapshot.frame.minY,
+                  composer.isHittable, finalParagraph.isHittable else { return false }
+            let end = paragraph.frame.divided(atDistance: 120, from: .maxYEdge).slice.intersection(viewport)
+            return RenderedTranscriptText.line("words arrive.", in: finalParagraph, viewport: end, app: app) != nil
         }, object: nil)
         let remaining = ContinuousClock.now.duration(to: deadline)
         let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
@@ -678,6 +694,18 @@ final class ConversationUITests: XCTestCase {
         let elapsed = start.duration(to: .now)
         print("BOTTO_LONG_CHAT_READY seconds=\(Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)")
         XCTAssertLessThan(elapsed, .seconds(10))
+    }
+
+    /// During opening, XCTest can fail outright instead of answering false for a moving row.
+    /// Spaced frame polls avoid treating a brief pause in that movement as settled.
+    @MainActor private func settledFrame(of element: XCUIElement, timeout: TimeInterval = 5) -> CGRect? {
+        var previous: CGRect?
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = element.exists ? element.frame : nil
+            defer { previous = frame }
+            return frame != nil && frame == previous
+        }, object: nil)
+        return XCTWaiter.wait(for: [settled], timeout: timeout) == .completed ? previous : nil
     }
 
     @MainActor func testPerformanceFixtureFirstStreamCompletesUnderBudget() throws {
@@ -715,13 +743,27 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(composer.isEnabled)
         composer.tap()
         composer.typeText("Stream the performance fixture")
+        let completionMarker = directory.appendingPathComponent("performance-stream-1.completed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: completionMarker.path))
         let streamStart = ContinuousClock.now
         let streamDeadline = streamStart + .seconds(20)
         app.buttons["Send message"].tap()
-        let finished = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
-        let remaining = ContinuousClock.now.duration(to: streamDeadline)
-        let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
-        let firstCompleted = finished.waitForExistence(timeout: timeout)
+        let producerCompleted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: completionMarker.path)
+        }, object: nil)
+        let producerRemaining = ContinuousClock.now.duration(to: streamDeadline)
+        let producerTimeout = max(0, Double(producerRemaining.components.seconds) + Double(producerRemaining.components.attoseconds) / 1e18)
+        let producerFinished = XCTWaiter.wait(for: [producerCompleted], timeout: producerTimeout) == .completed
+        if !producerFinished { captureReadingState(app, name: "Producer stream deadline") }
+        XCTAssertTrue(producerFinished, "The producer must finish within the shared stream budget.")
+        let reply = app.otherElements["transcript-message-performance-reply-1"]
+        let finished = reply.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
+        var firstCompleted = finished.exists
+        if !firstCompleted {
+            let remaining = ContinuousClock.now.duration(to: streamDeadline)
+            let timeout = max(0, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
+            firstCompleted = finished.waitForExistence(timeout: timeout)
+        }
         if !firstCompleted { captureReadingState(app, name: "First stream deadline") }
         XCTAssertTrue(firstCompleted)
         let streamElapsed = streamStart.duration(to: .now)
@@ -945,4 +987,14 @@ final class ConversationUITests: XCTestCase {
         return nil
     }
 
+}
+
+private extension XCUIElementSnapshot {
+    func first(where matches: (any XCUIElementSnapshot) -> Bool) -> (any XCUIElementSnapshot)? {
+        if matches(self) { return self }
+        for child in children {
+            if let match = child.first(where: matches) { return match }
+        }
+        return nil
+    }
 }

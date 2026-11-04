@@ -122,7 +122,8 @@ struct ChatView: View {
             editing.cancel()
             discardPreviews()
             configurePreviewCapture()
-            showsProfile = false; dismissOverviewImmediately(); childModals = []
+            if profileDestination?.isCurrent(in: store) != true { showsProfile = false }
+            dismissOverviewImmediately(); childModals = []
             connectionRequested = false
         }
         .sheet(isPresented: $showsProfile) {
@@ -134,6 +135,27 @@ struct ChatView: View {
             let owner = screen.owner
             await workspace.refreshDirectory(owner)
         }
+    }
+
+    private var openingRetry: some View {
+        HStack(spacing: 12) {
+            Text("This chat didn’t open.").font(.subheadline).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button(action: retryOpening) {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .frame(minHeight: 44).contentShape(.rect)
+            }
+                .font(.subheadline.weight(.semibold))
+                .accessibilityLabel("Retry opening this chat")
+                .accessibilityIdentifier("chat-opening-retry")
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func retryOpening() {
+        guard store.canRetryOpening(bot), let opening = store.prepareBotOpening(bot) else { return }
+        store.notice = nil
+        Task { await store.openBot(opening) }
     }
 
     private var readerLifecycle: some View {
@@ -168,7 +190,6 @@ struct ChatView: View {
             ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
                            messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
-                           onConnectionRequired: { connectionRequested = true },
                            preview: transcriptPreview, topContentInset: toolbarVisible ? headerOverlap : 0,
                            bottomContentInset: composerHeight,
                            searchFocus: presentation.searchFocus.flatMap {
@@ -218,6 +239,7 @@ struct ChatView: View {
                 if let error = presentation.searchError {
                     InlineNotice(message: error) { presentation.searchError = nil }.padding(.horizontal, 16)
                 }
+                if store.canRetryOpening(bot) { openingRetry }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
                              inputAvailable: inputAvailable,
@@ -553,7 +575,6 @@ private struct ChatTranscript: View {
     let messageDisplayRevision: [NativeTranscriptRowValue]
     let isExposed: Bool
     let onOpenArtifact: (AppStore.ArtifactDestination) -> Void
-    var onConnectionRequired: () -> Void = {}
     var preview: NativeTranscriptPreview? = nil
     var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
@@ -663,6 +684,13 @@ private struct ChatTranscript: View {
         let activeWorkDetailsID = activeWorkDetailsID(in: displayRows)
         let lastMessageID = messages.entries.last?.id
         let requests = NativeTranscriptRequestPlan(screen?.requests ?? [])
+        if screen?.hasEarlierMessages == true {
+            rows.append(.init(id: .historyNotice, value: .auxiliary("recent-history")) { _, _ in
+                hosted(Text("Some earlier history isn’t available on this device yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12))
+            })
+        }
         if messages.hasAmbiguity || requests.hasAmbiguity {
             rows.append(.init(id: .identityNotice, value: .auxiliary("ambiguous-identifiers")) { _, _ in
                 hosted(NativeTranscriptIdentityNotice())

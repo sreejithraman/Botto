@@ -13,7 +13,11 @@ struct InboxView: View {
     var body: some View {
         let entries = isExposed ? store.inbox : hiddenEntries
         let bots = entries.map(\.bot)
-        let pinned = bots.filter { store.isPinned($0) }
+        let pinned = bots.filter { store.isPinned($0) }.sorted {
+            let names = $0.name.localizedStandardCompare($1.name)
+            if names != .orderedSame { return names == .orderedAscending }
+            return Data($0.id.utf8).lexicographicallyPrecedes(Data($1.id.utf8))
+        }
         let lastBotID = entries.last?.id
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -81,12 +85,9 @@ struct InboxView: View {
         }
     }
     private func open(_ bot: BotProfile, attention: Bool = false) {
-        store.selectedBotID = bot.id
-        let workspace = store.chats
-        guard let profile = try? ExactID(bot.id),
-              let intent = workspace.captureOpening(profile: profile, attention: attention) else { return }
+        guard let opening = store.prepareBotOpening(bot, attention: attention) else { return }
         onOpened()
-        Task { await workspace.open(intent) }
+        Task { await store.openBot(opening) }
     }
 
     private func pinnedRail(_ pinned: [BotProfile]) -> some View {

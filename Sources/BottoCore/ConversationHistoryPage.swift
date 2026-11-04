@@ -24,13 +24,16 @@ public struct ConversationHistoryPage: Sendable {
     /// Message IDs before visible filtering, including omitted rows.
     public let sourceIDs: Set<Data>?
     public let unavailableMessageIDs: Set<Data>
+    /// Producer-checked identity evidence; completeness and sourceIDs alone do not certify uniqueness.
+    public let identityRead: ConversationIdentityRead?
 
     public init(messages: [ChatMessage], nextOffset: Int?, isComplete: Bool, sourceIDs: Set<Data>? = nil,
-                unavailableMessageIDs: Set<Data> = []) {
+                unavailableMessageIDs: Set<Data> = [], identityRead: ConversationIdentityRead? = nil) {
         self.messages = messages
         self.nextOffset = nextOffset
         self.isComplete = isComplete
         self.sourceIDs = sourceIDs
         self.unavailableMessageIDs = unavailableMessageIDs
+        self.identityRead = identityRead
     }
 }

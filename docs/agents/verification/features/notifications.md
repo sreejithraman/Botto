@@ -90,6 +90,10 @@ the complete path. Read [shared setup](../index.md#shared-setup-and-readiness),
    Reject a still-authorized cross-profile directory/open on the host while the
    socket stays online. Expect the prior bot/chat/preference and editable cached
    draft, no restored old action grant, and later successful notification recovery.
+   Interrupt a bot opening with a tap, then fail the tap's preflight or attachment.
+   Expect the selected chat to offer Retry when its composer cannot be used.
+   Retry must use fresh authority, preserve the draft and cancel the retained tap.
+   A newer bot choice or replacement connection must reject the old retry.
 4. `.a4` Resolve a request elsewhere before tapping. Expect current state without
    stale enabled decisions or automatic mutation replay.
 

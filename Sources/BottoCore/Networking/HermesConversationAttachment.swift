@@ -125,6 +125,7 @@ extension HermesBotService {
         let history = try await readHistory(snapshot: snapshot, stored: stored, profile: profile, owner: connectionOwner, identity: identity)
         try checkSelection(owner, connection: connectionOwner)
         try fresh.restore(snapshot, history: history.rows, authority: isAuthority)
+        fresh.conversation.hasEarlierMessages = !history.isComplete || (adapter == .sidecar && identity.root != identity.stored)
         if let prior = state, let identity = prior.profileIdentity, !exact(identity, fresh.profileIdentity) {
             throw HermesServiceError.wrongConversation
         }
@@ -194,7 +195,9 @@ extension HermesBotService {
             evidence = ConversationReadEvidence(summaryObservedBeforeRead: summaryBeforeRead)
         } else { evidence = nil }
         let sourceProof = observedSource.flatMap { sameInventoryTip($0, identity) && !catalogTipChanged(for: identity) ? $0 : nil }
-        reconciling = false; emitConversation(readEvidence: evidence, historyReadStartedAt: historyReadStartedAt, observedSource: sourceProof)
+        let identityRead = catalogTipChanged(for: identity) ? nil : history.identityRead
+        reconciling = false; emitConversation(readEvidence: evidence, historyReadStartedAt: historyReadStartedAt,
+            observedSource: sourceProof, identityRead: identityRead)
         guard let publication else { throw HermesServiceError.disconnected }
         completed = true
         return publication
@@ -215,15 +218,19 @@ extension HermesBotService {
     }
 
     func readHistory(snapshot: HermesJSON, stored: String, profile: String, owner: Int,
-                     identity: SessionIdentity) async throws -> (rows: [HermesJSON], isComplete: Bool) {
+                     identity: SessionIdentity) async throws -> (rows: [HermesJSON], isComplete: Bool, identityRead: ConversationIdentityRead?) {
         // Sidecar resume flattens structured image parts. Read its raw REST rows
         // after the replay/snapshot fence, while incoming events remain held.
         if adapter == .authority, snapshot["messages_omitted"].flag != true, let messages = snapshot["messages"].list,
            !messages.contains(where: { $0["archived_truncated"].flag == true }) {
-            return (messages, HermesConversationState.unavailableMessageIDs(messages, stored: stored).isEmpty)
+            let complete = HermesConversationState.unavailableMessageIDs(messages, stored: stored).isEmpty
+            let identityRead = complete && snapshot["hydrating"].flag != true && snapshot["status"].text != "resuming"
+                ? historyIdentityRead(messages, identity: identity) : nil
+            return (messages, complete, identityRead)
         }
         guard let http, Self.safeSegment(stored) else { throw HermesServiceError.incompatible }
-        var rows: [HermesJSON] = [], offset = 0, seen = Set<Int>(), complete = true
+        var rows: [HermesJSON] = [], offset = 0, seen = Set<Int>()
+        var complete = true
         while true {
             let page: HermesJSON
             do { page = try await http.json("api/sessions/\(stored)/messages", query: [
@@ -245,7 +252,7 @@ extension HermesBotService {
                 if snapshot["running"] == .null {
                     try await confirmUnpersistedDraftIsEmpty(snapshot, identity: identity, owner: owner)
                 }
-                return ([], true)
+                return ([], true, nil)
             }
             try checkConnection(owner)
             guard exact(page["session_id"].text, stored), exact(page["profile"].text, profile),
@@ -259,6 +266,7 @@ extension HermesBotService {
                     complete = false
                 }
             }
+            if !HermesConversationState.unavailableMessageIDs(batch, stored: stored).isEmpty { complete = false }
             if !batch.isEmpty { freshEmpty.remove(identity) }
             let unique = batch.filter { row in
                 guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer else { return true }
@@ -266,12 +274,24 @@ extension HermesBotService {
             }
             if unique.count != batch.count { complete = false }
             rows.insert(contentsOf: batch, at: 0)
-            if batch.count < 100 { return (rows, complete) }
+            if batch.count < 100 {
+                let identityRead = offset == 0 && complete ? historyIdentityRead(rows, identity: identity) : nil
+                return (rows, complete, identityRead)
+            }
             guard !unique.isEmpty, offset < 100_000 else { throw HermesServiceError.incompatible }
             offset += batch.count
         }
     }
 
+
+    private func historyIdentityRead(_ rows: [HermesJSON], identity: SessionIdentity) -> ConversationIdentityRead? {
+        guard adapter == .authority || identity.root == identity.stored,
+              HermesConversationState.unavailableMessageIDs(rows, stored: identity.stored.text).isEmpty else { return nil }
+        let messageIDs = Set(HermesConversationState.messages(rows, stored: identity.stored.text).compactMap { message in
+            message.hasStableIdentity(storedID: identity.stored.text) ? Data(message.id.utf8) : nil
+        })
+        return ConversationIdentityRead(identity: identity, messageIDs: messageIDs)
+    }
 
     func confirmUnpersistedDraftIsEmpty(_ snapshot: HermesJSON, identity: SessionIdentity, owner: Int) async throws {
         // ca678285 _resume_live_unpersisted omits running/inflight, and its omitted

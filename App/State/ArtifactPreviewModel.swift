@@ -6,6 +6,7 @@ import BottoCore
 @MainActor protocol ArtifactReadingSession: AnyObject {
     var file: ArtifactPreviewFile? { get }
     var errorMessage: String? { get }
+    var requiresConnection: Bool { get }
     var isCurrent: Bool { get }
     var isLoading: Bool { get }
     var canReload: Bool { get }
@@ -29,6 +30,7 @@ struct ArtifactOutput: Identifiable {
 }
 
 extension ArtifactReadingSession {
+    var requiresConnection: Bool { false }
     var previewBlock: ReplyContent.Block? { nil }
     var canReload: Bool { isCurrent }
     func endOutput(id: UUID) { endOutput(id: id, error: nil) }
@@ -87,48 +89,122 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
 }
 
 @MainActor @Observable final class ArtifactPreviewModel {
-    private(set) var file: ArtifactPreviewFile?
-    private(set) var errorMessage: String?
-    private(set) var isLoading = false
-    @ObservationIgnored private var generation = UUID()
-    @ObservationIgnored private var downloadTask: Task<DownloadedArtifact, Error>?
+    enum Request: Equatable { case initial, reload }
+    typealias Download = @MainActor () async throws -> DownloadedArtifact
 
-    func load(preservingFile: Bool = false, download: @escaping @MainActor () async throws -> DownloadedArtifact) async {
-        let previous = preservingFile ? file : nil
-        cancel()
-        file = previous
-        let owner = generation
-        isLoading = true
-        let task = Task { try await download() }
-        downloadTask = task
-        defer { if generation == owner { downloadTask = nil; isLoading = false } }
-        do {
-            let artifact = try await withTaskCancellationHandler {
-                try await task.value
-            } onCancel: { task.cancel() }
-            try Task.checkCancellation()
-            guard generation == owner else { return }
-            guard artifact.data.count <= DownloadedArtifact.maximumBytes else {
-                throw ArtifactPreviewFailure.tooLarge
+    private struct Content {
+        var file: ArtifactPreviewFile?
+        var error: (any Error)?
+    }
+    private struct Attempt {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    private enum State {
+        case idle(Content)
+        case loading(Attempt, Content)
+        case output(ArtifactOutput, Content)
+        case exportFailed(id: UUID, message: String, content: Content)
+        case finished
+
+        var content: Content {
+            switch self {
+            case .idle(let content), .loading(_, let content), .output(_, let content),
+                 .exportFailed(_, _, let content): content
+            case .finished: Content()
             }
-            let written = try await ArtifactPreviewFile.write(artifact)
-            guard generation == owner, !Task.isCancelled else { return }
-            file = written
-            isLoading = false
-        } catch {
-            guard generation == owner, !Task.isCancelled else { return }
-            errorMessage = error.localizedDescription
-            isLoading = false
         }
+        var attempt: Attempt? {
+            if case .loading(let attempt, _) = self { attempt } else { nil }
+        }
+    }
+    private var state: State = .idle(Content())
+
+    var file: ArtifactPreviewFile? { state.content.file }
+    var errorMessage: String? { state.content.error?.localizedDescription }
+    var requiresConnection: Bool { (state.content.error as? HermesServiceError) == .disconnected }
+    var isLoading: Bool { state.attempt != nil }
+    var isFinished: Bool { if case .finished = state { true } else { false } }
+    var output: ArtifactOutput? { if case .output(let output, _) = state { output } else { nil } }
+    var exportError: String? { if case .exportFailed(_, let message, _) = state { message } else { nil } }
+    var exportErrorID: UUID? { if case .exportFailed(let id, _, _) = state { id } else { nil } }
+    var isPresentingOutput: Bool { output != nil || exportError != nil }
+
+    func request(_ request: Request, isCurrent: @escaping @MainActor () -> Bool,
+                 prepareDownload: () -> Download) {
+        guard !isFinished, !isLoading, !isPresentingOutput, isCurrent(),
+              request == .reload || file == nil else { return }
+        let download = prepareDownload()
+        _ = begin(preservingFile: request == .reload, isCurrent: isCurrent, download: download)
+    }
+
+    func load(preservingFile: Bool = false,
+              download: @escaping @MainActor () async throws -> DownloadedArtifact) async {
+        guard !isFinished, !isPresentingOutput else { return }
+        let attempt = begin(preservingFile: preservingFile, isCurrent: { true }, download: download)
+        await withTaskCancellationHandler { await attempt.task.value } onCancel: { attempt.task.cancel() }
+    }
+
+    private func begin(preservingFile: Bool, isCurrent: @escaping @MainActor () -> Bool,
+                       download: @escaping @MainActor () async throws -> DownloadedArtifact) -> Attempt {
+        let previous = Content(file: preservingFile ? file : nil)
+        let retired = state.attempt
+        let id = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let artifact = try await download()
+                try Task.checkCancellation()
+                guard state.attempt?.id == id else { return }
+                guard artifact.data.count <= DownloadedArtifact.maximumBytes else {
+                    throw ArtifactPreviewFailure.tooLarge
+                }
+                let written = try await ArtifactPreviewFile.write(artifact)
+                try Task.checkCancellation()
+                guard state.attempt?.id == id else { return }
+                state = .idle(isCurrent() ? Content(file: written) : previous)
+            } catch {
+                guard state.attempt?.id == id else { return }
+                var content = previous
+                if !Task.isCancelled, isCurrent() { content.error = error }
+                state = .idle(content)
+            }
+        }
+        let attempt = Attempt(id: id, task: task)
+        state = .loading(attempt, previous)
+        retired?.task.cancel()
+        return attempt
+    }
+
+    func beginOutput(_ kind: ArtifactOutput.Kind) {
+        guard !isFinished, !isLoading, !isPresentingOutput, let file else { return }
+        state = .output(ArtifactOutput(kind: kind, file: file), state.content)
+    }
+
+    func endOutput(id: UUID, error: Error?) {
+        guard case .output(let output, let content) = state, output.id == id else { return }
+        if let error { state = .exportFailed(id: id, message: error.localizedDescription, content: content) }
+        else { state = .idle(content) }
+    }
+
+    func clearExportError(id: UUID?) {
+        guard let id, case .exportFailed(let current, _, let content) = state, current == id else { return }
+        state = .idle(content)
     }
 
     func cancel() {
-        generation = UUID()
-        downloadTask?.cancel()
-        downloadTask = nil
-        file = nil
-        errorMessage = nil
-        isLoading = false
+        guard !isFinished else { return }
+        let retired = state.attempt
+        state = .idle(Content())
+        retired?.task.cancel()
+    }
+
+    @discardableResult func finish() -> Bool {
+        guard !isFinished else { return false }
+        let retired = state.attempt
+        state = .finished
+        retired?.task.cancel()
+        return true
     }
 }
 

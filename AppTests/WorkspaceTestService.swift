@@ -3,6 +3,7 @@ import BottoCore
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
+    var onCreate: (() -> Void)?
     var onOpen: (() -> Void)?
     var onDownload: (() -> Void)?
     var downloadData = Data("artifact".utf8)
@@ -38,6 +39,8 @@ import BottoCore
     var replacements: [(QueuedMessage, String, SessionIdentity, UUID)] = []
     var sendGate: WorkspaceGate?
     var createGate: WorkspaceGate?
+    var botCreationGate: WorkspaceGate?
+    var createdBot: BotProfile?
     var openGate: WorkspaceGate?
     var openGatedProfile: ExactID?
     var directoryGate: WorkspaceGate?
@@ -67,7 +70,8 @@ import BottoCore
     var rosterProfiles: [BotProfile]?
     var previewGate: WorkspaceGate?
     var previewError: (any Error)?
-    var previewResult: ConversationPreviewRead?
+    var previewResult: ConversationHistoryWindow?
+    var previewUnavailable = false
     var previewReads: [SessionIdentity] = []
     var directoryChanges: Set<ExactID> = []
     var journal: JournalDurability = .saved
@@ -115,7 +119,11 @@ import BottoCore
         if !rosterActivity.isEmpty { onEvent?(.activity(profile: profile, observations: rosterActivity)) }
         return rosterProfiles ?? [rosterBot ?? .init(id: profile.text, name: "Milo", status: rosterStatus)]
     }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { .init(id: profile.text, name: draft.name) }
+    func createBot(_ draft: BotDraft) async throws -> BotProfile {
+        onCreate?()
+        await botCreationGate?.wait()
+        return createdBot ?? .init(id: profile.text, name: draft.name)
+    }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -126,11 +134,15 @@ import BottoCore
         if let captured { return captured }
         return .init(summaries: summaries.filter { $0.identity.profile == profile }, activity: directoryActivity, isComplete: directoryComplete)
     }
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
-        let result = previewResult ?? .init(preview: snapshots[identity.root].flatMap {
-            ConversationPreview.latest(in: $0.messages)
-        }, isComplete: true)
+        let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map { snapshot in
+            let ids = Set(snapshot.messages.map { Data($0.id.utf8) })
+            let proof = !snapshot.hasEarlierMessages && (snapshot.unavailableMessageIDs ?? []).isEmpty
+                && ids.count == snapshot.messages.count && snapshot.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
+                ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
+            return .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages, identityRead: proof)
+        }
         await previewGate?.wait()
         if let previewError { throw previewError }
         return result

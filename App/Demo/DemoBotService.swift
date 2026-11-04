@@ -147,11 +147,15 @@ import BottoCore
         return try BotAvatarGeometry(json: #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18 30 L18 14 Q18 10 24 14 L34 24 L66 24 L76 14 Q82 10 82 18 L82 72 Q82 86 68 86 L32 86 Q18 86 18 72 Z"},"eyes":{"x":50,"y":48,"spacing":16,"scale":1}}"#)
     }
 
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,
               let chat = chats[identity.root.bytes] else { throw HermesServiceError.wrongConversation }
-        return .init(preview: ConversationPreview.latest(in: chat.messages), isComplete: true)
+        let ids = Set(chat.messages.map { Data($0.id.utf8) })
+        let proof = !chat.hasEarlierMessages && (chat.unavailableMessageIDs ?? []).isEmpty
+            && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
+            ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
+        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
     }
 
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
@@ -161,9 +165,15 @@ import BottoCore
               let chat = chats[identity.root.bytes] else { throw HermesServiceError.wrongConversation }
         let end = max(0, chat.messages.count - offset)
         let start = max(0, end - 100)
-        return ConversationHistoryPage(messages: Array(chat.messages[start..<end]),
+        let messages = Array(chat.messages[start..<end])
+        let sourceIDs = Set(messages.map { Data($0.id.utf8) })
+        let identityRead = offset == 0 && start == 0 && !chat.hasEarlierMessages
+            && (chat.unavailableMessageIDs ?? []).isEmpty && sourceIDs.count == messages.count
+            && messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
+            ? ConversationIdentityRead(identity: identity, messageIDs: sourceIDs) : nil
+        return ConversationHistoryPage(messages: messages,
             nextOffset: start > 0 ? offset + 100 : nil, isComplete: true,
-            sourceIDs: Set(chat.messages[start..<end].map { Data($0.id.utf8) }))
+            sourceIDs: sourceIDs, identityRead: identityRead)
     }
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -830,6 +840,9 @@ import BottoCore
               let messageIndex = current.messages.firstIndex(where: { $0.id == id }) else { return }
         current.messages[messageIndex].text += "\n\nPerformance stream \(number) complete."
         completeReply(current, key: key, source: source, lineage: lineage, succeeded: true)
+        if let gateDirectory {
+            try? Data().write(to: gateDirectory.appendingPathComponent("performance-stream-\(number).completed"))
+        }
     }
     #endif
 

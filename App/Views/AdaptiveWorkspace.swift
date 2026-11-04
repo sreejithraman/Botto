@@ -51,6 +51,7 @@ private struct WorkspaceShell: View {
     @State private var nativeDetail = WorkspaceNativeDetailState()
     @State private var editing = ComposerEditingHandle()
     @State private var observedLayout = WorkspaceLayout(compact: true, accessibilityText: false, workspaceWidth: 0)
+    /// Holds the column only while a root cover is up. Otherwise the task decides it in `currentCompactColumn`.
     @State private var nativeCompactColumn: NavigationSplitViewColumn = .sidebar
     @State private var nativeNavigationRevision: UUID?
     @State private var nativeVisibility: NavigationSplitViewVisibility = .all
@@ -79,11 +80,7 @@ private struct WorkspaceShell: View {
         let revision = presentation.revision
         let workspace = store.chats
         let owner = selectedOwner
-        return Binding(get: {
-            if presentation.isBrowsingBots || selected == nil { return .sidebar }
-            if showsFile { return .detail }
-            return nativeCompactColumn
-        }, set: { value in
+        return Binding(get: { currentCompactColumn }, set: { value in
             // Ordinary native Back/edge-pop remains available for chat-only.
             // A foreground file has explicit Close/Bots; native fold feedback
             // cannot park or retire its reader.
@@ -102,10 +99,12 @@ private struct WorkspaceShell: View {
             }
         })
     }
+    /// Decided in the update that changes the task: a column written later from `onChange`
+    /// doesn't reach the native split view unless another update happens to follow it.
+    /// Reads the live selection because compact actions recheck roster presence through it.
     private var currentCompactColumn: NavigationSplitViewColumn {
         if presentation.isBrowsingBots || store.selectedBot == nil { return .sidebar }
-        if showsFile { return .detail }
-        return nativeCompactColumn
+        return showsFile || !rootCovered ? .detail : nativeCompactColumn
     }
     private var outputCovered: Bool { presentation.artifact?.isPresentingOutput == true }
     private var chatActionsAvailable: Bool {
@@ -220,12 +219,15 @@ private struct WorkspaceShell: View {
         .onChange(of: presentation.revision) { _, revision in
             if nativeNavigationRevision != revision { editing.cancel() }
             nativeNavigationRevision = nil
-            nativeCompactColumn = presentation.isBrowsingBots || store.selectedBot == nil ? .sidebar : .detail
+            if !rootCovered {
+                nativeCompactColumn = presentation.isBrowsingBots || store.selectedBot == nil ? .sidebar : .detail
+            }
             reconcileVisibility()
         }
         .onChange(of: store.selectedBotID) { _, _ in
             editing.cancel()
             chatCovered = false
+            guard !rootCovered else { return }
             nativeCompactColumn = store.selectedBot == nil ? .sidebar : .detail
             presentation.selectedBotChanged(store: store)
         }
@@ -269,7 +271,8 @@ private struct WorkspaceShell: View {
                 presentation.retryArtifact(id: session.id, revision: revision, canPresent: { artifactActionsAvailable })
             }, canPresentOutput: {
                 artifactActionsAvailable && presentation.acceptsArtifactCallback(id: session.id, revision: revision)
-            })
+            }, connectionFeedback: session.requiresConnection && !store.isConnected
+                ? AnyView(ConnectionStatusView(store: store)) : nil)
     }
 }
 

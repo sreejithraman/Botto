@@ -47,8 +47,9 @@ func conversationPreviewUsesTheUserAttachmentDisplay(caption: String) async thro
         }
         return try original?(request) ?? .object([:])
     }
-    let read = try await service.conversationPreview(identity)
-    #expect(read.isComplete && read.preview?.text == expected)
+    let read = try await service.recentConversationHistory(identity)
+    #expect(read != nil && read?.preview?.text == expected)
+    #expect(read?.messages.first?.text == raw)
 }
 
 @Test func conversationPreviewUsesAttributedContentAndSafeFailureTitles() throws {
@@ -69,7 +70,7 @@ func conversationPreviewUsesTheUserAttachmentDisplay(caption: String) async thro
 }
 
 @MainActor @Test(arguments: [true, false])
-func conversationPreviewReadsOlderPagesWithoutChangingTheLiveAttachment(authority: Bool) async throws {
+func recentHistoryReadsNewestWindowWithoutChangingTheLiveAttachment(authority: Bool) async throws {
     let host = try HermesTestHost(authority: authority), service = host.service()
     defer { service.disconnect() }
     let profile = try ExactID(host.bot.id)
@@ -87,8 +88,8 @@ func conversationPreviewReadsOlderPagesWithoutChangingTheLiveAttachment(authorit
             #expect(query.contains { $0.name == "include_compacted" && $0.value == "true" })
             let offset = Int(query.first { $0.name == "offset" }!.value!)!
             offsets.append(offset)
-            let rows: [HermesJSON] = offset == 0 ? (101...200).map { previewRow($0, text: "[SILENT]") }
-                : [previewRow(1, text: "The report is **ready**.", timestamp: 123)]
+            let rows: [HermesJSON] = [previewRow(1, text: "The report is **ready**.", timestamp: 123)]
+                + (101...200).map { previewRow($0, text: "[SILENT]") }
             return previewPage(host: host, offset: offset, rows: rows)
         }
         return try original?(request) ?? .object([:])
@@ -96,11 +97,19 @@ func conversationPreviewReadsOlderPagesWithoutChangingTheLiveAttachment(authorit
     let methods = host.sockets.flatMap(\.sent).map { $0["method"].text }
     var publications = 0
     service.onEvent = { if case .conversation = $0 { publications += 1 } }
-    let result = try await service.conversationPreview(identity)
-    #expect(result.preview?.text == "The report is ready.")
-    #expect(result.preview?.timestamp == Date(timeIntervalSince1970: 123))
-    #expect(result.isComplete)
-    #expect(offsets == [0, 100])
+    let result = try await service.recentConversationHistory(identity)
+    #expect(result?.preview?.text == "The report is ready.")
+    #expect(result?.preview?.timestamp == Date(timeIntervalSince1970: 123))
+    #expect(result?.messages.count == 101)
+    #expect(result?.messages.first?.text == "The report is **ready**.")
+    #expect(result?.messages.first?.id == host.root + ":row:1")
+    #expect(result?.messages.last?.id == host.root + ":row:200")
+    #expect(result?.messages.dropFirst().allSatisfy { $0.text == "[SILENT]" } == true)
+    #expect(result?.hasEarlierMessages == false)
+    let proof = try #require(result?.identityRead)
+    #expect(proof.matches(identity))
+    #expect(proof.messageIDs == Set(try #require(result).messages.map { Data($0.id.utf8) }))
+    #expect(offsets == [0])
     #expect(host.sockets.flatMap(\.sent).map { $0["method"].text } == methods)
     #expect(publications == 0)
     try service.validate(opened.access)
@@ -119,7 +128,7 @@ func conversationPreviewDistinguishesBoundedUnknownFromKnownAbsence(condition: S
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
             let offset = Int(query.first { $0.name == "offset" }!.value!)!
             offsets.append(offset)
-            let rows = condition == "budget" ? (1...100).map { previewRow(offset + $0, text: "[SILENT]") }
+            let rows = condition == "budget" ? (1...300).map { previewRow(offset + $0, text: "[SILENT]") }
                 : [previewRow(1, text: condition == "exhausted" ? "[SILENT]" : "An incomplete reply")]
             var page = previewPage(host: host, offset: offset, rows: rows)
             if condition == "omitted" { page["messages_omitted"] = .bool(true) }
@@ -130,13 +139,13 @@ func conversationPreviewDistinguishesBoundedUnknownFromKnownAbsence(condition: S
         }
         return try original?(request) ?? .object([:])
     }
-    let result = try await service.conversationPreview(identity)
-    #expect(result.preview == nil)
-    #expect(result.isComplete == (condition == "exhausted"))
-    #expect(offsets == (condition == "budget" ? [0, 100, 200] : [0]))
+    let result = try await service.recentConversationHistory(identity)
+    #expect(result?.preview == nil)
+    #expect((result != nil) == (condition == "exhausted"))
+    #expect(offsets == [0])
 }
 
-@MainActor @Test(arguments: ["profile", "session", "paging", "oversized"])
+@MainActor @Test(arguments: ["profile", "session", "paging", "oversized", "negativeID", "missingID"])
 func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) async throws {
     let host = try HermesTestHost(), service = host.service()
     defer { service.disconnect() }
@@ -150,13 +159,23 @@ func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) a
             case "profile": page["profile"] = .string("foreign-profile")
             case "session": page["session_id"] = .string("foreign-session")
             case "paging": page["pagination"]["offset"] = .number(100)
-            default: page["messages"] = .array((1...101).map { previewRow($0, text: "Unexpected surplus") })
+            case "oversized": page["messages"] = .array((1...301).map { previewRow($0, text: "Unexpected surplus") })
+            case "negativeID": page["messages"] = .array([previewRow(-1, text: "Invalid identity")])
+            case "missingID":
+                var row = previewRow(1, text: "Missing identity"); row["id"] = .null
+                page["messages"] = .array([row])
+            default: break
             }
             return page
         }
         return try original?(request) ?? .object([:])
     }
-    await #expect(throws: HermesServiceError.self) { try await service.conversationPreview(identity) }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("A malformed response must be rejected")
+    } catch {
+        #expect(error is HermesServiceError, "Unknown shapes prove nothing about cached identities: \(error)")
+    }
 }
 
 @MainActor @Test func conversationPreviewUsesExistingHistoryDisplayProjection() async throws {
@@ -179,9 +198,9 @@ func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) a
         }
         return try original?(request) ?? .object([:])
     }
-    let result = try await service.conversationPreview(identity)
-    #expect(result.preview?.text == "The visible reply")
-    #expect(result.isComplete)
+    let result = try await service.recentConversationHistory(identity)
+    #expect(result?.preview?.text == "The visible reply")
+    #expect(result != nil)
 }
 
 @MainActor @Test func conversationPreviewDoesNotClaimAbsenceBeyondSidecarCompressionTip() async throws {
@@ -202,9 +221,9 @@ func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) a
     }
     _ = try await service.connect(configuration: host.configuration)
     let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
-    let result = try await service.conversationPreview(identity)
-    #expect(result.preview == nil)
-    #expect(!result.isComplete)
+    let result = try await service.recentConversationHistory(identity)
+    #expect(result?.preview == nil)
+    #expect(result == nil)
 }
 
 @MainActor @Test(arguments: ["cancel", "connection", "tip"])
@@ -222,7 +241,7 @@ func conversationPreviewRejectsResultsAfterItsReadLifetimeEnds(retirement: Strin
         }
         return try original?(request) ?? .object([:])
     }
-    let read = Task { try await service.conversationPreview(identity) }
+    let read = Task { try await service.recentConversationHistory(identity) }
     try await eventually { gate != nil }
     switch retirement {
     case "cancel": read.cancel()
@@ -237,8 +256,14 @@ func conversationPreviewRejectsResultsAfterItsReadLifetimeEnds(retirement: Strin
         _ = try await service.conversations(profile: identity.profile)
     }
     let pending = gate; gate = nil
-    pending?.resume(returning: previewPage(host: host, offset: 0, rows: [previewRow(1, text: "Stale reply")]))
-    await #expect(throws: Error.self) { try await read.value }
+    pending?.resume(returning: previewPage(host: host, offset: 0, rows: [previewRow(1, text: "Stale reply"),
+        previewRow(1, text: "A stale conflicting reply")]))
+    do {
+        _ = try await read.value
+        Issue.record("A retired read must not return history")
+    } catch {
+        #expect(!(error is ConversationHistoryPage.Failure), "A retired read proves nothing: \(error)")
+    }
 }
 
 private func previewRow(_ id: Int, text: String, kind: String? = nil, timestamp: Double? = nil) -> HermesJSON {
@@ -248,8 +273,161 @@ private func previewRow(_ id: Int, text: String, kind: String? = nil, timestamp:
     return .object(fields)
 }
 
-@MainActor private func previewPage(host: HermesTestHost, offset: Int, rows: [HermesJSON]) -> HermesJSON {
+@MainActor private func previewPage(host: HermesTestHost, offset: Int, rows: [HermesJSON], limit: Int = 300) -> HermesJSON {
     .object(["session_id": .string(host.root), "profile": .string(host.bot.id), "messages": .array(rows),
-        "pagination": .object(["limit": .number(100), "offset": .number(Double(offset)), "order": .string("latest"),
+        "pagination": .object(["limit": .number(Double(limit)), "offset": .number(Double(offset)), "order": .string("latest"),
             "returned": .number(Double(rows.count))])])
+}
+
+@MainActor @Test func recentHistoryRetainsExactMessageContentForImmediateChatDisplay() async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    let fullReply = "The report is **ready**.\n\n```swift\nlet count = 2\n```"
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            return previewPage(host: host, offset: 0, rows: [
+                .object(["id": .number(1), "role": .string("user"), "content": .array([
+                    .object(["type": .string("text"), "text": .string("Review the full report")]),
+                    .object(["type": .string("image_url"), "image_url": .object(["url": .string("data:image/png;base64,aGVsbG8=")])])])]),
+                previewRow(2, text: fullReply),
+                .object(["id": .number(3), "role": .string("tool"), "content": .string("Diagnostic details")])])
+        }
+        return try original?(request) ?? .object([:])
+    }
+    let result = try #require(try await service.recentConversationHistory(identity))
+    #expect(result.messages.map(\.text) == ["Review the full report", fullReply, "Diagnostic details"])
+    #expect(result.messages.map(\.id) == [host.root + ":row:1", host.root + ":row:2", host.root + ":row:3"])
+    #expect(result.messages.first?.attachments == [ChatAttachment(name: "Image.png", path: host.root + ":row:1:image:1", mimeType: "image/png")])
+    #expect(!result.hasEarlierMessages)
+    #expect(result.preview?.messageID == host.root + ":row:2")
+}
+
+@MainActor @Test(arguments: ["visible", "hidden", "omitted", "truncated", "paging", "oversized", "invalidRow"])
+func recentHistoryReportsDuplicateRawIdentitiesAsScopedEvidence(shape: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            var rows = [previewRow(1, text: "One occurrence", kind: shape == "hidden" ? "hidden" : nil),
+                previewRow(2, text: "An unrelated row"), previewRow(1, text: "A conflicting occurrence")]
+            if shape == "truncated" { rows[1]["archived_truncated"] = .bool(true) }
+            if shape == "invalidRow" { rows.append(previewRow(-1, text: "Invalid identity")) }
+            if shape == "oversized" { rows += (3...300).map { previewRow($0, text: "Surplus") } }
+            var page = previewPage(host: host, offset: 0, rows: rows)
+            if shape == "omitted" { page["messages_omitted"] = .bool(true) }
+            if shape == "paging" { page["pagination"]["offset"] = .number(100) }
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("A duplicate raw identity must reject the window")
+    } catch let failure as ConversationHistoryPage.Failure {
+        #expect(failure.identity == identity)
+        #expect(failure.unavailableMessageIDs == [Data((identity.stored.text + ":row:1").utf8)])
+        #expect(failure.sourceIDs.isEmpty, "An observed dispute says nothing about the window's other rows")
+        #expect(!failure.exceedsRowLimit)
+    } catch {
+        Issue.record("A duplicate must stay structured evidence instead of \(error)")
+    }
+}
+
+@MainActor @Test(arguments: ["beyondWindow", "foreignProfile", "foreignSession"])
+func recentHistoryOffersNoDisputeWithoutBoundedAssociatedEvidence(condition: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            var page = previewPage(host: host, offset: 0, rows: [previewRow(1, text: "One"), previewRow(1, text: "Two")])
+            switch condition {
+            case "beyondWindow":
+                page["messages"] = .array((1...300).map { previewRow($0, text: "Inside") } + [previewRow(1, text: "Outside")])
+            case "foreignProfile": page["profile"] = .string("foreign-profile")
+            default: page["session_id"] = .string("foreign-session")
+            }
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("The response must be rejected")
+    } catch {
+        #expect(error is HermesServiceError, "Only bounded rows of this exact source can dispute it: \(error)")
+    }
+}
+
+@MainActor @Test(arguments: ["authorityComplete", "authorityBounded", "sidecarComplete", "sidecarCompressed"])
+func recentHistoryDistinguishesNewestWindowFromExhaustiveHistory(condition: String) async throws {
+    let host = try HermesTestHost(authority: condition.hasPrefix("authority")), service = host.service()
+    defer { service.disconnect() }
+    if condition == "sidecarCompressed" {
+        host.methodOverride = { frame, socket in
+            if frame["method"].text == "session.list" {
+                return .object(["sessions": .array([.object(["id": .string(host.root), "resolved_id": .string("compressed-tip")])])])
+            }
+            return host.defaultReply(frame, socket: socket)
+        }
+    }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            let count = condition == "authorityBounded" ? 300 : 1
+            var page = previewPage(host: host, offset: 0, rows: (1...count).map { previewRow($0, text: "A readable reply") })
+            page["session_id"] = .string(identity.stored.text)
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    let result = try #require(try await service.recentConversationHistory(identity))
+    #expect(result.hasEarlierMessages == (condition == "authorityBounded" || condition == "sidecarCompressed"))
+    if result.hasEarlierMessages { #expect(result.identityRead == nil) }
+    else {
+        let proof = try #require(result.identityRead)
+        #expect(proof.matches(identity))
+        #expect(proof.messageIDs == Set(result.messages.map { Data($0.id.utf8) }))
+    }
+    #expect(result.messages.last?.text == "A readable reply")
+}
+
+@MainActor @Test func recentHistoryUsesOneNewestWindowWhenOffsetPagesCouldMove() async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    var offsets: [Int] = []
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            let requestedLimit = query.first { $0.name == "limit" }?.value
+            let offset = Int(query.first { $0.name == "offset" }!.value!)!
+            #expect(requestedLimit == "300")
+            offsets.append(offset)
+            // Deletion between offset reads would shift the older page without necessarily duplicating IDs.
+            let rows = offset == 0 ? (1...300).map { previewRow($0, text: $0 == 1 ? "The retained reply" : "[SILENT]") }
+                : [previewRow(301, text: "A shifted older page")]
+            return previewPage(host: host, offset: offset, rows: rows, limit: 300)
+        }
+        return try original?(request) ?? .object([:])
+    }
+    let result = try #require(try await service.recentConversationHistory(identity))
+    #expect(offsets == [0])
+    #expect(result.messages.count == 300)
+    #expect(result.messages.first?.id == host.root + ":row:1")
+    #expect(result.messages.last?.id == host.root + ":row:300")
+    #expect(result.preview?.text == "The retained reply")
+    #expect(result.hasEarlierMessages)
 }

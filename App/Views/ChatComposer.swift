@@ -73,10 +73,7 @@ struct ChatComposer: View {
     }
     private var sending: Bool { screen?.isSending == true }
     private var uploading: Bool { attachmentReadID != nil || screen?.isUploading == true }
-    private var canCompose: Bool {
-        inputAvailable && screen?.canEditDraft == true &&
-        (screen?.canAct == true || !store.isConnected)
-    }
+    private var canCompose: Bool { inputAvailable && screen.map(store.canCompose) == true }
     private var canSend: Bool {
         canCompose && screen?.needsReattachment != true && !sending && !uploading &&
         hasContent

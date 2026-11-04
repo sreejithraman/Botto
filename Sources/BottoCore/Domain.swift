@@ -206,19 +206,22 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var profileID: String
     public var messages: [ChatMessage]
     public var unavailableMessageIDs: Set<Data>?
+    /// Stored history is incomplete; live updates do not prove the missing content was restored.
+    public var hasEarlierMessages: Bool
     public var pendingRequests: [PendingRequest]
     public var queuedMessages: [QueuedMessage]
     public var isWorking: Bool
     public var lastSequence: Int
-    public init(id: String, storedID: String, profileID: String, messages: [ChatMessage] = [], pendingRequests: [PendingRequest] = [], queuedMessages: [QueuedMessage] = [], isWorking: Bool = false, lastSequence: Int = 0) {
+    public init(id: String, storedID: String, profileID: String, messages: [ChatMessage] = [], pendingRequests: [PendingRequest] = [], queuedMessages: [QueuedMessage] = [], isWorking: Bool = false, lastSequence: Int = 0, hasEarlierMessages: Bool = false) {
         self.id = id; self.storedID = storedID; self.profileID = profileID
         self.messages = messages; self.pendingRequests = pendingRequests
+        self.hasEarlierMessages = hasEarlierMessages
         self.queuedMessages = queuedMessages
         self.isWorking = isWorking; self.lastSequence = lastSequence
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, storedID, profileID, messages, unavailableMessageIDs, pendingRequests, queuedMessages, isWorking, lastSequence
+        case id, storedID, profileID, messages, unavailableMessageIDs, hasEarlierMessages, pendingRequests, queuedMessages, isWorking, lastSequence
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -227,6 +230,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
         profileID = try values.decode(String.self, forKey: .profileID)
         messages = try values.decode([ChatMessage].self, forKey: .messages)
         unavailableMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .unavailableMessageIDs)
+        hasEarlierMessages = try values.decodeIfPresent(Bool.self, forKey: .hasEarlierMessages) ?? false
         pendingRequests = try values.decode([PendingRequest].self, forKey: .pendingRequests)
         queuedMessages = try values.decodeIfPresent([QueuedMessage].self, forKey: .queuedMessages) ?? []
         isWorking = try values.decode(Bool.self, forKey: .isWorking)
@@ -259,7 +263,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
@@ -297,8 +301,8 @@ public extension BotService {
         throw HermesServiceError.rejected(-32601)
     }
 
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
-        .init(preview: nil, isComplete: false)
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
+        nil
     }
 
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {

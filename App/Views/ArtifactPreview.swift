@@ -14,6 +14,7 @@ struct ArtifactPreview: View {
     let onRetry: () -> Void
     var onBrowseBots: (() -> Void)? = nil
     var canPresentOutput: () -> Bool = { true }
+    var connectionFeedback: AnyView? = nil
 
     var body: some View {
         let errorID = session.exportErrorID
@@ -117,9 +118,13 @@ struct ArtifactPreview: View {
             ContentUnavailableView {
                 Label("Could Not Load File", systemImage: "exclamationmark.triangle")
             } description: { Text(message).textSelection(.enabled) } actions: {
-                Button("Try Again", action: onRetry)
-                    .accessibilityIdentifier("artifact-retry")
-                    .disabled(!isActive)
+                if let connectionFeedback {
+                    connectionFeedback.disabled(!isActive)
+                } else {
+                    Button("Try Again", action: onRetry)
+                        .accessibilityIdentifier("artifact-retry")
+                        .disabled(!isActive)
+                }
             }
             .accessibilityIdentifier("artifact-error")
         } else {

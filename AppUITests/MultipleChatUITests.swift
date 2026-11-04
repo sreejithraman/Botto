@@ -584,13 +584,19 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["connection-feedback"].exists)
         let create = app.buttons["new-chat"]
         XCTAssertTrue(create.isEnabled)
+        let chats = app.staticTexts["3 chats"]
+        XCTAssertTrue(chats.exists)
         create.tap()
         XCTAssertTrue(app.descendants(matching: .any)["connection-feedback"].waitForExistence(timeout: 3))
         app.buttons["Reconnect"].tap()
+        // Recovery clears the feedback and keeps the picker, so the retry stays deliberate.
+        XCTAssertTrue(app.descendants(matching: .any)["connection-feedback"].waitForNonExistence(timeout: 8))
+        card("Main", app: app).tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].waitForNonExistence(timeout: 8))
         assertTitle("Main", app: app)
         XCTAssertEqual(editor(app).value as? String, "Keep my main draft")
         picker(app)
+        XCTAssertTrue(chats.exists, "Recovery must not replay the offline creation attempt.")
         app.buttons["new-chat"].tap()
         assertTitle("New chat", app: app)
     }
@@ -612,7 +618,8 @@ final class MultipleChatUITests: XCTestCase {
         let deadline = Date.now.addingTimeInterval(timeout)
         var found = Set<String>()
         repeat {
-            for row in rows.allElementsBoundByIndex where row.label.hasPrefix(prefix) || row.staticTexts.matching(content).firstMatch.exists {
+            // `count`, because `firstMatch.exists` on an index-bound row reported rows that hold no match.
+            for row in rows.allElementsBoundByIndex where row.label.hasPrefix(prefix) || row.staticTexts.matching(content).count > 0 {
                 found.insert(row.identifier)
             }
             if found.count < 2 && Date.now < deadline { transcript.swipeDown(velocity: .slow) }

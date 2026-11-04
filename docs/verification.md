@@ -943,3 +943,83 @@ bottleneck and pinned-selection race remain unresolved under Snip Snap item
 `B14EBCD5-EA29-4987-B202-A4FA7B4D5160`; this change does not claim a performance
 repair. Source/artifact evidence is retained in
 `/tmp/botto-stream-followup-20261101/investigation.json`.
+
+
+## Shared chat state — 4 November 2026
+
+Inbox refresh and chat opening share retained transcript rows. Cached content can
+appear before attachment completes; live attachment still supplies action access.
+The change also consolidates reader and connection lifecycles, preserves drafts
+and runtime identity, and orders ordinary navigation and Library publication.
+
+### Selected recovery contract
+
+PR 24 retains the existing cache journal, namespace isolation, quarantine,
+restoration holds and row-level exclusions. Negative publications can narrow a
+retained exact-tip row without restoring its content or directory presence.
+The new durable retired-tip recovery feature was removed by Sree's scope decision.
+Eviction or storage failure can lose its evidence, and returning tips use the
+ordinary source rules. See [core integration](core-integration.md) and the
+[superseded decision](adr/0012-retired-tip-evidence.md).
+
+### Current focused evidence
+
+The reduced implementation passed once through `scripts/check-native.sh`, serially,
+on an owned iPhone 17 Pro Simulator running iOS 27.0:
+
+| Suite | Functions | Argument cases | Failed / skipped |
+| --- | ---: | ---: | ---: |
+| `WorkspaceLibraryTests` | 164 | 299 | 0 / 0 |
+| `WorkspaceLibraryRetentionTests` | 62 | 98 | 0 / 0 |
+| `ArtifactCacheTests` | 40 | 62 | 0 / 0 |
+
+All runs used the same compiled inputs and binaries. Source binding, exact test
+removals and retained regression cases are recorded in
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/scope-reduction/implementation/`.
+Only documentation changed after these runs. Removed tests asserted the deferred
+stronger contract; no `427e76e` test function was removed. These checks establish
+focused cache behavior, not a full-gate or live-host result.
+
+### Earlier evidence and remaining acceptance
+
+The full gate passed on `1a96dc0`. On `427e76e`, it failed only the expanded HTML
+update test; the other phases, including native Save/Files reopen and independent
+provider readback, passed. A loading-cover readiness repair subsequently passed a
+controlled reproduction and all five rich UI tests. Those earlier results do not prove the reduced source.
+
+The reduced source `2e08230` passed one unfiltered `scripts/check.sh` run on
+4 November 2026. All 558 tracked files matched its snapshot before and after:
+
+- Python tooling: 252 tests passed.
+- Core: 497 tests reported passed, with four opt-in skips and seven deliberate
+  known issues. The MainActor-default compatibility build passed.
+- Native and UI: 1,108 functions passed, none failed and 18 skipped. Native
+  contributed 989 passes and two opt-in measurement skips; UI contributed
+  119 passes and 16 explicit host, layout or opt-in skips. All 135 UI functions
+  were discovered, with no runner restarts or test-selection flags.
+- The rich HTML and long-chat cases passed on unchanged budgets.
+- Native Save/Files reopen and independent provider readback passed. The saved
+  original was byte-identical: 80 bytes, SHA-256
+  `ab2d37c15d4277807c8d7c9ac788d680ce95645b07a1d0e61ee34005a2b41cce`.
+- The held-attachment Inbox test passed inside that same run. Its screenshot
+  shows the full reply and editable draft before attachment returns; the
+  passing assertions also check draft/reply survival after release and no send.
+  This demonstrates the fixture-based native flow, not a real Hermes host.
+
+One independent assessment of the reduced boundary found no material issues.
+Full evidence, explicit skip conditions and the demonstration image are retained
+under `/Users/sree/.t3/userdata/verification/botto-chat-pr24/full-gate-reduced/`.
+There were no retries. Other leases overlapped the run; no failure or performance
+claim is attributed to host contention. This single pass does not measure an
+intermittent failure rate. Only this result record changed after verification;
+compiled source and tests are unchanged. The owned session was explicitly
+released after export, and the temporary host lease cap was restored to 60 minutes.
+Device capacity remains four.
+
+The detailed development chronology, including failed attempts, is preserved on
+`archive/pr24-durable-recovery-cf430b3` and in
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/scope-reduction/archive/`.
+Raw historical evidence remains under the sibling `full-gate37`, `full-gate38`,
+`rich-ui39` and repair directories. Archived pass counts apply only to their
+recorded source revisions. Signed login, physical devices, real APNS, iPad,
+VoiceOver and the explicitly skipped performance measurements are unproven here.

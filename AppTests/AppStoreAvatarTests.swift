@@ -624,7 +624,7 @@ import BottoCore
         case "demo":
             await store.enterDemo()
             let profiles = Set(try store.bots.map { try ExactID($0.id) })
-            await store.chats.refreshInboxPreviews(profiles: profiles)
+            await store.chats.refreshInboxHistory(profiles: profiles)
         default:
             service.profiles = [BotProfile(id: "shared", name: "Replacement")]
             #expect(await store.connect(second))
@@ -648,7 +648,7 @@ import BottoCore
         try await avatarEventually { service.pending.count == 1 }
         #expect(!store.isRefreshing)
         let created = await store.create(.init(name: "New", avatar: .face(.init(shape: .drop, color: "#22c55e"))))
-        #expect(created?.id == "new")
+        #expect(created?.bot.id == "new")
         #expect(store.bots.contains { $0.id == "new" })
         service.profiles = [BotProfile(id: "shared", name: "Other host", hasAvatar: false)]
         #expect(await store.connect(second))

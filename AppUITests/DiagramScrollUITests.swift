@@ -46,7 +46,17 @@ final class DiagramScrollUITests: XCTestCase {
             Thread.sleep(forTimeInterval: index == 0 ? 6 : 0.5)
             revealDiagram()
             let visibleReturn = NSPredicate { _, _ in pixels.exists && pixels.isHittable }
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: visibleReturn, object: nil)], timeout: 3), .completed,
+            let returned = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: visibleReturn, object: nil)], timeout: 3)
+            if returned != .completed {
+                let pixelsExist = pixels.exists
+                let pixelFrame = pixelsExist ? pixels.frame : .null
+                let geometry = "cycle=\(index) transcript=\(transcript.frame) pixelsExist=\(pixelsExist) pixels=\(pixelFrame) hittable=\(pixelsExist && pixels.isHittable)"
+                let hierarchy = XCTAttachment(string: geometry + "\n" + app.debugDescription)
+                hierarchy.name = "Diagram return failure"
+                hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+            }
+            XCTAssertEqual(returned, .completed,
                            "A rendered diagram must keep visible native pixels on return")
             assertControlsOutsideDiagram(in: app)
             let capture = XCTAttachment(screenshot: app.screenshot())

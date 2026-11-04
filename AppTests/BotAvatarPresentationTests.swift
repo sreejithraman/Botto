@@ -74,6 +74,35 @@ import BottoCore
         }
     }
 
+    @Test func profileAvatarUsesRosterFallbackOnlyWhileChatActivityIsIncomplete() async throws {
+        let service = try WorkspaceTestService(), profile = service.profile
+        let sibling = service.summaries[1].identity
+        service.directoryActivity[sibling] = .known(.idle, .distantFuture)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: .init(), service: service, onDirty: {})
+        workspace.observeProfiles([.init(id: profile.text, name: "Milo", status: .waiting)])
+        workspace.setOnline(true)
+        await workspace.openBot(profile: profile)
+        let owner = try #require(workspace.screen(profile: profile)?.owner)
+        await workspace.refreshDirectory(owner)
+        #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .idle)
+
+        service.directoryComplete = false
+        await workspace.refreshDirectory(owner)
+        #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .waiting)
+        #expect(workspace.aggregate(profile: profile).attentionChat == nil)
+
+        workspace.observeProfiles([.init(id: profile.text, name: "Milo", status: .idle)])
+        service.directoryComplete = true
+        service.directoryActivity[sibling] = .unknown("Activity unavailable")
+        await workspace.refreshDirectory(owner)
+        #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .unavailable)
+
+        workspace.setOnline(false)
+        workspace.setOnline(true)
+        #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .idle)
+    }
+
     @Test func explicitActivityFailureSleepsAndRecoveryClearsIt() throws {
         let service = try WorkspaceTestService(), clock = Clock()
         var book = ConversationBook()

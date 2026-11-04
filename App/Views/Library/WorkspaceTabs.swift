@@ -2,20 +2,16 @@ import SwiftUI
 import BottoCore
 
 struct WorkspaceTabs: View {
-    enum Destination: Hashable { case bots, artifacts, search }
     let store: AppStore
-    let presentation: WorkspacePresentation
+    @Bindable var presentation: WorkspacePresentation
     let rootCovered: Bool
     let onSettings: () -> Void
     let onNewBot: () -> Void
-    @State private var selected = Destination.bots
     @State private var query = ""
-    @State private var reader: LibraryArtifactPreviewSession?
-    @State private var chatAfterReaderDismissal: LibraryChat?
-    @State private var openingTask: Task<Void, Never>?
     @State private var navigationError: String?
     @Environment(\.horizontalSizeClass) private var sizeClass
-    private var openingChat: Bool { openingTask != nil }
+    private var selected: WorkspaceDestination { presentation.destination }
+    private var openingChat: Bool { presentation.libraryOpening != nil }
 
     private var hidesTabs: Bool {
         selected == .bots && sizeClass == .compact && store.selectedBot != nil && !presentation.isBrowsingBots
@@ -32,7 +28,7 @@ struct WorkspaceTabs: View {
                     .padding().background(.regularMaterial, in: Capsule()).padding(.bottom, 80)
                 }
             }
-            .sheet(item: $reader, onDismiss: readerDidDismiss) { session in
+            .sheet(item: $presentation.libraryReader, onDismiss: readerDidDismiss) { session in
                 VStack(spacing: 0) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -51,7 +47,9 @@ struct WorkspaceTabs: View {
                     .padding(.horizontal, 16).padding(.top, 12)
                     ArtifactPreview(session: session, isExpanded: true,
                                     onClose: { guard !session.isPresentingOutput else { return }; closeReader() },
-                                    onRetry: { session.retry() })
+                                    onRetry: { session.retry() },
+                                    connectionFeedback: session.requiresConnection && !store.isConnected
+                                        ? AnyView(ConnectionStatusView(store: store)) : nil)
                 }
                 .background(BottoTheme.paper)
                 .interactiveDismissDisabled(session.isPresentingOutput)
@@ -66,10 +64,7 @@ struct WorkspaceTabs: View {
                 await store.refreshLibraryIfNeeded()
             }
             .onChange(of: ObjectIdentifier(store.library)) { _, _ in
-                cancelOpening(); closeReader(); query = ""; selected = .bots
-            }
-            .onChange(of: store.notificationNavigationRevision) { _, _ in
-                cancelOpening(); closeReader(); selected = .bots
+                cancelOpening(); closeReader(); query = ""; presentation.destination = .bots
             }
             .onChange(of: rootCovered) { _, covered in
                 if covered { cancelOpening(); closeReader(); presentation.retireSearchFocus() }
@@ -83,11 +78,12 @@ struct WorkspaceTabs: View {
     private struct RefreshKey: Equatable {
         let library: ObjectIdentifier
         let connected: Bool
-        let destination: Destination
+        let destination: WorkspaceDestination
         let revalidation: UUID
     }
-    private var refreshKey: RefreshKey {
-        .init(library: ObjectIdentifier(store.library), connected: store.isConnected,
+    private var refreshKey: RefreshKey? {
+        guard selected != .bots else { return nil }
+        return .init(library: ObjectIdentifier(store.library), connected: store.isConnected,
               destination: selected, revalidation: store.library.revalidationRevision)
     }
 
@@ -100,10 +96,10 @@ struct WorkspaceTabs: View {
     }
 
     private var tabs: some View {
-        TabView(selection: $selected) {
+        TabView(selection: $presentation.destination) {
             Tab("Bots", systemImage: "bubble.left.and.bubble.right", value: .bots) {
                 AdaptiveWorkspace(store: store, presentation: presentation,
-                                  rootCovered: rootCovered || reader != nil || selected != .bots,
+                                  rootCovered: rootCovered || presentation.libraryReader != nil || selected != .bots,
                                   onSettings: onSettings, onNewBot: onNewBot)
                     .toolbar(hidesTabs ? .hidden : .visible, for: .tabBar)
             }
@@ -125,19 +121,16 @@ struct WorkspaceTabs: View {
         guard !rootCovered, !openingChat, store.library.isCurrent(item) else { return }
         closeReader()
         let session = LibraryArtifactPreviewSession(item: item, library: store.library)
-        reader = session
+        presentation.libraryReader = session
         session.retry()
     }
 
     private func closeReader(opening chat: LibraryChat? = nil) {
-        chatAfterReaderDismissal = chat
-        reader?.finish()
-        reader = nil
+        presentation.closeLibraryReader(opening: chat)
     }
 
     private func readerDidDismiss() {
-        guard let chat = chatAfterReaderDismissal else { return }
-        chatAfterReaderDismissal = nil
+        guard let chat = presentation.takeChatAfterReaderDismissal() else { return }
         openChat(chat)
     }
 
@@ -145,35 +138,30 @@ struct WorkspaceTabs: View {
         guard !rootCovered, !openingChat, store.library.isCurrent(chat) else { return }
         let library = store.library
         let origin = selected
-        openingTask = Task {
+        presentation.libraryOpening = Task {
             let opened = await store.openLibraryChat(chat)
             guard !Task.isCancelled, store.library === library, selected == origin, !rootCovered else { return }
-            openingTask = nil
+            presentation.libraryOpening = nil
             if opened {
                 presentation.didChooseConversation()
-                selected = .bots
             } else {
                 navigationError = "This chat couldn’t be opened. Check your connection, then refresh and try again."
             }
         }
     }
 
-    private func cancelOpening() {
-        chatAfterReaderDismissal = nil
-        openingTask?.cancel(); openingTask = nil
-    }
+    private func cancelOpening() { presentation.cancelLibraryOpening() }
 
     private func openMessage(_ target: SearchMessageTarget) {
         guard !rootCovered, !openingChat, store.library.isCurrent(target.chat) else { return }
         let library = store.library, origin = selected
-        openingTask = Task {
+        presentation.libraryOpening = Task {
             let result = await store.openSearchMessage(target)
             guard !Task.isCancelled, store.library === library, selected == origin, !rootCovered else { return }
-            openingTask = nil
+            presentation.libraryOpening = nil
             switch result {
             case .opened(let focus):
                 presentation.didChooseConversation(focusing: focus)
-                selected = .bots
             case .unavailable:
                 navigationError = "This message is no longer available here. Refresh Search and try again."
             case .couldNotOpen:
@@ -184,13 +172,9 @@ struct WorkspaceTabs: View {
     }
 
     private func openBot(_ bot: BotProfile) {
-        guard !rootCovered, !openingChat, store.bot(withID: bot.id) != nil,
-              let profile = try? ExactID(bot.id) else { return }
-        let workspace = store.chats
-        store.selectedBotID = bot.id
-        guard let intent = workspace.captureOpening(profile: profile) else { return }
+        guard !rootCovered, !openingChat, store.bot(withID: bot.id) != nil else { return }
+        guard let opening = store.prepareBotOpening(bot) else { return }
         presentation.didChooseConversation()
-        selected = .bots
-        Task { await workspace.open(intent) }
+        Task { await store.openBot(opening) }
     }
 }

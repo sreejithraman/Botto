@@ -4,6 +4,98 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct AppStoreRefreshTests {
+    @Test func advisoryBurstsPublishPeriodicallyWithoutMovingTheirDeadline() async throws {
+        let intervals = RefreshIntervals()
+        let fixture = RefreshFixture(waitForBotInvalidationInterval: intervals.wait)
+        defer { fixture.cleanUp(); intervals.releaseAll() }
+        let store = fixture.store, service = fixture.service
+        try #require(await store.connect(fixture.configuration))
+        service.profiles.append(.init(id: "scout", name: "Scout"))
+        service.onEvent?(.botsChanged)
+        try await eventually { service.readCount == 2 && intervals.count == 1 }
+        #expect(store.bots.contains { $0.id == "scout" })
+
+        for (index, name) in ["Orbit", "Pip"].enumerated() {
+            service.profiles.append(.init(id: name.lowercased(), name: name))
+            for _ in 0..<100 { service.onEvent?(.botsChanged) }
+            #expect(intervals.count == index + 1, "New hints must not restart a trailing deadline.")
+            #expect(service.readCount == index + 2)
+            intervals.release(index)
+            try await eventually { service.readCount == index + 3 && intervals.count == index + 2 }
+            #expect(store.bots.contains { $0.name == name }, "Each fixed interval publishes progress despite continuing hints.")
+        }
+        #expect(service.readCount == 4, "Connection plus one leading read and two periodic reads.")
+    }
+
+    @Test func explicitRefreshDoesNotWaitForTheAdvisoryInterval() async throws {
+        let intervals = RefreshIntervals()
+        let fixture = RefreshFixture(waitForBotInvalidationInterval: intervals.wait)
+        defer { fixture.cleanUp(); intervals.releaseAll() }
+        let store = fixture.store, service = fixture.service
+        try #require(await store.connect(fixture.configuration))
+        service.onEvent?(.botsChanged)
+        try await eventually { service.readCount == 2 && intervals.count == 1 }
+        service.profiles.append(.init(id: "orbit", name: "Orbit"))
+        let heldRead = service.holdNextRead()
+        let explicit = RefreshCall { await store.refresh() }
+        try await eventually { heldRead.entered }
+        #expect(service.readCount == 3)
+        #expect(!explicit.finished)
+        #expect(intervals.count == 1)
+        heldRead.release()
+        try await eventually { explicit.finished }
+        #expect(store.bots.contains { $0.id == "orbit" })
+        #expect(intervals.returned.isEmpty, "The explicit caller finishes while the advisory clock is still held.")
+    }
+
+    @Test func queuedAdvisoryCannotAcquireRecoveredConnectionAuthority() async throws {
+        let intervals = RefreshIntervals()
+        let fixture = RefreshFixture(waitForBotInvalidationInterval: intervals.wait)
+        defer { fixture.cleanUp(); intervals.releaseAll() }
+        let store = fixture.store, service = fixture.service
+        try #require(await store.connect(fixture.configuration))
+        service.onEvent?(.botsChanged)
+        service.onEvent?(.disconnected("Connection lost before queued hint starts"))
+        service.profiles = [.init(id: "clover", name: "Clover")]
+        service.onEvent?(.connected(.init(version: "recovered", installID: "refresh-install")))
+        await store.refresh()
+        #expect(store.bots.map(\.id) == ["clover"])
+        #expect(service.readCount == 2)
+        #expect(intervals.count == 0, "The old advisory task must not become a worker on recovered authority.")
+    }
+
+    @Test(arguments: [false, true])
+    func retiredAdvisoryIntervalCannotReplaceANewOwner(socketRecovery: Bool) async throws {
+        let intervals = RefreshIntervals()
+        let fixture = RefreshFixture(waitForBotInvalidationInterval: intervals.wait)
+        let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
+        defer { fixture.cleanUp(); intervals.releaseAll(); LocalHistory.remove(for: replacement.id) }
+        let store = fixture.store, service = fixture.service
+        try #require(await store.connect(fixture.configuration))
+        service.onEvent?(.botsChanged)
+        try await eventually { service.readCount == 2 && intervals.count == 1 }
+        service.profiles = [.init(id: "clover", name: "Clover")]
+        if socketRecovery {
+            service.onEvent?(.disconnected("Connection lost during advisory interval"))
+            service.onEvent?(.connected(.init(version: "recovered", installID: "refresh-install")))
+            await store.refresh()
+        } else { try #require(await store.connect(replacement)) }
+        try await eventually { service.readCount == 3 && !store.isRefreshing }
+        service.onEvent?(.botsChanged)
+        try await eventually { service.readCount == 4 && intervals.count == 2 }
+
+        intervals.release(0)
+        try await eventually { intervals.returned.contains(0) }
+        service.profiles.append(.init(id: "orbit", name: "Orbit"))
+        for _ in 0..<100 { service.onEvent?(.botsChanged) }
+        #expect(service.readCount == 4)
+        #expect(intervals.count == 2)
+        intervals.release(1)
+        try await eventually { service.readCount == 5 && intervals.count == 3 }
+        #expect(store.bots.map(\.id).sorted() == ["clover", "orbit"])
+        #expect(store.configuration?.id == (socketRecovery ? fixture.configuration.id : replacement.id))
+    }
+
     @Test func inboxPreviewKeepsTheLastReadableMessageAfterSilentAutomation() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let replyAt = Date(timeIntervalSince1970: 100)
@@ -119,7 +211,7 @@ import BottoCore
                   preview: "Fresh preview", updatedAt: newer, messageCount: 1)
         ], activity: [:], isComplete: false)
         await store.refresh()
-        await store.chats.refreshInboxPreviews(profiles: [profile])
+        await store.chats.refreshInboxHistory(profiles: [profile])
         #expect(store.bots.map(\.id) == ["recent", "unread", "waiting"])
         let updated = try #require(store.bot(withID: "recent"))
         #expect(updated.name == "Renamed" && updated.preview == "Fresh preview" && updated.status == .waiting)
@@ -233,8 +325,8 @@ import BottoCore
         #expect(!invalidation.finished)
         #expect(store.bots.map(\.id) == [existing.id])
         if creation.finished, let premature = await creation.value() {
-            await store.open(premature)
-            #expect(store.selectedBot?.id == premature.id)
+            await store.open(premature.bot)
+            #expect(store.selectedBot?.id == premature.bot.id)
         }
 
         oldRead.release()
@@ -243,7 +335,7 @@ import BottoCore
         #expect(store.isRefreshing)
         freshRead.release()
         try await eventually { creation.finished && inbox.finished && invalidation.finished }
-        let bot = try #require(await creation.value())
+        let bot = try #require(await creation.value()).bot
         #expect(bot.id == "orbit")
         #expect(store.bots.contains { $0.id == bot.id })
         #expect(store.history.bots.contains { $0.id == bot.id })
@@ -368,7 +460,7 @@ import BottoCore
         try await eventually { callers.allSatisfy(\.started) }
         createdRead.release()
         try await eventually { futureRead.entered && creation.finished }
-        let created = try #require(await creation.value())
+        let created = try #require(await creation.value()).bot
         await store.open(created)
         #expect(store.selectedBot?.id == "orbit")
         #expect(!store.bots.contains { $0.id == "scout" })
@@ -480,7 +572,7 @@ import BottoCore
         canceled.cancel()
         #expect(await canceled.value() == nil)
         #expect(service.createdDrafts.isEmpty)
-        let created = try #require(await store.create(.init(name: "Orbit")))
+        let created = try #require(await store.create(.init(name: "Orbit"))).bot
         #expect(store.history.bots.contains { $0.id == created.id })
         await store.open(created)
         #expect(store.selectedBot?.name == "Orbit")
@@ -495,8 +587,12 @@ import BottoCore
     let service = RefreshService()
     let store: AppStore
 
-    init() {
-        store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+    init(waitForBotInvalidationInterval: (@MainActor () async throws -> Void)? = nil) {
+        let persistence = ConnectionPersistence(load: { nil }, save: { _ in }, remove: {})
+        if let waitForBotInvalidationInterval {
+            store = AppStore(service: service, persistence: persistence,
+                waitForBotInvalidationInterval: waitForBotInvalidationInterval)
+        } else { store = AppStore(service: service, persistence: persistence) }
     }
 
     func cleanUp() {
@@ -513,9 +609,9 @@ import BottoCore
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directories[profile] ?? authority.directory(profile)
     }
-    func conversationPreview(_ identity: SessionIdentity) async throws -> ConversationPreviewRead {
-        guard let messages = previewMessages[identity.profile.text] else { return .init(preview: nil, isComplete: false) }
-        return .init(preview: ConversationPreview.latest(in: messages), isComplete: true)
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
+        guard let messages = previewMessages[identity.profile.text] else { return nil }
+        return .init(messages: messages, hasEarlierMessages: false)
     }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
@@ -588,6 +684,22 @@ import BottoCore
         continuation?.resume()
         continuation = nil
     }
+}
+
+@MainActor private final class RefreshIntervals {
+    private var gates: [RefreshGate] = []
+    private(set) var returned = Set<Int>()
+    var count: Int { gates.count }
+
+    func wait() async {
+        let index = gates.count, gate = RefreshGate()
+        gates.append(gate)
+        await gate.wait()
+        returned.insert(index)
+    }
+
+    func release(_ index: Int) { gates[index].release() }
+    func releaseAll() { gates.forEach { $0.release() } }
 }
 
 @MainActor private final class RefreshCall<Value: Sendable> {

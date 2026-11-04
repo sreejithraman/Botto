@@ -43,14 +43,19 @@ public struct ConversationPreview: Codable, Equatable, Sendable {
     }
 }
 
-public struct ConversationPreviewRead: Sendable {
-    public let preview: ConversationPreview?
-    /// A complete search found the newest readable message or exhausted history.
-    /// It never proves that the user displayed or acknowledged the transcript.
-    public let isComplete: Bool
+/// A validated newest slice of stored chat history. It carries no live access or read acknowledgment.
+public struct ConversationHistoryWindow: Sendable {
+    /// Messages remain in chronological order, with their full display content.
+    public let messages: [ChatMessage]
+    /// Older messages may exist outside this bounded read.
+    public let hasEarlierMessages: Bool
+    public var preview: ConversationPreview? { ConversationPreview.latest(in: messages) }
+    /// Producer-checked evidence from an exhaustive response; bounded windows carry none.
+    public let identityRead: ConversationIdentityRead?
 
-    public init(preview: ConversationPreview?, isComplete: Bool) {
-        self.preview = preview
-        self.isComplete = isComplete
+    public init(messages: [ChatMessage], hasEarlierMessages: Bool, identityRead: ConversationIdentityRead? = nil) {
+        self.messages = messages
+        self.hasEarlierMessages = hasEarlierMessages
+        self.identityRead = identityRead
     }
 }

@@ -4,7 +4,7 @@ import BottoCore
 
 /// Exact byte identity avoids Swift String's canonical-equivalence coalescing.
 enum NativeTranscriptItemID: Hashable {
-    case date, message(Data), workDetails(Data), request(UUID), empty, terminal, identityNotice, typing, working
+    case date, message(Data), workDetails(Data), request(UUID), empty, terminal, identityNotice, historyNotice, typing, working
     case ambiguousMessage(Int), ambiguousRequest(Int)
 }
 enum NativeTranscriptRowValue: Equatable {

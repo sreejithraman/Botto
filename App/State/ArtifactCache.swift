@@ -20,8 +20,9 @@ nonisolated struct ArtifactMetadataRecovery: Sendable {
     var checkedSavedChats = Set<Data>()
     var hasInvalidations: Bool { all || !invalidated.isEmpty || allowedProfiles != nil }
     var needsHistoryCheck: Bool { all || !invalidated.isEmpty }
-    static func key(_ identity: SessionIdentity) -> Data {
-        Data(SHA256.hash(data: artifactCacheFields([identity.profile.bytes, identity.root.bytes])))
+    static func key(_ identity: SessionIdentity) -> Data { key(profile: identity.profile, root: identity.root) }
+    static func key(profile: ExactID, root: ExactID) -> Data {
+        Data(SHA256.hash(data: artifactCacheFields([profile.bytes, root.bytes])))
     }
     func excludes(_ profile: ExactID) -> Bool {
         allowedProfiles.map { !$0.contains(Data(SHA256.hash(data: profile.bytes))) } == true
@@ -41,8 +42,23 @@ nonisolated struct ArtifactMetadataHint: Sendable {
     let title: String
     let updatedAt: Date?
     let unavailableMessageIDs: Set<Data>
+    let unverifiedMessageIDs: Set<Data>
     let removedMessageIDs: Set<Data>
     let retiredStoredIDs: Set<Data>
+}
+
+extension ArtifactMetadataHint {
+    init(saved row: CachedArtifactChat) {
+        var messageIDs = Set<Data>(), unavailable = row.unavailableMessageIDs ?? []
+        for message in row.messages {
+            let id = Data(message.id.utf8)
+            if !messageIDs.insert(id).inserted { unavailable.insert(id) }
+        }
+        self.init(identity: row.identity, botName: row.botName, title: row.title, updatedAt: row.updatedAt,
+            unavailableMessageIDs: unavailable,
+            unverifiedMessageIDs: messageIDs.union(row.unverifiedMessageIDs ?? []),
+            removedMessageIDs: row.removedMessageIDs ?? [], retiredStoredIDs: row.retiredStoredIDs ?? [])
+    }
 }
 
 nonisolated final class ArtifactCaptureAdmission: @unchecked Sendable {
@@ -123,12 +139,64 @@ nonisolated struct CachedArtifactChat: Codable, Sendable {
     let summary: SessionSummary?
     let headFingerprint: Data?
     var unavailableMessageIDs: Set<Data>? = nil
+    var unverifiedMessageIDs: Set<Data>? = nil
     var removedMessageIDs: Set<Data>? = nil
     var retiredStoredIDs: Set<Data>? = nil
     var directoryAbsent: Bool? = nil
-    var excludedMessageIDs: Set<Data> { (unavailableMessageIDs ?? []).union(removedMessageIDs ?? []) }
+    var excludedMessageIDs: Set<Data> { (unavailableMessageIDs ?? []).union(unverifiedMessageIDs ?? []).union(removedMessageIDs ?? []) }
     var retainedEvidenceCount: Int { excludedMessageIDs.count + (retiredStoredIDs?.count ?? 0) }
     var retainedEvidenceBytes: Int { excludedMessageIDs.reduce(0) { $0 + $1.count } + (retiredStoredIDs?.reduce(0) { $0 + $1.count } ?? 0) }
+}
+extension CachedArtifactChat {
+    private enum CodingKeys: String, CodingKey {
+        case identity, botName, title, messages, updatedAt, coverage, summary, headFingerprint
+        case unavailableMessageIDs, disputedMessageIDs, unverifiedMessageIDs, removedMessageIDs, retiredStoredIDs, directoryAbsent
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try values.decode(SessionIdentity.self, forKey: .identity)
+        botName = try values.decode(String.self, forKey: .botName)
+        title = try values.decode(String.self, forKey: .title)
+        messages = try values.decode([ChatMessage].self, forKey: .messages)
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt)
+        coverage = try values.decode(ArtifactCacheCoverage.self, forKey: .coverage)
+        summary = try values.decodeIfPresent(SessionSummary.self, forKey: .summary)
+        headFingerprint = try values.decodeIfPresent(Data.self, forKey: .headFingerprint)
+        let legacyUnavailable = try values.decodeIfPresent(Set<Data>.self, forKey: .unavailableMessageIDs)
+        let unverified = try values.decodeIfPresent(Set<Data>.self, forKey: .unverifiedMessageIDs)
+        if values.contains(.disputedMessageIDs) {
+            unavailableMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .disputedMessageIDs)
+            let unexplained = (legacyUnavailable ?? []).subtracting(unavailableMessageIDs ?? [])
+            unverifiedMessageIDs = unverified.map { $0.union(unexplained) } ?? (unexplained.isEmpty ? nil : unexplained)
+        } else {
+            unavailableMessageIDs = legacyUnavailable
+            unverifiedMessageIDs = unverified
+        }
+        removedMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .removedMessageIDs)
+        retiredStoredIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .retiredStoredIDs)
+        directoryAbsent = try values.decodeIfPresent(Bool.self, forKey: .directoryAbsent)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(identity, forKey: .identity)
+        try values.encode(botName, forKey: .botName)
+        try values.encode(title, forKey: .title)
+        try values.encode(messages, forKey: .messages)
+        try values.encodeIfPresent(updatedAt, forKey: .updatedAt)
+        try values.encode(coverage, forKey: .coverage)
+        try values.encodeIfPresent(summary, forKey: .summary)
+        try values.encodeIfPresent(headFingerprint, forKey: .headFingerprint)
+        // Old readers must withhold both disputed identities and unverified revisions.
+        let legacyUnavailable = unavailableMessageIDs.map { $0.union(unverifiedMessageIDs ?? []) } ?? unverifiedMessageIDs
+        try values.encodeIfPresent(legacyUnavailable, forKey: .unavailableMessageIDs)
+        try values.encode(unavailableMessageIDs, forKey: .disputedMessageIDs)
+        try values.encodeIfPresent(unverifiedMessageIDs, forKey: .unverifiedMessageIDs)
+        try values.encodeIfPresent(removedMessageIDs, forKey: .removedMessageIDs)
+        try values.encodeIfPresent(retiredStoredIDs, forKey: .retiredStoredIDs)
+        try values.encodeIfPresent(directoryAbsent, forKey: .directoryAbsent)
+    }
 }
 nonisolated struct ArtifactOriginalKey: Hashable, Codable, Sendable {
     let identity: SessionIdentity
@@ -387,7 +455,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
             guard !closed else { throw ArtifactCacheError.unavailable }
             let entry = invalidation(scope: scope, profile: profile, root: root)
             let ledger = try writableLedger(configuration: entry.configuration, namespace: entry.namespace)
-            guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.retired }
+            guard revisions[entry.key]?.id == revision, ledger.entries.contains(entry) else { throw ArtifactCacheError.superseded }
         }
     }
     func begin(scope: ArtifactCacheScope, profile: ExactID, root: ExactID, revision: UUID) throws {
@@ -536,17 +604,22 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private let backend: ArtifactCacheBackend
     private let journal: ArtifactMetadataJournal
     private var maintenance: ArtifactCacheMaintenance?
+    private let afterChatLoad: (@Sendable () async throws -> Void)?
     private struct WeakSession { weak var value: ArtifactCacheSession?; let configurationID: UUID }
     private var sessions: [WeakSession] = []
     init(root: URL?, limits: Limits = .init(), beforeCaptureCommit: (@Sendable () -> Void)? = nil,
-         beforeMetadataWrite: (@Sendable () -> Void)? = nil, afterMetadataWrite: (@Sendable () -> Void)? = nil) {
+         beforeMetadataWrite: (@Sendable () -> Void)? = nil, afterMetadataWrite: (@Sendable () -> Void)? = nil,
+         beforeMetadataRevisionCheck: (@Sendable () -> Void)? = nil,
+         afterChatLoad: (@Sendable () async throws -> Void)? = nil) {
         let resolvedRoot = root ?? FileManager.default.temporaryDirectory.appendingPathComponent("BottoArtifactEphemeral-\(UUID().uuidString)")
+        self.afterChatLoad = afterChatLoad
         journal = ArtifactMetadataJournal(root: resolvedRoot, limits: limits)
         backend = ArtifactCacheBackend(root: resolvedRoot, ephemeral: root == nil, limits: limits, journal: journal,
-            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite, afterMetadataWrite: afterMetadataWrite)
+            beforeCaptureCommit: beforeCaptureCommit, beforeMetadataWrite: beforeMetadataWrite, afterMetadataWrite: afterMetadataWrite,
+            beforeMetadataRevisionCheck: beforeMetadataRevisionCheck)
     }
     func session(scope: ArtifactCacheScope) -> ArtifactCacheSession {
-        let session = ArtifactCacheSession(backend: backend, journal: journal, scope: scope, barrier: maintenance)
+        let session = ArtifactCacheSession(backend: backend, journal: journal, scope: scope, barrier: maintenance, afterChatLoad: afterChatLoad)
         sessions.removeAll { $0.value == nil }
         sessions.append(WeakSession(value: session, configurationID: scope.configurationID))
         return session
@@ -584,9 +657,11 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     private var acquisitionAttempt = UUID()
     private let metadataScope: ArtifactCacheScope
     private let maintenance: ArtifactCacheMaintenance?
-    fileprivate init(backend: ArtifactCacheBackend, journal: ArtifactMetadataJournal, scope: ArtifactCacheScope, barrier: ArtifactCacheMaintenance?) {
+    private let afterChatLoad: (@Sendable () async throws -> Void)?
+    fileprivate init(backend: ArtifactCacheBackend, journal: ArtifactMetadataJournal, scope: ArtifactCacheScope, barrier: ArtifactCacheMaintenance?,
+                     afterChatLoad: (@Sendable () async throws -> Void)?) {
         self.backend = backend; self.journal = journal
-        metadataScope = scope; maintenance = barrier
+        metadataScope = scope; maintenance = barrier; self.afterChatLoad = afterChatLoad
         let lease = lease, state = leaseState
         acquisition = Task {
             try await barrier?.wait()
@@ -634,7 +709,9 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
     }
     func loadChats() async throws -> [CachedArtifactChat] {
         try await ready()
-        return try accepted(try await backend.loadChats(lease))
+        let chats = try await backend.loadChats(lease)
+        try await afterChatLoad?()
+        return try accepted(chats)
     }
     func metadataRecovery() async throws -> ArtifactMetadataRecovery {
         guard !isRetired else { throw ArtifactCacheError.retired }
@@ -701,7 +778,7 @@ nonisolated fileprivate final class ArtifactMetadataJournal: @unchecked Sendable
         try accepted(())
     }
 }
-private enum ArtifactCacheError: Error { case unavailable, retired, unsupportedSchema, quota }
+enum ArtifactCacheError: Error { case unavailable, retired, superseded, unsupportedSchema, quota }
 
 fileprivate actor ArtifactCacheBackend {
     private let root: URL
@@ -710,6 +787,7 @@ fileprivate actor ArtifactCacheBackend {
     private let journal: ArtifactMetadataJournal
     private let beforeMetadataWrite: (@Sendable () -> Void)?
     private let afterMetadataWrite: (@Sendable () -> Void)?
+    private let beforeMetadataRevisionCheck: (@Sendable () -> Void)?
     private var database: SQLiteConnection?
     private var closed = false
     private var leases: [UUID: (scope: ArtifactCacheScope, state: ArtifactCacheLeaseState)] = [:]
@@ -719,10 +797,12 @@ fileprivate actor ArtifactCacheBackend {
     private let decoder = PropertyListDecoder()
 
     init(root: URL, ephemeral: Bool, limits: ArtifactCache.Limits, journal: ArtifactMetadataJournal,
-         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?, afterMetadataWrite: (@Sendable () -> Void)?) {
+         beforeCaptureCommit: (@Sendable () -> Void)?, beforeMetadataWrite: (@Sendable () -> Void)?, afterMetadataWrite: (@Sendable () -> Void)?,
+         beforeMetadataRevisionCheck: (@Sendable () -> Void)?) {
         self.ephemeral = ephemeral; self.root = root; self.limits = limits; self.journal = journal
         self.beforeMetadataWrite = beforeMetadataWrite
         self.afterMetadataWrite = afterMetadataWrite
+        self.beforeMetadataRevisionCheck = beforeMetadataRevisionCheck
         self.beforeCaptureCommit = beforeCaptureCommit
         encoder.outputFormat = .binary
     }
@@ -820,14 +900,11 @@ fileprivate actor ArtifactCacheBackend {
     func metadataRecoveryHints(_ lease: UUID) throws -> [ArtifactMetadataHint] {
         let scope = try scope(lease), chats = try savedChats(scope: scope)
         let recovery = try metadataRecovery(scope: scope)
-        return chats.filter { recovery.contains($0.identity) }.map {
-            ArtifactMetadataHint(identity: $0.identity, botName: $0.botName, title: $0.title, updatedAt: $0.updatedAt,
-                unavailableMessageIDs: ($0.unavailableMessageIDs ?? []).union($0.messages.map { Data($0.id.utf8) }),
-                removedMessageIDs: $0.removedMessageIDs ?? [], retiredStoredIDs: $0.retiredStoredIDs ?? [])
-        }
+        return chats.filter { recovery.contains($0.identity) }.map { ArtifactMetadataHint(saved: $0) }
     }
     func upsert(_ record: CachedArtifactChat, lease: UUID, revision: UUID) throws {
         let scope = try scope(lease)
+        beforeMetadataRevisionCheck?()
         try journal.requirePendingWrite(scope: scope, profile: record.identity.profile, root: record.identity.root, revision: revision)
         beforeMetadataWrite?()
         try Task.checkCancellation(); _ = try self.scope(lease)

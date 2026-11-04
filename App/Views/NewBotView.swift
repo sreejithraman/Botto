@@ -3,7 +3,7 @@ import BottoCore
 
 struct NewBotView: View {
     let store: AppStore
-    let onOpened: () -> Void
+    let onCreated: (AppStore.BotCreationResult) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var name = ""
@@ -115,11 +115,8 @@ struct NewBotView: View {
             let bot = await store.create(draft, onFailure: { failure = $0 })
             guard ownsCreation(presentation, connection: connection) else { return }
             if let bot {
-                await store.open(bot)
-                guard ownsCreation(presentation, connection: connection) else { return }
                 if canPlayFeedback { BottoHaptics.shared.play(.celebration) }
-                onOpened()
-                dismiss()
+                onCreated(bot)
             } else {
                 error = store.notice ?? "Couldn’t create your bot. Try again."
                 if let failure, !(failure is CancellationError), canPlayFeedback {
