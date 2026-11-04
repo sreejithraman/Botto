@@ -953,6 +953,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         }
         let id = key(for: source), observation = observations[id]
         let expected = observation?.stored ?? records[id]?.identity.stored
+        let withheld = records[id]?.directoryAbsent == true || restorationHints.contains(id)
         let provesSource: Bool
         if let read {
             provesSource = read.observedSource.map {
@@ -961,19 +962,22 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             let floor = observation?.contentAt ?? mountedAt
             // Newer content without identity proof leaves a dispute standing.
             guard evidence.isDispute || read.startedAt >= floor,
-                  (records[id]?.directoryAbsent != true && !restorationHints.contains(id)) || provesSource,
                   expected == nil || expected == source.stored || (
                     read.startedAt >= (observation?.sourceAt ?? mountedAt) && provesSource) else { return }
         } else {
             provesSource = false
-            guard records[id]?.directoryAbsent != true, !restorationHints.contains(id), expected == nil || expected == source.stored else { return }
+            guard !withheld, expected == nil || expected == source.stored else { return }
         }
         let checksDiscardedScope = discardedEvidence.contains(profile: source.profile, root: source.root)
         let coherentRead = checksDiscardedScope && provesSource && !snapshot.hasEarlierMessages
             && read.map { discardedEvidence.permitsRead(profile: source.profile, root: source.root, startedAt: $0.startedAt) } == true
             && coherentlyChecks(source, messages: snapshot.messages, unavailable: snapshot.unavailableMessageIDs ?? [], proof: read?.identityRead)
         // A hold withholds rows. A dispute adds none, so it can always narrow what remains.
-        if checksDiscardedScope, !evidence.isDispute { guard coherentRead else { return } }
+        guard (!withheld || provesSource) && (!checksDiscardedScope || evidence.isDispute || coherentRead) else {
+            if let read, read.observedSource == nil || provesSource,
+               let disputes = snapshot.unavailableMessageIDs, !disputes.isEmpty { withhold(disputes, source: source) }
+            return
+        }
         restorationHints.remove(id)
         indexingMetrics.acceptedSnapshots += 1
         recordAcceptance(id)
@@ -1738,6 +1742,16 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         if restoration.needsReconciliation && !metadataIsReconciled(id) { unreconciledMetadata[id] = .requiresGuard }
         commitCanonical(prepareAdmission(source: source, botName: chat.botName, title: chat.title,
             updatedAt: chat.updatedAt, input: .quarantine(unavailable: unavailable)), target: id)
+    }
+
+    /// What a hold cannot stop: older reads yield to these disputes, and no later read shows them
+    /// without proof. This admits no rows, so it proves no source and lifts no hold.
+    private func withhold(_ disputes: Set<Data>, source: SessionIdentity) {
+        let id = key(for: source)
+        recordAcceptance(id)
+        guard let chat = records[id], chat.identity.stored == source.stored, !chat.directoryAbsent else { return }
+        commitCanonical(prepareAdmission(source: chat.identity, botName: chat.botName, title: chat.title,
+            updatedAt: chat.updatedAt, input: .quarantine(unavailable: disputes)), target: id)
     }
 
     private func quarantineFailure(_ error: any Error, source: SessionIdentity) {

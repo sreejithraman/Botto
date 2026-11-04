@@ -191,6 +191,9 @@ Restoration rechecks saved rows against guards created during its own awaits and
 merges their exclusions as hints. Duplicate saved IDs remain identity disputes.
 Accepted rows survive retry behind the visibility gate; a successful SQL read
 can release them when it proves no saved source exists for their chat.
+A hold withholds a read's rows, never its disputes. A withheld dispute advances
+the chat's existing acceptance fence and retains quarantine without proving a
+source or lifting the hold. Older scans yield, and proofless reads cannot clear it.
 Hint admission reports either an installed source or a deferred result. Only
 installed sources receive restoration receipts. A deferred hint keeps its scope
 pending while independent saved peers continue loading. Hidden hints rank after

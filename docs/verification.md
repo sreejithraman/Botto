@@ -1714,8 +1714,18 @@ Newer disputes still withdraw immediately and survive cold launch. The final
 repair passed 358 native functions across ten suites. Evidence is at
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-36/live-followup/`.
 The attached chat keeps its conservative ambiguity until its next read, and a
-crash before Book's normal save can retain that ambiguity. A narrow restoration
-retry interleaving remains source-inferred and unexecuted for independent review.
+crash before Book's normal save can retain that ambiguity. A later restoration
+retry control reproduced an older scan clearing a newer Book dispute and
+exposing the row through Search, artifacts, persistence and cold reopen. The
+repair advances the existing acceptance fence and retains the dispute while
+withholding rows. A fence-only candidate failed a complete multi-page read
+without identity proof; the final repair keeps that row quarantined. It passed
+151 Library tests and 62 retention tests in separate selected runs. Red and
+final test bytes differ: an invalid offline-sibling expectation was narrowed
+and a resolution spy was scoped to its chat; the disputed-row checks remain.
+Failed restoration can still withhold same-chat siblings until a trusted read.
+Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-37/outputs/`.
 
 ### Completed gate and observer repairs
 
