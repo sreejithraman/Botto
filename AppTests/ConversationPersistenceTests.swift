@@ -21,6 +21,88 @@ struct ConversationPersistenceTests {
         #expect(decoded.opening(profile) == main)
     }
 
+    private func projectedChat(_ id: String) throws -> (book: ConversationBook, chat: ChatID, summary: SessionSummary) {
+        let stored = try ExactID(id), identity = SessionIdentity(profile: try ExactID("bot"), root: stored, stored: stored, aliases: [])
+        var book = ConversationBook()
+        let summary = SessionSummary(identity: identity, title: "Main", isCanonical: true, persistence: .durable,
+            preview: "Asked", messageCount: 1)
+        let chat = book.merge(summary)
+        return (book, chat, summary)
+    }
+
+    @Test func canonicalOnlyReplacementKeepsReadStateAndRetainsTheNewBytes() throws {
+        var (book, chat, summary) = try projectedChat("stored")
+        var snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
+            messages: [.init(id: "stored:row:1", role: .user, text: "Asked", canonicalText: "first handoff")])
+        book.cache(snapshot, for: chat)
+        book.update(chat) { $0.displayed(snapshot, acknowledging: ChatSummaryEvidence(summary), at: .now) }
+        let seen = try #require(book.record(chat)?.seen)
+
+        snapshot.messages[0].canonicalText = "second handoff"
+        book.cache(snapshot, for: chat, readEvidence: .init(summaryObservedBeforeRead: summary))
+        #expect(book.record(chat)?.isUnread == false)
+        #expect(book.record(chat)?.seen?.content == seen.content)
+        #expect(book.record(chat)?.seen?.observedAt == seen.observedAt)
+        #expect(book.record(chat)?.transcript?.messages.first?.canonicalText == "second handoff")
+
+        // The history-window guard treats the same revision as a new read to apply.
+        snapshot.messages[0].canonicalText = "third handoff"
+        let window = ConversationHistoryWindow(messages: snapshot.messages, hasEarlierMessages: false)
+        var record = try #require(book.record(chat))
+        let cached = try #require(ConversationBook.cachedHistoryWindow(window, for: record))
+        #expect(!cached.matches(record))
+        cached.apply(to: &record)
+        #expect(cached.matches(record))
+        #expect(record.transcript?.messages.first?.canonicalText == "third handoff")
+        let restored = try JSONDecoder().decode(ChatRecord.self, from: JSONEncoder().encode(record))
+        #expect(restored.transcript?.messages.first?.canonicalText == "third handoff")
+        #expect(restored.isUnread == false)
+    }
+
+    @Test func legacyReadStateFollowsVisibleTextAcrossTheFirstProjectedRead() throws {
+        // Older pages already stored display text, so only canonical bytes arrive and nothing turns unread.
+        var (pageBook, pageChat, pageSummary) = try projectedChat("page")
+        let pageRow = ChatMessage(id: "page:row:1", role: .user, text: "Asked")
+        var page = Conversation(id: "runtime", storedID: "page", profileID: "bot", messages: [pageRow])
+        pageBook.cache(page, for: pageChat)
+        pageBook.update(pageChat) { $0.displayed(page, acknowledging: ChatSummaryEvidence(pageSummary), at: .now) }
+        page.messages[0].canonicalText = "handoff"
+        pageBook.cache(page, for: pageChat)
+        #expect(pageBook.record(pageChat)?.isUnread == false)
+        #expect(pageBook.record(pageChat)?.transcript?.messages.first?.canonicalText == "handoff")
+
+        // Older transcripts stored the carrier as text, so read evidence over those bytes no longer matches.
+        var (book, chat, summary) = try projectedChat("transcript")
+        var transcript = Conversation(id: "runtime", storedID: "transcript", profileID: "bot",
+            messages: [.init(id: "transcript:row:1", role: .user, text: "handoff\nAsked")])
+        book.cache(transcript, for: chat)
+        book.update(chat) { $0.displayed(transcript, acknowledging: ChatSummaryEvidence(summary), at: .now) }
+        #expect(book.record(chat)?.isUnread == false)
+        transcript.messages[0].text = "Asked"
+        transcript.messages[0].canonicalText = "handoff\nAsked"
+        book.cache(transcript, for: chat)
+        #expect(book.record(chat)?.isUnread == true)
+        book.update(chat) { $0.displayed(transcript, acknowledging: ChatSummaryEvidence(summary), at: .now) }
+        #expect(book.record(chat)?.isUnread == false)
+    }
+
+    @Test func quietAppendCannotProveItselfBesideACanonicalOnlyRevision() throws {
+        var (book, chat, summary) = try projectedChat("stored")
+        var snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
+            messages: [.init(id: "stored:row:1", role: .user, text: "Asked", canonicalText: "first handoff")])
+        book.cache(snapshot, for: chat)
+        book.update(chat) { $0.displayed(snapshot, acknowledging: ChatSummaryEvidence(summary), at: .now) }
+        snapshot.messages.append(.init(id: "stored:row:2", role: .assistant, text: "Hidden", displayKind: "hidden"))
+        snapshot.messages[0].canonicalText = "second handoff"
+        let quiet = SessionSummary(identity: summary.identity, title: "Main", isCanonical: true, persistence: .durable,
+            preview: "Asked", messageCount: 2)
+        _ = book.merge(quiet)
+        book.cache(snapshot, for: chat, readEvidence: .init(summaryObservedBeforeRead: quiet))
+        // Existing prefix proof fails closed: the inventory change stays unseen until it is displayed.
+        #expect(book.record(chat)?.isUnread == true)
+        #expect(book.record(chat)?.transcript?.messages.first?.canonicalText == "second handoff")
+    }
+
     @Test func identityMatchingRequiresOneProfileOwnedLineage() throws {
         let profile = try ExactID("milo"), foreign = try ExactID("scout"), alias = try ExactID("shared-tip")
         let source = SessionIdentity(profile: profile, root: try ExactID("source"), stored: alias, aliases: [alias])

@@ -144,6 +144,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     /// Host transcript text when `text` holds a different host display projection.
     /// Never rendered. Nil means `text` already holds the canonical bytes.
     public var canonicalText: String?
+    /// UTF-8 bytes this message adds to retained history. Every retained-text budget charges this cost.
+    public nonisolated var retainedTextBytes: Int { text.utf8.count + (canonicalText?.utf8.count ?? 0) }
     /// Presentation only; the original text and row remain in the cached transcript.
     /// Exact control matching repairs stale partial-marker projections in older caches.
     public var isSilent: Bool?

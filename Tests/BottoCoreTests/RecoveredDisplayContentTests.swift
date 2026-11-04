@@ -184,6 +184,31 @@ private func message(_ row: HermesJSON) throws -> ChatMessage {
     #expect(decoded.text == "Saved words" && decoded.displayText == "Title")
 }
 
+@Test func retainedTextBytesChargeEveryRetainedUTF8ByteOnce() throws {
+    func bytes(_ text: String, _ canonicalText: String? = nil) -> Int {
+        ChatMessage(id: "row", role: .user, text: text, canonicalText: canonicalText).retainedTextBytes
+    }
+    #expect(bytes("") == 0)
+    #expect(bytes("four") == 4)
+    #expect(bytes("four", "") == 4)
+    #expect(bytes("", "four") == 4)
+    #expect(bytes("four", "four") == 8)
+    // Bytes, not characters: these two render alike and cost 2 and 3 bytes.
+    #expect(bytes("\u{E9}") == 2)
+    #expect(bytes("e\u{301}") == 3)
+    #expect(bytes("\u{E9}", "e\u{301}") == 5)
+    #expect(bytes("\u{1F916}", "\u{1F916}") == 8)
+
+    let ordinary = try message(row(1, "user", .string("Plain words")))
+    #expect(ordinary.retainedTextBytes == "Plain words".utf8.count)
+    let cleared = try message(row(2, "user", .string(compactionCarrier), display: .string("")))
+    #expect(cleared.retainedTextBytes == compactionCarrier.utf8.count)
+    let projected = try message(row(3, "user", .string(compactionCarrier), display: .string(recoveredAsk)))
+    #expect(projected.retainedTextBytes == recoveredAsk.utf8.count + compactionCarrier.utf8.count)
+    let identical = try message(row(4, "user", .string(recoveredAsk), display: .string(recoveredAsk)))
+    #expect(identical.retainedTextBytes == recoveredAsk.utf8.count)
+}
+
 @Test func presentationAndDiscoveryNeverReadCanonicalText() throws {
     let scaffolding = "MEDIA:/home/u/handoff-summary.pdf"
     let control = try message(row(1, "assistant", .string(scaffolding)))

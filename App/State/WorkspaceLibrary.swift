@@ -1397,7 +1397,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     message = old
                 }
             }
-            let cost = message.text.utf8.count
+            let cost = message.retainedTextBytes
             guard newestFirst.count < count, cost <= bytes - usedBytes else { trimmed = true; continue }
             newestFirst.append(message); admitted.insert(id); usedBytes += cost
         }
@@ -1520,7 +1520,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             let kept = boundedMessages(candidate.messages, existing: [], policy: .replace,
                 count: remainingCount, bytes: remainingBytes)
             remainingCount -= kept.messages.count
-            remainingBytes -= kept.messages.reduce(0) { $0 + $1.text.utf8.count }
+            remainingBytes -= kept.messages.reduce(0) { $0 + $1.retainedTextBytes }
             limited = limited || kept.trimmed
             return Candidate(id: candidate.id, source: candidate.source, botName: candidate.botName, title: candidate.title,
                 updatedAt: candidate.updatedAt, messages: kept.messages, coverage: kept.trimmed ? .partial : candidate.coverage,
@@ -2034,7 +2034,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         pageHead = head
                     }
                     readMessages += sourceIDs.count
-                    readBytes += page.messages.reduce(0) { $0 + $1.text.utf8.count }
+                    readBytes += page.messages.reduce(0) { $0 + $1.retainedTextBytes }
                     let buffered = boundedMessages(batch, existing: messages, policy: .prependOlder,
                         count: limits.messageCount, bytes: limits.textBytes, excluding: unavailableMessageIDs)
                     messages = buffered.messages

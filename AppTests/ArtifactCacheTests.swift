@@ -855,6 +855,60 @@ import BottoCore
         #expect(retained.count == 1)
         #expect(retained.first?.messages.map(\.text) == ["four", "four"])
     }
+    private func chatRecord(_ key: ArtifactOriginalKey, _ messages: [ChatMessage], unavailable: Set<Data>? = nil) -> CachedArtifactChat {
+        .init(identity: key.identity, botName: "Bot", title: "Report", messages: messages, updatedAt: nil, coverage: .complete,
+            summary: nil, headFingerprint: nil, unavailableMessageIDs: unavailable)
+    }
+
+    nonisolated private static let quotaBoundaries: [(limit: Int, evidence: String?, retained: Bool)] = [
+        (8, nil, true), (7, nil, false), (9, "x", true), (8, "x", false)]
+
+    @Test(arguments: quotaBoundaries)
+    func quotaChargesCanonicalBytesAndEvidenceTogether(boundary: (limit: Int, evidence: String?, retained: Bool)) async throws {
+        let (limit, evidence, retained) = boundary
+        var limits = ArtifactCache.Limits(); limits.textBytes = limit
+        let (cache, scope, key) = try fixture(limits: limits)
+        let session = cache.session(scope: scope)
+        let unavailable = evidence.map { [Data($0.utf8)] as Set<Data> }
+        let ordinary = ChatMessage(id: "1", role: .assistant, text: "eight by")
+        let projected = ChatMessage(id: "1", role: .assistant, text: "four", canonicalText: "four")
+        for message in [ordinary, projected] {
+            do {
+                try await session.upsert(chatRecord(key, [message], unavailable: unavailable))
+                #expect(retained)
+                #expect(try await session.loadChats().first?.messages == [message])
+            } catch ArtifactCacheError.quota {
+                #expect(!retained)
+                #expect(try await session.loadChats().isEmpty)
+            }
+        }
+    }
+
+    @Test func evictionChargesCanonicalBytesAcrossScopes() async throws {
+        var limits = ArtifactCache.Limits(); limits.textBytes = 9
+        let (cache, scope, key) = try fixture(limits: limits)
+        let other = ArtifactCacheScope(configurationID: UUID(), serverURL: scope.serverURL, installationID: scope.installationID,
+            username: scope.username, provider: scope.provider)
+        // Display text alone totals 8 bytes and would fit; the retained total is 16.
+        let record = chatRecord(key, [ChatMessage(id: "1", role: .assistant, text: "four", canonicalText: "four")])
+        let first = cache.session(scope: scope), second = cache.session(scope: other)
+        try await first.upsert(record)
+        #expect(try await first.loadChats().count == 1)
+        try await second.upsert(record)
+        #expect(try await first.loadChats().isEmpty)
+        #expect(try await second.loadChats().first?.messages == record.messages)
+    }
+
+    @Test func payloadCeilingStillRejectsCanonicalBytesBelowTheTextBudget() async throws {
+        var limits = ArtifactCache.Limits(); limits.metadataBytes = 4_000
+        let (cache, scope, key) = try fixture(limits: limits)
+        let session = cache.session(scope: scope)
+        let oversized = ChatMessage(id: "1", role: .assistant, text: "four", canonicalText: String(repeating: "x", count: 8_000))
+        #expect(oversized.retainedTextBytes <= limits.textBytes)
+        await #expect(throws: ArtifactCacheError.quota) { try await session.upsert(chatRecord(key, [oversized])) }
+        #expect(try await session.loadChats().isEmpty)
+    }
+
     @Test func unavailableRootPreservesExistingFileAndReportsFailure() async throws {
         try await withCacheRoot { root, own in
             let sentinel = Data("existing protected content".utf8)
