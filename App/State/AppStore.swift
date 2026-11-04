@@ -206,9 +206,12 @@ import BottoCore
     private struct PendingPushNavigation {
         var intent: PushNavigationIntent
         var claim: NavigationClaim?
+        var supersededOpening: Bool
     }
     @ObservationIgnored private var pendingPushNotification: PendingPushNavigation?
     @ObservationIgnored private var notificationRouting: UUID?
+    /// A tap attached nothing after superseding the selected bot's opening.
+    private var openingInterrupted = false
     private(set) var library: WorkspaceLibrary
     private(set) var cacheLoadFailed = false
     @ObservationIgnored private var protectedCaches: Set<UUID> = []
@@ -246,6 +249,7 @@ import BottoCore
             guard selectionRevision == attempt, isCurrent() else { return false }
             let workspace = chats
             selectedBotStorage = value
+            settleOpeningInterruption()
             retireArtifactPresentation()
             guard selectionRevision == attempt, isCurrent() else { return false }
             switch presentation {
@@ -290,6 +294,9 @@ import BottoCore
     private var avatarWorkspaceGeneration = UUID()
     private var attachmentRecoveryGeneration: UUID { connection.recoveryGeneration }
     @ObservationIgnored private var started = false
+    #if DEBUG
+    @ObservationIgnored private var interruptsScoutOpening = ProcessInfo.processInfo.arguments.contains("--interrupted-opening-demo")
+    #endif
     @ObservationIgnored private var active = true
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
     // Refresh consumes the previous token, even if secure storage is temporarily locked.
@@ -686,6 +693,7 @@ import BottoCore
             showsConnection = false
             if let restoration, workspace === chats {
                 await workspace.restoreAttachment(restoration)
+                settleInterruptedOpening()
             }
             return true
         } catch {
@@ -930,7 +938,8 @@ import BottoCore
             return
         }
         // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
-        pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim())
+        let supersededOpening = pendingPushNotification?.supersededOpening == true || hasUnsettledOpening
+        pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim(), supersededOpening: supersededOpening)
         await resumePushNavigation()
     }
     /// Recovery can retire the admitted claim without retiring the tap. A retained tap may then claim
@@ -949,6 +958,7 @@ import BottoCore
         defer {
             if notificationRouting == attempt {
                 notificationRouting = nil
+                if pendingPushNotification?.intent.id == intent.id { interruptSupersededOpening() }
                 if let pending = pendingPushNotification?.intent, pending != intent {
                     Task { [weak self] in await self?.resumePushNavigation() }
                 }
@@ -972,6 +982,7 @@ import BottoCore
         guard readiness == .current, push.authorizesNavigation(intent), bot(withID: destination.profileID) != nil,
               let profile = try? ExactID(destination.profileID),
               let root = try? ExactID(destination.rootID), let stored = try? ExactID(destination.storedID) else {
+            interruptSupersededOpening()
             pendingPushNotification = nil
             notice = "This notification no longer has a verified chat destination. Open your bot's chats to continue."
             return
@@ -989,11 +1000,36 @@ import BottoCore
         }
         guard self.configuration?.id == configuration.id, chats === workspace, ownsTap() else { return }
         if opened {
-            pendingPushNotification = nil; notice = nil
+            pendingPushNotification = nil; notice = nil; settleOpeningInterruption()
             notificationNavigationRevision = UUID()
         } else {
             notice = "Botto couldn’t open this notification's chat. Reconnect and try again."
         }
+    }
+
+    private var hasUnsettledOpening: Bool {
+        guard let selectedBotID, let selection = chatSelection(for: selectedBotID) else { return false }
+        return selection.isOpening || !chats.isCurrent(selection.owner)
+    }
+    private func interruptSupersededOpening() {
+        if pendingPushNotification?.supersededOpening == true { openingInterrupted = true }
+    }
+    /// An unconditional write would invalidate every chat observing the retry.
+    private func settleOpeningInterruption() {
+        if openingInterrupted { openingInterrupted = false }
+    }
+    private func settleInterruptedOpening() {
+        guard let selectedBotID, let screen = chatScreen(for: selectedBotID), canCompose(in: screen) else { return }
+        settleOpeningInterruption()
+    }
+    func canCompose(in screen: ChatScreen) -> Bool {
+        screen.canEditDraft && (screen.canAct || !isConnected)
+    }
+    /// The superseded opening stays retired, so only a fresh deliberate opening can settle this bot.
+    func canRetryOpening(_ bot: BotProfile) -> Bool {
+        guard openingInterrupted, selectedBotID.map({ Data($0.utf8) }) == Data(bot.id.utf8),
+              let screen = chatScreen(for: bot.id), chatSelection(for: bot.id)?.isUnverified == false else { return false }
+        return !screen.isOpening && !canCompose(in: screen)
     }
 
     func forgetConnectionWithPush() async {
@@ -1178,9 +1214,25 @@ import BottoCore
             selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes
     }
     func openBot(_ opening: BotOpening) async {
+        #if DEBUG
+        interruptOpeningForUITest(opening)
+        #endif
         guard canOpenBot(opening) else { return }
         await opening.authority.workspace.open(opening.intent)
+        settleInterruptedOpening()
     }
+    #if DEBUG
+    /// Demo mode can't receive a tap, so Scout's first opening loses its order to one that attaches nothing.
+    private func interruptOpeningForUITest(_ opening: BotOpening) {
+        guard interruptsScoutOpening, opening.profile.text == "scout" else { return }
+        interruptsScoutOpening = false
+        // Runs once the opening suspends at its service read.
+        Task {
+            _ = chats.captureNavigationClaim()
+            openingInterrupted = true
+        }
+    }
+    #endif
 
     func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotCreationResult? {
         guard isConnected, !Task.isCancelled else { return nil }

@@ -1044,9 +1044,33 @@ private struct ReadObservationKey: Hashable, Sendable {
                       opening?.chat != id, selected != id || live == nil else { return }
                 onAcceptedTranscript?(applied.publication)
             }
+        } catch let failure as ConversationHistoryPage.Failure {
+            publishDisputes(failure, from: read, in: id, profile: profile)
         } catch {
             // Optional history reads preserve the cached excerpt and existing activity.
         }
+    }
+    private func publishDisputes(_ failure: ConversationHistoryPage.Failure, from read: RecentHistoryRead,
+                                 in id: ChatID, profile: ExactID) {
+        let disputes = failure.unavailableMessageIDs
+        func currentSource(in book: ConversationBook) -> (identity: SessionIdentity, title: String)? {
+            guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
+                  inboxProfiles.contains(profile), opening?.chat != id, selected != id || live == nil,
+                  let current = book.record(id), let identity = current.binding.identity,
+                  SearchMessageTarget.sameSource(identity, failure.identity) else { return nil }
+            return (identity, current.title)
+        }
+        guard !disputes.isEmpty, currentSource(in: book) != nil else { return }
+        let changed = mutateBook { book in
+            currentSource(in: book) != nil && book.dispute(disputes, from: failure.identity, in: id)
+        }
+        if changed { onDirty() }
+        guard let source = currentSource(in: book) else { return }
+        var snapshot = Conversation(id: source.identity.stored.text, storedID: source.identity.stored.text,
+            profileID: source.identity.profile.text, hasEarlierMessages: true)
+        snapshot.unavailableMessageIDs = disputes
+        onAcceptedTranscript?(.init(identity: source.identity, snapshot: snapshot, title: source.title,
+            evidence: .disputed(startedAt: read.startedAt)))
     }
     func invalidateActivityDirectory(_ profile: ExactID) {
         guard online, !retired else { return }

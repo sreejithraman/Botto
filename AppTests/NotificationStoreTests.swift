@@ -542,6 +542,312 @@ import BottoCore
         #expect(service.sends.isEmpty && service.responses.isEmpty)
     }
 
+    enum SupersededOpening: CaseIterable { case prepared, created, inFlight, inFlightOutlivesTap }
+    enum FailedTap: CaseIterable { case roster, status, directory, open, retiredPairing }
+    enum RecoveryControl: CaseIterable {
+        case tapSucceeds, laterRefreshRoutesTap, newerBotChoice, newerChoiceBeforeFailure, ordinaryReopening,
+             failedRetry, offlineRetry, connectionSheet, reconnectionRestores, replacementConnection, replacementTap,
+             settledRetryStaysQuiet, sameBotTapRecovers, directSelectionWrite
+    }
+    private struct HeldTap {
+        let store: AppStore, service: WorkspaceTestService, connection: MemoryConnectionStorage
+        let configuration: ConnectionConfiguration
+        let scout: BotProfile, milo: BotProfile
+        let scoutChat: SessionIdentity, target: SessionIdentity
+        let revision: UUID
+        let gate: WorkspaceGate, tap: Task<Void, Never>
+        let finishOlder: @MainActor () async -> Void
+        let pairing: PushPairing
+    }
+
+    /// Admits a tap over Scout's opening and holds it at its roster read, with Milo's chat still attached.
+    private func tapHeldOver(_ opening: SupersededOpening, tapsScout: Bool = false) async throws -> HeldTap {
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        let scoutChat = try addNotificationProfile("scout", to: service)
+        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: scoutChat.profile.text, name: "Scout")]
+        var pairing = try #require(vault.saved.pairings.first)
+        if tapsScout {
+            pairing.host = try #require(PushHostBinding(configuration, profileID: scoutChat.profile.text))
+            pairing.deviceID = String(repeating: "d", count: 32)
+            vault.saved.pairings.append(pairing)
+            store.push.retryStorage()
+            service.pushStatusResult = .init(pluginVersion: "fixture", supported: true, installationID: pairing.installationID,
+                devices: vault.saved.pairings.map { .init(deviceID: $0.deviceID, generation: 1, active: true, state: .active) })
+        }
+        #expect(await store.connect(configuration))
+        let scout = try #require(store.bot(withID: scoutChat.profile.text))
+        let milo = try #require(store.bot(withID: service.profile.text))
+        if tapsScout { await store.push.selectProfile(scoutChat.profile.text) }
+        await store.open(scout)
+        store.chats.editDraft("Keep Scout's draft", owner: try #require(store.chats.screen(profile: scoutChat.profile)).owner)
+        await store.open(milo)
+        // Let the connection's background push refresh finish before any gate is installed.
+        for _ in 0..<100 { await Task.yield() }
+        store.chats.editDraft("Keep Milo's draft", owner: try #require(store.chats.screen(profile: service.profile)).owner)
+        let finishOlder: @MainActor () async -> Void
+        switch opening {
+        case .prepared:
+            let prepared = try #require(store.prepareBotOpening(scout))
+            finishOlder = { await store.openBot(prepared) }
+        case .created:
+            service.createdBot = scout
+            let creation = try #require(await store.create(.init(name: "Scout")))
+            let prepared = try #require(store.prepareCreatedBotOpening(creation))
+            finishOlder = { await store.openBot(prepared) }
+        case .inFlight, .inFlightOutlivesTap:
+            let olderGate = WorkspaceGate()
+            service.openGate = olderGate; service.openGatedProfile = scoutChat.profile
+            let prepared = try #require(store.prepareBotOpening(scout))
+            let older = Task { await store.openBot(prepared) }
+            await olderGate.entered()
+            finishOlder = { service.openGate = nil; olderGate.release(); await older.value }
+        }
+        let gate = WorkspaceGate()
+        service.rosterGate = gate
+        let target = tapsScout ? scoutChat : service.summaries[1].identity
+        let envelope = try notification(target, pairing: pairing)
+        let revision = store.notificationNavigationRevision
+        let tap = Task { await store.openPushNotification(envelope) }
+        await gate.entered()
+        return .init(store: store, service: service, connection: connection, configuration: configuration,
+                     scout: scout, milo: milo, scoutChat: scoutChat, target: target, revision: revision,
+                     gate: gate, tap: tap, finishOlder: finishOlder, pairing: pairing)
+    }
+
+    private func fail(_ held: HeldTap, at boundary: FailedTap, opening: SupersededOpening = .prepared) async {
+        let service = held.service
+        if opening != .inFlightOutlivesTap { await held.finishOlder() }
+        let failure = HermesServiceError.rejected(409)
+        switch boundary {
+        case .roster: service.rosterError = failure
+        case .status: service.pushStatusError = failure
+        case .directory: service.directoryError = failure
+        case .open: service.openError = failure
+        case .retiredPairing:
+            service.pushStatusResult?.devices = [.init(deviceID: held.pairing.deviceID, generation: 2, active: false, state: .removed)]
+        }
+        service.rosterGate = nil; held.gate.release(); await held.tap.value
+        if opening == .inFlightOutlivesTap { await held.finishOlder() }
+    }
+
+    private func clearFailures(_ service: WorkspaceTestService) {
+        service.rosterError = nil; service.pushStatusError = nil; service.directoryError = nil; service.openError = nil
+    }
+
+    private func offersRetry(_ bot: BotProfile, in store: AppStore) -> Bool { store.canRetryOpening(bot) }
+
+    /// ChatView's retry captures a fresh ordinary opening when pressed.
+    private func retryOpening(_ bot: BotProfile, in store: AppStore) async -> Bool {
+        guard offersRetry(bot, in: store), let opening = store.prepareBotOpening(bot) else { return false }
+        await store.openBot(opening)
+        return true
+    }
+
+    /// Reconnection reattaches a settled chat after its roster read, without offering a retry in the meantime.
+    private func expectQuietReconnection(_ held: HeldTap, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let (store, service) = (held.store, held.service)
+        held.service.onEvent?(.disconnected("Temporary outage"))
+        let gate = WorkspaceGate()
+        service.rosterGate = gate
+        let reconnection = Task { await store.connect(held.configuration) }
+        await gate.entered()
+        #expect(store.isConnected, sourceLocation: sourceLocation)
+        #expect(!offersRetry(held.scout, in: store), sourceLocation: sourceLocation)
+        service.rosterGate = nil; gate.release()
+        #expect(await reconnection.value, sourceLocation: sourceLocation)
+    }
+
+    private func expectUsableChat(_ identity: SessionIdentity, in store: AppStore,
+                                  sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let screen = try #require(store.chats.screen(profile: identity.profile), sourceLocation: sourceLocation)
+        #expect(store.selectedBotID == identity.profile.text, sourceLocation: sourceLocation)
+        #expect(store.chats.isCurrent(screen.owner), sourceLocation: sourceLocation)
+        #expect(screen.canAct && screen.canEditDraft && !screen.isOpening, sourceLocation: sourceLocation)
+        #expect(store.chats.selection(profile: identity.profile)?.identity?.root == identity.root, sourceLocation: sourceLocation)
+    }
+
+    @Test(arguments: SupersededOpening.allCases, FailedTap.allCases)
+    func aFailedTapLeavesTheOpeningItSupersededRecoverable(opening: SupersededOpening, failure: FailedTap) async throws {
+        let held = try await tapHeldOver(opening)
+        defer { LocalHistory.remove(for: held.configuration.id) }
+        let (store, service, scout) = (held.store, held.service, held.scout)
+        await fail(held, at: failure, opening: opening)
+
+        #expect(store.selectedBotID == scout.id, "The person still sees the bot they chose.")
+        let stranded = try #require(store.chats.screen(profile: held.scoutChat.profile))
+        #expect(!stranded.canAct && !stranded.isOpening, "The superseded opening stays retired.")
+        #expect(store.chats.draft(stranded.owner) == "Keep Scout's draft")
+        #expect(store.notificationNavigationRevision == held.revision)
+        #expect(!service.opens.contains(held.target) || failure == .open)
+        #expect(!offersRetry(held.milo, in: store), "Retry belongs to the selected bot.")
+
+        clearFailures(service)
+        // ChatView's own task only refreshes the directory; it cannot attach the chat.
+        await store.chats.refreshDirectory(stranded.owner)
+        let afterTask = try #require(store.chats.screen(profile: held.scoutChat.profile))
+        #expect(!afterTask.canAct, "A directory refresh is not a fresh attachment.")
+        let opens = service.opens.count
+        let retried = await retryOpening(scout, in: store)
+        #expect(retried, "The displayed bot needs a current way to open its chat.")
+        guard retried else { return }
+        try expectUsableChat(held.scoutChat, in: store)
+        #expect(Array(service.opens.dropFirst(opens)).map(\.root) == [held.scoutChat.root])
+        #expect(!offersRetry(scout, in: store))
+        let opened = try #require(store.chats.screen(profile: held.scoutChat.profile))
+        #expect(store.chats.draft(opened.owner) == "Keep Scout's draft")
+        store.chats.editDraft("Edited after retry", owner: opened.owner)
+        #expect(store.chats.draft(opened.owner) == "Edited after retry")
+
+        // The deliberate retry is newer than the failed tap, so the tap cannot navigate over it later.
+        await store.refresh()
+        try expectUsableChat(held.scoutChat, in: store)
+        #expect(store.notificationNavigationRevision == held.revision)
+        #expect(Array(service.opens.dropFirst(opens)).map(\.root) == [held.scoutChat.root])
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
+    }
+
+    @Test(arguments: RecoveryControl.allCases)
+    func recoveryOfASupersededOpeningStaysBoundToTheCurrentChoice(control: RecoveryControl) async throws {
+        let held = try await tapHeldOver(control == .replacementTap ? .inFlight : .prepared, tapsScout: control == .sameBotTapRecovers)
+        defer { LocalHistory.remove(for: held.configuration.id) }
+        let (store, service, scout, milo) = (held.store, held.service, held.scout, held.milo)
+        let miloChat = try #require(store.chats.selection(profile: service.profile)?.identity)
+        switch control {
+        case .tapSucceeds:
+            await held.finishOlder()
+            service.rosterGate = nil; held.gate.release(); await held.tap.value
+            try expectUsableChat(held.target, in: store)
+            #expect(store.notificationNavigationRevision != held.revision)
+            #expect(!offersRetry(scout, in: store) && !offersRetry(milo, in: store))
+        case .laterRefreshRoutesTap:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            await store.refresh()
+            try expectUsableChat(held.target, in: store)
+            #expect(store.notificationNavigationRevision != held.revision)
+            #expect(!offersRetry(scout, in: store) && !offersRetry(milo, in: store))
+        case .newerBotChoice:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            await store.open(milo)
+            #expect(!offersRetry(scout, in: store) && !offersRetry(milo, in: store))
+            await store.refresh()
+            try expectUsableChat(miloChat, in: store)
+            #expect(store.notificationNavigationRevision == held.revision)
+            #expect(!service.opens.contains(held.target), "A newer choice cancels the retained tap.")
+        case .newerChoiceBeforeFailure:
+            await held.finishOlder()
+            await store.open(milo)
+            await fail(held, at: .roster, opening: .inFlightOutlivesTap)
+            try expectUsableChat(miloChat, in: store)
+            #expect(!offersRetry(scout, in: store) && !offersRetry(milo, in: store),
+                    "An older failed tap cannot settle a newer selection.")
+        case .ordinaryReopening:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            let opening = try #require(store.prepareBotOpening(scout))
+            await store.openBot(opening)
+            try expectUsableChat(held.scoutChat, in: store)
+            #expect(!offersRetry(scout, in: store))
+        case .failedRetry:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            service.openError = HermesServiceError.rejected(409)
+            #expect(await retryOpening(scout, in: store))
+            #expect(offersRetry(scout, in: store), "A failed attempt keeps its deliberate retry.")
+            clearFailures(service)
+            #expect(await retryOpening(scout, in: store))
+            try expectUsableChat(held.scoutChat, in: store)
+            #expect(!offersRetry(scout, in: store))
+        case .offlineRetry:
+            await fail(held, at: .roster)
+            service.onEvent?(.disconnected("Temporary outage"))
+            #expect(!store.isConnected)
+            #expect(await retryOpening(scout, in: store))
+            let local = try #require(store.chats.screen(profile: held.scoutChat.profile))
+            #expect(store.chats.isCurrent(local.owner) && local.canEditDraft)
+            #expect(store.chats.draft(local.owner) == "Keep Scout's draft")
+            #expect(!offersRetry(scout, in: store))
+        case .connectionSheet:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            store.showsConnection = true
+            #expect(store.prepareBotOpening(scout) == nil, "Replacement review outranks a retry.")
+            store.showsConnection = false
+            #expect(await retryOpening(scout, in: store))
+            try expectUsableChat(held.scoutChat, in: store)
+        case .reconnectionRestores:
+            await fail(held, at: .retiredPairing)
+            #expect(await store.connect(held.configuration))
+            try expectUsableChat(held.scoutChat, in: store)
+            #expect(!offersRetry(scout, in: store))
+            #expect(store.notificationNavigationRevision == held.revision)
+            await expectQuietReconnection(held)
+        case .settledRetryStaysQuiet:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            #expect(await retryOpening(scout, in: store))
+            await expectQuietReconnection(held)
+            try expectUsableChat(held.scoutChat, in: store)
+        case .sameBotTapRecovers:
+            await fail(held, at: .roster)
+            #expect(offersRetry(scout, in: store))
+            clearFailures(service)
+            await store.refresh()
+            try expectUsableChat(held.scoutChat, in: store)
+            #expect(store.notificationNavigationRevision != held.revision)
+            #expect(!offersRetry(scout, in: store))
+            await expectQuietReconnection(held)
+        case .directSelectionWrite:
+            // A failed attachment leaves Milo without access too, under its own draft-only contract.
+            await fail(held, at: .open)
+            store.selectedBotID = milo.id
+            #expect(!offersRetry(milo, in: store), "A newer selection retires the interruption.")
+        case .replacementTap:
+            // The first tap retires the in-flight opening, so the second tap sees a current chat without access.
+            await held.finishOlder()
+            await store.openPushNotification(try notification(held.target, pairing: held.pairing))
+            await fail(held, at: .roster, opening: .inFlightOutlivesTap)
+            for _ in 0..<1_000 where !offersRetry(scout, in: store) { await Task.yield() }
+            #expect(offersRetry(scout, in: store))
+            clearFailures(service)
+            #expect(await retryOpening(scout, in: store))
+            try expectUsableChat(held.scoutChat, in: store)
+        case .replacementConnection:
+            await fail(held, at: .roster)
+            clearFailures(service)
+            let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.invalid")!, username: "owner", installID: "replacement-install")
+            defer { LocalHistory.remove(for: replacement.id) }
+            #expect(await store.connect(replacement))
+            #expect(store.selectedBotID == nil)
+            #expect(!offersRetry(scout, in: store) && !offersRetry(milo, in: store))
+            #expect(store.notificationNavigationRevision == held.revision)
+            #expect(!service.opens.contains(held.target), "A replacement connection retires the tap.")
+        }
+        #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
+    }
+
+    @Test func aFailedTapOverAnAttachedChatKeepsItsDraftOnlyContract() async throws {
+        let (store, service, connection, vault) = try fixture()
+        let configuration = try #require(connection.saved)
+        defer { LocalHistory.remove(for: configuration.id) }
+        #expect(await store.connect(configuration))
+        let milo = try #require(store.bots.first)
+        await store.open(milo)
+        for _ in 0..<100 { await Task.yield() }
+        let original = try #require(store.chats.screen(profile: service.profile))
+        store.chats.editDraft("Keep Milo's draft", owner: original.owner)
+        service.openError = HermesServiceError.rejected(409)
+
+        await store.openPushNotification(try notification(service.summaries[1].identity, pairing: #require(vault.saved.pairings.first)))
+
+        let restored = try #require(store.chats.screen(profile: service.profile))
+        #expect(restored.canEditDraft && !restored.canAct, "The retired grant stays retired.")
+        #expect(store.chats.draft(restored.owner) == "Keep Milo's draft")
+        #expect(!offersRetry(milo, in: store), "No opening was superseded; the retained tap owns recovery.")
+    }
+
     enum PendingTapBoundary: CaseIterable { case directory, open, selection }
     enum NewerSelectionWrite: CaseIterable { case none, sameValue, nilValue }
 

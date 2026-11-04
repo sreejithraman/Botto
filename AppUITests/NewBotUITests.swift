@@ -33,6 +33,44 @@ final class NewBotUITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
     }
 
+    @MainActor func testInterruptedOpeningRecoversThroughDeliberateRetry() throws {
+        continueAfterFailure = false
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let hold = directory.appendingPathComponent("open.hold")
+        try Data().write(to: hold)
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--interrupted-opening-demo"]
+        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
+        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
+        app.launch()
+        let scout = app.buttons["pinned-bot-scout"]
+        XCTAssertTrue(scout.waitForExistence(timeout: 5))
+        scout.tap()
+        let started = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("open.started").path)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 5), .completed)
+        try FileManager.default.removeItem(at: hold)
+
+        let retry = app.buttons["chat-opening-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        let composer = app.textViews["chat-composer"]
+        XCTAssertEqual(composer.label, "Message to Scout")
+        XCTAssertFalse(app.buttons["chat-send-button"].isEnabled)
+
+        retry.tap()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Back on track")
+        let send = app.buttons["chat-send-button"]
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+        XCTAssertTrue(app.staticTexts["Back on track"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "Back on track")).count, 1,
+                       "Retrying opens the chat without replaying a send.")
+    }
+
     @MainActor private func beginCreation(holding operation: String?, sceneInactive: Bool = false) throws -> (XCUIApplication, URL) {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -145,7 +145,7 @@ func conversationPreviewDistinguishesBoundedUnknownFromKnownAbsence(condition: S
     #expect(offsets == [0])
 }
 
-@MainActor @Test(arguments: ["profile", "session", "paging", "oversized", "negativeID", "missingID", "duplicateID"])
+@MainActor @Test(arguments: ["profile", "session", "paging", "oversized", "negativeID", "missingID"])
 func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) async throws {
     let host = try HermesTestHost(), service = host.service()
     defer { service.disconnect() }
@@ -164,15 +164,18 @@ func conversationPreviewRejectsMismatchedOrMalformedHistory(condition: String) a
             case "missingID":
                 var row = previewRow(1, text: "Missing identity"); row["id"] = .null
                 page["messages"] = .array([row])
-            default:
-                page["messages"] = .array([previewRow(1, text: "First version"), previewRow(1, text: "Second version")])
-                page["pagination"]["returned"] = .number(2)
+            default: break
             }
             return page
         }
         return try original?(request) ?? .object([:])
     }
-    await #expect(throws: HermesServiceError.self) { try await service.recentConversationHistory(identity) }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("A malformed response must be rejected")
+    } catch {
+        #expect(error is HermesServiceError, "Unknown shapes prove nothing about cached identities: \(error)")
+    }
 }
 
 @MainActor @Test func conversationPreviewUsesExistingHistoryDisplayProjection() async throws {
@@ -253,8 +256,14 @@ func conversationPreviewRejectsResultsAfterItsReadLifetimeEnds(retirement: Strin
         _ = try await service.conversations(profile: identity.profile)
     }
     let pending = gate; gate = nil
-    pending?.resume(returning: previewPage(host: host, offset: 0, rows: [previewRow(1, text: "Stale reply")]))
-    await #expect(throws: Error.self) { try await read.value }
+    pending?.resume(returning: previewPage(host: host, offset: 0, rows: [previewRow(1, text: "Stale reply"),
+        previewRow(1, text: "A stale conflicting reply")]))
+    do {
+        _ = try await read.value
+        Issue.record("A retired read must not return history")
+    } catch {
+        #expect(!(error is ConversationHistoryPage.Failure), "A retired read proves nothing: \(error)")
+    }
 }
 
 private func previewRow(_ id: Int, text: String, kind: String? = nil, timestamp: Double? = nil) -> HermesJSON {
@@ -296,7 +305,8 @@ private func previewRow(_ id: Int, text: String, kind: String? = nil, timestamp:
     #expect(result.preview?.messageID == host.root + ":row:2")
 }
 
-@MainActor @Test func recentHistoryRejectsDuplicateRawIdentitiesBeforeDisplayFiltering() async throws {
+@MainActor @Test(arguments: ["visible", "hidden", "omitted", "truncated", "paging", "oversized", "invalidRow"])
+func recentHistoryReportsDuplicateRawIdentitiesAsScopedEvidence(shape: String) async throws {
     let host = try HermesTestHost(), service = host.service()
     defer { service.disconnect() }
     _ = try await service.connect(configuration: host.configuration)
@@ -304,12 +314,57 @@ private func previewRow(_ id: Int, text: String, kind: String? = nil, timestamp:
     let original = host.transport.handler
     host.transport.handler = { request in
         if request.url?.path.hasSuffix("/messages") == true {
-            return previewPage(host: host, offset: 0, rows: [previewRow(1, text: "Hidden", kind: "hidden"),
-                previewRow(1, text: "A conflicting visible row")])
+            var rows = [previewRow(1, text: "One occurrence", kind: shape == "hidden" ? "hidden" : nil),
+                previewRow(2, text: "An unrelated row"), previewRow(1, text: "A conflicting occurrence")]
+            if shape == "truncated" { rows[1]["archived_truncated"] = .bool(true) }
+            if shape == "invalidRow" { rows.append(previewRow(-1, text: "Invalid identity")) }
+            if shape == "oversized" { rows += (3...300).map { previewRow($0, text: "Surplus") } }
+            var page = previewPage(host: host, offset: 0, rows: rows)
+            if shape == "omitted" { page["messages_omitted"] = .bool(true) }
+            if shape == "paging" { page["pagination"]["offset"] = .number(100) }
+            return page
         }
         return try original?(request) ?? .object([:])
     }
-    await #expect(throws: HermesServiceError.self) { try await service.recentConversationHistory(identity) }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("A duplicate raw identity must reject the window")
+    } catch let failure as ConversationHistoryPage.Failure {
+        #expect(failure.identity == identity)
+        #expect(failure.unavailableMessageIDs == [Data((identity.stored.text + ":row:1").utf8)])
+        #expect(failure.sourceIDs.isEmpty, "An observed dispute says nothing about the window's other rows")
+        #expect(!failure.exceedsRowLimit)
+    } catch {
+        Issue.record("A duplicate must stay structured evidence instead of \(error)")
+    }
+}
+
+@MainActor @Test(arguments: ["beyondWindow", "foreignProfile", "foreignSession"])
+func recentHistoryOffersNoDisputeWithoutBoundedAssociatedEvidence(condition: String) async throws {
+    let host = try HermesTestHost(), service = host.service()
+    defer { service.disconnect() }
+    _ = try await service.connect(configuration: host.configuration)
+    let identity = try #require(try await service.conversations(profile: ExactID(host.bot.id)).summaries.first).identity
+    let original = host.transport.handler
+    host.transport.handler = { request in
+        if request.url?.path.hasSuffix("/messages") == true {
+            var page = previewPage(host: host, offset: 0, rows: [previewRow(1, text: "One"), previewRow(1, text: "Two")])
+            switch condition {
+            case "beyondWindow":
+                page["messages"] = .array((1...300).map { previewRow($0, text: "Inside") } + [previewRow(1, text: "Outside")])
+            case "foreignProfile": page["profile"] = .string("foreign-profile")
+            default: page["session_id"] = .string("foreign-session")
+            }
+            return page
+        }
+        return try original?(request) ?? .object([:])
+    }
+    do {
+        _ = try await service.recentConversationHistory(identity)
+        Issue.record("The response must be rejected")
+    } catch {
+        #expect(error is HermesServiceError, "Only bounded rows of this exact source can dispute it: \(error)")
+    }
 }
 
 @MainActor @Test(arguments: ["authorityComplete", "authorityBounded", "sidecarComplete", "sidecarCompressed"])

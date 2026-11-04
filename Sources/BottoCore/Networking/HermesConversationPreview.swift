@@ -2,6 +2,8 @@ import Foundation
 
 extension HermesBotService {
     /// Reads one newest window without attaching or acknowledging the chat.
+    /// Throws `ConversationHistoryPage.Failure` naming duplicate row identities within the window,
+    /// whatever else is wrong with the response. Every other rejection proves nothing about cached rows.
     public func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         try Task.checkCancellation()
         _ = try readyGateway()
@@ -24,6 +26,11 @@ extension HermesBotService {
               exact(page["session_id"].text, identity.stored.text),
               exact(page["profile"].text, identity.profile.text),
               let rows = page["messages"].list else { throw HermesServiceError.wrongConversation }
+        let unavailable = HermesConversationState.unavailableMessageIDs(Array(rows.prefix(limit)), stored: identity.stored.text)
+        let disputed = unavailable.filter { ChatMessage.isStableID($0, storedID: identity.stored.text) }
+        guard disputed.isEmpty else {
+            throw ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: disputed)
+        }
         guard rows.count <= limit else { throw HermesServiceError.incompatible }
         let pagination = page["pagination"]
         if pagination != .null {
@@ -34,11 +41,7 @@ extension HermesBotService {
         }
         guard page["messages_omitted"].flag != true,
               !rows.contains(where: { $0["archived_truncated"].flag == true }) else { return nil }
-        var sourceIDs = Set<Int>()
-        for row in rows {
-            guard let id = row["row_id"].integer ?? row["_row_id"].integer ?? row["id"].integer,
-                  id >= 0, sourceIDs.insert(id).inserted else { throw HermesServiceError.incompatible }
-        }
+        guard unavailable.isEmpty else { throw HermesServiceError.incompatible }
         let displayRows = rows.map { raw -> HermesJSON in
             guard raw["display_content"] != .null else { return raw }
             var display = raw

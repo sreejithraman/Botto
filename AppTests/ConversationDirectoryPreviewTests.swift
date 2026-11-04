@@ -682,3 +682,133 @@ extension InboxMessagePreviewTests {
         #expect(probe.dirtyCount == 0)
     }
 }
+
+extension InboxMessagePreviewTests {
+    enum RejectedReadControl: CaseIterable, Sendable {
+        case reconnected, offline, opened, tipMoved, foreignProfile, foreignRoot, foreignTip, unknownFailure, noDisputes
+    }
+
+    private func disputedFixture(_ service: WorkspaceTestService, probe: InboxWindowPublicationProbe)
+        -> (workspace: ConversationWorkspace, chat: ChatID) {
+        let identity = service.summaries[0].identity
+        var book = ConversationBook()
+        let chat = book.merge(service.summaries[0])
+        book.updatePreference(service.profile) { $0.preferred = chat }
+        book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
+            messages: [.init(id: "disputed", role: .assistant, text: "Cached answer"),
+                .init(id: "sibling", role: .assistant, text: "Sibling answer")]), for: chat)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: { probe.dirtyCount += 1 })
+        workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
+        workspace.setOnline(true)
+        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        return (workspace, chat)
+    }
+
+    @Test func rejectedHistoryPublishesOnlyItsDisputesUnderTheReadStart() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8)
+        let (workspace, chat) = disputedFixture(service, probe: probe)
+        defer { workspace.retireWorkspace() }
+        let requested = ContinuousClock.now
+        // Evidence for one row cannot widen to the other rows of its rejected response.
+        service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [disputed],
+            sourceIDs: [Data("sibling".utf8)], exceedsRowLimit: true)
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        let publication = try #require(probe.publications.first)
+        #expect(probe.publications.count == 1)
+        #expect(probe.dirtyCount == 1)
+        #expect(publication.identity == workspace.persisted().record(chat)?.binding.identity)
+        #expect(publication.snapshot.messages.isEmpty, "A rejected read vouches for no rows")
+        #expect(publication.snapshot.unavailableMessageIDs == [disputed])
+        let read = try #require(publication.evidence.readContext)
+        #expect(read.startedAt >= requested)
+        #expect(read.identityRead == nil)
+        #expect(read.observedSource == nil, "A rejected read cannot adopt a source")
+        let retained = workspace.persisted().record(chat)?.transcript
+        #expect(retained?.unavailableMessageIDs == [disputed])
+        #expect(retained?.messages.map(\.text) == ["Cached answer", "Sibling answer"], "Disputed rows stay in the chat as ambiguous")
+
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(probe.publications.count == 2, "Repeated evidence still reaches a consumer that restarted")
+        #expect(probe.dirtyCount == 1, "Unchanged evidence writes nothing")
+    }
+
+    @Test func onlyAProducerCertifiedWindowResolvesADispute() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8)
+        let (workspace, chat) = disputedFixture(service, probe: probe)
+        defer { workspace.retireWorkspace() }
+        let rows = try #require(workspace.persisted().record(chat)?.transcript?.messages)
+        service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [disputed])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        service.previewError = nil
+        for window in [ConversationHistoryWindow(messages: rows, hasEarlierMessages: true),
+                       ConversationHistoryWindow(messages: rows, hasEarlierMessages: false)] {
+            service.previewResult = window
+            await workspace.refreshInboxHistory(profiles: [service.profile])
+            #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == [disputed])
+        }
+        service.previewResult = .init(messages: rows, hasEarlierMessages: false,
+            identityRead: .init(identity: identity, messageIDs: Set(rows.map { Data($0.id.utf8) })))
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs?.contains(disputed) != true)
+    }
+
+    @Test func rejectedHistoryWithoutACachedTranscriptOnlyReachesLibrary() async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe()
+        var book = ConversationBook()
+        let chat = book.merge(service.summaries[0])
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: service, onDirty: { probe.dirtyCount += 1 })
+        defer { workspace.retireWorkspace() }
+        workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
+        workspace.setOnline(true)
+        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [Data("disputed".utf8)])
+        await workspace.refreshInboxHistory(profiles: [service.profile])
+        let publication = try #require(probe.publications.first)
+        #expect(publication.snapshot.unavailableMessageIDs == [Data("disputed".utf8)])
+        #expect(workspace.persisted().record(chat)?.transcript == nil, "Evidence cannot invent a cached transcript")
+        #expect(probe.dirtyCount == 0)
+    }
+
+    @Test(arguments: RejectedReadControl.allCases)
+    func rejectedHistoryCannotDisputeAnotherOwner(control: RejectedReadControl) async throws {
+        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
+        let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8)
+        let (workspace, chat) = disputedFixture(service, probe: probe)
+        defer { workspace.retireWorkspace() }
+        let foreign = try ExactID("foreign")
+        var source = identity
+        switch control {
+        case .foreignProfile: source = .init(profile: foreign, root: identity.root, stored: identity.stored, aliases: [])
+        case .foreignRoot: source = .init(profile: identity.profile, root: foreign, stored: identity.stored, aliases: [])
+        case .foreignTip: source = .init(profile: identity.profile, root: identity.root, stored: foreign, aliases: [])
+        default: break
+        }
+        service.previewError = switch control {
+        case .unknownFailure: HermesServiceError.incompatible
+        case .noDisputes: ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [], exceedsRowLimit: true)
+        default: ConversationHistoryPage.Failure(identity: source, unavailableMessageIDs: [disputed])
+        }
+        let gate = WorkspaceGate(); service.previewGate = gate
+        let refreshing = Task { await workspace.refreshInboxHistory(profiles: [service.profile]) }
+        await gate.entered()
+        switch control {
+        case .reconnected: workspace.setOnline(false); workspace.setOnline(true)
+        case .offline: workspace.setOnline(false)
+        case .opened: await workspace.openBot(profile: service.profile)
+        case .tipMoved:
+            let moved = SessionIdentity(profile: identity.profile, root: identity.root, stored: try ExactID("moved-tip"), aliases: [])
+            service.summaries[0] = .init(identity: moved, title: "Bot Chat", isCanonical: true, persistence: .durable)
+            await workspace.refreshActivityDirectories(for: [.init(id: service.profile.text, name: "Milo")])
+        default: break
+        }
+        gate.release(); await refreshing.value
+        let disputes = probe.publications.filter { $0.evidence.readContext?.identityRead == nil && $0.snapshot.messages.isEmpty }
+        #expect(disputes.isEmpty)
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == nil)
+    }
+}

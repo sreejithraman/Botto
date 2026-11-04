@@ -137,6 +137,27 @@ struct ChatView: View {
         }
     }
 
+    private var openingRetry: some View {
+        HStack(spacing: 12) {
+            Text("This chat didn’t open.").font(.subheadline).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button(action: retryOpening) {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .frame(minHeight: 44).contentShape(.rect)
+            }
+                .font(.subheadline.weight(.semibold))
+                .accessibilityLabel("Retry opening this chat")
+                .accessibilityIdentifier("chat-opening-retry")
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func retryOpening() {
+        guard store.canRetryOpening(bot), let opening = store.prepareBotOpening(bot) else { return }
+        store.notice = nil
+        Task { await store.openBot(opening) }
+    }
+
     private var readerLifecycle: some View {
         let screen = self.screen
         return presentationContent
@@ -218,6 +239,7 @@ struct ChatView: View {
                 if let error = presentation.searchError {
                     InlineNotice(message: error) { presentation.searchError = nil }.padding(.horizontal, 16)
                 }
+                if store.canRetryOpening(bot) { openingRetry }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
                              inputAvailable: inputAvailable,

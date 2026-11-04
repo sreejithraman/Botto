@@ -1607,3 +1607,31 @@ post-reboot evidence and source bindings are preserved at
 The reboot also removed the earlier `/tmp/botto-*` logs and review archives;
 their recorded results remain historical claims. Fresh review of the combined
 change and the full gate on this source remain pending.
+
+### Recent-read dispute propagation
+
+The inbox reader now reports observed duplicate raw IDs even when the response
+is omitted, truncated or otherwise rejected. A scoped negative publication
+updates Book and Library without admitting rows or resolving earlier disputes.
+On starting production, the Core control failed seven of 19 cases and the native
+control failed eight of 27 tests with 34 issues. The fixed source passed
+`scripts/check-core.sh` (492 tests and MainActor build) and 248 native tests in
+six suites. Five repeats of the 27 focused tests passed. These checks cover
+cached-artifact withdrawal, cold restoration, unaffected peers and coherent-read
+recovery. HTTP producer and native consumer checks are composed; no single test
+crosses HTTP through AppStore to Library. Evidence and source bindings are at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repairs-35/cache/outputs/`.
+Combined navigation integration and the full local gate remain pending.
+
+### Integrated cache and interrupted-opening check
+
+One native-only `BottoTests` run on the combined cache and retry source passed
+944 tests with no failures. Two opt-in transcript measurements were skipped:
+`BOTTO_TRANSCRIPT_ACTIVE_RICH` and `BOTTO_TRANSCRIPT_BENCH` were unset. All 555
+source hashes and the 15-path dirty diff stayed unchanged throughout the run.
+Evidence is at `/Users/sree/.t3/userdata/verification/botto-chat-pr24/integrated-native35/`.
+
+The retry UI regression passed in eight fixed-source executions. The six existing
+creation UI tests still showed an intermittent compact-navigation failure on
+both unchanged production and the retry candidate. That required gate failure
+remains open; these separate runs do not establish a passing UI suite or full gate.

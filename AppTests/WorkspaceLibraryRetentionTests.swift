@@ -917,7 +917,8 @@ import BottoCore
         #expect(library.artifacts.map(\.artifact.title) == ["retained.txt"])
         #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(library.chats.first?.unavailableMessageIDs.contains(disputedID) == true)
-        book.cache(.init(messages: [disputed, retained], hasEarlierMessages: false), for: id)
+        book.cache(.init(messages: [disputed, retained], hasEarlierMessages: false,
+            identityRead: .init(identity: source, messageIDs: [disputedID, Data(retained.id.utf8)])), for: id)
         let resolved = try #require(book.record(id)?.transcript)
         #expect(TranscriptMessageIndex(resolved).matches(disputed))
         library.accept(identity: source, snapshot: resolved, title: "Main",

@@ -896,6 +896,281 @@ import BottoCore
         cold.retire(); await coldCache.close()
     }
 
+    /// A saved Book and Library holding a captured artifact while its chat stays unselected.
+    @MainActor private struct RetainedDispute {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let service = LibraryTestService(secondBot: true)
+        let disputed = ChatMessage(id: "main-file", role: .assistant, text: "Disputed needle\nMEDIA:/disputed.txt", timestamp: Date(timeIntervalSince1970: 1))
+        let sibling = ChatMessage(id: "main-sibling", role: .assistant, text: "Sibling needle\nMEDIA:/sibling.txt", timestamp: Date(timeIntervalSince1970: 2))
+        let peer = ChatMessage(id: "side-file", role: .assistant, text: "Peer needle\nMEDIA:/peer.txt", timestamp: Date(timeIntervalSince1970: 3))
+        var disputedID: Data { Data(disputed.id.utf8) }
+        var failure: ConversationHistoryPage.Failure {
+            .init(identity: service.first, unavailableMessageIDs: [disputedID])
+        }
+        func prepare() {
+            service.messages[service.first] = [disputed, sibling]; service.messages[service.second] = [peer]
+            service.previewEnabled = true; service.previewHasEarlierMessages = true
+        }
+        func originalKey() async throws -> ArtifactOriginalKey {
+            try #require(await WorkspaceLibrary.originalKey(identity: service.first,
+                attachment: ChatAttachment(name: "disputed.txt", path: "/disputed.txt"), messages: [disputed]))
+        }
+    }
+
+    private func artifact(_ id: String, in library: WorkspaceLibrary) -> LibraryArtifact? {
+        library.artifacts.first { $0.artifact.messageID == id }
+    }
+
+    private func searchFinds(_ query: String, in library: WorkspaceLibrary) -> Bool {
+        !LibrarySearchResults(query: query, bots: [], chats: library.chats, artifacts: []).messages.isEmpty
+    }
+
+    private func dispute(on fixture: RetainedDispute, library: WorkspaceLibrary, book: ConversationBook) -> ConversationWorkspace {
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: book, service: fixture.service, onDirty: {})
+        workspace.onAcceptedTranscript = { library.accept($0); library.reconcileOriginalConsumers() }
+        workspace.observeProfiles(fixture.service.profiles); workspace.setOnline(true)
+        return workspace
+    }
+
+    private func eventually(_ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try await !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        return try await condition()
+    }
+
+    @Test(arguments: [false, true])
+    func disputedInboxReadWithdrawsRetainedRowsUntilACoherentRead(reopenWithBook: Bool) async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let chat = try #require(book.records.first { $0.binding.identity == service.first }?.id)
+        let cache = ArtifactCache(root: fixture.root), session = cache.session(scope: fixture.scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let item = try #require(artifact(fixture.disputed.id, in: library))
+        _ = try await library.download(item)
+        _ = try await library.download(try #require(artifact(fixture.peer.id, in: library)))
+        let key = try await fixture.originalKey()
+        try #require(try await session.original(for: key) != nil, "The fixture must start with a captured original")
+        try #require(searchFinds("Disputed needle", in: library))
+
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(service.previewReadCount > 0)
+
+        #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == [fixture.disputedID])
+        #expect(!searchFinds("Disputed needle", in: library))
+        #expect(artifact(fixture.disputed.id, in: library) == nil)
+        #expect(!library.isCurrent(item))
+        let downloads = service.downloadCount
+        await #expect(throws: (any Error).self) { _ = try await library.download(item) }
+        #expect(searchFinds("Sibling needle", in: library), "The rest of the chat stays available")
+        #expect(artifact(fixture.sibling.id, in: library) != nil)
+        #expect(searchFinds("Peer needle", in: library))
+        _ = try await library.download(try #require(artifact(fixture.peer.id, in: library)))
+        #expect(service.downloadCount == downloads)
+
+        let saved = try await eventually {
+            try await session.loadChats().first { $0.identity == service.first }?.unavailableMessageIDs?.contains(fixture.disputedID) == true
+        }
+        #expect(saved, "The dispute must reach durable Library metadata")
+        library.retire(); await cache.close()
+
+        let coldCache = ArtifactCache(root: fixture.root)
+        let cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: fixture.scope))
+        defer { cold.retire() }
+        let reopened = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
+        if reopenWithBook { cold.seed(book: reopened, bots: service.profiles) }
+        await cold.restore()
+        #expect(!searchFinds("Disputed needle", in: cold))
+        #expect(artifact(fixture.disputed.id, in: cold) == nil)
+        #expect(searchFinds("Sibling needle", in: cold))
+        #expect(searchFinds("Peer needle", in: cold))
+        _ = try await cold.download(try #require(artifact(fixture.peer.id, in: cold)))
+        #expect(service.downloadCount == downloads, "Saved peers stay readable offline")
+
+        cold.setOnline(true)
+        let reopenedWorkspace = dispute(on: fixture, library: cold, book: reopened)
+        defer { reopenedWorkspace.retireWorkspace() }
+        service.previewFailure = nil
+        await reopenedWorkspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(reopenedWorkspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == [fixture.disputedID],
+            "A bounded read cannot clear a dispute")
+        #expect(!searchFinds("Disputed needle", in: cold))
+        #expect(artifact(fixture.disputed.id, in: cold) == nil)
+
+        service.previewHasEarlierMessages = false
+        await reopenedWorkspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(reopenedWorkspace.persisted().record(chat)?.transcript?.unavailableMessageIDs?.contains(fixture.disputedID) != true)
+        #expect(await eventually { artifact(fixture.disputed.id, in: cold) != nil }, "A coherent exhaustive read recovers the row")
+        #expect(searchFinds("Disputed needle", in: cold))
+        _ = try await cold.download(try #require(artifact(fixture.disputed.id, in: cold)))
+        #expect(service.downloadCount == downloads, "Recovery reuses the original captured for the same revision")
+        await coldCache.close()
+    }
+
+    @Test func disputedInboxReadBeforeRestorationKeepsSavedRowsQuarantined() async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let warmCache = ArtifactCache(root: fixture.root)
+        let warm = WorkspaceLibrary(service: service, cache: warmCache.session(scope: fixture.scope))
+        warm.setOnline(true); await warm.refresh(evidence: .observed, bots: service.profiles)
+        warm.retire(); await warmCache.close()
+
+        let cache = ArtifactCache(root: fixture.root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: fixture.scope))
+        defer { library.retire() }
+        library.observeBots(service.profiles, evidence: .cached)
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        await library.restore()
+        #expect(!searchFinds("Disputed needle", in: library), "Restoration cannot revive a row disputed while it ran")
+        #expect(artifact(fixture.disputed.id, in: library) == nil)
+        #expect(searchFinds("Peer needle", in: library))
+        await cache.close()
+    }
+
+    @Test func disputedInboxReadFencesAnOlderResolvingScan() async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let cache = ArtifactCache(root: fixture.root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: fixture.scope))
+        defer { library.retire() }
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        let held = StoreTestBarrier(); service.historyBarrier = held
+        let scanning = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
+        await held.waitUntilEntered()
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        service.historyBarrier = nil; held.release(); await scanning.value
+        #expect(!searchFinds("Disputed needle", in: library), "A scan read before the dispute cannot resolve it")
+        #expect(artifact(fixture.disputed.id, in: library) == nil)
+        #expect(searchFinds("Sibling needle", in: library))
+        await cache.close()
+    }
+
+    @Test func olderDisputeCannotOverrideANewerCoherentLibraryRead() async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let cache = ArtifactCache(root: fixture.root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: fixture.scope))
+        defer { library.retire() }
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        let held = StoreTestBarrier(); service.previewBarrier = held
+        service.previewFailure = fixture.failure
+        let reading = Task { await workspace.refreshInboxHistory(profiles: [service.first.profile]) }
+        await held.waitUntilEntered()
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        held.release(); await reading.value
+        #expect(searchFinds("Disputed needle", in: library))
+        #expect(artifact(fixture.disputed.id, in: library) != nil)
+        await cache.close()
+    }
+
+    @Test func disputeForAnOlderTipCannotQuarantineItsReplacement() async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let replacement = SessionIdentity(profile: service.first.profile, root: service.first.root,
+            stored: try ExactID("replacement-tip"), aliases: [service.first.root, try ExactID("replacement-tip")])
+        service.messages[replacement] = [fixture.disputed, fixture.sibling]
+        service.replacementFirst = replacement
+        let cache = ArtifactCache(root: fixture.root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: fixture.scope))
+        defer { library.retire() }
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        try #require(artifact(fixture.disputed.id, in: library)?.chat.identity.stored == replacement.stored)
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(service.previewReadCount > 0)
+        #expect(artifact(fixture.disputed.id, in: library)?.chat.identity.stored == replacement.stored)
+        #expect(searchFinds("Disputed needle", in: library))
+        await cache.close()
+    }
+
+    @Test func disputeNarrowsRowsAHeldScopeStillPresents() async throws {
+        let fixture = RetainedDispute(), service = fixture.service
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        service.previewHasEarlierMessages = false
+        let evicted = ChatMessage(id: "main-evicted", role: .assistant, text: "Evicted row", timestamp: Date(timeIntervalSince1970: 0))
+        service.messages[service.first] = [evicted, fixture.disputed]
+        service.messages[service.second] = (0..<2).map { ChatMessage(id: "side-\($0)", role: .assistant, text: "Pressure", timestamp: Date(timeIntervalSince1970: 100 + Double($0))) }
+        var book = savedBook(service)
+        book.merge(.init(identity: service.second, title: "Other", isCanonical: true, persistence: .durable))
+        let warmCache = ArtifactCache(root: fixture.root), warm = warmCache.session(scope: fixture.scope)
+        try warm.restrictMetadata(to: [service.first.profile, service.second.profile])
+        try await warm.upsert(.init(identity: service.first, botName: "Helper", title: "Main", messages: service.messages[service.first]!,
+            updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil))
+        await warmCache.close()
+        // A locked index keeps restoration unreconciled, so eviction turns the chat's scope into a hold.
+        var handle: OpaquePointer?
+        try #require(sqlite3_open(fixture.root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        defer { sqlite3_exec(handle, "ROLLBACK", nil, nil, nil); sqlite3_close(handle) }
+        try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let cache = ArtifactCache(root: fixture.root)
+        let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 3, chatCount: 2),
+            cache: cache.session(scope: fixture.scope))
+        defer { library.retire() }
+        await library.restore()
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        await workspace.refreshInboxHistory(profiles: [service.second.profile])
+        try #require(await eventually { searchFinds("Disputed needle", in: library) }, "The coherent row stays presented under the hold")
+        try #require(!library.chats.contains { $0.messages.contains { $0.id == evicted.id } }, "Eviction must have created the hold")
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(!searchFinds("Disputed needle", in: library))
+        library.retire(); await cache.close()
+    }
+
+    @Test func disputedInboxReadRetiresAnInFlightCapture() async throws {
+        let fixture = RetainedDispute(), service = fixture.service, gate = CaptureCommitGate()
+        defer { gate.release(); try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.prepare()
+        let book = savedBook(service)
+        let cache = ArtifactCache(root: fixture.root, beforeCaptureCommit: { gate.pause() })
+        let session = cache.session(scope: fixture.scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let item = try #require(artifact(fixture.disputed.id, in: library))
+        let workspace = dispute(on: fixture, library: library, book: book)
+        defer { workspace.retireWorkspace() }
+        gate.arm()
+        let capturing = Task { try await library.download(item) }
+        defer { capturing.cancel() }
+        try #require(await eventually { gate.isEntered })
+        service.previewFailure = fixture.failure
+        await workspace.refreshInboxHistory(profiles: [service.first.profile])
+        #expect(!library.isCurrent(item))
+        gate.release()
+        await #expect(throws: (any Error).self) { _ = try await capturing.value }
+        #expect(try await session.original(for: try await fixture.originalKey()) == nil)
+        await cache.close()
+    }
+
     @Test func inboxWindowDoesNotPersistAWorkingTailAsComplete() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -5162,6 +5437,7 @@ private actor NextLibraryProjectionPause {
     var historyBarriers: [SessionIdentity: StoreTestBarrier] = [:]
     var historyFailures: [SessionIdentity: any Error] = [:]
     var historyFailureOffsets: [SessionIdentity: Int] = [:]
+    var previewFailure: (any Error)?
     var historyPages: [SessionIdentity: [Int: ConversationHistoryPage]] = [:]
     var downloadBarrier: StoreTestBarrier?
     var openCount = 0
@@ -5221,8 +5497,9 @@ private actor NextLibraryProjectionPause {
         guard previewEnabled else { return nil }
         previewReadCount += 1
         if failHistory { throw URLError(.cannotConnectToHost) }
-        let capturedRows = messages[identity]
+        let capturedRows = messages[identity], capturedFailure = previewFailure
         await previewBarrier?.wait()
+        if let capturedFailure { throw capturedFailure }
         return capturedRows.map { rows in
             let page = certifyingIdentity(.init(messages: rows, nextOffset: nil, isComplete: true,
                 sourceIDs: Set(rows.map { Data($0.id.utf8) })), identity: identity, offset: 0)

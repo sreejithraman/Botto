@@ -46,6 +46,10 @@ these messages in the same transcript used by chat; the inbox derives its excerp
 transcript. Formatting and attachment descriptors survive the transition into
 chat. An incomplete search or failed request preserves the saved content.
 Legacy sidecar history cannot prove absence before a compressed tip.
+A rejected window still publishes any duplicate raw IDs it observed for that
+exact source. Book retains those disputes, and Library withdraws the affected
+Search results and artifacts. This negative evidence cannot adopt a new tip or
+resolve an existing dispute; ordinary read failures preserve cached content.
 
 A bounded window replaces the cached suffix when its first stable message
 uniquely anchors in the same stored transcript and is not quarantined.
@@ -308,7 +312,9 @@ cancels the tap when admitted: bot entry, creation, picker and chat-creation
 captures, and direct selection writes. Notification opening settles bot selection
 inside its attachment commit, before the chat, its saved selection or its grant
 is published. A superseded or failed tap keeps the prior chat and draft editable
-without reviving a retired grant.
+without reviving a retired grant. If it interrupted an unsettled bot opening,
+the selected chat offers Retry. That action starts a fresh ordinary opening and
+cancels the retained tap; it never replays the superseded opening.
 Bot creation returns its published profile with its original workspace, connection
 and socket-recovery lifetime. Its optional opening keeps that authority across
 selection callbacks and sheet dismissal. A transient inactive scene still

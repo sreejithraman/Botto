@@ -5,14 +5,21 @@ struct ChatTranscriptPublication: Sendable {
     enum Evidence: Sendable {
         case read(startedAt: ContinuousClock.Instant, observedSource: SessionIdentity?, identityRead: ConversationIdentityRead? = nil)
         case window(startedAt: ContinuousClock.Instant, observedSource: SessionIdentity, identityRead: ConversationIdentityRead? = nil)
+        /// A rejected read. Its row-free snapshot names the identities it disputed and proves nothing else.
+        case disputed(startedAt: ContinuousClock.Instant)
         case incremental(previous: Conversation?)
 
         var readContext: (startedAt: ContinuousClock.Instant, observedSource: SessionIdentity?, identityRead: ConversationIdentityRead?)? {
             switch self {
             case .read(let startedAt, let source, let proof): (startedAt, source, proof)
             case .window(let startedAt, let source, let proof): (startedAt, source, proof)
+            case .disputed(let startedAt): (startedAt, nil, nil)
             case .incremental: nil
             }
+        }
+        var isDispute: Bool {
+            if case .disputed = self { return true }
+            return false
         }
     }
     let identity: SessionIdentity
@@ -440,10 +447,20 @@ struct ConversationBook: Codable, Sendable {
         let snapshot = Conversation(id: previous?.id ?? identity.stored.text, storedID: identity.stored.text,
             profileID: identity.profile.text, messages: messages, queuedMessages: previous?.queuedMessages ?? [],
             hasEarlierMessages: hasEarlierMessages)
+        let proof = window.hasEarlierMessages ? nil : window.identityRead.flatMap { $0.matches(identity) ? $0 : nil }
         let transcript = Self.reconciled(snapshot, previous: previous,
-            resolvingMessageIDs: window.hasEarlierMessages ? [] : Set(window.messages.map { Data($0.id.utf8) }),
-            retainEarlierMessages: window.hasEarlierMessages)
+            resolvingMessageIDs: proof?.messageIDs ?? [], retainEarlierMessages: window.hasEarlierMessages)
         return .init(transcript: transcript, hasContentHistory: hasContentHistory)
+    }
+    /// Retains a rejected read's disputes on the cached tip they name.
+    /// Without that tip there are no retained rows for them to withdraw.
+    mutating func dispute(_ messageIDs: Set<Data>, from source: SessionIdentity, in id: ChatID) -> Bool {
+        guard let transcript = record(id)?.transcript,
+              Data(transcript.profileID.utf8) == source.profile.bytes,
+              Data(transcript.storedID.utf8) == source.stored.bytes,
+              !messageIDs.isSubset(of: transcript.unavailableMessageIDs ?? []) else { return false }
+        update(id) { $0.transcript?.unavailableMessageIDs = (transcript.unavailableMessageIDs ?? []).union(messageIDs) }
+        return true
     }
     mutating func cache(_ window: ConversationHistoryWindow, for id: ChatID) {
         update(id) { record in

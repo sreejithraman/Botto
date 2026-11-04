@@ -934,7 +934,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let coherentRead = checksDiscardedScope && provesSource && !snapshot.hasEarlierMessages
             && read.map { discardedEvidence.permitsRead(profile: source.profile, root: source.root, startedAt: $0.startedAt) } == true
             && coherentlyChecks(source, messages: snapshot.messages, unavailable: snapshot.unavailableMessageIDs ?? [], proof: read?.identityRead)
-        if checksDiscardedScope { guard coherentRead else { return } }
+        // A hold withholds rows. A dispute adds none, so it can always narrow what remains.
+        if checksDiscardedScope, !evidence.isDispute { guard coherentRead else { return } }
         restorationHints.remove(id)
         indexingMetrics.acceptedSnapshots += 1
         recordAcceptance(id)
@@ -946,7 +947,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         let protectsRestore: Bool
         let identityRead: ConversationIdentityRead?
         switch evidence {
-        case .read, .window:
+        case .read, .window, .disputed:
             let proof = read?.identityRead
             messages = snapshot.messages; unavailable = knownUnavailable; protectsRestore = true
             identityRead = !snapshot.hasEarlierMessages && proof?.matches(source) == true ? proof : nil
@@ -991,7 +992,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             if unreconciledMetadata[id] == .requiresGuard, previousAdmission != .requiresGuard { markDirty(id) }
         } else { unreconciledMetadata[id] = nil }
         switch evidence {
-        case .window: break
+        case .window, .disputed: break
         case .read, .incremental:
             let tail = snapshot.isWorking && snapshot.messages.last?.role == .assistant
                 ? snapshot.messages.last.map { WorkingTail(stored: source.stored, messageID: Data($0.id.utf8)) } : nil
