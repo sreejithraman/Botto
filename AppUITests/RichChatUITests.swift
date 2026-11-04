@@ -35,7 +35,12 @@ final class RichChatUITests: XCTestCase {
         app.buttons["Close HTML source"].tap()
         app.buttons.matching(identifier: "Expand HTML preview").allElementsBoundByIndex.last!.tap()
         XCTAssertTrue(app.buttons["Close HTML preview"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Update preview"].waitForExistence(timeout: 8))
+        // Web content can enter the accessibility tree while its loading cover still blocks taps.
+        let loading = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Loading preview")).firstMatch
+        let revealed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["Update preview"].exists && !loading.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [revealed], timeout: 8), .completed)
         app.buttons["Update preview"].tap()
         XCTAssertTrue(app.staticTexts["Preview updated"].waitForExistence(timeout: 3))
         let screenshot = XCTAttachment(screenshot: app.screenshot())

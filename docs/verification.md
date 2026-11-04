@@ -1798,3 +1798,24 @@ differs from the parent in other files. The parent renamed one older test to
 describe its retained-absence behavior; its assertions are unchanged. Evidence
 is at `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-38/outputs/`.
 Final integrated review and a full gate on this repair remain required.
+
+The next unfiltered gate on `427e76e` failed one expanded HTML interaction check:
+1,100 native/UI functions passed, one failed and 18 were skipped. All 984 native
+functions completed with 982 passes and two opt-in skips, including the six new
+absence tests and the renamed older test. Core, MainActor, native Save and Files
+reopen, and the independent 80-byte provider readback passed. The unchanged
+`scripts/` hashes retain the prior 252-test Python result. The long-chat check
+passed. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/full-gate38/`.
+
+A controlled two-second loading-cover hold reproduced the HTML failure at its
+original assertion. Web content entered the accessibility tree before the cover
+lifted. Waiting for that cover to disappear within the existing eight-second
+readiness budget passed the same forced sequence. The tap and three-second
+update assertion remain unchanged. All five rich UI tests then passed without
+probes. No production renderer change remains. The natural failure did not
+reproduce; the diagnosis relies on the controlled failure and the gate's matching
+screen, whose event timing is uncertain by about 0.3 seconds. These selected
+runs used an older isolated checkout with matching rich-content inputs; the
+combined parent still needs review and a fresh full gate. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/rich-ui39/outputs/`.
