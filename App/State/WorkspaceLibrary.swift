@@ -1397,7 +1397,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     message = old
                 }
             }
-            let cost = message.text.utf8.count
+            let cost = message.retainedTextBytes
             guard newestFirst.count < count, cost <= bytes - usedBytes else { trimmed = true; continue }
             newestFirst.append(message); admitted.insert(id); usedBytes += cost
         }
@@ -1520,7 +1520,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             let kept = boundedMessages(candidate.messages, existing: [], policy: .replace,
                 count: remainingCount, bytes: remainingBytes)
             remainingCount -= kept.messages.count
-            remainingBytes -= kept.messages.reduce(0) { $0 + $1.text.utf8.count }
+            remainingBytes -= kept.messages.reduce(0) { $0 + $1.retainedTextBytes }
             limited = limited || kept.trimmed
             return Candidate(id: candidate.id, source: candidate.source, botName: candidate.botName, title: candidate.title,
                 updatedAt: candidate.updatedAt, messages: kept.messages, coverage: kept.trimmed ? .partial : candidate.coverage,
@@ -1548,7 +1548,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             let artifacts = Self.discover(messages, streamingMessage: streamingMessage)
             let producers = Set(artifacts.map { Data($0.messageID.utf8) })
             let revisions = Dictionary(messages.filter { producers.contains(Data($0.id.utf8)) }.map {
-                (Data($0.id.utf8), fingerprintBytes([$0]))
+                (Data($0.id.utf8), sourceRevision($0))
             }, uniquingKeysWith: { first, _ in first })
             return Projection(artifacts: artifacts, revisions: revisions, searchableText: LibraryChat.searchIndex(messages))
         }.value
@@ -2034,7 +2034,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         pageHead = head
                     }
                     readMessages += sourceIDs.count
-                    readBytes += page.messages.reduce(0) { $0 + $1.text.utf8.count }
+                    readBytes += page.messages.reduce(0) { $0 + $1.retainedTextBytes }
                     let buffered = boundedMessages(batch, existing: messages, policy: .prependOlder,
                         count: limits.messageCount, bytes: limits.textBytes, excluding: unavailableMessageIDs)
                     messages = buffered.messages
@@ -2119,13 +2119,15 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             && Data(a.preview.utf8) == Data(b.preview.utf8)
     }
 
-    private nonisolated static func fingerprintBytes(_ messages: [ChatMessage]) -> Data {
+    /// Hashes the retained unprojected row representation; it cannot reconstruct upstream content shapes.
+    /// Full-message/head revisions and quiet-prefix proof compare both texts; read state follows display content.
+    /// Without separate canonical text, hash the encoded row.
+    private nonisolated static func sourceRevision(_ message: ChatMessage) -> Data {
+        var producer = message
+        producer.text = message.canonicalText ?? message.text
+        producer.canonicalText = nil
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return Data(SHA256.hash(data: (try? encoder.encode(messages)) ?? Data()))
-    }
-
-    private nonisolated static func fingerprint(_ messages: [ChatMessage]) async -> Data {
-        await Task.detached(priority: .utility) { fingerprintBytes(messages) }.value
+        return Data(SHA256.hash(data: (try? encoder.encode([producer])) ?? Data()))
     }
 
     private nonisolated static func headFingerprint(_ page: ConversationHistoryPage) async -> Data {
@@ -2158,7 +2160,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
         guard matches.count == 1, let message = matches.first else { return nil }
         guard message.hasStableIdentity(storedID: identity.stored.text) else { return nil }
         return ArtifactOriginalKey(identity: identity, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
-            sourceRevision: await fingerprint([message]))
+            sourceRevision: await Task.detached(priority: .utility) { sourceRevision(message) }.value)
     }
 
     func original(for key: ArtifactOriginalKey, force: Bool = false,

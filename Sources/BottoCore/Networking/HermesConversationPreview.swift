@@ -42,14 +42,7 @@ extension HermesBotService {
         guard page["messages_omitted"].flag != true,
               !rows.contains(where: { $0["archived_truncated"].flag == true }) else { return nil }
         guard unavailable.isEmpty else { throw HermesServiceError.incompatible }
-        let displayRows = rows.map { raw -> HermesJSON in
-            guard raw["display_content"] != .null else { return raw }
-            var display = raw
-            display["content"] = raw["display_content"]
-            display["text"] = .null
-            return display
-        }
-        let messages = HermesConversationState.messages(displayRows, stored: identity.stored.text)
+        let messages = HermesConversationState.messages(rows, stored: identity.stored.text)
         // Legacy REST history stops at the current compression segment.
         let hasEarlierMessages = rows.count == limit || (adapter != .authority && identity.root != identity.stored)
         let identityRead = !hasEarlierMessages

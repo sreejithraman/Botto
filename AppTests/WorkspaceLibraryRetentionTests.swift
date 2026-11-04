@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import UIKit
@@ -2265,6 +2266,381 @@ import BottoCore
 
         #expect(library.chats.flatMap(\.messages).isEmpty)
         #expect(library.warning != nil)
+    }
+
+    @Test(arguments: zip([15, 16], [false, true]))
+    func admissionChargesProjectedRowsTheirCanonicalBytes(limit: Int, retained: Bool) async {
+        // Ten characters, sixteen UTF-8 bytes: four shown plus six two-byte canonical characters.
+        let projected = ChatMessage(id: "row", role: .assistant, text: "four", timestamp: Date(timeIntervalSince1970: 20),
+            canonicalText: String(repeating: "\u{E9}", count: 6))
+        let ordinary = ChatMessage(id: "row", role: .assistant, text: String(repeating: "x", count: 16),
+            timestamp: Date(timeIntervalSince1970: 20))
+        for message in [projected, ordinary] {
+            let service = RetainedLibraryService(), source = service.source("main")
+            service.summaries = [service.summary(source, at: 20)]
+            service.pages[source] = [0: .init(messages: [message], nextOffset: nil, isComplete: true)]
+            let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 10, textBytes: limit, chatCount: 10))
+            library.setOnline(true)
+            await library.refresh(evidence: .observed, bots: service.profiles)
+            #expect(!library.chats.flatMap(\.messages).isEmpty == retained)
+            if retained { #expect(library.chats.first?.messages == [message]) }
+        }
+    }
+
+    nonisolated private static let sharedBudgetCases: [(Int, [String])] = [(8, ["newer", "older"]), (12, ["newer"])]
+
+    @Test(arguments: sharedBudgetCases)
+    func sharedBudgetChargesCanonicalBytesBeforeTheNextChat(olderBytes: Int, expected: [String]) async {
+        let service = RetainedLibraryService()
+        let newer = service.source("newer"), older = service.source("older")
+        service.summaries = [service.summary(newer, at: 20), service.summary(older, at: 10)]
+        service.pages[newer] = [0: .init(messages: [ChatMessage(id: "newer", role: .assistant, text: "four",
+            timestamp: Date(timeIntervalSince1970: 20), canonicalText: "eight by")], nextOffset: nil, isComplete: true)]
+        service.pages[older] = [0: .init(messages: [service.message("older", text: String(repeating: "x", count: olderBytes), at: 10)],
+            nextOffset: nil, isComplete: true)]
+        let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 10, textBytes: 20, chatCount: 10))
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles)
+        #expect(library.chats.flatMap(\.messages).map(\.id).sorted() == expected)
+    }
+
+    nonisolated private static let readCapCases: [(Int, Int)] = [(32 * 1024 * 1024 - 1, 2), (32 * 1024 * 1024, 1)]
+
+    @Test(arguments: readCapCases)
+    func historyScanStopsAtTheReadCapByRetainedBytes(bytes: Int, reads: Int) async {
+        let service = RetainedLibraryService(), source = service.source("main")
+        service.summaries = [service.summary(source, at: 20)]
+        let large = ChatMessage(id: "large", role: .assistant, text: "four", timestamp: Date(timeIntervalSince1970: 20),
+            canonicalText: String(repeating: "x", count: bytes - 4))
+        service.pages[source] = [
+            0: .init(messages: [large], nextOffset: 100, isComplete: true),
+            100: .init(messages: [service.message("older", text: "older", at: 10)], nextOffset: nil, isComplete: true)]
+        // A larger retention budget keeps trimming from ending the scan before the read cap does.
+        let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 10, textBytes: 64 * 1024 * 1024, chatCount: 10))
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles)
+        #expect(service.historyReads == reads)
+        #expect(library.chats.flatMap(\.messages).contains { $0.id == "large" })
+    }
+
+    @Test(arguments: zip([15, 16], [false, true]))
+    func libraryAndCacheAgreeOnProjectedRowsAtTheExactBudget(limit: Int, retained: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RetainedLibraryService(), source = service.source("main")
+        let canonical = String(repeating: "\u{E9}", count: 6)
+        let row = ChatMessage(id: "row", role: .assistant, text: "four", timestamp: Date(timeIntervalSince1970: 20), canonicalText: canonical)
+        service.summaries = [service.summary(source, at: 20)]
+        service.pages[source] = [0: .init(messages: [row], nextOffset: nil, isComplete: true)]
+        var cacheLimits = ArtifactCache.Limits(); cacheLimits.textBytes = limit
+        let libraryLimits = WorkspaceLibrary.Limits(messageCount: 10, textBytes: limit, chatCount: 10)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root, limits: cacheLimits), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, limits: libraryLimits, cache: session)
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while retained, try await session.loadChats().first?.messages.isEmpty != false, ContinuousClock.now < deadline { await Task.yield() }
+        let saved = try await session.loadChats().flatMap(\.messages)
+        #expect(saved.isEmpty == !retained)
+        if retained { #expect(saved.first?.canonicalText?.utf8.elementsEqual(canonical.utf8) == true) }
+        library.retire(); await cache.close()
+        let reopened = ArtifactCache(root: root, limits: cacheLimits)
+        let cold = WorkspaceLibrary(service: service, limits: libraryLimits, cache: reopened.session(scope: scope))
+        await cold.restore()
+        #expect(cold.chats.flatMap(\.messages) == (retained ? [row] : []))
+        cold.retire(); await reopened.close()
+    }
+
+    /// One stored Hermes row as two parsers read it. Hermes 4a0eaf79 and ca678285 `_project_for_display` produced
+    /// the wire rows; `oldRestoreHash` is the key 559c9ad's restore path gave them, so these are never synthetic edits.
+    nonisolated private struct SameWireRow: Sendable, CustomTestStringConvertible {
+        let name: String, oldRestoreHash: String
+        let raw: ChatMessage, rest: ChatMessage
+        var testDescription: String { name }
+    }
+    nonisolated private static let handoffPrefix = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the latest user message that appears AFTER this summary — that message is the single source of truth for what to do right now. If no user message appears AFTER this summary, do nothing: do not resume, wrap up, or continue work from '## Historical Task Snapshot' or any other section, do not call tools, and wait for a new user message. This handoff must never become the active turn by itself. (Exception: if tool results or your own tool calls appear after this summary, you are mid-way through an in-flight exchange — continue that exchange normally.) Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. The current session state (files, config, etc.) may reflect work described here — avoid repeating it:"
+    nonisolated private static func handoff(_ summary: String) -> String {
+        handoffPrefix + "\n" + summary + "\n\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+    }
+    nonisolated private static func carrier(_ prior: String, summary: String = "The parser task was compacted.") -> String {
+        "[PRIOR CONTEXT — for reference only; not a new message]\n" + prior + "\n\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\n\n" + handoff(summary)
+    }
+    nonisolated private static let visibleReply = "Report ready.\nMEDIA:/tmp/report.txt"
+    nonisolated private static func wireRow(_ role: ChatMessage.Role, _ text: String, canonical: String? = nil,
+                                            attachments: [ChatAttachment] = []) -> ChatMessage {
+        .init(id: "stored-1:row:11", role: role, text: text, attachments: attachments, isSilent: false, canonicalText: canonical)
+    }
+    nonisolated private static let mergedReply = SameWireRow(name: "compaction merged into an assistant reply",
+        oldRestoreHash: "6d08a50edee555c2ff1954cce92095d9c3ed128149cf117aa7518bac0ef642b8",
+        raw: wireRow(.assistant, carrier(visibleReply)), rest: wireRow(.assistant, visibleReply, canonical: carrier(visibleReply)))
+    nonisolated private static let sameWireRows: [SameWireRow] = {
+        let trimmed = "Working on it.\n\(visibleReply)", ask = "@file:`/tmp/input.txt`\n\nCan you check the parser?"
+        let leading = handoff("The parser task was compacted.") + "\n\n" + ask
+        let imageCarrier = carrier("\nCheck this image\n")
+        let image = ChatAttachment(name: "Image.png", path: "stored-1:row:11:image:2", mimeType: "image/png")
+        return [
+            SameWireRow(name: "ordinary reply", oldRestoreHash: "b06465ba05d33209da1b5039a581daf4a6d35be2f0329d0cad615bb20b23cbb7",
+                raw: wireRow(.assistant, visibleReply), rest: wireRow(.assistant, visibleReply)),
+            mergedReply,
+            SameWireRow(name: "trimmed commentary", oldRestoreHash: "db90e9deebb6a8cfcd7b1bf00cd3692d5eaaae8972be78a69821cd8af6a2784c",
+                raw: wireRow(.assistant, trimmed + "\n"), rest: wireRow(.assistant, trimmed, canonical: trimmed + "\n")),
+            SameWireRow(name: "handoff prepended to a user ask", oldRestoreHash: "a3e737710c3ecc769f1d5c2493a10ddf853b54405ec221774fe520128fc0019f",
+                raw: wireRow(.user, leading), rest: wireRow(.user, ask, canonical: leading)),
+            SameWireRow(name: "sidecar image row", oldRestoreHash: "556b184e9518725b221de8a1b8cfadeaa7e6f4ea9a3f14df56dcc73a7f44736f",
+                raw: wireRow(.user, imageCarrier, attachments: [image]),
+                rest: wireRow(.user, "Check this image", canonical: imageCarrier, attachments: [image]))
+        ]
+    }()
+
+    private struct OfflineRead {
+        let capturedKey: ArtifactOriginalKey, currentKey: ArtifactOriginalKey
+        let viaItem: Result<Data, HermesServiceError>, viaKey: Result<Data, HermesServiceError>
+        let capturedBytes: Data?, downloads: Int
+    }
+
+    /// Captures `captured`'s file online, reads `current` from the host, then asks both readers for it offline.
+    private func offlineRead(capturing captured: ChatMessage, thenReading current: ChatMessage,
+                             coldCache: Bool = false) async throws -> OfflineRead {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RetainedLibraryService(), source = service.source("stored-1")
+        service.summaries = [service.summary(source, at: 10)]
+        service.pages[source] = [0: .init(messages: [captured], nextOffset: nil, isComplete: true)]
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        var cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        var library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let capturedItem = try #require(library.artifacts.first), attachment = try #require(capturedItem.artifact.attachment)
+        let capturedKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [captured]))
+        #expect(try await library.download(capturedItem).data == service.downloadedBytes)
+
+        service.pages[source] = [0: .init(messages: [current], nextOffset: nil, isComplete: true)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(library.chats.first?.messages == [current])
+        if coldCache {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while try await session.loadChats().first?.messages != [current], ContinuousClock.now < deadline { await Task.yield() }
+            library.retire(); await cache.close()
+            cache = ArtifactCache(root: root); session = cache.session(scope: scope)
+            library = WorkspaceLibrary(service: service, cache: session)
+            library.setOnline(false); library.observeBots(service.profiles, evidence: .observed); await library.restore()
+            let restored = ContinuousClock.now + .seconds(5)
+            while library.artifacts.isEmpty, ContinuousClock.now < restored { await Task.yield() }
+        }
+        library.setOnline(false)
+        let item = try #require(library.artifacts.first), currentAttachment = try #require(item.artifact.attachment)
+        let currentKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: currentAttachment, messages: [current]))
+        func read(_ body: () async throws -> DownloadedArtifact) async -> Result<Data, HermesServiceError> {
+            do { return .success(try await body().data) }
+            catch let error as HermesServiceError { return .failure(error) }
+            catch { return .failure(.incompatible) }
+        }
+        let viaItem = await read { try await library.download(item) }
+        let viaKey = await read { try await library.original(for: currentKey) { throw HermesServiceError.rejected(500) } }
+        let capturedBytes = try await session.original(for: capturedKey)?.artifact.data
+        let downloads = service.downloadCount
+        library.retire(); await cache.close()
+        return .init(capturedKey: capturedKey, currentKey: currentKey, viaItem: viaItem, viaKey: viaKey,
+            capturedBytes: capturedBytes, downloads: downloads)
+    }
+
+    private func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+
+    @Test(arguments: sameWireRows, [false, true])
+    private func restoreCaptureStaysAvailableAcrossTheRowsRestProjection(row: SameWireRow, coldCache: Bool) async throws {
+        let read = try await offlineRead(capturing: row.raw, thenReading: row.rest, coldCache: coldCache)
+        #expect(hex(read.capturedKey.sourceRevision) == row.oldRestoreHash)
+        #expect(read.currentKey == read.capturedKey)
+        #expect(read.viaItem == .success(RetainedLibraryService().downloadedBytes))
+        #expect(read.viaKey == .success(RetainedLibraryService().downloadedBytes))
+        #expect(read.downloads == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func canonicalEditCannotReuseBytesBehindTheSameVisibleRow(fromRawRow: Bool) async throws {
+        let edited = Self.carrier(Self.visibleReply, summary: "The parser task was compacted again.")
+        let current = Self.wireRow(.assistant, Self.visibleReply, canonical: edited)
+        let captured = fromRawRow ? Self.mergedReply.raw : Self.mergedReply.rest
+        let read = try await offlineRead(capturing: captured, thenReading: current)
+        #expect(current.text == Self.mergedReply.rest.text)
+        #expect(read.capturedKey.path == read.currentKey.path && read.capturedKey.messageID == read.currentKey.messageID)
+        #expect(read.currentKey != read.capturedKey)
+        #expect(read.viaItem == .failure(.disconnected))
+        #expect(read.viaKey == .failure(.disconnected))
+        #expect(read.capturedBytes == RetainedLibraryService().downloadedBytes)
+        #expect(read.downloads == 1)
+    }
+
+    @Test func displayOnlyChangeKeepsTheCaptureOfItsUnchangedRow() async throws {
+        let captured = Self.mergedReply.rest
+        var current = captured; current.text = "Report finished.\nMEDIA:/tmp/report.txt"
+        let read = try await offlineRead(capturing: captured, thenReading: current)
+        #expect(read.currentKey == read.capturedKey)
+        #expect(read.viaItem == .success(RetainedLibraryService().downloadedBytes))
+        #expect(read.downloads == 1)
+    }
+
+    /// Page reads before canonical retention kept only display text. That capture cannot be tied to a stored row,
+    /// so it stays under its own key and the current row needs one online read. This is the accepted missing-provenance
+    /// boundary, not a repaired upgrade path.
+    @Test(arguments: [false, true])
+    func legacyPageCaptureHasNoCanonicalProvenanceToAttach(edited: Bool) async throws {
+        let oldPage = Self.wireRow(.assistant, Self.visibleReply)
+        let stored = Self.carrier(Self.visibleReply, summary: edited ? "The parser task was compacted again." : "The parser task was compacted.")
+        let read = try await offlineRead(capturing: oldPage, thenReading: Self.wireRow(.assistant, Self.visibleReply, canonical: stored))
+        #expect(hex(read.capturedKey.sourceRevision) == "b06465ba05d33209da1b5039a581daf4a6d35be2f0329d0cad615bb20b23cbb7")
+        #expect(read.currentKey != read.capturedKey)
+        #expect(read.viaItem == .failure(.disconnected))
+        #expect(read.viaKey == .failure(.disconnected))
+        #expect(read.capturedBytes == RetainedLibraryService().downloadedBytes)
+        #expect(read.downloads == 1)
+    }
+
+    @Test func sidecarImagePagePathStaysASeparateCapture() async throws {
+        let row = try #require(Self.sameWireRows.first { !$0.rest.attachments.isEmpty })
+        var oldPage = Self.wireRow(.user, "Check this image", attachments: row.rest.attachments)
+        oldPage.attachments[0].path = "stored-1:row:11:image:1"
+        let read = try await offlineRead(capturing: oldPage, thenReading: row.rest)
+        #expect(hex(read.capturedKey.sourceRevision) == "720e39f7b28efd373bb94f4423b7bf94372996f309cd486e9af565ac4ca56e92")
+        #expect(read.capturedKey.path != read.currentKey.path)
+        #expect(read.viaItem == .failure(.disconnected))
+        #expect(read.capturedBytes == RetainedLibraryService().downloadedBytes)
+        #expect(read.downloads == 1)
+    }
+
+    nonisolated private static let producerChanges: [(name: String, change: @Sendable (inout ChatMessage) -> Void)] = [
+        ("id", { $0.id = "stored-1:row:12" }),
+        ("role", { $0.role = .user }),
+        ("timestamp", { $0.timestamp = Date(timeIntervalSince1970: 10) }),
+        ("tool name", { $0.toolName = "write_file" }),
+        ("display kind", { $0.displayKind = "steer" }),
+        ("display title", { $0.displayText = "Finished" }),
+        ("silence flag", { $0.isSilent = nil }),
+        ("extra attachment", { $0.attachments.append(.init(name: "b.txt", path: "/tmp/b.txt", mimeType: "text/plain")) }),
+        ("attachment name", { $0.attachments[0].name = "renamed.txt" }),
+        ("attachment type", { $0.attachments[0].mimeType = "text/markdown" })
+    ]
+
+    @Test(arguments: producerChanges, [nil, "stored row"] as [String?])
+    func producerIdentityKeepsEveryOtherFieldExact(change: (name: String, change: @Sendable (inout ChatMessage) -> Void), canonical: String?) async throws {
+        let source = RetainedLibraryService().source("stored-1")
+        let attachment = ChatAttachment(name: "a.txt", path: "/tmp/a.txt", mimeType: "text/plain")
+        let base = Self.wireRow(.assistant, "Visible", canonical: canonical, attachments: [attachment])
+        var changed = base; change.change(&changed)
+        let found = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [changed]))
+        let original = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [base]))
+        #expect(found != original)
+    }
+
+    @Test func producerIdentityComparesExactUTF8AndPath() async throws {
+        let source = RetainedLibraryService().source("stored-1")
+        let attachment = ChatAttachment(name: "a.txt", path: "/tmp/a.txt", mimeType: "text/plain")
+        func key(_ text: String, canonical: String? = nil, attachment: ChatAttachment? = nil) async throws -> ArtifactOriginalKey {
+            let file = attachment ?? ChatAttachment(name: "a.txt", path: "/tmp/a.txt", mimeType: "text/plain")
+            let row = Self.wireRow(.assistant, text, canonical: canonical, attachments: [file])
+            return try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: file, messages: [row]))
+        }
+        let composed = "caf\u{00E9}", decomposed = "cafe\u{0301}"
+        #expect(composed == decomposed)
+        #expect(try await key(composed) != key(decomposed))
+        #expect(try await key("Visible", canonical: composed) != key("Visible", canonical: decomposed))
+        #expect(try await key("Visible", canonical: "") != key("Visible"))
+        #expect(try await key("Visible", canonical: "") == key("", canonical: ""))
+        #expect(try await key("Visible", canonical: "stored") == key("stored"))
+        let moved = ChatAttachment(name: "a.txt", path: "/tmp/caf\u{00E9}.txt", mimeType: "text/plain")
+        let movedDecomposed = ChatAttachment(name: "a.txt", path: "/tmp/cafe\u{0301}.txt", mimeType: "text/plain")
+        #expect(try await key("Visible", attachment: attachment) != key("Visible", attachment: moved))
+        #expect(try await key("Visible", attachment: moved) != key("Visible", attachment: movedDecomposed))
+    }
+
+    @Test func legacyRowsKeepCapturesUntilACanonicalRevisionChangesTheirKey() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The exact sorted encoding builds before canonicalText wrote for this row.
+        let legacyJSON = #"{"attachments":[],"id":"main:row:5","isSilent":false,"role":"assistant","text":"MEDIA:\/report.txt"}"#
+        let legacy = try JSONDecoder().decode(ChatMessage.self, from: Data(legacyJSON.utf8))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        #expect(try encoder.encode(legacy) == Data(legacyJSON.utf8))
+
+        let service = RetainedLibraryService(), source = service.source("main")
+        service.summaries = [service.summary(source, at: 10)]
+        service.pages[source] = [0: .init(messages: [legacy], nextOffset: nil, isComplete: true)]
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
+        let legacyItem = try #require(library.artifacts.first), attachment = try #require(legacyItem.artifact.attachment)
+        let legacyKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [legacy]))
+        #expect(legacyKey.sourceRevision == Data(SHA256.hash(data: Data("[\(legacyJSON)]".utf8))))
+        #expect(try await library.download(legacyItem).data == service.downloadedBytes)
+        #expect(service.downloadCount == 1)
+
+        // Upgrading alone changes nothing for a row no read has revised, including offline.
+        library.setOnline(false)
+        #expect(try await library.original(for: legacyKey) { throw HermesServiceError.disconnected }.data == service.downloadedBytes)
+        #expect(service.downloadCount == 1)
+
+        // This legacy row holds no canonical bytes to prove it is the stored row, so it is a new producer.
+        library.setOnline(true)
+        var projected = legacy; projected.canonicalText = "[CONTEXT COMPACTION] first handoff"
+        service.pages[source] = [0: .init(messages: [projected], nextOffset: nil, isComplete: true)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(library.chats.first?.messages == [projected])
+        #expect(!library.isCurrent(legacyItem))
+        let projectedItem = try #require(library.artifacts.first)
+        let projectedKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [projected]))
+        #expect(projectedKey != legacyKey)
+
+        #expect(try await library.download(projectedItem).data == service.downloadedBytes)
+        #expect(service.downloadCount == 2)
+
+        // A canonical-only revision replaces retained bytes rather than matching the old row.
+        var revised = projected; revised.canonicalText = "[CONTEXT COMPACTION] second handoff"
+        service.pages[source] = [0: .init(messages: [revised], nextOffset: nil, isComplete: true)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(library.chats.first?.messages == [revised])
+        #expect(!library.isCurrent(projectedItem))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try await session.loadChats().first?.messages.first?.canonicalText != revised.canonicalText,
+              ContinuousClock.now < deadline { await Task.yield() }
+        #expect(try await session.loadChats().first?.messages == [revised])
+        library.retire(); await cache.close()
+    }
+
+    @Test func canonicalOnlyConflictStaysUnverifiedUntilACoherentRead() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = RetainedLibraryService(), source = service.source("main")
+        let legacy = service.message("reply", text: "Visible reply\nMEDIA:/report.txt", at: 20)
+        var projected = legacy; projected.canonicalText = "[CONTEXT COMPACTION] handoff"
+        let rowID = Data(legacy.id.utf8)
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let warmCache = ArtifactCache(root: root), warm = warmCache.session(scope: scope)
+        try await warm.upsert(.init(identity: source, botName: "Helper", title: "Main", messages: [legacy],
+            updatedAt: legacy.timestamp, coverage: .partial, summary: nil, headFingerprint: nil))
+        await warmCache.close()
+        let control = SavedIndexReadControl(), cache = ArtifactCache(root: root, afterChatLoad: { try await control.load() })
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: scope))
+        library.setOnline(true); library.observeBots(service.profiles, evidence: .observed); await library.restore()
+        library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [legacy]),
+            title: "Main", evidence: .read(startedAt: .now, observedSource: source))
+        service.summaries = [service.summary(source, at: 20)]
+        service.pages[source] = [0: .init(messages: [projected], nextOffset: 100, isComplete: true)]
+        service.failAtOffset = 100
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(library.chats.isEmpty)
+        control.fails = false; await library.restore()
+        #expect(library.chats.first?.unverifiedMessageIDs.contains(rowID) == true)
+        #expect(library.artifacts.isEmpty)
+
+        library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [projected]),
+            title: "Main", evidence: service.coherentRead(source, messages: [projected]))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while library.artifacts.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(library.chats.first?.unverifiedMessageIDs.contains(rowID) == false)
+        #expect(library.chats.first?.messages == [projected])
+        library.retire(); await cache.close()
     }
 
     @Test func completeRefreshDoesNotReuseACanonicallyEqualButDifferentHostPath() async throws {

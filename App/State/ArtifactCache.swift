@@ -903,7 +903,7 @@ fileprivate actor ArtifactCacheBackend {
         try Task.checkCancellation(); _ = try self.scope(lease)
         let payload = try encoder.encode(record)
         guard record.messages.count + record.retainedEvidenceCount <= limits.messageCount,
-              record.messages.reduce(0, { $0 + $1.text.utf8.count }) + record.retainedEvidenceBytes <= limits.textBytes,
+              record.messages.reduce(0, { $0 + $1.retainedTextBytes }) + record.retainedEvidenceBytes <= limits.textBytes,
               payload.count <= metadataCapacity else {
             try database?.execute("DELETE FROM entries WHERE scope=? AND kind=0 AND key=?", [.data(scope.namespace), .data(artifactChatKey(profile: record.identity.profile, root: record.identity.root))])
             throw ArtifactCacheError.quota
@@ -1077,7 +1077,7 @@ fileprivate actor ArtifactCacheBackend {
         for row in try database.rows("SELECT rowid,payload,configuration,scope,key FROM entries WHERE kind=0 ORDER BY accessed DESC") {
             guard let payload = row[1].data, let record = try? decoder.decode(CachedArtifactChat.self, from: payload) else { continue }
             messages += record.messages.count + record.retainedEvidenceCount
-            textBytes += record.messages.reduce(0) { $0 + $1.text.utf8.count } + record.retainedEvidenceBytes
+            textBytes += record.messages.reduce(0) { $0 + $1.retainedTextBytes } + record.retainedEvidenceBytes
             if messages > limits.messageCount || textBytes > limits.textBytes {
                 try evict([row[0], .integer(0), row[2], row[3], row[4]], onEviction: onEviction)
                 removed = true

@@ -622,7 +622,9 @@ struct HermesConversationState {
                   let roleName = row["role"].text, let role = ChatMessage.Role(rawValue: roleName) else { return nil }
             let id = historyMessageID(row, offset: offset, stored: stored)
             let images = role == .user ? historyImages(row["content"], messageID: id) : (attachments: [], parts: Set<Int>())
-            let text = row["text"].text ?? (role == .tool ? toolResultText(row["content"]) ?? "" : contentText(row["content"], omitting: images.parts))
+            let canonical = row["text"].text ?? (role == .tool ? toolResultText(row["content"]) ?? "" : contentText(row["content"], omitting: images.parts))
+            let display = displayProjection(row, role: role, messageID: id)
+            let text = display ?? canonical
             if text.isEmpty, images.attachments.isEmpty, row["tool_calls"].list != nil { return nil }
             let failed = row["display_kind"].text == "failed_turn" || row["failed"].flag == true ||
                 row["display_metadata"]["failed"].flag == true ||
@@ -632,9 +634,19 @@ struct HermesConversationState {
                                toolName: row["tool_name"].nonempty ?? row["name"].text, attachments: images.attachments,
                                displayKind: failed && role == .assistant ? "failed_turn" : row["display_kind"].text,
                                isSilent: role == .assistant && !failed && HermesMessagePresentation.isSilence(text),
-                               displayText: row["display_metadata"]["display_text"].text)
+                               displayText: row["display_metadata"]["display_text"].text,
+                               canonicalText: display != nil && !exact(display, canonical) ? canonical : nil)
         }
     }
+    /// REST `display_content` supplies visible text without replacing the response's `content`.
+    /// That content may already be coerced by the host; attachments and identity come from the row as read.
+    /// Hermes 4a0eaf79 Desktop likewise reads stored tool rows without this projection.
+    private static func displayProjection(_ row: HermesJSON, role: ChatMessage.Role, messageID: String) -> String? {
+        let display = row["display_content"]
+        guard display != .null, role != .tool else { return nil }
+        return contentText(display, omitting: role == .user ? historyImages(display, messageID: messageID).parts : [])
+    }
+
     /// Both tested Hermes pins' agent/image_routing.py emit nested image_url parts.
     /// Retain descriptors only: inline bytes and remote addresses never become card identities.
     private static func historyImages(_ content: HermesJSON, messageID: String) -> (attachments: [ChatAttachment], parts: Set<Int>) {
