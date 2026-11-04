@@ -80,8 +80,13 @@ also reported separately from fix acceptance.
   result and do not establish full-suite or release acceptance. The
   [workflow](../../../.github/workflows/ios.yml) runs automatically for public
   repositories and supports manual dispatch once Actions is enabled. Private
-  repositories use manual dispatch. The revised split workflow still requires
-  hosted verification; prior native readiness failures remain recorded.
+  repositories use manual dispatch. Hosted `verify` passed in
+  [run 41128591325](https://github.com/sreejithraman/Botto/actions/runs/41128591325)
+  on `e9e17b8` before the job split, and in
+  [run 41649696137](https://github.com/sreejithraman/Botto/actions/runs/41649696137)
+  on `9c7412f` after it. Those runs cover each revision's automated suites, not
+  the complete recipes, which stay draft. Prior native readiness failures
+  remain recorded.
 - Choose and record an owned Simulator or physical device before native checks.
   Keep builds, automated suites, and interactive work serial when they share a
   device or app container. Use Xcode or a supported device driver for interaction,
