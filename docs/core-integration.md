@@ -162,6 +162,19 @@ database footprint have a 40 MiB allowance. Individual originals stay within
 The saved-history writer and version remain unchanged. Conversations add a
 backward-compatible optional ambiguity field.
 
+REST `display_content` sets the text a row shows. `ChatMessage.canonicalText`
+keeps the stored text when its bytes differ, and every retained-text budget
+charges both. A source revision identifies the stored row: it hashes canonical
+text in place of `text` and encodes every other field exactly, so ordinary rows
+keep their keys. A display-only change keeps a capture and a canonical edit gets
+a new one. Transcript, read, and history-head revisions keep comparing both
+texts. Raw authority `session.resume` rows share the REST row's key, though
+their display stays raw until the deferred projection work lands.
+
+Page reads before canonical retention saved display text alone. Nothing ties
+those captures to a stored row, so they stay under their own keys and that row
+needs one online capture. This adds no migration, fallback, or second lookup.
+
 During restoration, `MetadataAdmission` distinguishes inert seeds, passive
 positive windows, and rows requiring a recovery guard. This provenance survives
 ordering-fence eviction and prevents an old book seed from replacing accepted

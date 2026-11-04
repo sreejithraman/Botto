@@ -153,6 +153,9 @@ Previewing a captured file reuses its original bytes, including offline.
 the previous capture visible. Save and Share wait for Reload to finish, and an
 active export keeps its captured copy. A new producing message or source revision gets
 a separate capture. A host path alone does not identify immutable contents.
+Display text alone is not a source revision, so a changed display view keeps its
+capture. An older page read saved display text without the stored row, so that
+capture stays apart and a recovered row can need one online preview.
 The cache stays within its saved connection, installation, profile, and chat;
 confirmed Forget removes that connection's captures. Cached identity never
 grants network access. See [artifact capture scope](adr/0010-scoped-artifact-captures.md).
