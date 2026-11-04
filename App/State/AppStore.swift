@@ -586,8 +586,8 @@ import BottoCore
     }
     func conversation(for botID: String) -> Conversation? { chatSelection(for: botID)?.snapshot }
     func draft(for botID: String) -> String {
-        guard let profile = try? ExactID(botID), let id = chats.persisted().opening(profile) else { return "" }
-        return chats.persisted().record(id)?.draft.text ?? ""
+        guard let profile = try? ExactID(botID) else { return "" }
+        return chats.openingDraft(profile: profile)
     }
     func attachments(for botID: String) -> [ChatAttachment] { chatScreen(for: botID)?.attachments ?? [] }
     func isPinned(_ bot: BotProfile) -> Bool {
