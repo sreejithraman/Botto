@@ -133,10 +133,23 @@ func contractFixture(_ name: String) throws -> HermesJSON {
     return try HermesJSON.decode(Data(contentsOf: url))
 }
 
-@MainActor func eventually(_ predicate: () -> Bool) async throws {
-    let until = ContinuousClock.now + .seconds(3)
+let readinessDeadline: Duration = .seconds(3)
+
+@MainActor private func poll(within timeout: Duration, until predicate: () -> Bool) async throws {
+    let until = ContinuousClock.now + timeout
     while !predicate(), ContinuousClock.now < until { try await Task.sleep(for: .milliseconds(5)) }
+}
+
+@MainActor func eventually(_ predicate: () -> Bool) async throws {
+    try await poll(within: readinessDeadline, until: predicate)
     #expect(predicate())
+}
+
+/// Ends the test at a missed deadline, for waits whose later steps cannot run safely without it.
+@MainActor func requireEventually(within timeout: Duration = readinessDeadline, _ comment: Comment,
+    sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
+    try await poll(within: timeout, until: predicate)
+    try #require(predicate(), comment, sourceLocation: sourceLocation)
 }
 
 func isFullDirectoryRead(_ request: URLRequest) -> Bool {

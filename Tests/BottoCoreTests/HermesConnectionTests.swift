@@ -189,9 +189,41 @@ func fixture(_ name: String) throws -> HermesJSON {
     #expect(throws: HermesServiceError.invalidAddress) { try HermesHTTPConnection(configuration: configuration, transport: transport) }
 }
 
+@MainActor private final class RefreshHold {
+    private(set) var reached = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    var isHolding: Bool { waiter != nil }
+
+    func hold() async {
+        reached = true
+        if !released { await withCheckedContinuation { waiter = $0 } }
+    }
+
+    /// Stays open, so a refresh arriving after a failed readiness wait cannot block.
+    func release() {
+        released = true
+        waiter?.resume(); waiter = nil
+    }
+}
+
+private let refreshReadiness: Comment = "Refresh must reach its hold before retirement"
+
 @MainActor @Test func retiringDuringRefreshStillPersistsRotationBeforeReplacementSignsIn() async throws {
+    try await retireDuringRefresh(RefreshHold())
+}
+
+@MainActor @Test func failedRefreshReadinessReleasesLateRefreshAndKeepsItsFailure() async throws {
+    let refresh = RefreshHold()
+    try await withKnownIssue {
+        try await retireDuringRefresh(refresh, readinessTimeout: .zero)
+    } matching: { $0.comments.contains(refreshReadiness) }
+    #expect(refresh.reached)
+    #expect(!refresh.isHolding)
+}
+
+@MainActor private func retireDuringRefresh(_ refresh: RefreshHold, readinessTimeout: Duration = readinessDeadline) async throws {
     let host = try HermesTestHost()
-    var refreshWaiter: CheckedContinuation<Void, Never>?
     var refreshes: [String] = []
     host.transport.asyncHandler = { request in
         switch request.url!.path {
@@ -199,7 +231,7 @@ func fixture(_ name: String) throws -> HermesJSON {
         case "/auth/native/refresh":
             let token = try HermesJSON.decode(request.httpBody!)["refresh_token"].text!
             refreshes.append(token)
-            if refreshes.count == 1 { await withCheckedContinuation { refreshWaiter = $0 } }
+            if refreshes.count == 1 { await refresh.hold() }
             return .object(["access_token": .string("access"), "refresh_token": .string(token == "initial" ? "rotated-once" : "rotated-twice"),
                 "provider": .string("basic"), "user_id": .string("alice")])
         case "/api/auth/me": return .object(["provider": .string("basic"), "user_id": .string("alice")])
@@ -212,13 +244,23 @@ func fixture(_ name: String) throws -> HermesJSON {
     configuration.password = ""; configuration.nativeCredential = NativeCredential(refreshToken: "initial", provider: "basic")
     var saved: [String] = []
     service.onEvent = { if case .configuration(let value) = $0 { saved.append(value.nativeCredential!.refreshToken) } }
-    let first = Task { try await service.connect(configuration: configuration) }
-    try await eventually { refreshWaiter != nil }
+    var firstFinished = false
+    let first = Task {
+        defer { firstFinished = true }
+        return try await service.connect(configuration: configuration)
+    }
+    do {
+        try await requireEventually(within: readinessTimeout, refreshReadiness) { refresh.isHolding }
+    } catch {
+        refresh.release()
+        try? await requireEventually(within: .seconds(30), "A released connect must finish") { firstFinished || refresh.isHolding }
+        throw error
+    }
     service.disconnect()
     let second = Task { try await service.connect(configuration: configuration) }
     await Task.yield()
     #expect(refreshes == ["initial"])
-    refreshWaiter?.resume(); refreshWaiter = nil
+    refresh.release()
     _ = try? await first.value
     _ = try await second.value
     #expect(refreshes == ["initial", "rotated-once"])

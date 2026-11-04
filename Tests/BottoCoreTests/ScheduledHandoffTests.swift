@@ -127,8 +127,30 @@ struct ScheduledHandoffTests {
 
 }
 
+private let deliveryReadiness: Comment = "Canonical history must reach the conversation"
+private let deliveryCount: Comment = "Canonical history must hold the handoff and its reply"
+
 @MainActor @Test(arguments: [false, true])
 func scheduledDeliveryRefreshReconnectAndDuplicateEvents(authority: Bool) async throws {
+    try await verifyScheduledDelivery(authority: authority)
+}
+
+@MainActor @Test(arguments: [false, true])
+func scheduledDeliveryStopsAtFailedReadiness(authority: Bool) async throws {
+    try await withKnownIssue {
+        try await verifyScheduledDelivery(authority: authority, readinessTimeout: .zero)
+    } matching: { $0.comments.contains(deliveryReadiness) }
+}
+
+@MainActor @Test(arguments: [false, true])
+func scheduledDeliveryStopsBeforeIndexingMissingMessages(authority: Bool) async throws {
+    try await withKnownIssue {
+        try await verifyScheduledDelivery(authority: authority, canonicalRows: 1)
+    } matching: { $0.comments.contains(deliveryCount) }
+}
+
+@MainActor private func verifyScheduledDelivery(authority: Bool, readinessTimeout: Duration = readinessDeadline,
+    canonicalRows: Int = 2) async throws {
     let host = try HermesTestHost(authority: authority), service = host.service()
     defer { service.disconnect() }
     host.snapshot["messages"] = .array([])
@@ -142,7 +164,7 @@ func scheduledDeliveryRefreshReconnectAndDuplicateEvents(authority: Bool) async 
     let rows: [HermesJSON] = [
         .object(["role": .string("user"), "row_id": .number(71), "content": .string(body), "display_kind": .string("internal_notification"), "timestamp": .number(100)]),
         .object(["role": .string("assistant"), "row_id": .number(72), "content": .string("The service is healthy."), "timestamp": .number(105)])]
-    host.snapshot["messages"] = .array(rows)
+    host.snapshot["messages"] = .array(Array(rows.prefix(canonicalRows)))
     host.snapshot["last_sequence"] = .number(3)
     host.replay["latest_seq"] = .number(3)
     let socket = host.sockets[0]
@@ -152,9 +174,11 @@ func scheduledDeliveryRefreshReconnectAndDuplicateEvents(authority: Bool) async 
     socket.push(host.event("message.delta", seq: 2, payload: ["text": .string("DUPLICATE")]))
     socket.push(host.event("message.complete", seq: 3, payload: ["text": .string("The service is healthy."), "status": .string("complete"),
         "persisted_turn": .object(["user_row_id": .number(71), "final_assistant_row_id": .number(72)])]))
-    try await eventually { publications.last?.snapshot.messages.first?.scheduledJobName != nil }
+    try await requireEventually(within: readinessTimeout, deliveryReadiness) {
+        publications.last?.snapshot.messages.first?.scheduledJobName != nil
+    }
     let delivered = try #require(publications.last)
-    #expect(delivered.snapshot.messages.count == 2)
+    try #require(delivered.snapshot.messages.count == 2, deliveryCount)
     #expect(delivered.snapshot.messages[0].text == body)
     #expect(delivered.snapshot.messages[1].text == "The service is healthy.")
     #expect(!publications.contains { $0.snapshot.messages.contains { $0.text.contains("DUPLICATE") } })
