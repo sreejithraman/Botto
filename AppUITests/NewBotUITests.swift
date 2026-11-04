@@ -33,6 +33,27 @@ final class NewBotUITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("create.calls"), encoding: .utf8), "1")
     }
 
+    @MainActor func testSelectionRejectedBeforeAttachmentStillShowsItsChat() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "--interrupted-opening-demo", "--interrupt-before-attachment"]
+        addTeardownBlock { app.terminate() }
+        app.launch()
+        let scout = app.buttons["pinned-bot-scout"]
+        XCTAssertTrue(scout.waitForExistence(timeout: 5))
+        scout.tap()
+        XCTAssertTrue(app.buttons["Profile for Scout"].waitForExistence(timeout: 5))
+        let retry = app.buttons["chat-opening-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+
+        app.buttons["Back"].tap()
+        XCTAssertTrue(scout.waitForExistence(timeout: 5), "Native Back stays the way out of an unopened chat.")
+        XCTAssertFalse(app.buttons["Profile for Scout"].isHittable)
+        scout.tap()
+        XCTAssertTrue(app.buttons["Profile for Scout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5), "Choosing the bot again opens it normally.")
+    }
+
     @MainActor func testInterruptedOpeningRecoversThroughDeliberateRetry() throws {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -55,6 +76,10 @@ final class NewBotUITests: XCTestCase {
 
         let retry = app.buttons["chat-opening-retry"]
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Interrupted opening retry row"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
         let composer = app.textViews["chat-composer"]
         XCTAssertEqual(composer.label, "Message to Scout")
         XCTAssertFalse(app.buttons["chat-send-button"].isEnabled)
@@ -71,13 +96,23 @@ final class NewBotUITests: XCTestCase {
                        "Retrying opens the chat without replaying a send.")
     }
 
-    @MainActor private func beginCreation(holding operation: String?, sceneInactive: Bool = false) throws -> (XCUIApplication, URL) {
+    @MainActor func testCreatedBotRejectedBeforeAttachmentStillShowsItsChatWhenTheSheetLifts() throws {
+        let (app, directory) = try beginCreation(holding: "create", arguments: ["--interrupted-opening-demo", "--interrupt-before-attachment"])
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("create.hold"))
+        XCTAssertTrue(app.navigationBars["New bot"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Profile for Orbit"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chat-opening-retry"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Your bot was created."].exists)
+    }
+
+    @MainActor private func beginCreation(holding operation: String?, sceneInactive: Bool = false,
+                                          arguments: [String] = []) throws -> (XCUIApplication, URL) {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let operation { try Data().write(to: directory.appendingPathComponent("\(operation).hold")) }
         let app = XCUIApplication()
-        app.launchArguments = ["--demo"] + (sceneInactive ? ["--inactive-root-scene"] : [])
+        app.launchArguments = ["--demo"] + (sceneInactive ? ["--inactive-root-scene"] : []) + arguments
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock {
             app.terminate()

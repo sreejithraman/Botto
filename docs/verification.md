@@ -1635,3 +1635,20 @@ The retry UI regression passed in eight fixed-source executions. The six existin
 creation UI tests still showed an intermittent compact-navigation failure on
 both unchanged production and the retry candidate. That required gate failure
 remains open; these separate runs do not establish a passing UI suite or full gate.
+
+### Compact navigation projection
+
+Two deterministic native UI controls failed on the old compact-column code:
+an ordinary selection rejected before attachment and a created bot whose sheet
+then lifts. Both kept their five-second deadlines. Deriving the compact column
+from current presentation and live selection fixed both controls. The final
+focused run passed 167 native functions, all nine NewBot UI tests together,
+12 Inbox-retention tests and seven Duo tests. One paired-iPad-only Duo test was
+skipped. A first candidate failed a live-roster-presence control; the corrected
+candidate passed it. No unchanged-source retry supplied the final pass.
+
+The interruption fixture simulates a tap; selection, rejection, compact push,
+Back and Retry use the actual native interface. The saved retry-row screenshot
+was inspected in light mode at default text size. Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/repairs-35/availability/arch35/`.
+These focused results do not establish a full gate or a measured flake rate.

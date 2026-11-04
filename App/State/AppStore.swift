@@ -295,7 +295,7 @@ import BottoCore
     private var attachmentRecoveryGeneration: UUID { connection.recoveryGeneration }
     @ObservationIgnored private var started = false
     #if DEBUG
-    @ObservationIgnored private var interruptsScoutOpening = ProcessInfo.processInfo.arguments.contains("--interrupted-opening-demo")
+    @ObservationIgnored private var interruptsFirstOpening = ProcessInfo.processInfo.arguments.contains("--interrupted-opening-demo")
     #endif
     @ObservationIgnored private var active = true
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
@@ -1222,15 +1222,17 @@ import BottoCore
         settleInterruptedOpening()
     }
     #if DEBUG
-    /// Demo mode can't receive a tap, so Scout's first opening loses its order to one that attaches nothing.
+    /// Demo mode can't receive a tap, so the first opening loses its order to one that attaches nothing.
+    /// The tap is simulated; the opening's selection, rejection and native presentation are real.
     private func interruptOpeningForUITest(_ opening: BotOpening) {
-        guard interruptsScoutOpening, opening.profile.text == "scout" else { return }
-        interruptsScoutOpening = false
-        // Runs once the opening suspends at its service read.
-        Task {
+        guard interruptsFirstOpening else { return }
+        interruptsFirstOpening = false
+        let interrupt = { [self] in
             _ = chats.captureNavigationClaim()
             openingInterrupted = true
         }
+        if ProcessInfo.processInfo.arguments.contains("--interrupt-before-attachment") { interrupt() }
+        else { Task { interrupt() } } // Runs once the opening suspends at its service read.
     }
     #endif
 

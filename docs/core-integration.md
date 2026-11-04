@@ -321,6 +321,9 @@ selection callbacks and sheet dismissal. A transient inactive scene still
 acknowledges success without replaying creation. Ordinary bot entry resolves the
 current preferred or canonical chat; Library results retain their exact originating
 lineage contract.
+Compact navigation derives its column from the current task presentation and
+live selection in the same update. A root cover retains the native column;
+uncovering projects the current task without waiting for an attachment update.
 Foreground reconnect captures its restoration intent before refreshing the
 roster and directories. Its later restoration must still own that intent;
 it cannot replace a newer library lookup. If the newer lookup fails or is
