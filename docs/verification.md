@@ -1747,3 +1747,21 @@ opt-in transcript measurements. Both renderer suites passed separate attribution
 runs, which does not establish a fix for their whole-suite watchdog failures.
 Evidence is at
 `/Users/sree/.t3/userdata/verification/botto-chat-pr24/repair-36/gate-followup/outputs/`.
+
+Five more UI observer repairs count matching reply rows directly, scroll and tap
+within the unobscured transcript, expand collapsed tool output, and retry offline
+creation deliberately after reconnecting. The picker stays open after recovery;
+the test checks that recovery creates no extra chat before a new creation tap.
+These five cases passed in a selected run, but that run failed overall: 45 test
+functions passed, two failed and one was skipped. The long-transcript readiness
+and rich HTML update checks failed with their original budgets. Both passed once
+on identical bytes in a quieter run; this does not clear either full-gate check.
+Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/ui-gate36/additional/outputs/`.
+
+The two native renderer failures expired before a document committed. Retained
+logs show WebContent launches of 107.0 and 31.8 seconds against the 30-second
+startup budget, while a separate Simulator's runner also stalled. The shared
+cause is unestablished. No renderer code or budget changed, and a passing
+isolated run does not establish a whole-suite repair. Final integrated review
+and the unfiltered gate remain required.

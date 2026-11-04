@@ -49,12 +49,12 @@ final class ScheduledHandoffUITests: XCTestCase {
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         for _ in 0..<8 {
             let window = app.frame
-            let viewport = transcript.frame.intersection(window)
+            let viewport = readingArea(of: transcript, in: app)
             XCTAssertFalse(viewport.isNull || viewport.isInfinite)
             XCTAssertGreaterThan(viewport.width, 0)
             XCTAssertGreaterThan(viewport.height, 0)
             let target = details.exists ? details.frame : .null
-            if details.isHittable && target.intersection(viewport).height >= 44 { break }
+            if !target.isNull && details.isHittable && target.intersection(viewport).height >= 44 { break }
             let towardOlder = target.isNull || target.midY < viewport.midY
             let x = viewport.minX + viewport.width * 0.2
             let fromY = viewport.minY + viewport.height * (towardOlder ? 0.05 : 0.95)
@@ -135,7 +135,10 @@ final class ScheduledHandoffUITests: XCTestCase {
         XCTAssertEqual(last.frame.minY, y, accuracy: 4)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         let details = app.descendants(matching: .any).matching(identifier: "scheduled-details-scheduled-check").firstMatch
-        for _ in 0..<3 where !details.isHittable { transcript.swipeUp() }
+        for _ in 0..<3 where !(details.exists && readingArea(of: transcript, in: app).contains(details.frame)) {
+            transcript.swipeUp()
+        }
+        XCTAssertTrue(readingArea(of: transcript, in: app).contains(details.frame))
         XCTAssertTrue(details.isHittable)
         details.tap()
         let raw = app.staticTexts["work-details-section-0-part-0"]
@@ -167,8 +170,10 @@ final class ScheduledHandoffUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Close"].exists)
         let content = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "The service is healthy.")).firstMatch
         XCTAssertTrue(content.waitForExistence(timeout: 5))
+        // Tool rows open collapsed; their formatted output is one deliberate expansion away.
+        app.buttons["Expand terminal"].tap()
         let metadata = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "\"exit_code\": 0")).firstMatch
-        XCTAssertTrue(metadata.exists)
+        XCTAssertTrue(metadata.waitForExistence(timeout: 5))
         XCTAssertFalse(content.label.contains("\\n"))
         XCTAssertTrue(app.buttons["work-details-copy-work-one"].exists)
         let formatted = XCTAttachment(screenshot: app.screenshot())
@@ -200,6 +205,15 @@ final class ScheduledHandoffUITests: XCTestCase {
         dismissDetailsSheet(app)
         XCTAssertTrue(transcript.exists)
         XCTAssertFalse(app.staticTexts["[SILENT]"].exists)
+    }
+
+    /// The transcript scrolls beneath the fixed header and the opaque banner above the composer, and
+    /// `isHittable` can still be true there. Only this area is one a person can read and tap.
+    @MainActor private func readingArea(of transcript: XCUIElement, in app: XCUIApplication) -> CGRect {
+        let banner = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Demo workspace.")).firstMatch
+        let top = app.buttons["bot-profile-button"].frame.maxY
+        let visible = transcript.frame.intersection(app.frame)
+        return CGRect(x: visible.minX, y: top, width: visible.width, height: banner.frame.minY - top)
     }
 
     @MainActor private func dismissDetailsSheet(_ app: XCUIApplication) {
