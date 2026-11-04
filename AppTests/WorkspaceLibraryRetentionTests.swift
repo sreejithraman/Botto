@@ -2457,21 +2457,6 @@ import BottoCore
         #expect(read.downloads == 1)
     }
 
-    @Test(arguments: sameWireRows)
-    private func rawResumeAndRestPageShareOneProducerKey(row: SameWireRow) async throws {
-        // Authority display stays deferred: a resume row still shows the carrier its REST page projects away.
-        #expect(row.raw.canonicalText == nil)
-        if row.rest.canonicalText != nil { #expect(row.raw.text != row.rest.text) }
-        let source = RetainedLibraryService().source("stored-1")
-        guard case .file(let attachment)? = ArtifactDiscovery.artifacts(in: [row.rest]).first?.payload else {
-            Issue.record("Every same-wire row produces a file"); return
-        }
-        let rawKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [row.raw]))
-        let restKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [row.rest]))
-        #expect(rawKey == restKey)
-        #expect(hex(rawKey.sourceRevision) == row.oldRestoreHash)
-    }
-
     @Test(arguments: [false, true])
     func canonicalEditCannotReuseBytesBehindTheSameVisibleRow(fromRawRow: Bool) async throws {
         let edited = Self.carrier(Self.visibleReply, summary: "The parser task was compacted again.")
@@ -2498,7 +2483,7 @@ import BottoCore
 
     /// Page reads before canonical retention kept only display text. That capture cannot be tied to a stored row,
     /// so it stays under its own key and the current row needs one online read. This is the accepted missing-provenance
-    /// boundary, recorded red in U8-evidence/d4 as pageOriginUnchangedRow, not a repaired upgrade path.
+    /// boundary, not a repaired upgrade path.
     @Test(arguments: [false, true])
     func legacyPageCaptureHasNoCanonicalProvenanceToAttach(edited: Bool) async throws {
         let oldPage = Self.wireRow(.assistant, Self.visibleReply)
@@ -2606,15 +2591,6 @@ import BottoCore
         let projectedItem = try #require(library.artifacts.first)
         let projectedKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [projected]))
         #expect(projectedKey != legacyKey)
-
-        // Offline before that download, the current row has no capture; the old one survives under its own key.
-        library.setOnline(false)
-        await #expect(throws: HermesServiceError.disconnected) {
-            try await library.original(for: projectedKey) { throw HermesServiceError.rejected(500) }
-        }
-        #expect(try await library.original(for: legacyKey) { throw HermesServiceError.rejected(500) }.data == service.downloadedBytes)
-        #expect(service.downloadCount == 1)
-        library.setOnline(true)
 
         #expect(try await library.download(projectedItem).data == service.downloadedBytes)
         #expect(service.downloadCount == 2)

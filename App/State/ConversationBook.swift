@@ -390,7 +390,7 @@ struct ConversationBook: Codable, Sendable {
                let previous = record.transcript, snapshot.pendingRequests.isEmpty,
                let baselineCount = record.seen?.rawMessageCount, baselineCount >= 0,
                snapshot.messages.count > baselineCount,
-               snapshot.messages.starts(with: previous.messages),
+               snapshot.messages.starts(with: previous.messages, by: TranscriptContentRevision.sameMessage),
                snapshot.messages.dropFirst(baselineCount).allSatisfy({ !$0.requiresAttention }),
                record.seen?.content == ChatContentEvidence(snapshot) {
                 record.quietSummary = ChatSummaryEvidence(observed)

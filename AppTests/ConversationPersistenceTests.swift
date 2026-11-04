@@ -86,21 +86,22 @@ struct ConversationPersistenceTests {
         #expect(book.record(chat)?.isUnread == false)
     }
 
-    @Test func quietAppendCannotProveItselfBesideACanonicalOnlyRevision() throws {
+    @Test(arguments: [("first handoff", "second handoff"), ("caf\u{E9}", "cafe\u{301}")])
+    func quietAppendCannotProveItselfBesideACanonicalOnlyRevision(previous: String, incoming: String) throws {
         var (book, chat, summary) = try projectedChat("stored")
         var snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
-            messages: [.init(id: "stored:row:1", role: .user, text: "Asked", canonicalText: "first handoff")])
+            messages: [.init(id: "stored:row:1", role: .user, text: "Asked", canonicalText: previous)])
         book.cache(snapshot, for: chat)
         book.update(chat) { $0.displayed(snapshot, acknowledging: ChatSummaryEvidence(summary), at: .now) }
         snapshot.messages.append(.init(id: "stored:row:2", role: .assistant, text: "Hidden", displayKind: "hidden"))
-        snapshot.messages[0].canonicalText = "second handoff"
+        snapshot.messages[0].canonicalText = incoming
         let quiet = SessionSummary(identity: summary.identity, title: "Main", isCanonical: true, persistence: .durable,
             preview: "Asked", messageCount: 2)
         _ = book.merge(quiet)
         book.cache(snapshot, for: chat, readEvidence: .init(summaryObservedBeforeRead: quiet))
         // Existing prefix proof fails closed: the inventory change stays unseen until it is displayed.
         #expect(book.record(chat)?.isUnread == true)
-        #expect(book.record(chat)?.transcript?.messages.first?.canonicalText == "second handoff")
+        #expect(book.record(chat)?.transcript?.messages.first?.canonicalText.map { Data($0.utf8) } == Data(incoming.utf8))
     }
 
     @Test func identityMatchingRequiresOneProfileOwnedLineage() throws {

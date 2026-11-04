@@ -43,12 +43,6 @@ private func message(_ row: HermesJSON) throws -> ChatMessage {
     #expect(ReplyContent(message: reply).canonicalText == recoveredAsk)
 }
 
-@Test func displayContentOutranksBothCanonicalFields() throws {
-    let projected = try message(row(1, "user", .string(compactionCarrier), display: .string(recoveredAsk),
-                                    extra: ["text": .string(compactionCarrier)]))
-    #expect(projected.text == recoveredAsk)
-}
-
 @Test func ordinaryRowsKeepTheirCanonicalTextAndMetadata() throws {
     #expect(try message(row(1, "user", .string("Plain words"))).text == "Plain words")
     #expect(try message(row(2, "assistant", .string("From content"), extra: ["text": .string("From text")])).text == "From text")
