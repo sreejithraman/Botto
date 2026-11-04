@@ -163,13 +163,21 @@ The saved-history writer and version remain unchanged. Conversations add a
 backward-compatible optional ambiguity field.
 
 REST `display_content` sets the text a row shows. `ChatMessage.canonicalText`
-keeps the stored text when its bytes differ, and every retained-text budget
-charges both. A source revision identifies the stored row: it hashes canonical
-text in place of `text` and encodes every other field exactly, so ordinary rows
-keep their keys. A display-only change keeps a capture and a canonical edit gets
-a new one. Transcript, read, and history-head revisions keep comparing both
-texts. Raw authority `session.resume` rows share the REST row's key, though
-their display stays raw until the deferred projection work lands.
+keeps the unprojected response text when its bytes differ, and every retained-text
+budget charges both. This includes commentary or think blocks removed or redacted
+from the display projection, even for chats only scanned or previewed. Those bytes
+stay in local history and caches; rendering and discovery use display text.
+
+A source revision hashes the retained unprojected text in place of `text` and
+encodes every other field exactly, so ordinary rows keep their keys. A display-only
+change keeps a capture when those producer fields are unchanged; a canonical edit
+gets a new one. Transcript, read, and history-head revisions compare both texts.
+Raw authority `session.resume` and REST rows share a key only when their extracted
+unprojected text and remaining producer fields agree. On the 4a0eaf79 authority
+pin, REST `inline_images=false` flattens list content differently from raw resume
+parsing, so text-part and image rows can keep separate keys and offline captures.
+This pre-existing split adds no cross-key reuse. Authority display stays raw until
+the deferred projection work lands.
 
 Page reads before canonical retention saved display text alone. Nothing ties
 those captures to a stored row, so they stay under their own keys and that row

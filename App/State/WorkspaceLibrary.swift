@@ -2119,8 +2119,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             && Data(a.preview.utf8) == Data(b.preview.utf8)
     }
 
-    /// Hashes the row the host stored. A display projection cannot move a capture, while transcript and read
-    /// revisions keep comparing both texts. Rows without canonical text hash exactly as they encode.
+    /// Hashes the retained unprojected row representation; it cannot reconstruct upstream content shapes.
+    /// Transcript and read revisions compare both texts. Without separate canonical text, hash the encoded row.
     private nonisolated static func sourceRevision(_ message: ChatMessage) -> Data {
         var producer = message
         producer.text = message.canonicalText ?? message.text

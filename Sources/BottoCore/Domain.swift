@@ -141,8 +141,8 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     /// Host-authored provenance. Missing metadata never authorizes automation classification.
     public var displayKind: String?
     public var displayText: String?
-    /// Host transcript text when `text` holds a different host display projection.
-    /// Never rendered. Nil means `text` already holds the canonical bytes.
+    /// Unprojected response text retained alongside a different host display projection. Never rendered.
+    /// Nil means no separate canonical copy is stored, including legacy display-only saved rows.
     public var canonicalText: String?
     /// UTF-8 bytes this message adds to retained history. Every retained-text budget charges this cost.
     public nonisolated var retainedTextBytes: Int { text.utf8.count + (canonicalText?.utf8.count ?? 0) }

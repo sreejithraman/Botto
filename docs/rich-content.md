@@ -153,8 +153,10 @@ Previewing a captured file reuses its original bytes, including offline.
 the previous capture visible. Save and Share wait for Reload to finish, and an
 active export keeps its captured copy. A new producing message or source revision gets
 a separate capture. A host path alone does not identify immutable contents.
-Display text alone is not a source revision, so a changed display view keeps its
-capture. An older page read saved display text without the stored row, so that
+Display text alone is not a source revision. A changed display view keeps its
+capture when the retained producer fields are unchanged. Raw authority history
+and REST can still produce different keys when they extract list content differently.
+An older page read saved display text without the unprojected row text, so that
 capture stays apart and a recovered row can need one online preview.
 The cache stays within its saved connection, installation, profile, and chat;
 confirmed Forget removes that connection's captures. Cached identity never
