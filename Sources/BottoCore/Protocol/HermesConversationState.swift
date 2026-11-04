@@ -638,8 +638,8 @@ struct HermesConversationState {
                                canonicalText: display != nil && !exact(display, canonical) ? canonical : nil)
         }
     }
-    /// REST `display_content` is Hermes's display view of a row whose `content` stays physical, such
-    /// as a recovered compaction ask or a steer's own words. Attachments and identity stay canonical.
+    /// REST `display_content` supplies visible text without replacing the response's `content`.
+    /// That content may already be coerced by the host; attachments and identity come from the row as read.
     /// Hermes 4a0eaf79 Desktop likewise reads stored tool rows without this projection.
     private static func displayProjection(_ row: HermesJSON, role: ChatMessage.Role, messageID: String) -> String? {
         let display = row["display_content"]

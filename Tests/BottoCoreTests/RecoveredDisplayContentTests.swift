@@ -3,8 +3,9 @@ import Testing
 @testable import BottoCore
 
 // Source-backed wire fixtures, not captured traffic. Hermes 4a0eaf79
-// hermes_cli/web_routers/sessions.py:_project_for_display keeps physical rows in `content` and
-// adds `display_content`; tests/hermes_cli/test_sessions_rest_scaffold_notices.py pins that shape.
+// hermes_cli/web_routers/sessions.py:_project_for_display adds `display_content` beside response content,
+// which inline_images=false can first coerce. tests/hermes_cli/test_sessions_rest_scaffold_notices.py
+// pins the string-content shape; list fixtures below also exercise the parser directly.
 // ca678285 emits the compaction case only.
 private let summary = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted."
 private let recoveredAsk = "Can you check the parser?"

@@ -162,16 +162,20 @@ database footprint have a 40 MiB allowance. Individual originals stay within
 The saved-history writer and version remain unchanged. Conversations add a
 backward-compatible optional ambiguity field.
 
-REST `display_content` sets the text a row shows. `ChatMessage.canonicalText`
-keeps the unprojected response text when its bytes differ, and every retained-text
-budget charges both. This includes commentary or think blocks removed or redacted
+REST `display_content` sets the text a row shows. For retained rows,
+`ChatMessage.canonicalText` keeps the unprojected response text when its bytes
+differ, and every retained-text budget charges both. This includes commentary or think blocks removed or redacted
 from the display projection, even for chats only scanned or previewed. Those bytes
 stay in local history and caches; rendering and discovery use display text.
+Hidden and model-only rows are omitted. A tool-call row with an empty projection
+and no images is also omitted, so none of its canonical bytes are retained.
 
 A source revision hashes the retained unprojected text in place of `text` and
 encodes every other field exactly, so ordinary rows keep their keys. A display-only
 change keeps a capture when those producer fields are unchanged; a canonical edit
-gets a new one. Transcript, read, and history-head revisions compare both texts.
+gets a new one. Full-message and history-head revisions and the quiet-append
+prefix proof compare both texts. Read state follows displayed attention content,
+so a standalone canonical-only change does not mark a chat unread.
 Raw authority `session.resume` and REST rows share a key only when their extracted
 unprojected text and remaining producer fields agree. On the 4a0eaf79 authority
 pin, REST `inline_images=false` flattens list content differently from raw resume

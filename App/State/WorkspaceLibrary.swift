@@ -2120,7 +2120,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     }
 
     /// Hashes the retained unprojected row representation; it cannot reconstruct upstream content shapes.
-    /// Transcript and read revisions compare both texts. Without separate canonical text, hash the encoded row.
+    /// Full-message/head revisions and quiet-prefix proof compare both texts; read state follows display content.
+    /// Without separate canonical text, hash the encoded row.
     private nonisolated static func sourceRevision(_ message: ChatMessage) -> Data {
         var producer = message
         producer.text = message.canonicalText ?? message.text
