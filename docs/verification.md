@@ -4,6 +4,26 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Active-rich measurement acceptance (4 November 2026)
+
+`rendered_endpoint_success=false` now fails
+`TranscriptActiveRichMeasurementTests.actualVisibleFileAtTheEndOfMixedHistory`
+after writing its JSON. Before the guard, legacy100 exited 0 with a false
+endpoint. With the guard, the same workload failed with exit 65 and kept its JSON.
+A deterministic test covers false and missing values.
+
+Legacy100 could not reach its endpoint because only the native transcript emitted
+the terminal marker. One run showed the complete file on screen while
+`terminal_visible` stayed false. After adding the marker to the Debug legacy path,
+legacy100 passed its OCR endpoint with the same snapshot hash as native100.
+
+These runs used an iPhone 17 Pro Simulator on iOS 27.0 under severe host load, so
+their timings are not comparisons. Native100 passed before the guard and was not
+repeated after it. One earlier legacy run stayed blank with no attached rows,
+download or WKWebView. That state remains unexplained; a repeat now fails and
+records its endpoint gates and scroll geometry. `matchedMixedRichHistory` still
+does not fail on a false endpoint, and this work did not run it.
+
 ## Static custom avatar compatibility (3 November 2026)
 
 Custom character Save and custom creation now export a transparent 512px PNG
