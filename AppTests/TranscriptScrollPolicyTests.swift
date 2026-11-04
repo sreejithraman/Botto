@@ -30,6 +30,40 @@ struct TranscriptScrollPolicyTests {
         }
     }
 
+    @Test func canonicalOnlyRevisionReplacesSnapshotsWithoutClaimingAttention() {
+        let projected = ChatMessage(id: "stored:row:3", role: .user, text: "Can you check the parser?",
+                                    canonicalText: "[CONTEXT COMPACTION] summary")
+        let revisions: [String?] = [nil, "", "[CONTEXT COMPACTION] other summary"]
+        let snapshot = Conversation(id: "chat", storedID: "stored", profileID: "profile", messages: [projected])
+        for canonicalText in revisions {
+            var revised = projected; revised.canonicalText = canonicalText
+            var incoming = snapshot; incoming.messages = [revised]
+            #expect(!TranscriptContentRevision.sameMessage(projected, revised))
+            #expect(!TranscriptContentRevision.sameSnapshotContent(snapshot, incoming))
+            #expect(!TranscriptMessageIndex(incoming).matches(projected))
+            #expect(!TranscriptContentRevision.uniqueMessage(projected, in: incoming))
+            #expect(NativeTranscriptRowValue.workDetails([projected]) != .workDetails([revised]))
+
+            #expect(!TranscriptScrollPolicy.attentionChanged(from: snapshot, to: incoming))
+            var following = TranscriptScrollPolicy()
+            let follows = following.snapshotChanged(from: snapshot, to: incoming)
+            #expect(!follows)
+            var reading = TranscriptScrollPolicy()
+            reading.readerChanged(isUserScrolling: false, isNearBottom: false)
+            let moved = reading.snapshotChanged(from: snapshot, to: incoming)
+            #expect(!moved && !reading.showsLatest)
+        }
+        // Swift String equality would treat these as one revision.
+        var composed = projected, decomposed = projected
+        composed.canonicalText = "caf\u{E9}"; decomposed.canonicalText = "cafe\u{301}"
+        #expect(!TranscriptContentRevision.sameMessage(composed, decomposed))
+        #expect(TranscriptContentRevision.sameMessage(composed, composed))
+
+        var edited = projected; edited.text = "Different words"
+        var visible = snapshot; visible.messages = [edited]
+        #expect(TranscriptScrollPolicy.attentionChanged(from: snapshot, to: visible))
+    }
+
     @Test func rawQuietSnapshotsDoNotBorrowAttentionFromAnUnchangedRequestButReclassificationDoes() {
         let payload = "[Cronjob \"Daily check\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\nPayload"
         let ordinary = ChatMessage(id: "ordinary", role: .assistant, text: "Existing reply")

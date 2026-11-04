@@ -47,7 +47,7 @@ nonisolated struct TranscriptScrollPolicy {
         case (nil, nil): false
         case let (previous?, current?):
             !previous.messages.lazy.filter(\.requiresAttention).elementsEqual(
-                current.messages.lazy.filter(\.requiresAttention), by: TranscriptContentRevision.sameMessage) ||
+                current.messages.lazy.filter(\.requiresAttention), by: TranscriptContentRevision.samePresentation) ||
                 !previous.pendingRequests.elementsEqual(current.pendingRequests, by: TranscriptContentRevision.sameRequest)
         default: true
         }
@@ -118,6 +118,10 @@ nonisolated struct TranscriptMessageIndex {
 /// No content digest or second history is retained.
 nonisolated enum TranscriptContentRevision {
     static func sameMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
+        samePresentation(a, b) && exact(a.canonicalText, b.canonicalText)
+    }
+    /// Canonical text is never rendered, so changing only it cannot claim reader attention.
+    static func samePresentation(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
         a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID &&
         exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) &&
         exact(a.displayKind, b.displayKind) && exact(a.displayText, b.displayText) && a.attachments.count == b.attachments.count &&
