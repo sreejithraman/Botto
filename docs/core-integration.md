@@ -570,8 +570,8 @@ checking raw identities in an exhaustive first response. Library consumes that
 proof; completeness, source ID sets, and multi-page scans cannot create it.
 A multi-page scan can replace ordinary cached content but cannot clear a known
 dispute. Fresh pages protect only admitted canonical revisions during restoration even
-when they lack identity-resolution proof; that evidence never releases the
-metadata gate or clears an actual dispute. An ID absent from a coherent read
+when they lack identity-resolution proof; while a retry can still reconcile,
+that evidence never releases the metadata gate. It never clears an actual dispute. An ID absent from a coherent read
 stays disputed. Recovery hints carry
 unverified saved revisions separately from known ID disputes: a fresh accepted
 revision can supersede the former, while the latter needs identity evidence.
@@ -597,8 +597,8 @@ it; retirement ends ownership before cancellation and immediately ends loading.
 Seeding, projection, identity evidence and metadata eligibility remain independent.
 
 Startup restoration tracks accepted revisions and identity evidence separately.
-When saved metadata cannot load, verified coherent results can appear in Library
-while metadata writes wait for its negative evidence to be reconciled. Unchanged
+While a retry can still reconcile saved metadata, verified coherent results can
+appear in Library while metadata writes wait for its negative evidence to be reconciled. Unchanged
 reseeding retains that display proof, including across freshness shortcuts.
 Presentation filters each message, artifact and Search entry by verified ID, so
 a later unverified row cannot hide verified results or gain artifact admission.
@@ -624,8 +624,12 @@ Negative evidence lasts as long as its retained row, the existing restoration
 holds and Book's own claims. Eviction or storage failure can lose a row's
 disputes and retired stored IDs. A tip that returns afterward follows the
 ordinary source rules above, and Library promises neither to remember it nor to
-withhold it until proof. The stronger contract is
-[deferred](adr/0012-retired-tip-evidence.md).
+withhold it until proof. A blocked or undecodable ledger keeps saved metadata
+withheld at restore, but rows this launch reads reach Library because no retry
+can clear it. A saved row stays hidden until a read that isn't partial covers it.
+A chat held during that recovery waits for the next launch. A failed read of the
+saved index keeps its holds, because a retry can still succeed.
+See [returning versions](adr/0013-returning-versions-follow-the-host.md).
 
 The scene owns a short-lived focus receipt with the actual attached message
 revision. The native controller reveals a measured glyph range and retains its

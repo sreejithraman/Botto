@@ -417,6 +417,8 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     // Scope hashes outlive canonical eviction until saved evidence is reconciled.
     @ObservationIgnored private var discardedEvidence = DiscardedEvidence.scoped([:])
     private var unreconciledMetadata: [LibraryChat.ID: MetadataAdmission] = [:]
+    /// The ledger reported a block or couldn't be decoded, so no retry here can reconcile saved data.
+    private var savedDataIsBlocked = false
     private struct WorkingTail: Equatable {
         let stored: ExactID
         let messageID: Data
@@ -705,11 +707,13 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func readMetadataRecovery() async throws {
         do {
             metadataRecovery = try await cache.metadataRecovery()
+            savedDataIsBlocked = metadataRecovery.all
             if metadataRecovery.needsHistoryCheck {
                 scanNotice = .failure("Saved artifacts need a fresh history check. Pull to refresh to try again.")
             }
         } catch {
             metadataRecovery = ArtifactMetadataRecovery(all: true)
+            savedDataIsBlocked = false
             throw error
         }
     }
@@ -1088,15 +1092,18 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func presented(_ chat: LibraryChat) -> LibraryChat? {
         guard unreconciledMetadata[chat.id] != nil else { return chat }
-        guard let rows = initialReadRows[chat.id], rows.hasCoherentRead,
-              rows.stored == chat.identity.stored, initialSourceProofs[chat.id] == chat.identity.stored else { return nil }
-        let messages = chat.messages.filter { rows.resolved.contains(Data($0.id.utf8)) }
+        guard let rows = initialReadRows[chat.id], rows.stored == chat.identity.stored,
+              initialSourceProofs[chat.id] == chat.identity.stored else { return nil }
+        // No retry can reconcile a blocked ledger, so this launch's own reads stand.
+        guard savedDataIsBlocked || rows.hasCoherentRead else { return nil }
+        let shown = savedDataIsBlocked ? rows.accepted : rows.resolved
+        let messages = chat.messages.filter { shown.contains(Data($0.id.utf8)) }
         guard !messages.isEmpty || chat.messages.isEmpty else { return nil }
         return LibraryChat(workspace: identity, identity: chat.identity, botName: chat.botName, title: chat.title,
             messages: messages, updatedAt: chat.updatedAt,
-            discoveredArtifacts: chat.discoveredArtifacts.filter { rows.resolved.contains(Data($0.messageID.utf8)) },
-            sourceRevisions: chat.sourceRevisions.filter { rows.resolved.contains($0.key) },
-            searchableText: chat.searchableText.filter { rows.resolved.contains($0.key) },
+            discoveredArtifacts: chat.discoveredArtifacts.filter { shown.contains(Data($0.messageID.utf8)) },
+            sourceRevisions: chat.sourceRevisions.filter { shown.contains($0.key) },
+            searchableText: chat.searchableText.filter { shown.contains($0.key) },
             unavailableMessageIDs: chat.unavailableMessageIDs, unverifiedMessageIDs: chat.unverifiedMessageIDs,
             removedMessageIDs: chat.removedMessageIDs, retiredStoredIDs: chat.retiredStoredIDs,
             directoryAbsent: chat.directoryAbsent)
@@ -1831,6 +1838,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             initialSourceProofs[target] = source.stored
             retainInitialRead(source: source, messages: messages, unavailable: unavailable,
                 protectsRevisions: true, identityRead: identityRead)
+            if savedDataIsBlocked { restorationHints.remove(target) }
         }
         let admitted = cachedChat(target)
         // Passive discovery follows the workspace after admission; completion
