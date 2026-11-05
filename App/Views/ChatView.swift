@@ -363,8 +363,7 @@ struct ChatView: View {
         overviewTransition.finishImmediately()
     }
 
-    /// The header's bar touch target spans its frame, so the frame must stop short of Back and Chats:
-    /// the bar margin, a 44-point control, and an 8-point gap.
+    /// Keep the mirrored profile target in the center region of the navigation bar.
     private var headerSideClearance: CGFloat { 16 + 44 + 8 }
 
     private var headerReferenceHeight: CGFloat {

@@ -895,6 +895,9 @@ final class MultipleChatUITests: XCTestCase {
     @MainActor private func assertLongBotNameLeavesHeaderNavigationOperable(largeText: Bool) {
         let app = launch(largeText: largeText)
         let profile = app.buttons["bot-profile-button"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 5))
+        let shortNameHeight = profile.frame.height
+        XCTAssertGreaterThan(shortNameHeight, 0)
         profile.tap()
         let edit = app.buttons["bot-profile-edit"]
         XCTAssertTrue(edit.waitForExistence(timeout: 5)); edit.tap()
@@ -907,6 +910,11 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertTrue(done.waitForNonExistence(timeout: 5))
 
         XCTAssertTrue(profile.label.contains("Milo the Extraordinarily Thorough Morning Planner"), profile.label)
+        if largeText {
+            XCTAssertGreaterThan(profile.frame.height - shortNameHeight, 20,
+                                 "The largest-text long name must occupy more than one line.")
+        }
+        keepScreenshot(largeText ? "Largest-text long-name header" : "Normal long-name header", app: app)
         let back = app.buttons["BackButton"].exists ? app.buttons["BackButton"] : app.buttons["Back"]
         let chats = app.buttons["chat-picker-button"]
         chats.tap()

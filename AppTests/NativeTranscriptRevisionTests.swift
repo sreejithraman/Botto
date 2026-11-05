@@ -141,6 +141,65 @@ import BottoCore
                 "message=\(messageFrame), header=\(headerFrame)")
     }
 
+    @Test func largestTextLongNameAddsOneLineAndKeepsTheFirstMessageClear() async throws {
+        let service = try WorkspaceTestService(), session = service.summaries[0].identity
+        let text = "First"
+        let longName = "Milo the Extraordinarily Thorough Morning Planner"
+        service.snapshots[session.root]?.messages = [.init(id: "first-tall-header-message", role: .user, text: text)]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://tall-header.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        var bot = try #require(store.selectedBot)
+        bot.name = "Milo"
+        let fixture = try Window(store: store, bot: bot, fullChat: true, height: nil, textSize: .accessibility5)
+        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        var shortHeight: CGFloat = 0, headerFrame = CGRect.zero, messageFrame = CGRect.zero
+        let lineHeight = UIFont.preferredFont(forTextStyle: .headline,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: .accessibilityExtraExtraExtraLarge)).lineHeight
+        defer {
+            Attachment.record("shortHeight=\(shortHeight)\nlineHeight=\(lineHeight)\nheader=\(headerFrame)\nmessage=\(messageFrame)",
+                              named: "largest-text-long-name-geometry.txt")
+            let image = UIGraphicsImageRenderer(bounds: fixture.window.bounds).image { _ in
+                fixture.window.drawHierarchy(in: fixture.window.bounds, afterScreenUpdates: false)
+            }
+            Attachment.record(image, named: "largest-text-long-name-header.png", as: .png)
+            if let collection = revisionController(fixture.host)?.collection {
+                Attachment.record("bounds=\(collection.bounds)\ncontentSize=\(collection.contentSize)\ninset=\(collection.contentInset)\nadjustedInset=\(collection.adjustedContentInset)\noffset=\(collection.contentOffset)",
+                                  named: "largest-text-transcript-geometry.txt")
+            }
+        }
+        try await revisionWait("the short name and initial message are mounted at largest text") {
+            guard let header = revisionHeader(fixture.host), header.view.window === fixture.window,
+                  revisionElement("Profile for Milo", in: fixture.host.view) != nil,
+                  let message = revisionElement(text, in: fixture.host.view) else { return false }
+            shortHeight = header.view.bounds.height
+            return shortHeight > 0 && !message.accessibilityFrame.isEmpty &&
+                revisionController(fixture.host)?.previewState != nil
+        }
+        fixture.profile.bot.name = longName
+        try await revisionWait("the largest-text name renders one additional line") {
+            guard let header = revisionHeader(fixture.host),
+                  revisionElement("Profile for " + longName, in: fixture.host.view) != nil else { return false }
+            headerFrame = header.view.convert(header.view.bounds, to: fixture.window)
+            let growth = headerFrame.height - shortHeight
+            return growth >= lineHeight * 0.8 && growth <= lineHeight * 1.2
+        }
+        try await revisionWait("the full-height fixture can fit its entire transcript") {
+            guard let collection = revisionController(fixture.host)?.collection else { return false }
+            let visibleHeight = collection.bounds.height - collection.adjustedContentInset.top - collection.adjustedContentInset.bottom
+            return collection.contentSize.height > 0 && visibleHeight >= collection.contentSize.height
+        }
+        try await revisionWait("the first message clears the taller largest-text header") {
+            guard let header = revisionHeader(fixture.host),
+                  let message = revisionElement(text, in: fixture.host.view) else { return false }
+            headerFrame = header.view.convert(header.view.bounds, to: fixture.window)
+            messageFrame = fixture.window.convert(message.accessibilityFrame, from: nil)
+            return !messageFrame.isEmpty && messageFrame.minY >= headerFrame.maxY
+        }
+        #expect(messageFrame.minY >= headerFrame.maxY,
+                "message=\(messageFrame), header=\(headerFrame)")
+    }
+
     @Test func floatingHeaderBindsTheMountedScrollViewAndReleasesItOnRetirement() async throws {
         guard #available(iOS 26, *) else { return }
         let service = try WorkspaceTestService()
@@ -494,11 +553,11 @@ import BottoCore
         let window: UIWindow
         let previous: UIWindow?
         let profile: Profile
-        init(store: AppStore, bot: BotProfile, fullChat: Bool = false) throws {
+        init(store: AppStore, bot: BotProfile, fullChat: Bool = false, height: CGFloat? = 434, textSize: DynamicTypeSize? = nil) throws {
             let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
             previous = scene.windows.first { $0.isKeyWindow }
             profile = Profile(bot)
-            host = UIHostingController(rootView: Host(store: store, profile: profile, fullChat: fullChat))
+            host = UIHostingController(rootView: Host(store: store, profile: profile, fullChat: fullChat, height: height, textSize: textSize))
             window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
         }
         func close() {
@@ -513,6 +572,9 @@ import BottoCore
         let store: AppStore
         let profile: Profile
         let fullChat: Bool
+        let height: CGFloat?
+        let textSize: DynamicTypeSize?
+        @Environment(\.dynamicTypeSize) private var inheritedTextSize
         @State private var presentation = WorkspacePresentation()
         var body: some View {
             Group {
@@ -526,7 +588,9 @@ import BottoCore
                     transcriptFixture(store: store, bot: profile.bot, presentation: presentation, native: true)
                 }
             }
-            .frame(width: 382, height: 434).environment(\.scenePhase, .active)
+            .frame(width: 382, height: height)
+            .environment(\.dynamicTypeSize, textSize ?? inheritedTextSize)
+            .environment(\.scenePhase, .active)
         }
     }
 }
