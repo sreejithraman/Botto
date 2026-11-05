@@ -627,8 +627,9 @@ ordinary source rules above, and Library promises neither to remember it nor to
 withhold it until proof. A blocked or undecodable ledger keeps saved metadata
 withheld at restore, but rows this launch reads reach Library because no retry
 can clear it. A saved row stays hidden until a read that isn't partial covers it.
-A chat held during that recovery waits for the next launch. A failed read of the
-saved index keeps its holds, because a retry can still succeed.
+A chat held during that recovery, by eviction or a late write, waits for the next
+launch. A block that starts mid-launch leaves rows already reconciled in place. A
+failed read of the saved index keeps its holds, because a retry can still succeed.
 See [returning versions](adr/0013-returning-versions-follow-the-host.md).
 
 The scene owns a short-lived focus receipt with the actual attached message

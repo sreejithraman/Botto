@@ -32,11 +32,8 @@ its file is removed. Saved metadata stays withheld at restore, as
 [retained captures](0010-scoped-artifact-captures.md) requires, but rows this
 launch reads appear in Library.
 
-Three limits remain while blocked. A saved row stays hidden until a read that
-isn't partial covers it. A chat held during recovery, by eviction or a late
-write, waits for the next launch. A block that starts mid-launch leaves rows
-already reconciled in place. A failed read of the saved index keeps its holds,
-because a retry can still succeed.
+[Core integration](../core-integration.md) lists the limits that remain while
+blocked.
 
 This decides what [retired-tip evidence](0012-retired-tip-evidence.md) deferred.
 If real Hermes output shows duplicate row IDs, withholding those rows durably is
