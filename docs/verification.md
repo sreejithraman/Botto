@@ -1023,3 +1023,29 @@ Raw historical evidence remains under the sibling `full-gate37`, `full-gate38`,
 `rich-ui39` and repair directories. Archived pass counts apply only to their
 recorded source revisions. Signed login, physical devices, real APNS, iPad,
 VoiceOver and the explicitly skipped performance measurements are unproven here.
+
+### Returning chat versions on the disposable host
+
+On Hermes `4a0eaf7`, deleting a compressed chat's newest segment with the CLI moved
+the listed tip back to the previous segment. A snapshot restore moved a rotated
+chat back to its old tip, and row 1674 returned with new text on a tip that never
+changed. Seven fresh-chat shapes, covering undo, in-place compaction and rotation,
+and a rotated chat past the 300-row window showed no duplicate row IDs in one response. That is a
+sample, not proof. Both dashboard delete routes refused the request on this host,
+so their whole-chain delete stayed unobserved.
+
+With an overflowed ledger, a two-page chat stayed out of Library on `098687c` and
+on the reduced PR 24 source, while a healthy-storage control passed. It now appears.
+A long returning tip fails on `cf430b3` and passes here, and the short control
+passes on both.
+
+The full gate passed once on `559c9ad` with this change: 1119 tests passed, 18 were
+skipped, and export readback passed. An earlier gate on the same source failed
+`testVisitedViewportPreviewSurvivesSwitchingToAnotherChat` once, at its final title
+wait. That test then passed five times alone and once in the passing gate, so the
+cause stays unknown. On `8ed6ae3`, `WorkspaceLibraryTests` ran 169 tests,
+`WorkspaceLibraryRetentionTests` 77 and `ArtifactCacheTests` 46, all passing once. No
+full gate ran on `8ed6ae3`.
+
+Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/recovery-policy-followup/`.

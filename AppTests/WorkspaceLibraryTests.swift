@@ -2144,8 +2144,144 @@ import BottoCore
         return SessionIdentity(profile: source.profile, root: source.root, stored: stored, aliases: [source.root, stored])
     }
 
-    /// Overflow leaves no record of which tips left, so each chat in the scope needs its own proof.
-    @Test func overflowedRecoveryAdmitsOnlyEachChatsOwnCoherentRead() async throws {
+    /// Hermes moves a chat back to its previous tip when that chat's newest segment is deleted.
+    @Test(arguments: [false, true])
+    func aReturningTipStandsOnAFreshReadAtAnyLength(long: Bool) async throws {
+        let service = LibraryTestService(), successor = try replacementTip(of: service.first)
+        let earlier = ChatMessage(id: "earlier", role: .assistant, text: "Earlier needle", timestamp: Date(timeIntervalSince1970: 1))
+        let original = ChatMessage(id: "original", role: .assistant, text: "Original needle", timestamp: Date(timeIntervalSince1970: 2))
+        let newer = ChatMessage(id: "newer", role: .assistant, text: "Successor needle", timestamp: Date(timeIntervalSince1970: 3))
+        service.messages[service.first] = [earlier, original]; service.messages[successor] = [newer]
+        let library = WorkspaceLibrary(service: service)
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("Original needle", in: library) })
+
+        service.replacementFirst = successor
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("Successor needle", in: library) })
+        #expect(!searchFinds("Original needle", in: library), "The host moved on from this tip")
+
+        service.replacementFirst = nil
+        if long {
+            service.historyPages[service.first] = [0: .init(messages: [original], nextOffset: 1, isComplete: true),
+                                                   1: .init(messages: [earlier], nextOffset: nil, isComplete: true)]
+        }
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("Original needle", in: library) }, "The host names this tip again")
+        #expect(searchFinds("Earlier needle", in: library))
+        #expect(!searchFinds("Successor needle", in: library), "Nothing from the deleted segment stays")
+        library.retire()
+    }
+
+    /// Disputes last as long as their row. A read of the host decides what happens after eviction.
+    @Test func aDisputeLostToEvictionFollowsTheNextRead() async throws {
+        let service = LibraryTestService()
+        let row = ChatMessage(id: "row", role: .assistant, text: "Evicted needle", timestamp: Date(timeIntervalSince1970: 1))
+        let disputedPage = ConversationHistoryPage(messages: [row], nextOffset: nil, isComplete: false, unavailableMessageIDs: [Data(row.id.utf8)])
+        service.messages[service.first] = [row]; service.messages[service.second] = []
+        service.historyPages[service.first] = [0: disputedPage]
+        service.summaryDates = [service.first: Date(timeIntervalSince1970: 2_000), service.second: Date(timeIntervalSince1970: 1_000)]
+        let library = WorkspaceLibrary(service: service, limits: .init(chatCount: 1))
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(!searchFinds("Evicted needle", in: library), "A known dispute hides its row")
+
+        service.summaryDates = [service.first: Date(timeIntervalSince1970: 1_000), service.second: Date(timeIntervalSince1970: 2_000)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { !library.chats.contains { $0.identity == service.first } }, "The budget evicted this chat")
+
+        service.historyPages[service.first] = nil
+        service.summaryDates = [service.first: Date(timeIntervalSince1970: 3_000), service.second: Date(timeIntervalSince1970: 2_000)]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("Evicted needle", in: library) }, "The host no longer repeats the dispute")
+
+        service.historyPages[service.first] = [0: disputedPage]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { !searchFinds("Evicted needle", in: library) }, "A later read finds it again")
+        library.retire()
+    }
+
+    /// A Hermes snapshot restore can give a row number new text on a tip that never changed.
+    @Test func explicitRefreshReplacesARowNumberThatARollbackReused() async throws {
+        let service = LibraryTestService()
+        service.messages[service.first] = [ChatMessage(id: "row-1250", role: .assistant, text: "Written before restore")]
+        let library = WorkspaceLibrary(service: service)
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("before restore", in: library) })
+
+        service.messages[service.first] = [ChatMessage(id: "row-1250", role: .assistant, text: "Written after restore")]
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("after restore", in: library) })
+        #expect(!searchFinds("before restore", in: library))
+        library.retire()
+    }
+
+    /// A named guard ends with restoration, so it can't outlive a launch for a chat no response can prove.
+    @Test func aNamedGuardCannotHoldALongChatPastRestoration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let service = LibraryTestService()
+        let older = ChatMessage(id: "older", role: .assistant, text: "Earlier needle", timestamp: Date(timeIntervalSince1970: 1))
+        let newest = ChatMessage(id: "newest", role: .assistant, text: "Long chat needle", timestamp: Date(timeIntervalSince1970: 2))
+        service.historyPages[service.first] = [0: .init(messages: [newest], nextOffset: 1, isComplete: true),
+                                               1: .init(messages: [older], nextOffset: nil, isComplete: true)]
+        let filling = ArtifactCache(root: root), saved = filling.session(scope: scope)
+        try await saved.upsert(.init(identity: service.first, botName: "Helper", title: "Main", messages: [older],
+            updatedAt: nil, coverage: .partial, summary: nil, headFingerprint: nil))
+        try saved.invalidateMetadata([(service.first.profile, service.first.root)])
+        await filling.close()
+
+        let cache = ArtifactCache(root: root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: scope))
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        #expect(await eventually { searchFinds("Long chat needle", in: library) })
+        #expect(searchFinds("Earlier needle", in: library))
+        library.retire(); await cache.close()
+    }
+
+    /// An overflowed ledger stays blocked until its connection is forgotten, and no single response proves a long chat.
+    @Test(arguments: ["healthy storage", "overflowed ledger"])
+    func freshlyReadLongChatReachesLibraryWhileSavedDataIsBlocked(failure: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
+        let service = LibraryTestService()
+        let older = ChatMessage(id: "older", role: .assistant, text: "Earlier needle", timestamp: Date(timeIntervalSince1970: 1))
+        let newest = ChatMessage(id: "newest", role: .assistant, text: "Long chat needle", timestamp: Date(timeIntervalSince1970: 2))
+        service.messages[service.first] = [older, newest]
+        service.historyPages[service.first] = [0: .init(messages: [newest], nextOffset: 1, isComplete: true),
+                                               1: .init(messages: [older], nextOffset: nil, isComplete: true)]
+        var limits = ArtifactCache.Limits(); limits.chatCount = 1
+        let filling = ArtifactCache(root: root, limits: limits), saved = filling.session(scope: scope)
+        let savedOnly = ChatMessage(id: "saved-only", role: .assistant, text: "Saved only needle", timestamp: Date(timeIntervalSince1970: 3))
+        try await saved.upsert(.init(identity: service.first, botName: "Helper", title: "Main", messages: [older, savedOnly], updatedAt: nil,
+            coverage: .partial, summary: nil, headFingerprint: nil))
+        if failure == "overflowed ledger" {
+            let guards: [(profile: ExactID, root: ExactID)] = try (0..<3).map { (service.first.profile, try ExactID("guard-\($0)")) }
+            #expect(throws: (any Error).self) { try saved.invalidateMetadata(guards) }
+        }
+        await filling.close()
+
+        let cache = ArtifactCache(root: root)
+        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: scope))
+        library.setOnline(true)
+        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
+        func shown() -> Bool { library.chats.contains { $0.messages.contains { $0.id == newest.id } } }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !shown(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(shown(), "A fresh read reaches Library when saved data can't be trusted")
+        #expect(!searchFinds("Saved only needle", in: library), "Saved data stays withheld, and a complete read replaces it")
+        if failure == "overflowed ledger" {
+            #expect(library.warning == "Artifacts are available, but changes couldn’t be saved on this device.")
+        }
+        library.retire(); await cache.close()
+    }
+
+    @Test func blockedLedgerShowsEachChatsOwnFreshReadsAndKeepsItsMarker() async throws {
         let fixture = RetainedDispute(), service = fixture.service, subject = fixture.subject
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         fixture.prepare()
@@ -2167,14 +2303,10 @@ import BottoCore
         service.historyPages[service.second] = [0: .init(messages: [fixture.peer], nextOffset: 1, isComplete: true),
                                                 1: .init(messages: [], nextOffset: nil, isComplete: true)]
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        #expect(!searchFinds("Disputed needle", in: library), "A directory report releases nothing")
-        #expect(!searchFinds("Peer needle", in: library), "Overflow names no chat, so this one waits too")
+        #expect(await eventually { searchFinds("Disputed needle", in: library) }, "No retry can clear this, so a read stands")
+        #expect(await eventually { searchFinds("Peer needle", in: library) }, "Overflow names no chat, so each read stands")
         #expect(library.statusAction == .retry)
-
-        service.historyPages[subject] = nil
-        await library.refresh(evidence: .observed, bots: service.profiles, force: true)
-        #expect(await eventually { searchFinds("Disputed needle", in: library) }, "Its own coherent read admits it")
-        #expect(!searchFinds("Peer needle", in: library), "That read cannot vouch for another chat")
+        #expect(try await cache.session(scope: fixture.scope).metadataRecovery().all, "A read cannot clear the marker")
 
         let peerScope = ArtifactCacheScope(configurationID: fixture.scope.configurationID, serverURL: Data(), installationID: nil,
             username: Data("another-account".utf8), provider: nil)
@@ -2185,8 +2317,8 @@ import BottoCore
         unrelated.retire(); library.retire(); await cache.close()
     }
 
-    /// Another chat stays unchecked, so restoration keeps retrying and the overflow marker holds a returning tip.
-    @Test func overflowDuringRetryableRestorationKeepsARetiredTipWaiting() async throws {
+    /// Another chat stays unchecked, so restoration keeps retrying when the ledger overflows under it.
+    @Test func overflowDuringRetryableRestorationStillShowsAReturningTip() async throws {
         let fixture = RetainedDispute(customChat: true), service = fixture.service, subject = fixture.subject
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         fixture.prepare()
@@ -2240,12 +2372,7 @@ import BottoCore
         service.historyPages[subject] = fixture.prooflessPages
         service.summaryDates[subject] = Date(timeIntervalSince1970: 8_000_000_000)
         await enterLibrary()
-        #expect(!library.chats.contains { $0.identity.root == subject.root && !$0.messages.isEmpty }, "The tip returned without proof")
-        #expect(artifact(fixture.disputed.id, in: library) == nil)
-
-        service.historyPages[subject] = nil
-        await enterLibrary()
-        #expect(await eventually { searchFinds("Disputed needle", in: library) }, "Its own coherent read admits it")
+        #expect(await eventually { searchFinds("Disputed needle", in: library) }, "The host names this tip again")
         #expect(try await session.metadataRecovery().all, "A read cannot clear the marker")
         library.retire(); await cache.close()
     }
