@@ -4,6 +4,27 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Chat header and footer accessibility (4 November 2026)
+
+An unsigned Debug build of `f8a514f` on `8ed6ae3` passed nine selected native
+and UI functions on an iPhone 18 Pro Simulator, iOS 27.0, with Xcode 27.2.
+`ChatView.swift` built without its two concurrency warnings. Actual-app tests
+operated Back, Chats and Profile with long names at normal and largest text.
+History/add glyph sizes are capped; text remains uncapped.
+
+A real `ChatView` in a test navigation host showed a two-line name and a first
+bubble clear of it when the transcript fit. A single-test control with one name
+line failed the growth gate. A separately compiled control without header-overlap
+publication passed growth, then failed clearance. The existing A-to-B late
+retirement regression also passed. Restored source matched the tested bytes.
+
+The fixture uses a different navigation host from the app, so its exact geometry
+is not an app measurement. Largest names still truncate heavily. Compact panes,
+keyboard-up, small iPhone, iPad, landscape, iOS 18/26 and invisible touch edges
+remain unproven. This was a focused run, not the full gate or complete product
+recipes. Later integration of main `66b1666` kept all four component source blobs
+unchanged; that integration was outside this local runtime proof.
+
 ## Active-rich measurement acceptance (4 November 2026)
 
 `rendered_endpoint_success=false` now fails
