@@ -204,6 +204,7 @@ struct ChatPickerView: View {
                         }
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
+                            .dynamicTypeSize(Self.footerGlyphTextSizes)
                             .frame(width: 48, height: 48)
                     }
                     .tabFooterGlass(in: Circle(), id: "history", namespace: footerGlassNamespace,
@@ -233,6 +234,9 @@ struct ChatPickerView: View {
         .frame(minHeight: 52)
         .padding(.horizontal, 20).padding(.vertical, 12)
     }
+
+    /// Larger symbols leave the footer's 48-point circles.
+    private static let footerGlyphTextSizes = ...DynamicTypeSize.accessibility1
 
     private var footerAnimation: Animation {
         reduceMotion ? .easeOut : .default
@@ -307,7 +311,7 @@ struct ChatPickerView: View {
                 if isCreating {
                     ProgressView().tint(BottoTheme.action).accessibilityHidden(true)
                 } else {
-                    Image(systemName: "plus")
+                    Image(systemName: "plus").dynamicTypeSize(Self.footerGlyphTextSizes)
                 }
             }
             .font(.subheadline.weight(.medium))

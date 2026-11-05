@@ -268,12 +268,14 @@ struct ChatView: View {
         .toolbarColorScheme(colorScheme, for: .navigationBar)
         .overlay(alignment: .top) {
             if toolbarVisible {
-                NativeTranscriptHeader(preview: transcriptPreview, onActivate: screen == nil ? nil : {
-                    presentProfile(revision: toolbarRevision, owner: toolbarOwner)
-                }) {
+                NativeTranscriptHeader(preview: transcriptPreview,
+                                       onActivate: profileActivation(screen, revision: toolbarRevision, owner: toolbarOwner)) {
                     profileButton(screen, revision: toolbarRevision, owner: toolbarOwner)
                 }
-                .onGeometryChange(for: CGFloat.self) { max(0, $0.size.height - headerReferenceHeight) } action: { headerOverlap = $0 }
+                .padding(.horizontal, headerSideClearance)
+                .onGeometryChange(for: CGFloat.self) { [headerReferenceHeight] in
+                    max(0, $0.size.height - headerReferenceHeight)
+                } action: { headerOverlap = $0 }
                 .offset(y: -headerReferenceHeight)
             }
         }
@@ -328,6 +330,11 @@ struct ChatView: View {
         showsProfile = true
     }
 
+    private func profileActivation(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> (@MainActor () -> Void)? {
+        guard screen != nil else { return nil }
+        return { presentProfile(revision: revision, owner: owner) }
+    }
+
     private func presentOverview(revision: UUID, owner: PresentationOwner?) {
         guard mayPresent(revision: revision, owner: owner) else { return }
         overviewTransition.prepareOpening(id: screen?.selectedChatID.value.uuidString)
@@ -356,6 +363,10 @@ struct ChatView: View {
         overviewTransition.finishImmediately()
     }
 
+    /// The header's bar touch target spans its frame, so the frame must stop short of Back and Chats:
+    /// the bar margin, a 44-point control, and an 8-point gap.
+    private var headerSideClearance: CGFloat { 16 + 44 + 8 }
+
     private var headerReferenceHeight: CGFloat {
         BotAvatarLayout(shape: .circle, size: 56).fittedHeight
     }
@@ -367,7 +378,8 @@ struct ChatView: View {
     }
 
     private var profileNameLabel: some View {
-        Text(bot.name).font(.headline).lineLimit(1)
+        Text(bot.name).font(.headline).lineLimit(textSize.isAccessibilitySize ? 2 : 1)
+            .multilineTextAlignment(.center)
             .padding(.horizontal, 18).frame(minHeight: 44)
     }
 
@@ -378,10 +390,10 @@ struct ChatView: View {
                     .zIndex(1)
                 let label = profileNameLabel.foregroundStyle(BottoTheme.ink)
                 if #available(iOS 26, *) {
-                    label.glassEffect(.regular.interactive(), in: .capsule)
+                    label.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
                         .padding(.bottom, 8 + shortAvatarHeaderLift)
                 } else {
-                    label.background(.regularMaterial, in: Capsule())
+                    label.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
                         .padding(.bottom, 8 + shortAvatarHeaderLift)
                 }
             }

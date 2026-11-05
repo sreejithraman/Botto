@@ -122,20 +122,16 @@ import BottoCore
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        func header(in controller: UIViewController) -> NativeTranscriptHeaderController? {
-            if let header = controller as? NativeTranscriptHeaderController { return header }
-            return controller.children.lazy.compactMap(header).first
-        }
         try await revisionWait("the initial message and floating profile header are mounted") {
             revisionElement(text, in: fixture.host.view).map { !$0.accessibilityFrame.isEmpty } == true &&
-                header(in: fixture.host)?.view.window != nil && revisionController(fixture.host)?.previewState != nil
+                revisionHeader(fixture.host)?.view.window != nil && revisionController(fixture.host)?.previewState != nil
         }
         var headerFrame = CGRect.zero, messageFrame = CGRect.zero
         defer {
             Attachment.record("message=\(messageFrame)\nheader=\(headerFrame)", named: "initial-chat-header-geometry.txt")
         }
         try await revisionWait("the initial message clears the visible floating profile header") {
-            guard let profileHeader = header(in: fixture.host),
+            guard let profileHeader = revisionHeader(fixture.host),
                   let message = revisionElement(text, in: fixture.host.view) else { return false }
             headerFrame = profileHeader.view.convert(profileHeader.view.bounds, to: fixture.window)
             messageFrame = fixture.window.convert(message.accessibilityFrame, from: nil)
@@ -153,20 +149,15 @@ import BottoCore
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        func header(in controller: UIViewController) -> NativeTranscriptHeaderController? {
-            if let header = controller as? NativeTranscriptHeaderController { return header }
-            for child in controller.children { if let found = header(in: child) { return found } }
-            return nil
-        }
         try await revisionWait("the floating header observes the mounted transcript") {
             guard let transcript = revisionController(fixture.host),
-                  let header = header(in: fixture.host),
+                  let header = revisionHeader(fixture.host),
                   let edge = header.view.interactions.compactMap({ $0 as? UIScrollEdgeElementContainerInteraction }).first else { return false }
             return edge.scrollView === transcript.collection &&
                 header.navigationController?.topViewController?.contentScrollView(for: .top) === transcript.collection
         }
         let transcript = try #require(revisionController(fixture.host))
-        let floatingHeader = try #require(header(in: fixture.host))
+        let floatingHeader = try #require(revisionHeader(fixture.host))
         let edge = try #require(floatingHeader.view.interactions.compactMap { $0 as? UIScrollEdgeElementContainerInteraction }.first)
         let navigation = try #require(floatingHeader.navigationController)
         let bar = navigation.navigationBar
@@ -214,6 +205,57 @@ import BottoCore
                 "Retiring a header must preserve another scroll view's newer association.")
         contentOwner.setContentScrollView(nil, for: .top)
         transcript.retire()
+    }
+
+    @Test func floatingHeaderKeepsTheReplacementTranscriptWhenTheFormerOneRetiresLate() async throws {
+        guard #available(iOS 26, *) else { return }
+        let service = try WorkspaceTestService()
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-header-replacement.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
+        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try await revisionWait("the floating header observes the mounted transcript") {
+            guard let transcript = revisionController(fixture.host),
+                  let header = revisionHeader(fixture.host),
+                  let edge = header.view.interactions.compactMap({ $0 as? UIScrollEdgeElementContainerInteraction }).first else { return false }
+            return edge.scrollView === transcript.collection &&
+                header.navigationController?.topViewController?.contentScrollView(for: .top) === transcript.collection
+        }
+        let former = try #require(revisionController(fixture.host))
+        let floatingHeader = try #require(revisionHeader(fixture.host))
+        let edge = try #require(floatingHeader.view.interactions.compactMap { $0 as? UIScrollEdgeElementContainerInteraction }.first)
+        let contentOwner = try #require(floatingHeader.navigationController?.topViewController)
+        let preview = try #require(former.previewReceiver)
+        let parent = try #require(former.parent)
+        let container = try #require(former.view.superview)
+
+        // Stay synchronous from here: a SwiftUI update would rebind the still-mounted former transcript.
+        let replacement = NativeTranscriptController()
+        parent.addChild(replacement)
+        replacement.view.frame = former.view.frame
+        container.addSubview(replacement.view)
+        replacement.didMove(toParent: parent)
+        defer {
+            replacement.willMove(toParent: nil)
+            replacement.view.removeFromSuperview(); replacement.removeFromParent()
+        }
+        preview.bind(replacement)
+        preview.refreshHeader()
+        #expect(edge.scrollView === replacement.collection)
+        #expect(contentOwner.contentScrollView(for: .top) === replacement.collection)
+        #expect(former.previewReceiver === preview, "The late retirement must reach the preview's identity guard.")
+
+        former.retire()
+        #expect(preview.viewportView === replacement.collection)
+        #expect(edge.scrollView === replacement.collection,
+                "A late retirement must not clear the header's binding to its replacement.")
+        #expect(contentOwner.contentScrollView(for: .top) === replacement.collection)
+
+        replacement.retire()
+        #expect(preview.viewportView == nil)
+        #expect(edge.scrollView == nil)
+        #expect(contentOwner.contentScrollView(for: .top) == nil)
     }
 
     @Test func viewportCaptureCoalescesAndRetiresWithItsActualNativeOwner() async throws {
@@ -492,6 +534,10 @@ import BottoCore
 @MainActor private func revisionController(_ parent: UIViewController) -> NativeTranscriptController? {
     if let controller = parent as? NativeTranscriptController, controller.isViewLoaded, controller.view.window != nil { return controller }
     return parent.children.lazy.compactMap(revisionController).first
+}
+@MainActor private func revisionHeader(_ parent: UIViewController) -> NativeTranscriptHeaderController? {
+    if let header = parent as? NativeTranscriptHeaderController { return header }
+    return parent.children.lazy.compactMap(revisionHeader).first
 }
 @MainActor private func revisionElement(_ label: String, in root: NSObject) -> NSObject? {
     var visited = Set<ObjectIdentifier>()
