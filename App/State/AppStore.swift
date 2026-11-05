@@ -25,6 +25,8 @@ import BottoCore
     struct ArtifactDestination: Identifiable, Sendable {
         let id = UUID()
         let attachment: ChatAttachment
+        /// Every attachment of the producing message, in reading order.
+        let siblings: [ChatAttachment]
         let conversation: Conversation
         fileprivate let producingMessage: ChatMessage?
         fileprivate let workspace: ConversationWorkspace
@@ -1097,8 +1099,15 @@ import BottoCore
               let localOwner = currentArtifactPresentationKey(), let source = chatSelection(for: botID)?.identity else { return nil }
         if let producingMessage, !TranscriptMessageIndex(conversation).matches(producingMessage) { return nil }
         let intent = chats.captureArtifact(attachment, owner: screen.owner)
-        return .init(attachment: attachment, conversation: conversation, producingMessage: producingMessage, workspace: chats, intent: intent,
+        return .init(attachment: attachment, siblings: producingMessage.map { AttachmentPresentation.display($0).attachments } ?? [],
+                     conversation: conversation, producingMessage: producingMessage, workspace: chats, intent: intent,
                      identity: source, library: library, localOwner: localOwner, localEpoch: artifactPresentationEpoch)
+    }
+    func artifactDestination(adjacentTo destination: ArtifactDestination, by step: Int) -> ArtifactDestination? {
+        guard let index = destination.siblings.firstIndex(where: { $0.id == destination.attachment.id }),
+              destination.siblings.indices.contains(index + step) else { return nil }
+        return artifactDestination(for: destination.siblings[index + step], botID: destination.identity.profile.text,
+                                   producingMessage: destination.producingMessage)
     }
     /// Completed local bytes retain their owner independently of socket/access epochs.
     func isAuthorizedArtifactPresentation(_ destination: ArtifactDestination) -> Bool {

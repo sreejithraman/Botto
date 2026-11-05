@@ -132,6 +132,37 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
     }
 
+    @MainActor func testKeepingBothCopiesClosesFilesWithoutReopeningIt() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("This test writes copies to the local Files provider.")
+        #else
+        // `chart.png` stays clear of the absence record that guards `notes.txt`.
+        let app = openArtifact("chart.png")
+        for attempt in 1...2 {
+            tapOutput("artifact-save", label: "Save to Files", in: app)
+            let picker = readyFilesPicker(in: app, captureName: "Files before Save \(attempt)")
+            picker.buttons["Save"].tap()
+            // Earlier runs can leave `chart.png`, so either Save may collide. The second must.
+            let choices = keepBothChoices(in: app)
+            let resolved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { choices.contains(where: \.exists) || !picker.exists }
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [resolved], timeout: 20), .completed)
+            if let keepBoth = choices.first(where: \.exists) { keepBoth.tap() }
+            else { XCTAssertEqual(attempt, 1, "The second Save must collide.") }
+            XCTAssertTrue(picker.waitForNonExistence(timeout: 20), "Save must dismiss Files.")
+            let reopened = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                MainActor.assumeIsolated { picker.exists }
+            }, object: nil)
+            let stayedClosed = XCTWaiter.wait(for: [reopened], timeout: 5) == .timedOut
+            capture("Reader after Save \(attempt)", app: app)
+            XCTAssertTrue(stayedClosed, "Files must not present itself again after Save.")
+            assertOutputActions(in: app)
+        }
+        XCTAssertFalse(app.alerts["Export Failed"].exists)
+        #endif
+    }
+
     @MainActor func testLibrarySaveToFilesAndReopenSavedOriginal() throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("The durable export fixture writes only to an owned CI simulator.")
@@ -206,6 +237,14 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertTrue(reference.isHittable)
         reference.tap()
         return app
+    }
+
+    /// Files hosts this alert out of process, where `app.buttons` doesn't reach it.
+    @MainActor private func keepBothChoices(in app: XCUIApplication) -> [XCUIElement] {
+        let label = NSPredicate(format: "label == %@", "Keep Both")
+        return [app, XCUIApplication(bundleIdentifier: "com.apple.springboard")].map {
+            $0.descendants(matching: .any).matching(label).firstMatch
+        }
     }
 
     @MainActor private func filesPicker(in app: XCUIApplication) -> XCUIElement {

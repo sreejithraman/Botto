@@ -4,6 +4,135 @@ Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.
 
+## Composer attachments (4–5 November 2026)
+
+Initial public-entry checks used an iPhone 17 Pro Simulator on iOS 27.0 and a
+pinned local Hermes host with a mock model. Photos used native image input.
+Final repair checks used local service fixtures on iPhone 17 Pro and iPad Pro
+13-inch (M5), also on iOS 27.0. These are separate evidence scopes.
+
+- Files staged `.mov`, no-extension, `.svg`, `.bin`, `.epub` and `.tar.gz` inputs.
+  A 26 MiB file alone got the budget message; the batch continued. Removal worked,
+  and five sent files matched their fixtures by hash on the host.
+- Native paste staged a Photos **Copy Photo** image, a Files text file and three
+  Files items copied together. Plain text stayed text. Generic files, UTF-16,
+  HTML, RTF, URLs and refused mixed pastes have final hosted tests. RTF and URL
+  cases guard the new path; they did not fail before repair. Paste over budget has
+  classifier/state coverage only. Live generic Files paste after repair was not run.
+- Four photos sent as a fanned deck. Both swipe directions matched the reference,
+  and vertical drags from the deck scrolled the transcript. Tapping opened the
+  selected attachment in the minimal header; photo/PDF paging stopped at the ends.
+- A 5 MiB incompressible upload at 100 KB/s through a local relay finished in about
+  75 seconds. Its host hash matched, and an earlier staged PDF survived. This does
+  not prove survival of a remote host's keepalive timeout.
+
+Final focused verification:
+
+- **Final iPhone checks passed twice: 93 passed, one wide method skipped, and
+  zero failures in five native suites.** The eight wide cases ran separately on
+  iPad in the earlier 92-test pass. Held provider reads and service uploads covered
+  hidden readers, renewed chat access, rendered Cancel activation,
+  paired page turns, interruption notices and deliberate retry. Paired page turns
+  retained both selected files; hidden readers and stale access did not stage late
+  results. The eight wide cases used the shared accessibility runtime and
+  `BOTTO_RUN_WIDE_IMPORT_TESTS=1` in an actual iPad window.
+- Opening-paste guidance reproduced staying visible after recovery, then cleared
+  after the repair. Independent offline reconnect and held-upload cases also
+  proved guidance clears without a new chat owner; both failed before repair.
+  Replacing Cancel with a no-op failed both cancellation cases
+  before any covering event; restoring its action passed. Gateway, renewed-access,
+  generic-file, UTF-16/HTML mixed-text, filename and PDF-pan regressions also failed
+  before their respective repairs.
+- **Five iPhone UI journeys passed** before the last notice-clearing change,
+  in the shipped shell: library Save and Files reopen, offline attachment feedback, draft/reader return, PDF pan/swipe,
+  and Files import with sibling-chat isolation and Send. Independent provider
+  readback matched all 80 original notes-file bytes.
+- An earlier combined run intermittently missed the expected HTML paste text.
+  Five isolated editor-suite runs did not reproduce it; its cause is unknown.
+  The test now suspends between checks with the same three-second deadline and
+  expected text. The final two combined runs passed.
+
+The earlier full check sequence passed 533 core tests with seven known issues,
+all 1,011 native unit tests, and byte-identical export readback. Its UI suite ran
+136 tests with 16 skipped and three failures, so **the full gate did not pass**.
+Two obsolete compact-reader Full screen expectations were corrected and rechecked.
+The remaining sibling-retirement test failed intermittently on both `8ed6ae3`
+(5/8 runs) and this branch (4/8); its cause remains unknown. A separate iPad
+`DuoWorkspaceUITests` run passed 8/9 journeys. Its paired Quick Look PDF pinch
+failed at the same initial page-growth assertion on base; that path remains
+unproved. No green whole-gate rerun is claimed.
+
+Complete recipes remain draft. Physical devices, iOS 18, VoiceOver, iCloud-offloaded
+files, offline paste outside hosted tests, and final repair retesting against a
+live remote host were not exercised. Quick Look image zoom/paging and text-selection/video-scrub gesture
+interactions remain unproved. A non-loopback host can still close a frame that
+exceeds its keepalive, about 40 seconds by default. A canceled provider read may
+finish in the background; its result cannot stage.
+
+### Per-file progress, previews and photo pager (5 November 2026)
+
+Local demo service on iPhone 17 Pro and iPad Pro 13-inch (M5) Simulators, iOS 27.0.
+No remote host. Fixtures were a known JPEG, PDF and text file in the local Files
+provider. A DEBUG `--slow-upload-demo` flag held each upload for three seconds.
+
+- Three files chosen in Files each took their own tile with activity feedback, and
+  Send stayed disabled until they settled. Cancelling one tile left the other two
+  to attach. Unit tests cover mid-upload cancel, partial failure and chat ownership.
+  A final visual-only change replaced the spinner with a rotating circular ring.
+  Its iPhone build and a fresh Files-import recording passed; the ring remains
+  until the file attaches. Reduce Motion uses a stationary arc by source inspection.
+- PDF first pages and text excerpts appeared in composer tiles and the sent stack.
+  Encrypted, malformed and unsupported files keep the named tile in tests. Seeded
+  or hosted attachments with no local bytes still show named cards.
+- In the reader, a slow partial drag followed the finger with the next page alongside,
+  then settled back. Swipes moved photo to PDF to text and held at the end. A zoomed
+  PDF panned without turning the page; at fit size it turned again.
+- Save with **Keep Both** produced a copy matching the fixture's SHA-256. Share showed
+  the original name and size. Close returned to the chat. The wide iPad journey
+  covered paired and full-screen readers, Actions and Bots.
+- Under test load, **Keep Both** could reopen Files. A trace showed the scene going
+  inactive with the save still open, which dropped its completion. Keeping the
+  exporter through `.inactive` fixed it. With core tests running as load, the new UI
+  test failed on the first try without the fix and passed three of three with it.
+
+Before the final sibling-retry repair, 533 core tests passed serially with seven
+known issues, and
+124 affected native tests passed on iPhone, with one wide method skipped. iPhone
+UI ran 29 tests with two skipped.
+Its one failure was the first version of the new test, which was then corrected and
+passed. On iPad, the eight wide import cases passed, and UI ran 17 tests with one
+skipped and two failures: `testPDFPreviewZoomAndShareCancellation` and
+`testPDFZoomAndScrolledViewportSurviveFullScreenReturnAndClose`. The frozen prior
+revision failed both on the same iPad at the same assertions, so paired Quick Look
+PDF pinch stays unproved. The whole gate was not rerun. The Keep Both test failure on
+the old reader came from the first try only, and the trigger needs load, so a pass
+is weaker evidence than that failure. Plain parallel `swift test` failed
+`aSlowAttachmentFrameOutlivesTheRequestAndSilenceTimers` twice; the documented
+`--no-parallel` run passed it.
+
+A later regression reproduced a failed or still-loading neighboring page becoming
+unavailable after same-chat access renewed. Both cases failed before repair. The
+repair keeps loaded pages and captures a fresh read for a retired neighbor. All
+66 tests in four affected native suites then passed, including both cases and
+export of the newly selected file.
+
+Canceling a tile whose provider never returned during the assertions initially
+kept the composer busy. Both lone-file and following-file cases failed before
+repair; 108 tests in five affected native suites passed after cancellation was
+separated from provider completion. Dispatched uploads still retain their slot.
+The iPad exposure suite also passed all eight wide read/upload cases.
+
+Opening the second stack card exposed a title/content mismatch: its header named
+the image while the first PDF remained visible. Explicit initial positioning
+repaired it. Phone and iPad journeys then passed selected-image alignment and
+partial/full/end paging; stricter phone and iPad checks read the selected filename from the
+actual Share metadata caption. Earlier failed test selectors were corrected and
+are not counted as product regressions or passing proof.
+
+Not exercised: Photos picker in this revision (Files supplied the JPEG), paged Quick
+Look edge strips, image pinch and double-tap, text selection and video inside the pager,
+Reduce Motion, VoiceOver, physical devices and thumbnails after relaunch.
+
 ## Active-rich measurement acceptance (4 November 2026)
 
 `rendered_endpoint_success=false` now fails

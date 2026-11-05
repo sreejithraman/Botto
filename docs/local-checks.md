@@ -144,6 +144,12 @@ Audit the named method and final Swift Testing count. Its XCTest wrapper can
 report zero tests before the real Swift Testing run. Revision-test failure
 screenshots are retained as `.xcresult` attachments.
 
+Wide import interruption checks need an iPad window at least 681 points wide.
+Run `ChatEditingExposureTests` on an owned iPad with
+`TEST_RUNNER_BOTTO_RUN_WIDE_IMPORT_TESTS=1` before `xcodebuild test`. The suite
+uses the same accessibility runtime; ordinary phone runs leave its wide-only
+cases disabled.
+
 ## Opt in to checks before push
 
 Cloning or checking out these files does not enable hooks. To enable the

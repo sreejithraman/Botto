@@ -4,7 +4,7 @@ import Foundation
 public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
     case invalidAddress, insecureAddress, differentHost, incompatible, authentication, browserAuthentication
     case redirected, disconnected, staleConversation, wrongConversation, missingChat, timeout, uncertain
-    case rejected(Int), invalidName, nameTaken, unsupportedRequest, invalidResponse, attachmentLimit, invalidAttachment
+    case rejected(Int), invalidName, nameTaken, unsupportedRequest, invalidResponse, attachmentLimit, invalidAttachment, unreadableImage
     case modelSelection, missingModel, partialCreation, submissionStorage, profileUnavailable, staleGeneration
     case steeringUnavailable, steeringAttachments
     case queuedMessageUnavailable
@@ -55,6 +55,7 @@ public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
         case .responseTooLong: "This answer is too long. Use 16,384 UTF-8 bytes or fewer, then submit again. Some characters use more than one byte. Nothing was sent."
         case .attachmentLimit: AttachmentLimits.message
         case .invalidAttachment: "This attachment is invalid or belongs to another chat. Attach the file again."
+        case .unreadableImage: "Botto couldn’t read this image. Try another one."
         case .modelSelection: "Botto uses the server’s default model. Configure model choices in Hermes Desktop."
         case .missingModel: "The bot and its chat were created, but no default model was inherited. Set a model in Hermes Desktop before chatting."
         case .partialCreation: "The bot was created, but its appearance or chat setup was not confirmed. Refresh the bot list and check it in Hermes Desktop before creating another."

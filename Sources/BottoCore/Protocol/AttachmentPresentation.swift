@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 
 /// Read-only transcript projection. Host paths are identities, never local files or URLs to load.
 public enum AttachmentPresentation {
+    public static let imageOnlyPrompt = "Please examine the attached image."
+
     public static func display(_ message: ChatMessage) -> (text: String, attachments: [ChatAttachment]) {
         guard message.role == .user else { return (message.text, message.attachments) }
         var seen = Set<String>()
@@ -18,7 +20,8 @@ public enum AttachmentPresentation {
         var references: [String] = []
         var extracted = false
         var fence: String?
-        let imageText = textWithoutImageHints(message.text, attachments: attachments)
+        let persisted = persistedImages(in: message.text)
+        let imageText = textWithoutImageHints(persisted?.text ?? message.text, attachments: attachments)
         let blocks = imageText.components(separatedBy: "\n\n")
         for (index, block) in blocks.enumerated() {
             let inCode = fence != nil
@@ -46,8 +49,25 @@ public enum AttachmentPresentation {
                 }
             } else { kept.append(block) }
         }
-        guard extracted else { return (imageText, attachments) }
-        return (kept.joined(separator: "\n\n").trimmingCharacters(in: .newlines), attachments)
+        for path in persisted?.paths ?? [] where !attachments.contains(where: { $0.path == path }) {
+            attachments.append(attachment(path: path, image: true))
+        }
+        let text = extracted ? kept.joined(separator: "\n\n").trimmingCharacters(in: .newlines) : imageText
+        return (text == imageOnlyPrompt && !attachments.isEmpty ? "" : text, attachments)
+    }
+
+    /// Text-only history rows replace each image part with `[screenshot]` after the hints.
+    /// Equal counts mark them as generated; a lone look-alike stays what the user typed.
+    private static func persistedImages(in text: String) -> (text: String, paths: [String])? {
+        var lines = text.components(separatedBy: "\n")
+        var placeholders = 0
+        while let line = lines.last, line.wholeMatch(of: /\[screenshot(?: detail=(?:low|high|auto))?\]/) != nil {
+            lines.removeLast(); placeholders += 1
+        }
+        guard placeholders > 0, let hints = imageHints(in: lines.joined(separator: "\n")), hints.paths.count == placeholders,
+              hints.paths.allSatisfy({ isFilePath($0) && ($0.hasPrefix("/") || $0.firstMatch(of: /^[A-Za-z]:[\\\/]/) != nil) })
+        else { return nil }
+        return hints
     }
 
     private static func textWithoutImageHints(_ text: String, attachments: [ChatAttachment]) -> String {
@@ -118,7 +138,10 @@ public enum AttachmentPresentation {
     private static func displayName(_ value: String, image: Bool) -> String {
         let name = basename(value)
         var shown = name.replacing(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}-/, with: "")
-        if image { shown = shown.replacing(/^dashboard_\d{8}_\d{6}_[0-9a-f]{8}_/, with: "") }
+        if image {
+            shown = shown.replacing(/^dashboard_\d{8}_\d{6}_[0-9a-f]{8}_/, with: "")
+                .replacing(/^upload_[a-z0-9_]{8}(?=\.)/, with: "Photo")
+        }
         return shown.isEmpty ? name : shown
     }
 

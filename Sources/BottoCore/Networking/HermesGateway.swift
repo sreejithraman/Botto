@@ -7,15 +7,25 @@ import Foundation
         var avatarGeneration: Duration = .seconds(75)
         var heartbeat: Duration = .seconds(15)
         var silence: Duration = .seconds(45)
+        /// The slowest uplink, in bytes per second, an attachment frame's deadline allows for.
+        var attachmentUplink = 64 * 1024
         var reconnectDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30)]
     }
     private struct Pending {
         let continuation: CheckedContinuation<HermesJSON, Error>
-        let timer: Task<Void, Never>
         let mutation: Bool
+        let timeoutPolicy: TimeoutPolicy
+        let allowance: Duration
+        /// Attachment frames ahead of this one on the socket. Later frames never join this
+        /// set, and each member has its own deadline, so the wait stays bounded.
+        var framesAhead: Set<Int>
+        var timer: Task<Void, Never>?
     }
     private let http: HermesHTTPConnection
     private let timing: Timing
+    /// URLSession reports neither the frame's progress nor its delivery, and Hermes answers
+    /// nothing until it holds the whole frame, so only the reply can end this wait.
+    private var attachmentCalls: Set<Int> = []
     private var socket: (any HermesSocket)?
     private var reader: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
@@ -43,7 +53,9 @@ import Foundation
             while !Task.isCancelled {
                 do { try await Task.sleep(for: self?.timing.heartbeat ?? .seconds(15)) } catch { return }
                 guard let self, !self.closed else { return }
-                if self.lastRead.duration(to: .now) >= self.timing.silence { self.end(.timeout); return }
+                if self.attachmentCalls.isEmpty, self.lastRead.duration(to: .now) >= self.timing.silence {
+                    self.end(.timeout); return
+                }
             }
         }
         try await withTaskCancellationHandler {
@@ -86,20 +98,18 @@ import Foundation
         let id = nextID
         let frame = HermesJSON.object(["jsonrpc": .string("2.0"), "id": .number(Double(id)),
                                       "method": .string(method), "params": .object(params)])
+        let attachment = method == "file.attach" || method == "image.attach_bytes"
         let data: Data
-        if method == "file.attach" || method == "image.attach_bytes" { data = try await Task.detached { try frame.data }.value }
+        if attachment { data = try await Task.detached { try frame.data }.value }
         else { data = try frame.data }
         guard !closed, !Task.isCancelled else { throw HermesServiceError.disconnected }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let timer = Task { [weak self, timing] in
-                    do { try await Task.sleep(for: timeout ?? timing.request) } catch { return }
-                    guard let self, self.pending[id] != nil else { return }
-                    if timeoutPolicy == .requestOnly, !mutation {
-                        self.settle(id, result: .failure(HermesServiceError.timeout))
-                    } else { self.end(.timeout) }
-                }
-                pending[id] = Pending(continuation: continuation, timer: timer, mutation: mutation)
+                let transfer = attachment ? Duration.seconds(Double(data.count) / Double(timing.attachmentUplink)) : .zero
+                pending[id] = Pending(continuation: continuation, mutation: mutation, timeoutPolicy: timeoutPolicy,
+                                      allowance: (timeout ?? timing.request) + transfer, framesAhead: attachmentCalls)
+                if attachmentCalls.isEmpty { startDeadline(id) }
+                if attachment { attachmentCalls.insert(id) }
                 Task { [weak self] in
                     guard let self, !self.closed, self.pending[id] != nil else { return }
                     do { try validate?() }
@@ -144,9 +154,24 @@ import Foundation
         else { settle(id, result: .failure(HermesServiceError.incompatible)) }
     }
 
+    private func startDeadline(_ id: Int) {
+        guard let allowance = pending[id]?.allowance else { return }
+        pending[id]?.timer = Task { [weak self] in
+            do { try await Task.sleep(for: allowance) } catch { return }
+            guard let self, let entry = self.pending[id] else { return }
+            if entry.timeoutPolicy == .requestOnly, !entry.mutation {
+                self.settle(id, result: .failure(HermesServiceError.timeout))
+            } else { self.end(.timeout) }
+        }
+    }
+
     private func settle(_ id: Int, result: Result<HermesJSON, Error>) {
         guard let entry = pending.removeValue(forKey: id) else { return }
-        entry.timer.cancel(); entry.continuation.resume(with: result)
+        attachmentCalls.remove(id)
+        entry.timer?.cancel(); entry.continuation.resume(with: result)
+        for waiting in Array(pending.keys) where pending[waiting]?.framesAhead.remove(id) != nil {
+            if pending[waiting]?.framesAhead.isEmpty == true { startDeadline(waiting) }
+        }
     }
 
     func close() { onDisconnect = nil; end(.disconnected) }
@@ -159,9 +184,9 @@ import Foundation
         watchdog?.cancel(); watchdog = nil
         socket?.close(); socket = nil
         let waiter = ready; ready = nil; waiter?.resume(throwing: reason)
-        let entries = pending; pending = [:]
+        let entries = pending; pending = [:]; attachmentCalls = []
         for entry in entries.values {
-            entry.timer.cancel()
+            entry.timer?.cancel()
             entry.continuation.resume(throwing: entry.mutation ? HermesServiceError.uncertain : reason)
         }
         onDisconnect?(reason)

@@ -918,6 +918,9 @@ final class MultipleChatUITests: XCTestCase {
         let file = app.collectionViews.cells.containing(NSPredicate(
             format: "label CONTAINS %@", stem)).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 15)); file.tap()
+        // The picker takes several files, so a choice needs confirming.
+        let open = app.buttons["Open"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
         let remove = app.buttons["Remove " + filename]
         XCTAssertTrue(remove.waitForExistence(timeout: 8))
         editor(app).tap(); editor(app).typeText("Draft with a file")

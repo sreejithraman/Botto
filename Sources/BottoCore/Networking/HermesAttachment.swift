@@ -14,12 +14,13 @@ nonisolated enum HermesAttachment {
               filename != ".", filename != "..", !mime.contains(where: { $0.isWhitespace || $0 == ";" })
         else { throw HermesServiceError.invalidAttachment }
         let type = UTType(filenameExtension: (filename as NSString).pathExtension)
-        if type?.conforms(to: .image) == true || mime.hasPrefix("image/") {
+        let vector = type?.conforms(to: .svg) == true || mime == UTType.svg.preferredMIMEType
+        if !vector, type?.conforms(to: .image) == true || mime.hasPrefix("image/") {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 4096] as CFDictionary) else { throw HermesServiceError.invalidAttachment }
+                    kCGImageSourceThumbnailMaxPixelSize: 4096] as CFDictionary) else { throw HermesServiceError.unreadableImage }
             let alpha = [CGImageAlphaInfo.first, .last, .premultipliedFirst, .premultipliedLast, .alphaOnly].contains(image.alphaInfo)
             let format = alpha ? UTType.png : UTType.jpeg
             let output = NSMutableData()
@@ -29,11 +30,7 @@ nonisolated enum HermesAttachment {
             let name = (filename as NSString).deletingPathExtension + (alpha ? ".png" : ".jpg")
             return Prepared(data: output as Data, name: name, mime: alpha ? "image/png" : "image/jpeg", image: true)
         }
-        let ext = (filename as NSString).pathExtension.lowercased()
-        guard type?.conforms(to: .text) == true || type?.conforms(to: .pdf) == true || type?.conforms(to: .audio) == true
-            || ["json", "yaml", "yml", "csv", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip"].contains(ext)
-        else { throw HermesServiceError.invalidAttachment }
-        return Prepared(data: data, name: filename, mime: type?.preferredMIMEType ?? "application/octet-stream", image: false)
+        return Prepared(data: data, name: filename, mime: type?.preferredMIMEType ?? (mime.isEmpty ? "application/octet-stream" : mime), image: false)
     }
     static func hostPath(_ value: String?) throws -> String {
         guard let value, !value.hasPrefix("//"), !value.hasPrefix("\\\\"),

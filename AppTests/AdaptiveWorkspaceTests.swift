@@ -1255,6 +1255,7 @@ private struct ChatCoverageHost: View {
     @State private var presentation = WorkspacePresentation()
     var body: some View {
         ChatView(store: store, bot: bot, presentation: presentation, isExposed: !state.covered, isEditingExposed: !state.covered,
+                 importPaneVisible: !state.covered,
                  rootCovered: state.covered, onLocalModalPresentation: { _ in })
             .onChange(of: state.covered) { _, _ in state.observedCover = true }
     }
@@ -1304,6 +1305,7 @@ private struct NativeReadCoverageHost: View {
     let native: WorkspaceNativeDetailState
     var body: some View {
         ChatView(store: store, bot: bot, presentation: presentation, isExposed: true, isEditingExposed: true,
+                 importPaneVisible: true,
                  rootCovered: false, onLocalModalPresentation: { _ in })
             .environment(\.scenePhase, .active)
             .environment(\.workspaceNativeDetail, native)

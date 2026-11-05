@@ -171,12 +171,18 @@ paths. Ordinary web links and code examples remain text. Host paths identify
 files on Hermes; they never open as local iPhone paths.
 
 The retained file reader appears beside its conversation when space permits,
-or fills the detail area in narrow space. **Full screen** and **Exit full screen** change
-its allocation; **Close** ends the preview. Browsing Bots hides the reader.
+or fills the detail area in narrow space. Where it can sit beside the chat, **Full
+screen** and **Exit full screen** change its allocation; **Close** ends the preview.
+A reader filling the workspace takes the navigation bar's place and carries **Bots**
+in its **Actions** menu. Browsing Bots hides the reader.
 Selecting a bot retires the old reader, including when selecting the same bot.
 
 Plain text uses a selectable, read-only native text view with strict decoding.
-PDF, images and other supported formats use Quick Look. The local **Actions**
+PDF, images and other supported formats use Quick Look. A message's attachments
+share a pager that follows the finger, so unencrypted PDFs among them use PDFKit
+and images a zooming view: Quick Look draws in another process, where the app never
+sees the swipe. Other Quick Look pages turn from their edges. Only the selected
+page owns export; its neighbors load beside it. The local **Actions**
 menu offers **Save to Files** and **Share** for the original downloaded bytes,
 including when text cannot be decoded or a format cannot be previewed. Files
 larger than 25 MiB cannot load. Missing files and connection failures show an

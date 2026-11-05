@@ -57,6 +57,7 @@ import BottoCore
     var creates: [UUID] = []
     var opens: [SessionIdentity] = []
     var uploads: [SessionIdentity] = []
+    var uploadError: (any Error)?
     var responses: [PendingRequest] = []
     var responseError: (any Error)?
     var responseOperations: [UUID] = []
@@ -228,6 +229,7 @@ import BottoCore
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
         uploads.append(try issuer.resolve(access))
         await uploadGate?.wait()
+        if let uploadError { throw uploadError }
         return .init(name: filename, path: "uploads/" + filename, mimeType: mimeType, byteCount: data.count)
     }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {

@@ -111,9 +111,11 @@ import Testing
         default: socket.reject(frame, code: -32601); return nil
         }
     }
-    func service(requestTimeout: Duration = .seconds(1), avatarEngine: BotAvatarEngine = .shared) -> HermesBotService {
+    func service(requestTimeout: Duration = .seconds(1), heartbeat: Duration = .seconds(10), silence: Duration = .seconds(30),
+                 attachmentUplink: Int = 64 * 1024, avatarEngine: BotAvatarEngine = .shared) -> HermesBotService {
         HermesBotService(transportFactory: { [transport] in transport },
-            timing: .init(request: requestTimeout, heartbeat: .seconds(10), silence: .seconds(30), reconnectDelays: [.milliseconds(10)]),
+            timing: .init(request: requestTimeout, heartbeat: heartbeat, silence: silence, attachmentUplink: attachmentUplink,
+                          reconnectDelays: [.milliseconds(10)]),
             journal: HermesSubmissionJournal(directory: nil), avatarEngine: avatarEngine)
     }
     var configuration: ConnectionConfiguration {

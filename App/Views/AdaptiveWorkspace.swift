@@ -132,9 +132,13 @@ private struct WorkspaceShell: View {
             localCovered: chatCovered, sceneActive: scenePhase == .active,
             compactShowsSidebar: compactColumn.wrappedValue == .sidebar)
     }
-    private var title: String {
-        if allocation.artifactVisible && !allocation.chatVisible { return "File" }
-        return selected?.profile.name ?? ""
+    private var title: String { selected?.profile.name ?? "" }
+    /// A full-width reader's own header carries the Bots control, leaving one bar on screen.
+    private var readerFillsWorkspace: Bool { allocation.artifactVisible && !allocation.chatVisible }
+    private func browseBots() {
+        guard !rootCovered, !chatCovered, !outputCovered else { return }
+        editing.cancel()
+        presentation.browseBots()
     }
     var body: some View {
         NavigationSplitView(columnVisibility: visibility, preferredCompactColumn: compactColumn) {
@@ -159,7 +163,8 @@ private struct WorkspaceShell: View {
                                               allowsTopOverflow: true, isSemanticallyVisible: chatSemanticallyVisible) {
                             if let bot = selected?.profile {
                                 ChatView(store: store, bot: bot, presentation: presentation,
-                                    isExposed: chatExposed(in: layout), isEditingExposed: chatEditingExposed(in: layout), rootCovered: rootCovered || outputCovered,
+                                    isExposed: chatExposed(in: layout), isEditingExposed: chatEditingExposed(in: layout),
+                                    importPaneVisible: presentation.artifact == nil || panes.chatVisible, rootCovered: rootCovered || outputCovered,
                                     onLocalModalPresentation: { [renderedBotID = bot.id] covered in
                                         guard store.selectedBotID == renderedBotID else { return }
                                         chatCovered = covered
@@ -174,8 +179,10 @@ private struct WorkspaceShell: View {
                                               initialWidth: WorkspaceLayout.minimumFileWidth,
                                               isSemanticallyVisible: panes.artifactVisible && geometry.size.height > 0) {
                             if let session = presentation.artifact {
-                                artifactReader(session, active: nativeDetail.readable && panes.artifactVisible && !rootCovered && !chatCovered && scenePhase == .active)
-                                    .id(session.id)
+                                let readable = nativeDetail.readable && panes.artifactVisible && !rootCovered && !chatCovered
+                                artifactReader(session, active: readable && scenePhase == .active,
+                                               holdsOutput: readable && scenePhase != .background)
+                                    .id(session.readerID)
                             }
                         }
                     }
@@ -194,14 +201,11 @@ private struct WorkspaceShell: View {
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .navigationBarBackButtonHidden(showsFile)
+                .toolbarVisibility(readerFillsWorkspace ? .hidden : .automatic, for: .navigationBar)
                 .toolbar {
-                    if showsBrowseBots {
+                    if showsBrowseBots && !readerFillsWorkspace {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button("Bots", systemImage: "sidebar.left") {
-                                guard !rootCovered, !chatCovered, !outputCovered else { return }
-                                editing.cancel()
-                                presentation.browseBots()
-                            }
+                            Button("Bots", systemImage: "sidebar.left", action: browseBots)
                             .accessibilityIdentifier("workspace-browse-bots")
                             .disabled(outputCovered)
                         }
@@ -258,21 +262,29 @@ private struct WorkspaceShell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity).background(BottoTheme.paper)
     }
 
-    private func artifactReader(_ session: ArtifactPreviewSession, active: Bool) -> some View {
+    private func artifactReader(_ session: ArtifactPreviewSession, active: Bool, holdsOutput: Bool) -> some View {
         let revision = presentation.revision
-        return ArtifactPreview(session: session, isExpanded: presentation.isArtifactExpanded, isActive: active,
+        let toggleExpanded = {
+            guard artifactActionsAvailable, presentation.acceptsArtifactCallback(id: session.id, revision: revision) else { return }
+            presentation.setArtifactExpanded(!presentation.isArtifactExpanded, id: session.id)
+        }
+        let showsExpansion = observedLayout.pairsChatAndFile || presentation.isArtifactExpanded
+        return ArtifactPreview(session: session, isExpanded: presentation.isArtifactExpanded, isActive: active, holdsOutput: holdsOutput,
             onClose: {
                 guard artifactActionsAvailable, presentation.acceptsArtifactCallback(id: session.id, revision: revision) else { return }
                 presentation.closeArtifact(id: session.id)
-            }, onToggleExpanded: {
-                guard artifactActionsAvailable, presentation.acceptsArtifactCallback(id: session.id, revision: revision) else { return }
-                presentation.setArtifactExpanded(!presentation.isArtifactExpanded, id: session.id)
-            }, onRetry: {
+            }, onToggleExpanded: showsExpansion ? toggleExpanded : nil, onRetry: {
                 presentation.retryArtifact(id: session.id, revision: revision, canPresent: { artifactActionsAvailable })
-            }, canPresentOutput: {
+            }, onBrowseBots: showsBrowseBots && readerFillsWorkspace ? { browseBots() } : nil, canPresentOutput: {
                 artifactActionsAvailable && presentation.acceptsArtifactCallback(id: session.id, revision: revision)
             }, connectionFeedback: session.requiresConnection && !store.isConnected
-                ? AnyView(ConnectionStatusView(store: store)) : nil)
+                ? AnyView(ConnectionStatusView(store: store)) : nil,
+            pages: session.page.map { page in
+                ArtifactPages(index: page.index, count: page.count, session: presentation.artifactSession(atPage:)) { step in
+                    guard artifactActionsAvailable, presentation.acceptsArtifactCallback(id: session.id, revision: revision) else { return false }
+                    return presentation.moveArtifact(by: step, id: session.id, store: store)
+                }
+            })
     }
 }
 

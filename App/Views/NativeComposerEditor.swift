@@ -16,6 +16,8 @@ struct NativeComposerEditor: UIViewRepresentable {
     let accessibilityLabel: String
     let editing: ComposerEditingHandle
     let canEdit: () -> Bool
+    var pasteAttachments: ((PresentationOwner, [PastedAttachment]) -> Void)?
+    var admitAttachmentPaste: ((PresentationOwner) -> Bool)?
 
     func makeUIView(context: Context) -> NativeComposerTextView {
         let view = NativeComposerTextView()
@@ -26,6 +28,8 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.configure(text: $text, identity: identity, enabled: enabled, placeholder: placeholder,
             label: accessibilityLabel, dynamicType: context.environment.dynamicTypeSize,
             direction: context.environment.layoutDirection, canEdit: canEdit)
+        view.pasteAttachments = pasteAttachments
+        view.admitAttachmentPaste = admitAttachmentPaste
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: NativeComposerTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
@@ -62,6 +66,9 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
     private lazy var inputTrace = InteractionFrameTrace.make(viewport: self, outputVariable: "BOTTO_TYPING_TRACE_OUTPUT")
     #endif
     weak var editingHandle: ComposerEditingHandle?
+    var pasteAttachments: ((PresentationOwner, [PastedAttachment]) -> Void)?
+    var admitAttachmentPaste: ((PresentationOwner) -> Bool)?
+    var pasteboard = UIPasteboard.general
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -141,6 +148,19 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
         if geometryChanged || markedTextRange != nil { invalidateIntrinsicContentSize() }
     }
 
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), eligible, pasteAttachments != nil, ComposerPaste.containsAttachment(pasteboard) { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    override func paste(_ sender: Any?) {
+        guard eligible, canEdit(), let pasteAttachments, let owner = identity?.owner else { super.paste(sender); return }
+        let content = ComposerPaste(pasteboard)
+        guard !content.attachments.isEmpty else { super.paste(sender); return }
+        guard admitAttachmentPaste?(owner) != false else { return }
+        pasteAttachments(owner, content.attachments)
+        if !content.text.isEmpty { super.paste(itemProviders: content.text) }
+    }
+
     func fittingSize(width: CGFloat) -> CGSize {
         let insets = textContainerInset.top + textContainerInset.bottom
         let line = font?.lineHeight ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
@@ -196,7 +216,7 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
         inputTrace?.finish()
         #endif
         reconciling = true; cancelEditing(commit: false); unmarkText(); undoManager?.removeAllActions()
-        boundText = .constant(""); identity = nil; canEdit = { false }
+        boundText = .constant(""); identity = nil; canEdit = { false }; pasteAttachments = nil; admitAttachmentPaste = nil
         if editingHandle?.editor === self { editingHandle?.editor = nil }
     }
     private static func category(_ size: DynamicTypeSize) -> UIContentSizeCategory {
