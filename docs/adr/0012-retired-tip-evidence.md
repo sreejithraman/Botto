@@ -28,6 +28,7 @@ These cases are deferred:
 
 Sree accepted `main`'s behavior for these cases in this delivery. This records a
 scope choice. It measures no frequency and accepts no wider security claim.
+[Returning versions](0013-returning-versions-follow-the-host.md) settles them.
 
 ## Original decision
 

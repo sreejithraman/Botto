@@ -884,6 +884,74 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Add attachment"].isHittable)
     }
 
+    @MainActor func testLongBotNameLeavesHeaderNavigationOperable() {
+        assertLongBotNameLeavesHeaderNavigationOperable(largeText: false)
+    }
+
+    @MainActor func testLongBotNameLeavesHeaderNavigationOperableAtLargestText() {
+        assertLongBotNameLeavesHeaderNavigationOperable(largeText: true)
+    }
+
+    @MainActor private func assertLongBotNameLeavesHeaderNavigationOperable(largeText: Bool) {
+        let app = launch(largeText: largeText)
+        let profile = app.buttons["bot-profile-button"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 5))
+        let shortNameHeight = profile.frame.height
+        XCTAssertGreaterThan(shortNameHeight, 0)
+        profile.tap()
+        let edit = app.buttons["bot-profile-edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5)); edit.tap()
+        let nameField = app.textFields["bot-profile-name"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+        nameField.tap(); nameField.typeText(" the Extraordinarily Thorough Morning Planner")
+        app.buttons["save-bot-profile"].tap()
+        let done = app.buttons["bot-profile-done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5)); done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 5))
+
+        XCTAssertTrue(profile.label.contains("Milo the Extraordinarily Thorough Morning Planner"), profile.label)
+        if largeText {
+            XCTAssertGreaterThan(profile.frame.height - shortNameHeight, 20,
+                                 "The largest-text long name must occupy more than one line.")
+        }
+        keepScreenshot(largeText ? "Largest-text long-name header" : "Normal long-name header", app: app)
+        let back = app.buttons["BackButton"].exists ? app.buttons["BackButton"] : app.buttons["Back"]
+        let chats = app.buttons["chat-picker-button"]
+        chats.tap()
+        XCTAssertTrue(app.buttons["new-chat"].waitForExistence(timeout: 5), "Chats must open the overview, not the profile.")
+        XCTAssertFalse(done.exists)
+        chats.tap()
+        XCTAssertTrue(app.buttons["new-chat"].waitForNonExistence(timeout: 5))
+
+        XCTAssertLessThanOrEqual(back.frame.maxX, profile.frame.minX)
+        XCTAssertLessThanOrEqual(profile.frame.maxX, chats.frame.minX)
+        XCTAssertGreaterThanOrEqual(profile.frame.height, 44)
+        profile.tap()
+        XCTAssertTrue(done.waitForExistence(timeout: 5)); done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(app.buttons["bot-row-milo"].waitForExistence(timeout: 5), "Back must leave the chat, not open the profile.")
+    }
+
+    @MainActor func testLargestTextOverviewFooterKeepsHistorySymbolInItsControl() {
+        let app = launch(largeText: true)
+        picker(app)
+        app.scrollViews["chat-tabs-scroll"].swipeDown()
+        let search = app.textFields["chat-picker-search"]
+        search.tap(); search.typeText("Weekend\n")
+        app.buttons["Close Weekend plan"].tap()
+        let confirmation = app.buttons["Confirm closing Weekend plan"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 3))
+        confirmation.tap()
+        let history = app.buttons["closed-chats"]
+        XCTAssertTrue(history.waitForExistence(timeout: 5))
+        let symbol = app.images["clock.arrow.circlepath"]
+        XCTAssertTrue(symbol.waitForExistence(timeout: 5))
+        XCTAssertTrue(history.frame.contains(symbol.frame), "symbol=\(symbol.frame), control=\(history.frame)")
+        XCTAssertGreaterThanOrEqual(history.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(app.buttons["new-chat"].frame.width, 44)
+    }
+
     /// Supply a real Files-visible disposable fixture name on the runner. Selection,
     /// upload, switching, removal, and text editing still use native public controls.
     @MainActor func testStagedFileAndDraftStayWithSourceChat() throws {

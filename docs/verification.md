@@ -133,6 +133,27 @@ Not exercised: Photos picker in this revision (Files supplied the JPEG), paged Q
 Look edge strips, image pinch and double-tap, text selection and video inside the pager,
 Reduce Motion, VoiceOver, physical devices and thumbnails after relaunch.
 
+## Chat header and footer accessibility (4 November 2026)
+
+An unsigned Debug build of `f8a514f` on `8ed6ae3` passed nine selected native
+and UI functions on an iPhone 18 Pro Simulator, iOS 27.0, with Xcode 27.2.
+`ChatView.swift` built without its two concurrency warnings. Actual-app tests
+operated Back, Chats and Profile with long names at normal and largest text.
+History/add glyph sizes are capped; text remains uncapped.
+
+A real `ChatView` in a test navigation host showed a two-line name and a first
+bubble clear of it when the transcript fit. A single-test control with one name
+line failed the growth gate. A separately compiled control without header-overlap
+publication passed growth, then failed clearance. The existing A-to-B late
+retirement regression also passed. Restored source matched the tested bytes.
+
+The fixture uses a different navigation host from the app, so its exact geometry
+is not an app measurement. Largest names still truncate heavily. Compact panes,
+keyboard-up, small iPhone, iPad, landscape, iOS 18/26 and invisible touch edges
+remain unproven. This was a focused run, not the full gate or complete product
+recipes. Later integration of main `66b1666` kept all four component source blobs
+unchanged; that integration was outside this local runtime proof.
+
 ## Active-rich measurement acceptance (4 November 2026)
 
 `rendered_endpoint_success=false` now fails
@@ -1152,3 +1173,29 @@ Raw historical evidence remains under the sibling `full-gate37`, `full-gate38`,
 `rich-ui39` and repair directories. Archived pass counts apply only to their
 recorded source revisions. Signed login, physical devices, real APNS, iPad,
 VoiceOver and the explicitly skipped performance measurements are unproven here.
+
+### Returning chat versions on the disposable host
+
+On Hermes `4a0eaf7`, deleting a compressed chat's newest segment with the CLI moved
+the listed tip back to the previous segment. A snapshot restore moved a rotated
+chat back to its old tip, and row 1674 returned with new text on a tip that never
+changed. Seven fresh-chat shapes, covering undo, in-place compaction and rotation,
+and a rotated chat past the 300-row window showed no duplicate row IDs in one response. That is a
+sample, not proof. Both dashboard delete routes refused the request on this host,
+so their whole-chain delete stayed unobserved.
+
+With an overflowed ledger, a two-page chat stayed out of Library on `098687c` and
+on the reduced PR 24 source, while a healthy-storage control passed. It now appears.
+A long returning tip fails on `cf430b3` and passes here, and the short control
+passes on both.
+
+The full gate passed once on `559c9ad` with this change: 1119 tests passed, 18 were
+skipped, and export readback passed. An earlier gate on the same source failed
+`testVisitedViewportPreviewSurvivesSwitchingToAnotherChat` once, at its final title
+wait. That test then passed five times alone and once in the passing gate, so the
+cause stays unknown. On `8ed6ae3`, `WorkspaceLibraryTests` ran 169 tests,
+`WorkspaceLibraryRetentionTests` 77 and `ArtifactCacheTests` 46, all passing once. No
+full gate ran on `8ed6ae3`.
+
+Evidence is at
+`/Users/sree/.t3/userdata/verification/botto-chat-pr24/recovery-policy-followup/`.

@@ -122,24 +122,79 @@ import BottoCore
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        func header(in controller: UIViewController) -> NativeTranscriptHeaderController? {
-            if let header = controller as? NativeTranscriptHeaderController { return header }
-            return controller.children.lazy.compactMap(header).first
-        }
         try await revisionWait("the initial message and floating profile header are mounted") {
             revisionElement(text, in: fixture.host.view).map { !$0.accessibilityFrame.isEmpty } == true &&
-                header(in: fixture.host)?.view.window != nil && revisionController(fixture.host)?.previewState != nil
+                revisionHeader(fixture.host)?.view.window != nil && revisionController(fixture.host)?.previewState != nil
         }
         var headerFrame = CGRect.zero, messageFrame = CGRect.zero
         defer {
             Attachment.record("message=\(messageFrame)\nheader=\(headerFrame)", named: "initial-chat-header-geometry.txt")
         }
         try await revisionWait("the initial message clears the visible floating profile header") {
-            guard let profileHeader = header(in: fixture.host),
+            guard let profileHeader = revisionHeader(fixture.host),
                   let message = revisionElement(text, in: fixture.host.view) else { return false }
             headerFrame = profileHeader.view.convert(profileHeader.view.bounds, to: fixture.window)
             messageFrame = fixture.window.convert(message.accessibilityFrame, from: nil)
             return !headerFrame.isEmpty && !messageFrame.isEmpty && messageFrame.minY >= headerFrame.maxY
+        }
+        #expect(messageFrame.minY >= headerFrame.maxY,
+                "message=\(messageFrame), header=\(headerFrame)")
+    }
+
+    @Test func largestTextLongNameAddsOneLineAndKeepsTheFirstMessageClear() async throws {
+        let service = try WorkspaceTestService(), session = service.summaries[0].identity
+        let text = "First"
+        let longName = "Milo the Extraordinarily Thorough Morning Planner"
+        service.snapshots[session.root]?.messages = [.init(id: "first-tall-header-message", role: .user, text: text)]
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://tall-header.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        var bot = try #require(store.selectedBot)
+        bot.name = "Milo"
+        let fixture = try Window(store: store, bot: bot, fullChat: true, height: nil, textSize: .accessibility5)
+        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        var shortHeight: CGFloat = 0, headerFrame = CGRect.zero, messageFrame = CGRect.zero
+        let lineHeight = UIFont.preferredFont(forTextStyle: .headline,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: .accessibilityExtraExtraExtraLarge)).lineHeight
+        defer {
+            Attachment.record("shortHeight=\(shortHeight)\nlineHeight=\(lineHeight)\nheader=\(headerFrame)\nmessage=\(messageFrame)",
+                              named: "largest-text-long-name-geometry.txt")
+            let image = UIGraphicsImageRenderer(bounds: fixture.window.bounds).image { _ in
+                fixture.window.drawHierarchy(in: fixture.window.bounds, afterScreenUpdates: false)
+            }
+            Attachment.record(image, named: "largest-text-long-name-header.png", as: .png)
+            if let collection = revisionController(fixture.host)?.collection {
+                Attachment.record("bounds=\(collection.bounds)\ncontentSize=\(collection.contentSize)\ninset=\(collection.contentInset)\nadjustedInset=\(collection.adjustedContentInset)\noffset=\(collection.contentOffset)",
+                                  named: "largest-text-transcript-geometry.txt")
+            }
+        }
+        try await revisionWait("the short name and initial message are mounted at largest text") {
+            guard let header = revisionHeader(fixture.host), header.view.window === fixture.window,
+                  revisionElement("Profile for Milo", in: fixture.host.view) != nil,
+                  let message = revisionElement(text, in: fixture.host.view) else { return false }
+            shortHeight = header.view.bounds.height
+            return shortHeight > 0 && !message.accessibilityFrame.isEmpty &&
+                revisionController(fixture.host)?.previewState != nil
+        }
+        fixture.profile.bot.name = longName
+        try await revisionWait("the largest-text name renders one additional line") {
+            guard let header = revisionHeader(fixture.host),
+                  revisionElement("Profile for " + longName, in: fixture.host.view) != nil else { return false }
+            headerFrame = header.view.convert(header.view.bounds, to: fixture.window)
+            let growth = headerFrame.height - shortHeight
+            return growth >= lineHeight * 0.8 && growth <= lineHeight * 1.2
+        }
+        try await revisionWait("the full-height fixture can fit its entire transcript") {
+            guard let collection = revisionController(fixture.host)?.collection else { return false }
+            let visibleHeight = collection.bounds.height - collection.adjustedContentInset.top - collection.adjustedContentInset.bottom
+            return collection.contentSize.height > 0 && visibleHeight >= collection.contentSize.height
+        }
+        try await revisionWait("the first message clears the taller largest-text header") {
+            guard let header = revisionHeader(fixture.host),
+                  let message = revisionElement(text, in: fixture.host.view) else { return false }
+            headerFrame = header.view.convert(header.view.bounds, to: fixture.window)
+            messageFrame = fixture.window.convert(message.accessibilityFrame, from: nil)
+            return !messageFrame.isEmpty && messageFrame.minY >= headerFrame.maxY
         }
         #expect(messageFrame.minY >= headerFrame.maxY,
                 "message=\(messageFrame), header=\(headerFrame)")
@@ -153,20 +208,15 @@ import BottoCore
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        func header(in controller: UIViewController) -> NativeTranscriptHeaderController? {
-            if let header = controller as? NativeTranscriptHeaderController { return header }
-            for child in controller.children { if let found = header(in: child) { return found } }
-            return nil
-        }
         try await revisionWait("the floating header observes the mounted transcript") {
             guard let transcript = revisionController(fixture.host),
-                  let header = header(in: fixture.host),
+                  let header = revisionHeader(fixture.host),
                   let edge = header.view.interactions.compactMap({ $0 as? UIScrollEdgeElementContainerInteraction }).first else { return false }
             return edge.scrollView === transcript.collection &&
                 header.navigationController?.topViewController?.contentScrollView(for: .top) === transcript.collection
         }
         let transcript = try #require(revisionController(fixture.host))
-        let floatingHeader = try #require(header(in: fixture.host))
+        let floatingHeader = try #require(revisionHeader(fixture.host))
         let edge = try #require(floatingHeader.view.interactions.compactMap { $0 as? UIScrollEdgeElementContainerInteraction }.first)
         let navigation = try #require(floatingHeader.navigationController)
         let bar = navigation.navigationBar
@@ -214,6 +264,57 @@ import BottoCore
                 "Retiring a header must preserve another scroll view's newer association.")
         contentOwner.setContentScrollView(nil, for: .top)
         transcript.retire()
+    }
+
+    @Test func floatingHeaderKeepsTheReplacementTranscriptWhenTheFormerOneRetiresLate() async throws {
+        guard #available(iOS 26, *) else { return }
+        let service = try WorkspaceTestService()
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-header-replacement.invalid")!)
+        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
+        let fixture = try Window(store: store, bot: try #require(store.selectedBot), fullChat: true)
+        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        try await revisionWait("the floating header observes the mounted transcript") {
+            guard let transcript = revisionController(fixture.host),
+                  let header = revisionHeader(fixture.host),
+                  let edge = header.view.interactions.compactMap({ $0 as? UIScrollEdgeElementContainerInteraction }).first else { return false }
+            return edge.scrollView === transcript.collection &&
+                header.navigationController?.topViewController?.contentScrollView(for: .top) === transcript.collection
+        }
+        let former = try #require(revisionController(fixture.host))
+        let floatingHeader = try #require(revisionHeader(fixture.host))
+        let edge = try #require(floatingHeader.view.interactions.compactMap { $0 as? UIScrollEdgeElementContainerInteraction }.first)
+        let contentOwner = try #require(floatingHeader.navigationController?.topViewController)
+        let preview = try #require(former.previewReceiver)
+        let parent = try #require(former.parent)
+        let container = try #require(former.view.superview)
+
+        // Stay synchronous from here: a SwiftUI update would rebind the still-mounted former transcript.
+        let replacement = NativeTranscriptController()
+        parent.addChild(replacement)
+        replacement.view.frame = former.view.frame
+        container.addSubview(replacement.view)
+        replacement.didMove(toParent: parent)
+        defer {
+            replacement.willMove(toParent: nil)
+            replacement.view.removeFromSuperview(); replacement.removeFromParent()
+        }
+        preview.bind(replacement)
+        preview.refreshHeader()
+        #expect(edge.scrollView === replacement.collection)
+        #expect(contentOwner.contentScrollView(for: .top) === replacement.collection)
+        #expect(former.previewReceiver === preview, "The late retirement must reach the preview's identity guard.")
+
+        former.retire()
+        #expect(preview.viewportView === replacement.collection)
+        #expect(edge.scrollView === replacement.collection,
+                "A late retirement must not clear the header's binding to its replacement.")
+        #expect(contentOwner.contentScrollView(for: .top) === replacement.collection)
+
+        replacement.retire()
+        #expect(preview.viewportView == nil)
+        #expect(edge.scrollView == nil)
+        #expect(contentOwner.contentScrollView(for: .top) == nil)
     }
 
     @Test func viewportCaptureCoalescesAndRetiresWithItsActualNativeOwner() async throws {
@@ -452,11 +553,11 @@ import BottoCore
         let window: UIWindow
         let previous: UIWindow?
         let profile: Profile
-        init(store: AppStore, bot: BotProfile, fullChat: Bool = false) throws {
+        init(store: AppStore, bot: BotProfile, fullChat: Bool = false, height: CGFloat? = 434, textSize: DynamicTypeSize? = nil) throws {
             let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
             previous = scene.windows.first { $0.isKeyWindow }
             profile = Profile(bot)
-            host = UIHostingController(rootView: Host(store: store, profile: profile, fullChat: fullChat))
+            host = UIHostingController(rootView: Host(store: store, profile: profile, fullChat: fullChat, height: height, textSize: textSize))
             window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
         }
         func close() {
@@ -471,6 +572,9 @@ import BottoCore
         let store: AppStore
         let profile: Profile
         let fullChat: Bool
+        let height: CGFloat?
+        let textSize: DynamicTypeSize?
+        @Environment(\.dynamicTypeSize) private var inheritedTextSize
         @State private var presentation = WorkspacePresentation()
         var body: some View {
             Group {
@@ -484,7 +588,9 @@ import BottoCore
                     transcriptFixture(store: store, bot: profile.bot, presentation: presentation, native: true)
                 }
             }
-            .frame(width: 382, height: 434).environment(\.scenePhase, .active)
+            .frame(width: 382, height: height)
+            .environment(\.dynamicTypeSize, textSize ?? inheritedTextSize)
+            .environment(\.scenePhase, .active)
         }
     }
 }
@@ -492,6 +598,10 @@ import BottoCore
 @MainActor private func revisionController(_ parent: UIViewController) -> NativeTranscriptController? {
     if let controller = parent as? NativeTranscriptController, controller.isViewLoaded, controller.view.window != nil { return controller }
     return parent.children.lazy.compactMap(revisionController).first
+}
+@MainActor private func revisionHeader(_ parent: UIViewController) -> NativeTranscriptHeaderController? {
+    if let header = parent as? NativeTranscriptHeaderController { return header }
+    return parent.children.lazy.compactMap(revisionHeader).first
 }
 @MainActor private func revisionElement(_ label: String, in root: NSObject) -> NSObject? {
     var visited = Set<ObjectIdentifier>()
