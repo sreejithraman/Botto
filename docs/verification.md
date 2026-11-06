@@ -133,6 +133,40 @@ Not exercised: Photos picker in this revision (Files supplied the JPEG), paged Q
 Look edge strips, image pinch and double-tap, text selection and video inside the pager,
 Reduce Motion, VoiceOver, physical devices and thumbnails after relaunch.
 
+### Merge preparation (5–6 November 2026)
+
+The integrated gate on `a19b95e`, based on main `53b3544`, passed 533 core tests
+with seven known issues, the MainActor build, 252 Python tooling tests and
+80-byte identical export readback. Native/UI results were 1,191 passed, one failed
+and 19 skipped. The failure queried hittability before any scroll while the report was offscreen.
+One same-build replay passed; that does not establish its cause or make the gate
+green. A first test repair also exposed moving layout between accessibility reads.
+The test now waits for equal frame observations before querying visible native
+hittability, retaining bounded scrolling, tap, output and retirement assertions.
+
+A new hosted `AdaptiveWorkspace` test at a logical paired width of 1,000 points
+on iPhone reproduced page turns dismissing the focused editor. Removing the
+page-turn revision reset passed all 14 selected native tests, including retained
+focus, selection, draft and working undo/redo across paging. This is hosted paired
+layout evidence, not a physical iPad or IME check.
+
+The final full run passed 1,191 native/UI cases, failed two UI waits and skipped
+19. All 1,066 native cases passed, including the new paired editor regression;
+the repaired retirement UI test passed in both its preflight and full run.
+`testVisitedViewportPreviewSurvivesSwitchingToAnotherChat` exceeded its five-second
+title wait, and `testHostFileDirectiveRendersInteractiveHTMLWithSourceAndExpand`
+exceeded its eight-second loading-cover wait. Both unchanged tests passed in the
+prior full run and then each passed one unmodified focused replay on a fresh
+phone. Their causes remain unresolved; **no clean full gate exists**. The replay
+does not reproduce the surrounding suite order or establish determinism.
+
+A fresh iPad Pro 13-inch (M5), iOS 27.0, passed all 21 selected native cases with
+zero skipped: all eight wide-import argument combinations, paired editor
+focus/draft/undo/redo, and the 13 presentation tests. That is 56 test runs including
+arguments. The focused phone replay passed both selected cases. No source or test
+deadline changed between the full run and these checks. Python tooling retains
+its 252 passes on unchanged scripts; both export readbacks matched all 80 bytes.
+
 ## Chat header and footer accessibility (4 November 2026)
 
 An unsigned Debug build of `f8a514f` on `8ed6ae3` passed nine selected native

@@ -122,7 +122,7 @@ enum WorkspaceDestination: Hashable { case bots, artifacts, search }
         guard let next = sibling(of: selected, by: step, reusing: pages.removeValue(forKey: index + step),
                                  store: store) else { return false }
         searchFocus = nil
-        surface = .reading(.artifact(next, expanded: isArtifactExpanded)); revision = UUID()
+        surface = .reading(.artifact(next, expanded: isArtifactExpanded))
         next.retry()
         loadArtifactNeighbors(reusing: pages, store: store)
         return true
