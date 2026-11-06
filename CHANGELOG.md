@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Paste copied images and files into the composer, and choose several photos or
+  files at once. Any file type now attaches.
+- Show attachments as scrolling thumbnails in the composer, and as a fanned deck
+  you can swipe on sent messages. PDFs show their first page and text files an
+  excerpt, and each attachment shows its own progress and can be cancelled.
+- Page through attachments in a photo-style viewer that follows your finger, with a
+  centered title and matching controls.
+- Give slow attachment uploads longer client deadlines. Host keepalive limits still apply.
+
 ## 0.1.0 (2026-10-30)
 
 Initial Botto source release.

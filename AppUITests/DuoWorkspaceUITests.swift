@@ -116,7 +116,7 @@ final class DuoWorkspaceUITests: XCTestCase {
         let draft = "Keep this exact PDF review draft\nwhile I inspect the page."
         enterDraft(draft, app: app)
         openPDF(app)
-        assertExpansionAction("Full screen", app: app)
+        assertExpansionOffer(app)
         capturePDF("PDF contextual fit", app: app)
         let fit = pdfText(app).frame.size
         XCTAssertGreaterThan(fit.width, 0)
@@ -156,28 +156,30 @@ final class DuoWorkspaceUITests: XCTestCase {
         XCTAssertGreaterThan(contextualSize.width, fit.width * 1.25)
         XCTAssertGreaterThan(contextualSize.height, fit.height * 1.25)
 
-        tap("artifact-toggle-expanded", app: app)
-        assertExpansionAction("Exit full screen", app: app)
-        XCTAssertTrue(pdfText(app).waitForExistence(timeout: 15),
-                      "Full screen must still contain the actual Canvas PDF.")
-        wait("Full screen visibly renders both printed PDF lines", timeout: 15) {
-            self.pdfInk(app) != nil
-        }
-        capturePDF("PDF explicit full screen", app: app)
+        if readerOffersExpansion {
+            tap("artifact-toggle-expanded", app: app)
+            assertExpansionAction("Exit full screen", app: app)
+            XCTAssertTrue(pdfText(app).waitForExistence(timeout: 15),
+                          "Full screen must still contain the actual Canvas PDF.")
+            wait("Full screen visibly renders both printed PDF lines", timeout: 15) {
+                self.pdfInk(app) != nil
+            }
+            capturePDF("PDF explicit full screen", app: app)
 
-        tap("artifact-toggle-expanded", app: app)
-        assertExpansionAction("Full screen", app: app)
-        wait("Return preserves PDF zoom and its useful scrolled viewport", timeout: 15) {
-            let page = self.pdfText(app)
-            guard page.exists, let returnedInk = self.pdfInk(app) else { return false }
-            let size = page.frame.size
-            return abs(size.width - contextualSize.width) <= contextualSize.width * 0.10
-                && abs(size.height - contextualSize.height) <= contextualSize.height * 0.10
-                && self.samePDFViewport(contextualInk, returnedInk)
+            tap("artifact-toggle-expanded", app: app)
+            assertExpansionAction("Full screen", app: app)
+            wait("Return preserves PDF zoom and its useful scrolled viewport", timeout: 15) {
+                let page = self.pdfText(app)
+                guard page.exists, let returnedInk = self.pdfInk(app) else { return false }
+                let size = page.frame.size
+                return abs(size.width - contextualSize.width) <= contextualSize.width * 0.10
+                    && abs(size.height - contextualSize.height) <= contextualSize.height * 0.10
+                    && self.samePDFViewport(contextualInk, returnedInk)
+            }
+            capturePDF("PDF returned with the same zoom and viewport", app: app)
+            XCTAssertGreaterThan(pdfText(app).frame.width, fit.width * 1.25,
+                                 "Returning must not silently reset the page to fit.")
         }
-        capturePDF("PDF returned with the same zoom and viewport", app: app)
-        XCTAssertGreaterThan(pdfText(app).frame.width, fit.width * 1.25,
-                             "Returning must not silently reset the page to fit.")
         assertOutputActions(app)
 
         tap("artifact-done", app: app)
@@ -187,6 +189,137 @@ final class DuoWorkspaceUITests: XCTestCase {
         capture("Conversation and exact draft after PDF close", app: app)
     }
 
+    @MainActor func testZoomedPDFPansWithoutLeavingItsAttachment() {
+        let app = launch(bot: "Canvas", arguments: ["--attachment-deck-demo"])
+        let deck = app.descendants(matching: .any)["sent-attachment-stack"]
+        XCTAssertTrue(deck.waitForExistence(timeout: 10))
+        deck.buttons["Open report.pdf"].firstMatch.tap()
+        let label = app.staticTexts["artifact-page"]
+        XCTAssertTrue(pdfText(app).waitForExistence(timeout: 15))
+        XCTAssertEqual(label.label, "Attachment 1 of 2")
+        let fit = pdfText(app).frame.size
+
+        let reader = artifactReader(app)
+        reader.pinch(withScale: 2.5, velocity: 1)
+        wait("The PDF page grows after pinch", timeout: 15) {
+            self.pdfText(app).frame.width > fit.width * 1.25
+        }
+        let beforePan = pdfText(app).frame
+        // A long, level pan clears the 80 point page-turn distance in both directions.
+        for (from, to) in [(0.9, 0.1), (0.1, 0.9)] {
+            reader.coordinate(withNormalizedOffset: CGVector(dx: from, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: reader.coordinate(withNormalizedOffset: CGVector(dx: to, dy: 0.5)))
+            XCTAssertEqual(label.label, "Attachment 1 of 2", "Panning a zoomed PDF stays on it")
+        }
+        reader.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: reader.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)))
+        XCTAssertEqual(label.label, "Attachment 1 of 2")
+        XCTAssertNotEqual(pdfText(app).frame.minX, beforePan.minX, "The pan moves the page itself")
+        capture("Zoomed PDF after horizontal pans", app: app)
+
+        reader.pinch(withScale: 0.2, velocity: -1)
+        wait("The PDF returns to fit", timeout: 15) {
+            self.pdfText(app).frame.width < fit.width * 1.1
+        }
+        reader.swipeLeft()
+        wait("A fitted PDF still swipes to its sibling", timeout: 10) {
+            label.label == "Attachment 2 of 2"
+        }
+        capture("Fitted PDF swiped to the next attachment", app: app)
+    }
+
+    @MainActor func testOpeningALaterStackCardShowsAndSharesThatPage() {
+        let app = launch(bot: "Canvas", arguments: ["--attachment-deck-demo"])
+        let deck = app.scrollViews["sent-attachment-stack"].firstMatch
+        XCTAssertTrue(deck.waitForExistence(timeout: 10))
+        deck.swipeLeft()
+        let card = deck.buttons["Open chart.png"].firstMatch
+        assertUsable(card)
+        card.tap()
+        wait("The reader opens the card that was tapped") {
+            app.staticTexts["artifact-title"].label == "chart.png"
+                && app.staticTexts["artifact-page"].label == "Attachment 2 of 2"
+                && app.images["chart.png"].isHittable
+        }
+        XCTAssertEqual(app.images["chart.png"].frame.midX, artifactReader(app).frame.midX, accuracy: 2,
+                       "The selected image is centered in the visible page")
+        capture("Reader opened directly on the second attachment", app: app)
+        ArtifactOutputActions.open(in: app)
+        ArtifactOutputActions.action("artifact-share", label: "Share", in: app).tap()
+        let sheet = app.otherElements["ActivityListView"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+        let filename = sheet.descendants(matching: .any).matching(identifier: "LP.CaptionBar.TopCaption").firstMatch
+        XCTAssertTrue(filename.waitForExistence(timeout: 5))
+        XCTAssertTrue(["chart", "chart.png"].contains(filename.label), "Share identifies the selected image")
+        capture("Share identifies the second attachment", app: app)
+        ArtifactOutputActions.dismissShare(in: app)
+        XCTAssertEqual(app.staticTexts["artifact-page"].label, "Attachment 2 of 2")
+    }
+
+    @MainActor func testReaderHeaderCentersTheTitleBetweenMatchingControls() {
+        let app = launch(bot: "Canvas", arguments: ["--attachment-deck-demo"])
+        let deck = app.descendants(matching: .any)["sent-attachment-stack"]
+        XCTAssertTrue(deck.waitForExistence(timeout: 10))
+        deck.buttons["Open report.pdf"].firstMatch.tap()
+        XCTAssertTrue(pdfText(app).waitForExistence(timeout: 15))
+
+        let reader = artifactReader(app).frame
+        let title = app.staticTexts["artifact-title"].frame
+        let page = app.staticTexts["artifact-page"].frame
+        XCTAssertEqual(title.midX, reader.midX, accuracy: 1, "The title centers on the reader")
+        XCTAssertEqual(page.midX, reader.midX, accuracy: 1)
+        let close = app.buttons["artifact-done"].frame
+        let actions = app.buttons["artifact-actions"].frame
+        XCTAssertEqual(close.size, CGSize(width: 44, height: 44))
+        XCTAssertEqual(actions.size, CGSize(width: 44, height: 44))
+        XCTAssertEqual(close.midY, actions.midY, accuracy: 1)
+        XCTAssertLessThan(close.maxX, title.minX, "The title clears Close")
+        XCTAssertLessThan(title.maxX, actions.minX, "The title clears Actions")
+        // A clipped control can still report hittable, so compare it with what covers it.
+        XCTAssertLessThanOrEqual(close.maxY, reader.minY, "The header sits above the file")
+        XCTAssertLessThanOrEqual(reader.maxY, app.windows.firstMatch.frame.maxY, "The file fits its pane")
+        let bar = app.navigationBars.firstMatch
+        if bar.exists, bar.frame.maxX > reader.minX {
+            XCTAssertGreaterThanOrEqual(close.minY, bar.frame.maxY, "The navigation bar leaves the header uncovered")
+        }
+    }
+
+    @MainActor func testPartialDragSettlesBackAndFullSwipeTurnsThePage() {
+        let app = launch(bot: "Canvas", arguments: ["--attachment-deck-demo"])
+        let deck = app.descendants(matching: .any)["sent-attachment-stack"]
+        XCTAssertTrue(deck.waitForExistence(timeout: 10))
+        deck.buttons["Open report.pdf"].firstMatch.tap()
+        let label = app.staticTexts["artifact-page"]
+        XCTAssertTrue(pdfText(app).waitForExistence(timeout: 15))
+        let reader = artifactReader(app)
+        reader.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: reader.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)),
+                   withVelocity: 40, thenHoldForDuration: 0.3)
+        sleep(1)
+        XCTAssertEqual(label.label, "Attachment 1 of 2", "A short, slow drag returns to its file")
+        XCTAssertEqual(app.staticTexts["artifact-title"].label, "report.pdf")
+
+        reader.swipeLeft()
+        wait("A full swipe turns the page", timeout: 10) { label.label == "Attachment 2 of 2" }
+        XCTAssertEqual(app.staticTexts["artifact-title"].label, "chart.png")
+        reader.swipeLeft()
+        sleep(1)
+        XCTAssertEqual(label.label, "Attachment 2 of 2", "The last page is an end stop")
+        if readerOffersExpansion {
+            tap("artifact-toggle-expanded", app: app)
+            let chart = app.images["chart.png"]
+            wait("A resized reader keeps its page centered", timeout: 10) {
+                abs(chart.frame.midX - self.artifactReader(app).frame.midX) < 2
+            }
+            tap("artifact-toggle-expanded", app: app)
+            wait("Leaving full screen keeps the page centered", timeout: 10) {
+                abs(chart.frame.midX - self.artifactReader(app).frame.midX) < 2
+            }
+        }
+        reader.swipeRight()
+        wait("Swiping back returns", timeout: 10) { label.label == "Attachment 1 of 2" }
+    }
+
     @MainActor func testDraftSurvivesFileFullScreenReturnAndClose() {
         let app = launch(bot: "Canvas")
         let draft = "Review this draft\nbefore publishing."
@@ -194,15 +327,17 @@ final class DuoWorkspaceUITests: XCTestCase {
         openNotes(app)
         capture("Contextual notes", app: app)
 
-        assertExpansionAction("Full screen", app: app)
-        tap("artifact-toggle-expanded", app: app)
-        assertExpansionAction("Exit full screen", app: app)
-        assertNotes(app)
-        capture("Full screen notes", app: app)
+        assertExpansionOffer(app)
+        if readerOffersExpansion {
+            tap("artifact-toggle-expanded", app: app)
+            assertExpansionAction("Exit full screen", app: app)
+            assertNotes(app)
+            capture("Full screen notes", app: app)
 
-        tap("artifact-toggle-expanded", app: app)
-        assertExpansionAction("Full screen", app: app)
-        assertNotes(app)
+            tap("artifact-toggle-expanded", app: app)
+            assertExpansionAction("Full screen", app: app)
+            assertNotes(app)
+        }
         tap("artifact-done", app: app)
         assertNoArtifact(app)
         assertConversation(bot: "Canvas", title: "Main", draft: draft, app: app)
@@ -290,11 +425,11 @@ final class DuoWorkspaceUITests: XCTestCase {
         assertConversation(bot: "Milo", title: "Weekend plan", draft: weekendDraft, app: app)
     }
 
-    @MainActor private func launch(bot: String) -> XCUIApplication {
+    @MainActor private func launch(bot: String, arguments: [String] = []) -> XCUIApplication {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
-        app.launchArguments = ["--demo"]
+        app.launchArguments = ["--demo"] + arguments
         app.launch()
         chooseBot(bot, app: app)
         assertConversation(bot: bot, title: "Main", app: app)
@@ -528,6 +663,14 @@ final class DuoWorkspaceUITests: XCTestCase {
         }
     }
 
+    /// A phone's reader already fills the workspace, so only a pairing layout can expand it.
+    private var readerOffersExpansion: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    @MainActor private func assertExpansionOffer(_ app: XCUIApplication) {
+        if readerOffersExpansion { assertExpansionAction("Full screen", app: app) }
+        else { XCTAssertFalse(app.buttons["artifact-toggle-expanded"].exists) }
+    }
+
     @MainActor private func assertExpansionAction(_ label: String, app: XCUIApplication) {
         wait("File offers \(label)") {
             let toggle = self.activeButton("artifact-toggle-expanded", app: app)
@@ -536,7 +679,7 @@ final class DuoWorkspaceUITests: XCTestCase {
     }
 
     @MainActor private func tapBots(_ app: XCUIApplication) {
-        let explicit = activeButton("workspace-browse-bots", app: app)
+        let explicit = WorkspaceNavigation.botsControl(in: app)
         if explicit.exists && explicit.isHittable {
             assertUsable(explicit); explicit.tap(); return
         }

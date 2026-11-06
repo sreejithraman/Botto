@@ -1,6 +1,7 @@
 import Testing
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import BottoCore
 @testable import Botto
 
@@ -355,6 +356,157 @@ import BottoCore
             await Task.yield()
         } while ContinuousClock.now < deadline
         try #require(condition(), "Hosted editor must settle without forcing a layout invalidation")
+    }
+
+    @Test func pasteSendsFilesToTheComposerAndLeavesTextInTheEditor() async throws {
+        let fixture = try await fixture()
+        defer { fixture.close() }
+        let screen = try #require(fixture.store.chats.screen(profile: fixture.service.profile))
+        fixture.configure(screen, revision: UUID())
+        let pasteboard = try #require(UIPasteboard(name: .init("botto-composer-paste-\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        var pasted: [[PastedAttachment]] = []
+        fixture.editor.pasteboard = pasteboard
+        fixture.editor.pasteAttachments = { _, items in pasted.append(items) }
+        #expect(fixture.editor.becomeFirstResponder())
+
+        pasteboard.string = "plain text"
+        #expect(!ComposerPaste.containsAttachment(pasteboard))
+        fixture.editor.paste(nil)
+        #expect(pasted.isEmpty, "Text-only pastes stay with UIKit")
+
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
+        let png = try #require(photo.pngData())
+        pasteboard.items = [[UTType.png.identifier: png], [UTType.utf8PlainText.identifier: "caption"]]
+        #expect(ComposerPaste.containsAttachment(pasteboard))
+        #expect(fixture.editor.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil))
+        fixture.editor.paste(nil)
+        #expect(await settledDraft(of: fixture, screen.owner, matching: "caption"))
+        #expect(pasted.count == 1 && pasted[0].map(\.type) == [.png])
+    }
+
+    @Test func reopeningTheChatRefusesAMixedPasteWithoutChangingItsDraft() async throws {
+        let fixture = try await fixture()
+        defer { fixture.close() }
+        let gate = WorkspaceGate()
+        fixture.service.openGate = gate
+        let bot = try #require(fixture.store.bots.first)
+        let opening = Task { await fixture.store.open(bot) }
+        await gate.entered()
+        let screen = try #require(fixture.store.chats.screen(profile: fixture.service.profile))
+        fixture.store.chats.editDraft("Keep this draft", owner: screen.owner)
+        let coverage = try fixture.hostComposer(screen)
+        try await waitForLayout(fixture) { coverage.editing.editor?.isEditable == true }
+        let editor = try #require(coverage.editing.editor)
+        #expect(editor.becomeFirstResponder())
+        let pasteboard = try #require(UIPasteboard(name: .init("botto-opening-paste-\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        editor.pasteboard = pasteboard
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image {
+            $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        pasteboard.items = [[UTType.png.identifier: try #require(image.pngData())],
+                            [UTType.utf8PlainText.identifier: "caption"]]
+        editor.paste(nil)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(fixture.service.uploads.isEmpty)
+        #expect(fixture.store.chats.draft(screen.owner) == "Keep this draft")
+        gate.release(); await opening.value
+    }
+
+    @Test func aRefusedMixedPasteChangesNeitherTextNorAttachments() async throws {
+        let fixture = try await fixture()
+        defer { fixture.close() }
+        let screen = try #require(fixture.store.chats.screen(profile: fixture.service.profile))
+        fixture.configure(screen, revision: UUID())
+        let pasteboard = try #require(UIPasteboard(name: .init("botto-refused-paste-\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        fixture.editor.pasteboard = pasteboard
+        var attachments = 0
+        fixture.editor.pasteAttachments = { _, items in attachments += items.count }
+        fixture.editor.admitAttachmentPaste = { _ in false }
+        #expect(fixture.editor.becomeFirstResponder())
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image {
+            $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        pasteboard.items = [[UTType.png.identifier: try #require(image.pngData())],
+                            [UTType.utf8PlainText.identifier: "caption"]]
+        fixture.editor.paste(nil)
+        #expect(attachments == 0)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(fixture.store.chats.draft(screen.owner).isEmpty)
+    }
+
+    @Test(arguments: [
+        (UTType.utf8PlainText.identifier, Data("caption".utf8), "caption"),
+        (UTType.utf16PlainText.identifier, "caption".data(using: .utf16LittleEndian)!, "caption"),
+        (UTType.utf16ExternalPlainText.identifier, "caption".data(using: .utf16)!, "caption"),
+        (UTType.rtf.identifier, Data(#"{\rtf1\ansi caption}"#.utf8), "caption"),
+        (UTType.html.identifier, Data("<p>caption</p>".utf8), "caption"),
+    ] as [(String, Data, String)])
+    func aMixedPasteKeepsItsTextInEverySupportedRepresentation(type: String, bytes: Data, expected: String) async throws {
+        try await expectMixedPaste([type: bytes], text: expected)
+    }
+
+    @Test func aMixedPasteKeepsACopiedLinkAsText() async throws {
+        try await expectMixedPaste([UTType.url.identifier: URL(string: "https://example.com/page")!], text: "https://example.com/page")
+    }
+
+    private func expectMixedPaste(_ item: [String: Any], text: String) async throws {
+        let fixture = try await fixture()
+        defer { fixture.close() }
+        let screen = try #require(fixture.store.chats.screen(profile: fixture.service.profile))
+        fixture.configure(screen, revision: UUID())
+        let pasteboard = try #require(UIPasteboard(name: .init("botto-composer-paste-\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        var pasted: [[PastedAttachment]] = []
+        fixture.editor.pasteboard = pasteboard
+        fixture.editor.pasteAttachments = { _, items in pasted.append(items) }
+        #expect(fixture.editor.becomeFirstResponder())
+
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
+        pasteboard.items = [[UTType.png.identifier: try #require(photo.pngData())], item]
+        fixture.editor.paste(nil)
+
+        #expect(pasted.count == 1 && pasted[0].map(\.type) == [.png])
+        #expect(await settledDraft(of: fixture, screen.owner, matching: text))
+    }
+
+    /// UIKit loads providers asynchronously and keeps an HTML block's trailing newline.
+    private func settledDraft(of fixture: Fixture, _ owner: PresentationOwner, matching text: String) async -> Bool {
+        let settled = { fixture.store.chats.draft(owner).trimmingCharacters(in: .whitespacesAndNewlines) == text }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !settled() && ContinuousClock.now < deadline {
+            // Suspend polling so UIKit's paste conversion can advance on the main run loop.
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
+        }
+        return settled()
+    }
+
+    @Test func pasteIsOfferedForGenericDataAndStagesItsOriginalName() async throws {
+        let fixture = try await fixture()
+        defer { fixture.close() }
+        let screen = try #require(fixture.store.chats.screen(profile: fixture.service.profile))
+        fixture.configure(screen, revision: UUID())
+        let pasteboard = try #require(UIPasteboard(name: .init("botto-composer-paste-\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pasteboard.name) }
+        var pasted: [[PastedAttachment]] = []
+        fixture.editor.pasteboard = pasteboard
+        fixture.editor.pasteAttachments = { _, items in pasted.append(items) }
+        #expect(fixture.editor.becomeFirstResponder())
+
+        pasteboard.setItems([[UTType.data.identifier: Data([1, 2, 3])]])
+        #expect(ComposerPaste.containsAttachment(pasteboard), "Offering Paste cannot depend on a name, which needs the bytes' provider")
+        #expect(fixture.editor.canPerformAction(#selector(UIResponder.paste(_:)), withSender: nil))
+
+        let provider = NSItemProvider()
+        provider.suggestedName = "payload"
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.data.identifier, visibility: .all) { completion in
+            completion(Data([1, 2, 3]), nil); return nil
+        }
+        let content = ComposerPaste(providers: [provider])
+        #expect(content.attachments.map(\.type) == [.data])
+        #expect(content.attachments.first?.filename(temporaryFile: URL(fileURLWithPath: "/tmp/x.bin")) == "payload")
     }
 
     private func fixture() async throws -> Fixture {

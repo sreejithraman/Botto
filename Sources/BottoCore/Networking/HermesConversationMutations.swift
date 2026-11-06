@@ -115,7 +115,7 @@ extension HermesBotService {
         guard !prompt.isEmpty || !files.isEmpty else { throw HermesServiceError.invalidResponse }
         let submission = operationID.uuidString
         let images = files.filter(\.nativeImage).map { HermesJSON.object(["path": .string($0.attachment.path), "mime": .string($0.attachment.mimeType)]) }
-        let wireText = prompt.isEmpty ? "Please examine the attached image." : prompt
+        let wireText = prompt.isEmpty ? AttachmentPresentation.imageOnlyPrompt : prompt
         if adapter == .authority {
             guard let configuration else { throw HermesServiceError.disconnected }
             try journal.record(submission, connection: configuration.id, profile: conversation.profileID, stored: conversation.storedID)

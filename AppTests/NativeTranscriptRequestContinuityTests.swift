@@ -407,6 +407,7 @@ import BottoCore
             if let bot = store.selectedBot {
                 ChatView(store: store, bot: bot, presentation: presentation,
                          isExposed: !presentation.isBrowsingBots, isEditingExposed: !presentation.isBrowsingBots,
+                         importPaneVisible: !presentation.isBrowsingBots,
                          rootCovered: coverage.covered, onLocalModalPresentation: { _ in })
                     .frame(width: 382, height: 434).environment(\.scenePhase, .active)
             }

@@ -168,6 +168,7 @@ struct ChatScreen {
     let isLoadingDirectory: Bool
     let error: String?
     let attachments: [ChatAttachment]
+    let pendingAttachments: [PendingAttachment]
     let needsReattachment: Bool
     let directoryComplete: Bool
     let queuedEdit: QueuedMessageEdit?
@@ -320,7 +321,17 @@ private struct ReadObservationKey: Hashable, Sendable {
     private var uncertainCreation: Set<ExactID> = []
     private var dispatched: Set<UUID> = []
     private var imports: [UUID: PresentationOwner] = [:]
-    private var uploadReservations: [ChatID: UUID] = [:]
+    /// One chat's upload slot. A frame already handed to the service cannot be recalled, so
+    /// cancelling it stops publication while the slot stays held until the service settles.
+    private struct UploadReservation {
+        let intent: UUID
+        var dispatched = false
+        var cancelled = false
+    }
+    private var uploadReservations: [ChatID: UploadReservation] = [:]
+    @ObservationIgnored let thumbnails = AttachmentThumbnails()
+    /// The errors[chat] text an import wrote, so the next import clears only its own.
+    private var importFailures: [ChatID: String] = [:]
     private struct Staged {
         let id: UUID
         let attachment: ChatAttachment
@@ -329,6 +340,17 @@ private struct ReadObservationKey: Hashable, Sendable {
         var valid: Bool
     }
     private var staging: [ChatID: [Staged]] = [:]
+    private struct PendingImport {
+        let intent: UUID
+        var attachment: PendingAttachment
+    }
+    private var pendingImports: [ChatID: [PendingImport]] = [:]
+    private struct ImportStep {
+        let task: Task<Void, Never>
+        let completion: AsyncStream<Void>.Continuation
+    }
+    /// A provider may ignore cancellation; its waiter can leave before dispatch.
+    @ObservationIgnored private var importSteps: [UUID: ImportStep] = [:]
     private struct DirectoryRead {
         let id: UUID
         let recovery: UUID
@@ -504,7 +526,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             isSending: sends[id] != nil,
             isUploading: uploadReservations[id] != nil, isCreating: creations[profile] != nil,
             isLoadingDirectory: loadingDirectories.contains(profile), error: errors[id] ?? readOnlyExplanation(record) ?? directoryWarnings[profile],
-            attachments: staged.map(\.attachment), needsReattachment: staged.contains { !$0.valid },
+            attachments: staged.map(\.attachment), pendingAttachments: (pendingImports[id] ?? []).map(\.attachment),
+            needsReattachment: staged.contains { !$0.valid },
             directoryComplete: complete[profile] ?? false,
             queuedEdit: queuedEditing.edit(id),
             canReplaceQueuedEdit: source.map { queuedEditing.canReplace(id, source: $0, messages: snapshot?.queuedMessages ?? []) } == true,
@@ -1548,44 +1571,134 @@ private struct ReadObservationKey: Hashable, Sendable {
         return intent
     }
     func cancelImport(_ intent: ImportIntent) {
-        if imports[intent.id] == intent.owner { finishOperation(intent.id) }
+        let chat = intent.owner.chat
+        if let reservation = uploadReservations[chat], reservation.intent == intent.id {
+            if reservation.dispatched { uploadReservations[chat]?.cancelled = true } else { uploadReservations[chat] = nil }
+        }
+        stopPending(chat: chat, intent: intent.id)
+        if uploadReservations[chat]?.intent != intent.id || uploadReservations[chat]?.dispatched != true {
+            finishOperation(intent.id)
+        }
     }
     func upload(_ data: Data, filename: String, mimeType: String, to intent: ImportIntent) async {
-        defer { withExtendedLifetime(intent.reservation) { finishOperation(intent.id) } }
-        guard !Task.isCancelled, imports.removeValue(forKey: intent.id) == intent.owner, canAct(intent.owner),
-              uploadReservations[intent.owner.chat] == nil, let access = intent.owner.access else { return }
-        guard let source = live?.identity else { return }
-        let id = intent.owner.chat, current = staging[intent.owner.chat] ?? []
-        let feedbackLifetime = selectedViewLifetime
-        let used = current.reduce(0) { $0 + $1.bytes }
-        let reserved = AttachmentLimits.reservationBytes(dataCount: data.count, filename: filename, mimeType: mimeType)
-        guard !data.isEmpty, data.count <= AttachmentLimits.fileBytes, current.count < AttachmentLimits.count,
-              reserved <= AttachmentLimits.totalBytes - used else {
-            errors[id] = AttachmentLimits.message
-            emitFeedback(.error, owner: intent.owner, lifetime: feedbackLifetime)
-            return
+        await importAttachments([AttachmentInput(name: filename, isImage: mimeType.hasPrefix("image/")) {
+            .init(data: data, filename: filename, mimeType: mimeType)
+        }], to: intent)
+    }
+    /// Stops one input, leaving the rest of its import running.
+    func cancelPendingAttachment(_ id: UUID, owner: PresentationOwner) {
+        guard isCurrent(owner) else { return }
+        if let step = importSteps[id] {
+            updatePending(id, chat: owner.chat) { $0.phase = .stopping }
+            step.task.cancel()
+            if uploadReservations[owner.chat]?.dispatched != true { step.completion.finish() }
+        } else { removePending(id, chat: owner.chat) }
+    }
+    /// A frame already sent can't be recalled, so its tile stays until the chat is free.
+    private func stopPending(chat: ChatID, intent: UUID? = nil) {
+        let settling = uploadReservations[chat]?.dispatched == true
+        let remaining = pendingImports[chat]?.compactMap { item -> PendingImport? in
+            guard intent == nil || item.intent == intent else { return item }
+            guard settling, importSteps[item.attachment.id] != nil else { return nil }
+            var stopping = item
+            stopping.attachment.phase = .stopping
+            return stopping
         }
-        uploadReservations[id] = intent.id
-        defer { if uploadReservations[id] == intent.id { uploadReservations[id] = nil } }
-        do {
-            let attachment = try await service.upload(data: data, filename: filename, mimeType: mimeType, access: access)
-            guard canAct(intent.owner), uploadReservations[id] == intent.id, !Task.isCancelled else { return }
-            let bytes = attachment.byteCount ?? reserved
-            guard bytes > 0, bytes <= AttachmentLimits.fileBytes, bytes <= AttachmentLimits.totalBytes - used else {
-                errors[id] = AttachmentLimits.message
-                emitFeedback(.error, owner: intent.owner, lifetime: feedbackLifetime)
-                return
+        pendingImports[chat] = remaining?.isEmpty == false ? remaining : nil
+    }
+    private func updatePending(_ id: UUID, chat: ChatID, _ change: (inout PendingAttachment) -> Void) {
+        guard let index = pendingImports[chat]?.firstIndex(where: { $0.attachment.id == id }) else { return }
+        change(&pendingImports[chat]![index].attachment)
+    }
+    private func removePending(_ id: UUID, chat: ChatID) {
+        pendingImports[chat]?.removeAll { $0.attachment.id == id }
+        if pendingImports[chat]?.isEmpty == true { pendingImports[chat] = nil }
+    }
+    /// One failed input leaves the others to stage; losing the chat ends the whole import.
+    func importAttachments(_ inputs: [AttachmentInput], to intent: ImportIntent) async {
+        defer { withExtendedLifetime(intent.reservation) { finishOperation(intent.id) } }
+        let id = intent.owner.chat
+        guard !Task.isCancelled, imports.removeValue(forKey: intent.id) == intent.owner, canAct(intent.owner),
+              uploadReservations[id] == nil, let access = intent.owner.access, let source = live?.identity else { return }
+        let feedbackLifetime = selectedViewLifetime
+        if let failure = importFailures.removeValue(forKey: id), errors[id] == failure { errors[id] = nil }
+        uploadReservations[id] = .init(intent: intent.id)
+        let items = inputs.map { PendingAttachment(id: UUID(), name: $0.name, isImage: $0.isImage) }
+        pendingImports[id, default: []] += items.map { PendingImport(intent: intent.id, attachment: $0) }
+        defer {
+            for item in items { removePending(item.id, chat: id) }
+            if uploadReservations[id]?.intent == intent.id {
+                uploadReservations[id] = nil
+                considerForegroundRead()
             }
-            staging[id, default: []].append(.init(id: UUID(), attachment: attachment, bytes: bytes, source: source, valid: true))
-            emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
-        } catch {
-            if isCurrent(intent.owner), !Task.isCancelled { errors[id] = error.localizedDescription }
-            emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
+        }
+        let holdsLiveSlot = { [unowned self] in
+            uploadReservations[id]?.intent == intent.id && uploadReservations[id]?.cancelled == false && !Task.isCancelled
+        }
+        let ownsImport = { [unowned self] in canAct(intent.owner) && holdsLiveSlot() }
+        let reject = { [unowned self] (message: String) in
+            errors[id] = message; importFailures[id] = message
+            emitFeedback(.error, owner: intent.owner, lifetime: feedbackLifetime)
+        }
+        for (input, item) in zip(inputs, items) {
+            guard pendingImports[id]?.contains(where: { $0.attachment.id == item.id }) == true else { continue }
+            let completion = AsyncStream<Void>.makeStream()
+            let step = Task {
+                defer { completion.continuation.finish() }
+                updatePending(item.id, chat: id) { $0.phase = .reading }
+                let payload: AttachmentPayload
+                do { payload = try await input.read() }
+                catch {
+                    if ownsImport(), !(error is CancellationError) { reject(error.localizedDescription) }
+                    return
+                }
+                guard ownsImport() else { return }
+                let current = staging[id] ?? [], used = current.reduce(0) { $0 + $1.bytes }
+                let reserved = AttachmentLimits.reservationBytes(dataCount: payload.data.count, filename: payload.filename, mimeType: payload.mimeType)
+                guard !payload.data.isEmpty, payload.data.count <= AttachmentLimits.fileBytes, current.count < AttachmentLimits.count,
+                      reserved <= AttachmentLimits.totalBytes - used else {
+                    reject(AttachmentLimits.message); return
+                }
+                do {
+                    let preview = await AttachmentPreview.rendered(payload)
+                    guard ownsImport() else { return }
+                    updatePending(item.id, chat: id) {
+                        $0.name = payload.filename; $0.preview = preview; $0.phase = .uploading
+                    }
+                    uploadReservations[id]?.dispatched = true
+                    defer { if uploadReservations[id]?.intent == intent.id { uploadReservations[id]?.dispatched = false } }
+                    let attachment = try await service.upload(data: payload.data, filename: payload.filename,
+                                                              mimeType: payload.mimeType, access: access)
+                    guard ownsImport() else { return }
+                    let bytes = attachment.byteCount ?? reserved
+                    guard bytes > 0, bytes <= AttachmentLimits.fileBytes, bytes <= AttachmentLimits.totalBytes - used else {
+                        reject(AttachmentLimits.message); return
+                    }
+                    thumbnails.retain(preview, for: attachment)
+                    staging[id, default: []].append(.init(id: UUID(), attachment: attachment, bytes: bytes, source: source, valid: true))
+                    emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
+                } catch {
+                    guard holdsLiveSlot() else { return }
+                    if isCurrent(intent.owner) { errors[id] = error.localizedDescription; importFailures[id] = error.localizedDescription }
+                    emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
+                }
+            }
+            importSteps[item.id] = .init(task: step, completion: completion.continuation)
+            await withTaskCancellationHandler {
+                for await _ in completion.stream {}
+                if uploadReservations[id]?.intent == intent.id, uploadReservations[id]?.dispatched == true {
+                    await step.value
+                }
+            } onCancel: { step.cancel() }
+            importSteps[item.id] = nil
+            removePending(item.id, chat: id)
+            guard ownsImport() else { return }
         }
     }
     func removeAttachment(_ attachment: ChatAttachment, owner: PresentationOwner) {
         guard isCurrent(owner), let index = staging[owner.chat]?.firstIndex(where: { $0.attachment == attachment }) else { return }
         staging[owner.chat]?.remove(at: index)
+        thumbnails.discard(attachment)
     }
     func captureArtifact(_ attachment: ChatAttachment, owner: PresentationOwner) -> ArtifactIntent? {
         guard canAct(owner) else { return nil }
@@ -1820,7 +1933,14 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     private func retireActionOwnership() {
         retireRecoveryHandoff()
-        presentation = UUID(); opening = nil; imports = [:]; uploadReservations = [:]; requestRows = []
+        presentation = UUID(); opening = nil; imports = [:]; requestRows = []
+        uploadReservations = uploadReservations.compactMapValues { reservation in
+            guard reservation.dispatched else { return nil }
+            var draining = reservation
+            draining.cancelled = true
+            return draining
+        }
+        for chat in Array(pendingImports.keys) { stopPending(chat: chat) }
         creations = creations.filter { dispatched.contains($0.value) }
         pendingOperations = pendingOperations.filter { dispatched.contains($0.key) }
         sends = sends.filter { dispatched.contains($0.value) }
@@ -1834,6 +1954,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         let retiredAccess = recoveryHandoff?.pending?.access ?? live?.access ?? recoveryHandoff?.retiredAccess
         avatarActivity = BotAvatarActivityLedger()
         online = false; recovery = UUID(); live = nil
+        uploadReservations = [:]; pendingImports = [:]
         for id in staging.keys { invalidateStaging(id) }
         for read in directoryReads.values { read.task.cancel() }
         inboxHistoryRefresh?.task.cancel(); inboxHistoryRefresh = nil; pendingInboxProfiles = []

@@ -581,7 +581,7 @@ import BottoCore
                 if fullChat {
                     NavigationStack {
                         ChatView(store: store, bot: profile.bot, presentation: presentation,
-                                 isExposed: true, isEditingExposed: true, rootCovered: false,
+                                 isExposed: true, isEditingExposed: true, importPaneVisible: true, rootCovered: false,
                                  onLocalModalPresentation: { _ in })
                     }
                 } else {

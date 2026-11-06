@@ -37,6 +37,7 @@
 		2B0A96A56DD77B7CDC9AB14D /* BotProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C791E208EABB6AF87F092FA /* BotProfileView.swift */; };
 		2BC0AF7A3453A0507297FF01 /* BotAvatarLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F2104D8B0DF572DE3BB1C4 /* BotAvatarLayoutTests.swift */; };
 		2C19A64BC59036E0A284ABD2 /* Hermex.txt in Resources */ = {isa = PBXBuildFile; fileRef = C4BCF8A898C7050C2B11AC39 /* Hermex.txt */; };
+		2D67C4EEE6B5F2ECC2F202CA /* AttachmentImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1941A813C3CA9FFBF816DBB3 /* AttachmentImportTests.swift */; };
 		2DF16B1C589632F95C5A0616 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFEBD96B631B495C3094B053 /* ConnectionView.swift */; };
 		2F754BE14308079F304B11DD /* SearchMatchTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6872CEA80884F3AF85BE94AC /* SearchMatchTextTests.swift */; };
 		30C38C42214F22FAE131F6D3 /* NativeTranscriptLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CBCCDAC6B8672D772678DD1 /* NativeTranscriptLifecycleTests.swift */; };
@@ -78,6 +79,7 @@
 		62484280E98E19F17651C9A1 /* ConversationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53F067D91D2B53D8680EEAD6 /* ConversationPersistenceTests.swift */; };
 		676F0E1F11AFE81AF8B9D915 /* ConversationReadPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC8E9FA109B94A8F2C060D56 /* ConversationReadPersistenceTests.swift */; };
 		6778716E6E397F6B5FF30326 /* BotAvatarMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88D326386B3298BB4EFAA3A /* BotAvatarMotion.swift */; };
+		693A07C6A93E9F831BDD1BA2 /* AttachmentImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0A143883806B60DBB2E432F /* AttachmentImport.swift */; };
 		6BF683BBB1DEA553B778C307 /* DiagramSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76255593E8DDA9DD1B93F2E1 /* DiagramSnapshot.swift */; };
 		6CAE36F0993341034D61E455 /* HapticsPlayground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E2BC2323583FA13E3C8682 /* HapticsPlayground.swift */; };
 		6D838E7C6D9E174E5363D416 /* WorkspaceUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870CFB815324D657477AE77D /* WorkspaceUITestSupport.swift */; };
@@ -279,6 +281,7 @@
 		162047411A429BB88BA61507 /* ArtifactPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreview.swift; sourceTree = "<group>"; };
 		16231759144C3E641A64D1CA /* NotificationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationStoreTests.swift; sourceTree = "<group>"; };
 		162914939CB38B1F1ED1DFD0 /* BotAvatarGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarGeometry.swift; sourceTree = "<group>"; };
+		1941A813C3CA9FFBF816DBB3 /* AttachmentImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentImportTests.swift; sourceTree = "<group>"; };
 		1BE2D72A453EBACF2BA18E44 /* SetupUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupUITests.swift; sourceTree = "<group>"; };
 		1C8FDAA5E724961CB0F1E2D2 /* BotFaceMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotFaceMotion.swift; sourceTree = "<group>"; };
 		1CBF13B23ECA60EC385686CE /* BottoBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottoBrand.swift; sourceTree = "<group>"; };
@@ -427,6 +430,7 @@
 		DD20C1E8D6F24F41BEB6145C /* capabilities.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = capabilities.js; sourceTree = "<group>"; };
 		DEE9A2F44F2479C5EA0DBF95 /* LiveChatReadUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveChatReadUITests.swift; sourceTree = "<group>"; };
 		E05E176FC00C2EE2B19BE98D /* RenderedTranscriptFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderedTranscriptFile.swift; sourceTree = "<group>"; };
+		E0A143883806B60DBB2E432F /* AttachmentImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentImport.swift; sourceTree = "<group>"; };
 		E2CB6F5CDBACF0A0D15C29CB /* ConversationDirectoryPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectoryPreviewTests.swift; sourceTree = "<group>"; };
 		E33C98BAA4AD8C0060A54811 /* NativeTranscriptRequestContinuityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptRequestContinuityTests.swift; sourceTree = "<group>"; };
 		E42E3411D31C0B482AE94E8F /* pele-provenance.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pele-provenance.json"; sourceTree = "<group>"; };
@@ -616,6 +620,7 @@
 				540FEEA6131914A5C16B27D4 /* AppStore.swift */,
 				F42DB3A669B8BEC3CAC78FEF /* ArtifactCache.swift */,
 				494DC1F3139E0BD947ACEBC5 /* ArtifactPreviewModel.swift */,
+				E0A143883806B60DBB2E432F /* AttachmentImport.swift */,
 				920DD8C00F774068F9F4322B /* AvatarGenerationModel.swift */,
 				68473CA510B55D892D4A64B9 /* BotAvatarPresentation.swift */,
 				11654F56AA63A3AE0D07F837 /* BotAvatarStore.swift */,
@@ -764,6 +769,7 @@
 				3E6E4472AF57C4CDD3FDB026 /* ArtifactCacheTests.swift */,
 				883FD4DEEBCC502E2607DC0A /* ArtifactPreviewTests.swift */,
 				6811E64F4A6AE8179D162B2E /* ArtifactTextReaderTests.swift */,
+				1941A813C3CA9FFBF816DBB3 /* AttachmentImportTests.swift */,
 				B698713E9C9A260D5CD181DB /* AvatarGenerationModelTests.swift */,
 				300BEB2BC921574B035E823A /* AvatarGenerationStoreTests.swift */,
 				E7F2104D8B0DF572DE3BB1C4 /* BotAvatarLayoutTests.swift */,
@@ -1052,6 +1058,7 @@
 				D6FC589D8743E32EE495461C /* ArtifactTextReader.swift in Sources */,
 				78DEF221FF98C0665C6B9A88 /* ArtifactsView.swift in Sources */,
 				93FE4925A6DF3A44967E357B /* AssistantReplyBody.swift in Sources */,
+				693A07C6A93E9F831BDD1BA2 /* AttachmentImport.swift in Sources */,
 				3D8726FBC0AC48132C86DE8C /* AvatarGenerationModel.swift in Sources */,
 				9D968EEBE63EA6122B79B1C7 /* BotAvatar.swift in Sources */,
 				8E7DBB78495F0CF739B6032C /* BotAvatarColor.swift in Sources */,
@@ -1145,6 +1152,7 @@
 				E6539137082AD87AE2AE351A /* ArtifactCacheTests.swift in Sources */,
 				945D1754184001135916C175 /* ArtifactPreviewTests.swift in Sources */,
 				4AD6E55CE76801A9C2D81D98 /* ArtifactTextReaderTests.swift in Sources */,
+				2D67C4EEE6B5F2ECC2F202CA /* AttachmentImportTests.swift in Sources */,
 				36CA06A1D9BD3FD5FBBC37C7 /* AvatarGenerationModelTests.swift in Sources */,
 				3FB145EB21CD8697E2D8BCE6 /* AvatarGenerationStoreTests.swift in Sources */,
 				2BC0AF7A3453A0507297FF01 /* BotAvatarLayoutTests.swift in Sources */,

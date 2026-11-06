@@ -10,17 +10,22 @@ struct MessageView: View {
     var senderProfile: BotProfile?
     var senderImage: UIImage?
     var onOpenAttachment: ((ChatAttachment) -> Void)?
+    var thumbnails: AttachmentThumbnails?
     private let rawRevision: Data?
     private var outgoing: Bool { message.isOutgoingUserMessage }
 
     init(message: ChatMessage, isStreaming: Bool = false, rendersRichContent: Bool = true, filePreviewsAreSettled: Bool = true,
          senderProfile: BotProfile? = nil, senderImage: UIImage? = nil,
-         onOpenAttachment: ((ChatAttachment) -> Void)? = nil) {
+         onOpenAttachment: ((ChatAttachment) -> Void)? = nil, thumbnails: AttachmentThumbnails? = nil) {
         self.message = message; self.isStreaming = isStreaming; self.rendersRichContent = rendersRichContent
         self.filePreviewsAreSettled = filePreviewsAreSettled
         self.senderProfile = senderProfile; self.senderImage = senderImage
-        self.onOpenAttachment = onOpenAttachment
+        self.onOpenAttachment = onOpenAttachment; self.thumbnails = thumbnails
         rawRevision = message.notificationPresentation == nil ? nil : Data(message.text.utf8)
+    }
+
+    private func showsStack(_ attachments: [ChatAttachment], _ thumbnails: AttachmentThumbnails) -> Bool {
+        attachments.count > 1 || attachments.first.map { thumbnails.image(for: $0) != nil } == true
     }
 
     var body: some View {
@@ -47,27 +52,38 @@ struct MessageView: View {
                 identifier: "message-details-" + message.id, messages: [message])
         } else {
             let presentation = AttachmentPresentation.display(message)
-            HStack(alignment: .top, spacing: 0) {
-                if outgoing { Spacer(minLength: 35) }
-                VStack(alignment: .leading, spacing: 10) {
-                    if !presentation.text.isEmpty {
-                        if outgoing { SearchMatchText(presentation.text).textSelection(.enabled) }
-                        else if !rendersRichContent { MarkdownBody(text: presentation.text) }
-                        else { AssistantReplyBody(message: message, isStreaming: isStreaming,
-                                                  filePreviewsAreSettled: filePreviewsAreSettled,
-                                                  onOpenAttachment: onOpenAttachment) }
-                    }
-                    ForEach(presentation.attachments) { attachment in
-                        ArtifactCard(attachment: attachment, outgoing: outgoing,
-                                     open: onOpenAttachment.map { action in { action(attachment) } })
-                    }
+            let stack = outgoing ? thumbnails.flatMap { showsStack(presentation.attachments, $0) ? $0 : nil } : nil
+            VStack(alignment: .trailing, spacing: 8) {
+                if let stack {
+                    SentAttachmentStack(attachments: presentation.attachments, thumbnails: stack, open: onOpenAttachment)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                .font(.body).lineSpacing(outgoing ? 3 : 4)
-                .padding(.horizontal, outgoing ? 16 : 0)
-                .padding(.vertical, outgoing ? 13 : 6)
-                .foregroundStyle(outgoing ? BottoTheme.onOutgoing : BottoTheme.ink)
-                .background {
-                    if outgoing { RoundedRectangle(cornerRadius: 23).fill(BottoTheme.outgoing) }
+                if stack == nil || !presentation.text.isEmpty {
+                    HStack(alignment: .top, spacing: 0) {
+                        if outgoing { Spacer(minLength: 35) }
+                        VStack(alignment: .leading, spacing: 10) {
+                            if !presentation.text.isEmpty {
+                                if outgoing { SearchMatchText(presentation.text).textSelection(.enabled) }
+                                else if !rendersRichContent { MarkdownBody(text: presentation.text) }
+                                else { AssistantReplyBody(message: message, isStreaming: isStreaming,
+                                                          filePreviewsAreSettled: filePreviewsAreSettled,
+                                                          onOpenAttachment: onOpenAttachment) }
+                            }
+                            if stack == nil {
+                                ForEach(presentation.attachments) { attachment in
+                                    ArtifactCard(attachment: attachment, outgoing: outgoing,
+                                                 open: onOpenAttachment.map { action in { action(attachment) } })
+                                }
+                            }
+                        }
+                        .font(.body).lineSpacing(outgoing ? 3 : 4)
+                        .padding(.horizontal, outgoing ? 16 : 0)
+                        .padding(.vertical, outgoing ? 13 : 6)
+                        .foregroundStyle(outgoing ? BottoTheme.onOutgoing : BottoTheme.ink)
+                        .background {
+                            if outgoing { RoundedRectangle(cornerRadius: 23).fill(BottoTheme.outgoing) }
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity)

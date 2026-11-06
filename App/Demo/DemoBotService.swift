@@ -439,6 +439,7 @@ import BottoCore
         guard data.count <= AttachmentLimits.fileBytes else { throw HermesServiceError.attachmentLimit }
         #if DEBUG
         try await waitForUITestFixture("upload")
+        if ProcessInfo.processInfo.arguments.contains("--slow-upload-demo") { try await Task.sleep(for: .seconds(3)) }
         #endif
         guard try issuer.resolve(access) == source else { throw HermesServiceError.staleConversation }
         let token = UUID()
@@ -868,6 +869,12 @@ import BottoCore
             ChatMessage(id: "canvas-rich-reply", role: .assistant, text: Self.richReply, timestamp: now)
         ])
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--attachment-deck-demo") {
+            chats[Data("canvas".utf8)]?.messages.append(ChatMessage(id: "canvas-deck", role: .user, text: "Here are the files.", timestamp: now, attachments: [
+                ChatAttachment(name: "report.pdf", path: "/demo/canvas/report.pdf", mimeType: "application/pdf", byteCount: pdf.count),
+                ChatAttachment(name: "chart.png", path: "/demo/canvas/chart.png", mimeType: "image/png", byteCount: png.count)
+            ]))
+        }
         if ProcessInfo.processInfo.arguments.contains("--rich-inbox-demo"),
            let index = profiles.firstIndex(where: { $0.id == "canvas" }) {
             profiles[index].preview = Self.richReply

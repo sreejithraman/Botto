@@ -4,7 +4,8 @@
 
 Open a message file card in a retained native reader, save original bytes to
 Files, or share them. Appropriate plain/source text uses a selectable text
-reader; PDF and images use Quick Look. Sub-features: user/assistant references,
+reader; PDF and images use Quick Look, or PDFKit and a zooming image view when
+paging through a message's attachments. Sub-features: user/assistant references,
 PDF zoom, text encoding, empty/unsupported files, retry, captured conversation
 ownership, export lifetime, and interruption by external connection review.
 
@@ -16,11 +17,21 @@ ownership, export lifetime, and interruption by external connection review.
 - `artifacts.e.host`: open an actual user/assistant file card in its original
   connected conversation. Explicit `MEDIA:`, `@file:`, `file://` or server-path
   Markdown references can project cards; ordinary web links/code stay text.
-- `artifacts.e.preview`: card → preview (`artifact-preview`). The file header
-  offers **Close** (`artifact-done`), **Full screen / Exit full screen**
-  (`artifact-toggle-expanded`) and **Actions** (`artifact-actions`). Open Actions
-  for **Save to Files** (`artifact-save`) or **Share** (`artifact-share`). A load
-  error offers **Try Again** (`artifact-retry`).
+- `artifacts.e.preview`: card → preview (`artifact-preview`). The header centers
+  the filename between 44-point controls: **Close** (`artifact-done`) on the left;
+  **Full screen / Exit full screen** (`artifact-toggle-expanded`), only where the
+  file can sit beside the chat, and **Actions** (`artifact-actions`) on the right.
+  Open Actions for **Save to Files** (`artifact-save`) or **Share**
+  (`artifact-share`). A reader filling the workspace replaces the navigation bar,
+  so Actions also holds **Bots** (`workspace-browse-bots`). A load error offers
+  **Try Again** (`artifact-retry`).
+- `artifacts.e.pages`: an attachment opened from a message with others shows
+  `artifact-page` ("2 of 3") under the filename. The pages follow your finger with
+  their neighbors alongside; release early to settle back. VoiceOver adjusts the
+  same label. Paged PDFs use PDFKit and paged images a zooming view, because Quick
+  Look's out-of-process views never deliver the swipe. Other paged Quick Look
+  files turn from 28-point edge strips. A zoomed PDF or image keeps horizontal
+  drags for panning; zoom back to fit to swipe again.
 
 ## Interactive checks
 
@@ -76,7 +87,10 @@ Workflow `artifacts.save`:
    (Files app or fresh provider URL read). Expect exact expected bytes/hash,
    filename/type and zero-byte file where applicable, surviving preview cleanup.
    Proof: provider location, fresh read bytes/hash, success state. Reading
-   `botto-artifact-*` temp files cannot pass this assertion.
+   `botto-artifact-*` temp files cannot pass this assertion. Save the same name
+   again and choose **Keep Both**, with the Mac under load; expect Files to stay
+   closed and the reader usable. Files turns the scene inactive there, so an
+   exporter tied to the active scene closes, loses its result and reopens.
 3. `.a3` With a supported read-only/unavailable provider fixture, attempt Save.
    Expect honest error, no partial output, and preview still usable for deliberate
    retry. Proof: error and independent provider directory read. If unavailable,

@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// Decoding is a display operation. The session keeps the original Data/URL for
 /// export, including BOMs and line endings, independently of this Unicode text.
-enum ArtifactPlainText {
+nonisolated enum ArtifactPlainText {
     enum Failure: Error, Equatable, Sendable {
         case unsupportedEncoding
         case invalidText

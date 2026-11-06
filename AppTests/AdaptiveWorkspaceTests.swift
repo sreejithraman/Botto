@@ -106,6 +106,66 @@ import BottoCore
         #expect(store.history.bots.first?.updatedAt == Date(timeIntervalSince1970: 103))
     }
 
+    @Test func pairedAttachmentPagingPreservesNativeEditingAndUndo() async throws {
+        let service = try WorkspaceTestService()
+        service.downloadData = Data("Comparison notes".utf8)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://paired-editor-paging.invalid")!)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
+        try #require(await store.connect(configuration))
+        await store.open(try #require(store.bots.first))
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let identity = try #require(service.completedOpens.last?.identity)
+        let files = [ChatAttachment(name: "first.txt", path: "/first.txt", mimeType: "text/plain"),
+                     ChatAttachment(name: "second.txt", path: "/second.txt", mimeType: "text/plain")]
+        let message = ChatMessage(id: identity.stored.text + ":row:1", role: .assistant,
+                                  text: "Compare these files", attachments: files)
+        service.snapshots[identity.root]?.messages = [message]
+        store.chats.receive(try service.publication(identity))
+        let presentation = WorkspacePresentation()
+        let window = try await attach(AdaptiveWorkspace(store: store, presentation: presentation,
+            rootCovered: false, onSettings: {}, onNewBot: {}), logicalSize: CGSize(width: 1000, height: 700))
+        defer { window.close() }
+        let root = try #require(window.rootViewController)
+        let destination = try #require(store.artifactDestination(for: files[0], botID: service.profile.text,
+                                                                producingMessage: message))
+        presentation.openArtifact(destination, store: store)
+        try await waitUntil("The paired reader and native composer are ready") {
+            presentation.artifact?.file != nil &&
+                self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
+        }
+        let editor = try #require(nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
+            .first { $0.isEditable })
+        let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
+        editor.inputView = UIView(frame: .zero)
+        try #require(editor.becomeFirstResponder())
+        let draft = "Keep this comparison draft"
+        editor.insertText(draft)
+        try await waitUntil { store.chats.draft(owner) == draft && editor.undoManager?.canUndo == true }
+        let selection = NSRange(location: 5, length: 4)
+        editor.selectedRange = selection
+        let first = try #require(presentation.artifact)
+        try #require(presentation.moveArtifact(by: 1, id: first.id, store: store))
+        try await waitUntil("The second page rendered beside the existing draft") {
+            presentation.artifact?.title == "second.txt" && presentation.artifact?.file != nil &&
+                self.shellAccessibilityLabels(in: root.view).contains("Attachment 2 of 2")
+        }
+        #expect(!presentation.acceptsArtifactCallback(id: first.id, revision: presentation.revision))
+        try #require(editor.isFirstResponder, "Paging must preserve the active native composer")
+        #expect(editor.selectedRange == selection && editor.text == draft)
+        try #require(editor.undoManager?.canUndo == true, "Paging must preserve native undo history")
+        editor.undoManager?.undo()
+        try await waitUntil { store.chats.draft(owner).isEmpty }
+        editor.undoManager?.redo()
+        try await waitUntil { store.chats.draft(owner) == draft }
+        let second = try #require(presentation.artifact)
+        try #require(presentation.moveArtifact(by: -1, id: second.id, store: store))
+        try await waitUntil { presentation.artifact?.title == "first.txt" &&
+            self.shellAccessibilityLabels(in: root.view).contains("Attachment 1 of 2") }
+        #expect(editor.isFirstResponder && editor.text == draft && editor.undoManager?.canUndo == true)
+        #expect(nativeTextViews(in: root.view).contains { $0 === editor })
+        presentation.closeArtifact(id: try #require(presentation.artifact).id)
+    }
+
     @Test func nativeRootControlsUseReplacementOpaqueCallbacksWithOtherwiseEqualInputs() async throws {
         let service = try WorkspaceTestService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://shell-callbacks.invalid")!)
@@ -1255,6 +1315,7 @@ private struct ChatCoverageHost: View {
     @State private var presentation = WorkspacePresentation()
     var body: some View {
         ChatView(store: store, bot: bot, presentation: presentation, isExposed: !state.covered, isEditingExposed: !state.covered,
+                 importPaneVisible: !state.covered,
                  rootCovered: state.covered, onLocalModalPresentation: { _ in })
             .onChange(of: state.covered) { _, _ in state.observedCover = true }
     }
@@ -1304,6 +1365,7 @@ private struct NativeReadCoverageHost: View {
     let native: WorkspaceNativeDetailState
     var body: some View {
         ChatView(store: store, bot: bot, presentation: presentation, isExposed: true, isEditingExposed: true,
+                 importPaneVisible: true,
                  rootCovered: false, onLocalModalPresentation: { _ in })
             .environment(\.scenePhase, .active)
             .environment(\.workspaceNativeDetail, native)

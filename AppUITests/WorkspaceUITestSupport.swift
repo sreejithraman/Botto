@@ -154,9 +154,19 @@ import Vision
         return !overview.exists && header.exists && header.isHittable && header.isEnabled && header.value as? String == title
     }
 
+    /// The toolbar's Bots control, or the same action in the Actions menu of a full-width file.
+    static func botsControl(in app: XCUIApplication) -> XCUIElement {
+        let toolbar = app.descendants(matching: .any).matching(identifier: "workspace-browse-bots").firstMatch
+        let actions = app.buttons["artifact-actions"].firstMatch
+        if toolbar.exists || !actions.exists || !actions.isHittable { return toolbar }
+        actions.tap()
+        let menuItem = ArtifactOutputActions.action("workspace-browse-bots", label: "Bots", in: app)
+        return menuItem.waitForExistence(timeout: 5) ? menuItem : toolbar
+    }
+
     static func browseBots(in app: XCUIApplication, expectedBotRow: String? = nil,
                            file: StaticString = #filePath, line: UInt = #line) {
-        let explicit = app.descendants(matching: .any).matching(identifier: "workspace-browse-bots").firstMatch
+        let explicit = botsControl(in: app)
         if explicit.exists && explicit.isHittable {
             explicit.tap()
         } else {

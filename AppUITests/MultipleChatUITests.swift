@@ -986,6 +986,9 @@ final class MultipleChatUITests: XCTestCase {
         let file = app.collectionViews.cells.containing(NSPredicate(
             format: "label CONTAINS %@", stem)).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 15)); file.tap()
+        // The picker takes several files, so a choice needs confirming.
+        let open = app.buttons["Open"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
         let remove = app.buttons["Remove " + filename]
         XCTAssertTrue(remove.waitForExistence(timeout: 8))
         editor(app).tap(); editor(app).typeText("Draft with a file")
@@ -1112,8 +1115,29 @@ final class MultipleChatUITests: XCTestCase {
         app.buttons["bot-row-canvas"].tap()
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         let report = app.buttons["Open report.pdf"]
-        for _ in 0..<8 where !report.isHittable { transcript.swipeDown() }
-        XCTAssertTrue(report.isHittable); report.tap()
+        func openReport() -> Bool {
+            func ready() -> Bool {
+                var previousFrame: CGRect?
+                var hittable = false
+                let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    guard report.exists else { previousFrame = nil; return false }
+                    let frame = report.frame
+                    defer { previousFrame = frame }
+                    guard frame == previousFrame else { return false }
+                    hittable = !frame.isEmpty && transcript.frame.intersection(app.frame).contains(frame) && report.isHittable
+                    return true
+                }, object: nil)
+                return XCTWaiter.wait(for: [settled], timeout: 5) == .completed && hittable
+            }
+            for _ in 0..<8 where !ready() { transcript.swipeDown() }
+            guard ready() else {
+                XCTFail("The report must scroll into view and become hittable before opening.")
+                return false
+            }
+            report.tap()
+            return true
+        }
+        guard openReport() else { return }
         ArtifactOutputActions.assertAvailable(in: app, timeout: 8)
         app.buttons["artifact-done"].tap()
         picker(app); app.buttons["new-chat"].tap()
@@ -1123,8 +1147,7 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Add review"].exists)
         editor(app).tap(); editor(app).typeText("Separate Canvas conversation")
         select("Main", app: app)
-        for _ in 0..<8 where !report.isHittable { transcript.swipeDown() }
-        XCTAssertTrue(report.isHittable); report.tap()
+        guard openReport() else { return }
         ArtifactOutputActions.assertAvailable(in: app, timeout: 8)
         XCTAssertFalse(app.descendants(matching: .any)["artifact-error"].exists)
         app.buttons["artifact-done"].tap()

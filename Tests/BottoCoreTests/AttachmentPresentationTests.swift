@@ -195,3 +195,46 @@ func attachmentPresentationLeavesOtherRolesUnmodified(_ role: ChatMessage.Role) 
     #expect(shown.attachments == [ChatAttachment(name: "notes.txt", path: "/h/file", mimeType: "text/plain")])
     #expect(message.attachments == [uploaded, uploaded])
 }
+
+// Hermes 4a0eaf79 agent/session_persistence.py replaces each image part with `[screenshot]`
+// in the text-only row, after the hints from gateway/run_turn_runner.py.
+@Test func persistedImageRowsShowCardsWithoutTheirGeneratedHints() {
+    let a = "/h/cache/documents/native-inputs/1/upload_a.jpg", b = "/h/cache/documents/native-inputs/2/upload_b.jpg"
+    let file = "/h/attachments/id-report.pdf"
+    let text = "Compare these\n\n@file:\(file)\n\n[Image attached at: \(a)]\n[Image attached at: \(b)]\n[screenshot]\n[screenshot detail=high]"
+    let shown = AttachmentPresentation.display(ChatMessage(id: "1", role: .user, text: text, timestamp: .now))
+    #expect(shown.text == "Compare these")
+    #expect(shown.attachments.map(\.path) == [file, a, b])
+    #expect(shown.attachments.map(\.name) == ["id-report.pdf", "upload_a.jpg", "upload_b.jpg"])
+    #expect(shown.attachments.suffix(2).allSatisfy { $0.mimeType.hasPrefix("image/") })
+}
+
+@Test(arguments: [
+    "Example\n\n[Image attached at: /h/a.png]\n[screenshot]\n[screenshot]",
+    "Example\n\n[screenshot]",
+    "Example\n\n[Image attached at: relative/a.png]\n[screenshot]",
+    "Example\n\n```\n[Image attached at: /h/a.png]\n[screenshot]",
+])
+func textThatOnlyLooksLikePersistedImagesStaysText(text: String) {
+    let shown = AttachmentPresentation.display(ChatMessage(id: "1", role: .user, text: text, timestamp: .now))
+    #expect(shown.text == text)
+    #expect(shown.attachments.isEmpty)
+}
+
+@Test func aPhotoOnlyMessageHidesThePromptBottoSentOnItsBehalf() {
+    let text = "\(AttachmentPresentation.imageOnlyPrompt)\n\n[Image attached at: /h/a.jpg]\n[screenshot]"
+    let shown = AttachmentPresentation.display(ChatMessage(id: "1", role: .user, text: text, timestamp: .now))
+    #expect(shown.text.isEmpty)
+    #expect(shown.attachments.map(\.path) == ["/h/a.jpg"])
+
+    let plain = ChatMessage(id: "2", role: .user, text: AttachmentPresentation.imageOnlyPrompt, timestamp: .now)
+    #expect(AttachmentPresentation.display(plain).text == AttachmentPresentation.imageOnlyPrompt)
+}
+
+@Test func photosTheHostRenamedShowAPlainName() {
+    let hosted = ChatAttachment(name: "upload_bz7wz_3o.jpg", path: "/h/native-inputs/1/upload_bz7wz_3o.jpg", mimeType: "image/jpeg")
+    let chosen = ChatAttachment(name: "upload_notes.jpg", path: "/h/upload_notes.jpg", mimeType: "image/jpeg")
+    let file = ChatAttachment(name: "upload_abcd1234.txt", path: "/h/upload_abcd1234.txt", mimeType: "text/plain")
+    let shown = AttachmentPresentation.display(ChatMessage(id: "1", role: .user, text: "", timestamp: .now, attachments: [hosted, chosen, file]))
+    #expect(shown.attachments.map(\.name) == ["Photo.jpg", "upload_notes.jpg", "upload_abcd1234.txt"])
+}

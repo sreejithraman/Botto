@@ -8,6 +8,7 @@ struct ChatView: View {
     let presentation: WorkspacePresentation
     let isExposed: Bool
     let isEditingExposed: Bool
+    let importPaneVisible: Bool
     let rootCovered: Bool
     let onLocalModalPresentation: (Bool) -> Void
     var toolbarVisible = true
@@ -82,7 +83,6 @@ struct ChatView: View {
         .onChange(of: rootCovered) { _, covered in
             if covered { coverTranscript(); dismissOverviewImmediately(); importPresentationRevision = UUID() }
         }
-        .onChange(of: presentation.revision) { _, _ in importPresentationRevision = UUID() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
             dismissOverviewImmediately()
             discardPreviews()
@@ -243,7 +243,8 @@ struct ChatView: View {
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
                              inputAvailable: inputAvailable,
-                             importsAllowed: !showsProfile && !overviewCovered && childModals.isEmpty && !rootCovered && !presentation.isBrowsingBots && scenePhase != .background,
+                             importsAllowed: importPaneVisible && (showsAttachmentPicker || nativeDetail?.inputVisible != false) &&
+                                !showsProfile && !overviewCovered && childModals.isEmpty && !rootCovered && !presentation.isBrowsingBots && scenePhase != .background,
                              importPresentationRevision: importPresentationRevision,
                              editingRevision: editingRevision,
                              onPickerPresentation: { shown in
@@ -1030,7 +1031,7 @@ private struct TranscriptMessage: View {
                               actionScope: actionScope, actionRevision: actionRevision,
                               canOpenAttachment: onOpenAttachment != nil,
                               senderProfile: senderProfile, senderImage: senderProfile.flatMap(store.avatar(for:)),
-                              onOpenAttachment: onOpenAttachment)
+                              onOpenAttachment: onOpenAttachment, thumbnails: store.chats.thumbnails)
             .equatable()
             .environment(\.richReplyContext, message.isVisible && message.role == .assistant ? store.richReplyContext(for: botID, messageID: message.id) : .chat(nil))
         if message.notificationPresentation == nil && message.role != .tool && message.role != .system {
@@ -1056,6 +1057,7 @@ private struct TranscriptMessageBody: View, Equatable {
     let senderProfile: BotProfile?
     let senderImage: UIImage?
     let onOpenAttachment: ((ChatAttachment) -> Void)?
+    let thumbnails: AttachmentThumbnails
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.isStreaming == rhs.isStreaming,
@@ -1081,7 +1083,8 @@ private struct TranscriptMessageBody: View, Equatable {
     var body: some View {
         MessageView(message: message, isStreaming: isStreaming,
                     filePreviewsAreSettled: filePreviewsAreSettled,
-                    senderProfile: senderProfile, senderImage: senderImage, onOpenAttachment: onOpenAttachment)
+                    senderProfile: senderProfile, senderImage: senderImage, onOpenAttachment: onOpenAttachment,
+                    thumbnails: thumbnails)
     }
 }
 

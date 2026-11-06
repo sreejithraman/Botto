@@ -18,8 +18,8 @@ struct ChatComposer: View {
     @Binding var connectionRequested: Bool
     @State private var showsFiles = false
     @State private var showsPhotos = false
-    @State private var selectedPhoto: PhotosPickerItem?
-    private struct AttachmentPicker: Equatable {
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    private struct AttachmentImport: Equatable {
         let id = UUID()
         let destination: ImportIntent
         let owner: PresentationOwner
@@ -27,13 +27,27 @@ struct ChatComposer: View {
 
         static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
     }
-    @State private var filePicker: AttachmentPicker?
-    @State private var photoPicker: AttachmentPicker?
-    @State private var fileTask: Task<Void, Never>?
-    @State private var attachmentReadID: UUID?
-    @State private var photoTask: Task<Void, Never>?
+    @State private var filePicker: AttachmentImport?
+    @State private var photoPicker: AttachmentImport?
+    @State private var runningImport: AttachmentImport?
+    @State private var importTask: Task<Void, Never>?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var attachmentError: String?
+    private enum AttachmentNotice {
+        case failure(String)
+        case pasteGuidance(String)
+        case interrupted
+
+        var message: String {
+            switch self {
+            case .failure(let message), .pasteGuidance(let message): message
+            case .interrupted: "Attachment import stopped. Check the attached files before sending."
+            }
+        }
+        var survivesOwnerChange: Bool {
+            if case .interrupted = self { true } else { false }
+        }
+    }
+    @State private var attachmentError: AttachmentNotice?
     @State private var stopping: UUID?
 
     private var draft: Binding<String> {
@@ -44,13 +58,14 @@ struct ChatComposer: View {
             workspace.editDraft(text, owner: owner)
         })
     }
-    private var photoSelection: Binding<PhotosPickerItem?> {
+    private var photoSelection: Binding<[PhotosPickerItem]> {
         let picker = photoPicker
-        return Binding(get: { selectedPhoto }, set: { photo in
+        return Binding(get: { selectedPhotos }, set: { photos in
             guard let picker, importsAllowed, photoPicker == picker else { return }
-            selectedPhoto = photo
+            selectedPhotos = photos
         })
     }
+    private var photoRoom: Int { max(AttachmentLimits.count - (screen?.attachments.count ?? 0), 1) }
     private var working: Bool { screen?.snapshot?.isWorking == true }
     private var hasContent: Bool {
         !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(screen?.attachments.isEmpty ?? true)
@@ -72,7 +87,7 @@ struct ChatComposer: View {
         return "Send message"
     }
     private var sending: Bool { screen?.isSending == true }
-    private var uploading: Bool { attachmentReadID != nil || screen?.isUploading == true }
+    private var uploading: Bool { runningImport != nil || screen?.isUploading == true }
     private var canCompose: Bool { inputAvailable && screen.map(store.canCompose) == true }
     private var canSend: Bool {
         canCompose && screen?.needsReattachment != true && !sending && !uploading &&
@@ -81,35 +96,42 @@ struct ChatComposer: View {
     var body: some View {
         VStack(spacing: 10) {
             if let error = attachmentError {
-                InlineNotice(message: error) { attachmentError = nil }.padding(.horizontal, 16)
+                InlineNotice(message: error.message) { attachmentError = nil }.padding(.horizontal, 16)
             }
             if screen?.needsReattachment == true {
                 Text("Attach these files again before sending.")
                     .font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 16)
             }
-            if let screen, !screen.attachments.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(screen.attachments) { attachment in
-                            HStack(spacing: 8) {
-                                Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "doc")
-                                Text(attachment.name).font(.caption).lineLimit(1)
-                                Button { workspace.removeAttachment(attachment, owner: screen.owner) } label: {
-                                    Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 44, height: 44)
-                                }.buttonStyle(.plain).accessibilityLabel("Remove \(attachment.name)")
-                                    .disabled(sending)
+            if let screen, !screen.attachments.isEmpty || !screen.pendingAttachments.isEmpty {
+                HStack(spacing: 4) {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(screen.attachments) { attachment in
+                                StagedAttachmentTile(name: attachment.name, isImage: attachment.mimeType.hasPrefix("image/"),
+                                                     thumbnail: workspace.thumbnails.image(for: attachment), removable: !sending) {
+                                    workspace.removeAttachment(attachment, owner: screen.owner)
+                                }
                             }
-                            .padding(.leading, 12).background(BottoTheme.surface, in: Capsule())
-                        }
-                    }.padding(.horizontal, 16)
-                }.scrollIndicators(.hidden)
+                            ForEach(screen.pendingAttachments) { pending in
+                                StagedAttachmentTile(name: pending.name, isImage: pending.isImage, thumbnail: pending.preview,
+                                                     pending: pending.phase, removable: true) {
+                                    workspace.cancelPendingAttachment(pending.id, owner: screen.owner)
+                                }
+                            }
+                        }.padding(.horizontal, 16)
+                    }.scrollIndicators(.hidden)
+                    if screen.pendingAttachments.count > 1, runningImport != nil {
+                        Button("Cancel All") { cancelAttachmentImport(showNotice: true) }
+                            .font(.caption).frame(minWidth: 44, minHeight: 44).padding(.trailing, 12).contentShape(Rectangle())
+                            .accessibilityIdentifier("composer-cancel-attachment")
+                    }
+                }
             }
             QueuedMessagesView(workspace: workspace, screen: screen, inputAvailable: inputAvailable,
                                canAttemptSave: canCompose, requireConnection: requireConnection)
                 .frame(maxWidth: 780).padding(.horizontal, 16)
-            if uploading || sending {
-                Text(uploading ? "Attaching…" : "Sending…")
-                    .font(.caption).foregroundStyle(.secondary)
+            if sending {
+                Text("Sending…").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22)
             }
             HStack(alignment: .bottom, spacing: 10) {
@@ -118,20 +140,20 @@ struct ChatComposer: View {
                         guard canCompose, requireConnection() else { return }
                         editingHandle.cancel()
                         guard let screen, let destination = workspace.captureImport(screen.owner) else { return }
-                        photoPicker = AttachmentPicker(destination: destination, owner: screen.owner, workspace: workspace)
-                        selectedPhoto = nil
+                        photoPicker = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
+                        selectedPhotos = []
                         showsPhotos = true
                     }
                     Button("Choose a file", systemImage: "doc") {
                         guard canCompose, requireConnection() else { return }
                         editingHandle.cancel()
                         guard let screen, let destination = workspace.captureImport(screen.owner) else { return }
-                        filePicker = AttachmentPicker(destination: destination, owner: screen.owner, workspace: workspace)
+                        filePicker = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
                         showsFiles = true
                     }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 20)).frame(width: 48, height: 48)
-                        .composerGlass(in: Circle())
+                        .controlGlass(in: Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("composer-add-attachment")
@@ -144,7 +166,7 @@ struct ChatComposer: View {
                         editing: editingHandle, canEdit: {
                             guard canContinueEditing(), let screen else { return false }
                             return workspace.canEditDraft(screen.owner)
-                        })
+                        }, pasteAttachments: pasteAttachments, admitAttachmentPaste: admitAttachmentPaste)
                     Button {
                         if offersStop { stop() } else { send(defaultDelivery) }
                     } label: {
@@ -171,48 +193,58 @@ struct ChatComposer: View {
                     }
                     .padding(3)
                 }
-                .composerGlass(in: RoundedRectangle(cornerRadius: 26))
+                .controlGlass(in: RoundedRectangle(cornerRadius: 26))
             }
             .composerGlassGroup()
             .padding(.horizontal, 12).padding(.bottom, 8)
             .frame(maxWidth: 780)
         }
         .frame(maxWidth: .infinity)
-        .fileImporter(isPresented: $showsFiles, allowedContentTypes: [.item], allowsMultipleSelection: false, onCompletion: { [picker = filePicker] result in
+        .fileImporter(isPresented: $showsFiles, allowedContentTypes: [.item], allowsMultipleSelection: true, onCompletion: { [picker = filePicker] result in
             guard let picker, importsAllowed, filePicker == picker,
                   picker.workspace.isCurrent(picker.owner) else { return }
             switch result {
             case .success(let urls):
-                guard let url = urls.first else {
+                guard !urls.isEmpty else {
                     picker.workspace.cancelImport(picker.destination); filePicker = nil; return
                 }
-                readFile(url, picker: picker)
+                filePicker = nil
+                start(picker, reading: urls.map(AttachmentSource.file))
             case .failure(let error):
                 picker.workspace.cancelImport(picker.destination)
                 filePicker = nil
-                if !(error is CancellationError) { attachmentError = error.localizedDescription }
+                if !(error is CancellationError) { attachmentError = .failure(error.localizedDescription) }
             }
         }, onCancellation: { [picker = filePicker] in
             guard let picker else { return }
             picker.workspace.cancelImport(picker.destination)
             if filePicker == picker { filePicker = nil }
         })
-        .photosPicker(isPresented: $showsPhotos, selection: photoSelection, matching: .images)
-        .onChange(of: selectedPhoto) { _, photo in
-            photoTask?.cancel()
-            if photo != nil { photoTask = Task { await readPhoto() } }
+        .photosPicker(isPresented: $showsPhotos, selection: photoSelection, maxSelectionCount: photoRoom, matching: .images)
+        .onChange(of: selectedPhotos) { _, photos in
+            guard !photos.isEmpty, let picker = photoPicker else { return }
+            photoPicker = nil
+            start(picker, reading: photos.map(AttachmentSource.photo))
         }
         .onChange(of: showsFiles || showsPhotos) { _, shown in onPickerPresentation(shown) }
-        .onChange(of: importPresentationRevision) { _, _ in cancelAttachmentImport() }
-        .onChange(of: screen?.owner) { _, _ in
+        .onChange(of: importPresentationRevision) { _, _ in cancelAttachmentImport(showNotice: true) }
+        .onChange(of: screen?.owner) { previous, next in
             stopping = nil
-            cancelAttachmentImport()
+            if attachmentError?.survivesOwnerChange != true { attachmentError = nil }
+            cancelAttachmentImport(showNotice: previous != nil && previous?.chat == next?.chat)
         }
+        .onChange(of: ObjectIdentifier(workspace)) { _, _ in cancelAttachmentImport() }
         .onChange(of: importsAllowed) { _, available in
-            if !available { cancelAttachmentImport() }
+            if !available { cancelAttachmentImport(showNotice: true) }
+        }
+        .onChange(of: store.isConnected) { _, connected in
+            if connected { clearPasteGuidance() }
+        }
+        .onChange(of: canCompose && !sending && !uploading) { _, available in
+            if available { clearPasteGuidance() }
         }
         .onChange(of: showsPhotos) { _, shown in
-            if !shown, selectedPhoto == nil, let picker = photoPicker {
+            if !shown, selectedPhotos.isEmpty, let picker = photoPicker {
                 picker.workspace.cancelImport(picker.destination); photoPicker = nil
             }
         }
@@ -247,79 +279,63 @@ struct ChatComposer: View {
         return screen.canAct
     }
 
-    private func cancelAttachmentImport() {
-        photoTask?.cancel(); photoTask = nil
-        fileTask?.cancel()
-        fileTask = nil
+    private func cancelAttachmentImport(showNotice: Bool = false) {
+        let interrupted = runningImport.map { $0.workspace === workspace && $0.owner.chat == screen?.owner.chat } == true
+        importTask?.cancel(); importTask = nil
+        if let runningImport { runningImport.workspace.cancelImport(runningImport.destination) }
         if let filePicker { filePicker.workspace.cancelImport(filePicker.destination) }
         if let photoPicker { photoPicker.workspace.cancelImport(photoPicker.destination) }
-        filePicker = nil; photoPicker = nil
-        attachmentReadID = nil; attachmentError = nil
-        selectedPhoto = nil
+        filePicker = nil; photoPicker = nil; runningImport = nil
+        if showNotice {
+            if interrupted { attachmentError = .interrupted }
+        } else { attachmentError = nil }
+        selectedPhotos = []
         showsFiles = false; showsPhotos = false
     }
 
-    private func readFile(_ url: URL, picker: AttachmentPicker) {
-        guard !uploading, importsAllowed, filePicker == picker,
-              picker.workspace.isCurrent(picker.owner) else { return }
-        attachmentReadID = picker.id; attachmentError = nil
-        fileTask = Task { @MainActor in
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer {
-                if scoped { url.stopAccessingSecurityScopedResource() }
-                picker.workspace.cancelImport(picker.destination)
-                if attachmentReadID == picker.id {
-                    attachmentReadID = nil; fileTask = nil; filePicker = nil
-                }
-            }
-            do {
-                try Task.checkCancellation()
-                let metadata = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
-                guard (metadata.fileSize ?? 0) <= AttachmentLimits.fileBytes else {
-                    attachmentError = AttachmentLimits.message; return
-                }
-                let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url) }.value
-                guard !Task.isCancelled, importsAllowed, filePicker == picker else { return }
-                await picker.workspace.upload(data, filename: url.lastPathComponent,
-                                              mimeType: metadata.contentType?.preferredMIMEType ?? "application/octet-stream",
-                                              to: picker.destination)
-            } catch {
-                if !Task.isCancelled, importsAllowed, filePicker == picker {
-                    attachmentError = "Couldn’t attach this file. \(error.localizedDescription)"
-                }
-            }
+    private func start(_ attachmentImport: AttachmentImport, reading inputs: [AttachmentInput]) {
+        guard !uploading, importsAllowed, attachmentImport.workspace.isCurrent(attachmentImport.owner) else {
+            attachmentImport.workspace.cancelImport(attachmentImport.destination); return
+        }
+        runningImport = attachmentImport; attachmentError = nil
+        importTask = Task { @MainActor in
+            await attachmentImport.workspace.importAttachments(inputs, to: attachmentImport.destination)
+            if runningImport == attachmentImport { runningImport = nil; importTask = nil; selectedPhotos = [] }
         }
     }
 
-    private func readPhoto() async {
-        guard let photo = selectedPhoto, let picker = photoPicker, !uploading, importsAllowed,
-              picker.workspace.isCurrent(picker.owner) else { return }
-        attachmentReadID = picker.id; attachmentError = nil
-        defer {
-            picker.workspace.cancelImport(picker.destination)
-            if attachmentReadID == picker.id {
-                attachmentReadID = nil; selectedPhoto = nil; photoPicker = nil
-            }
+    private func pasteAttachments(owner: PresentationOwner, items: [PastedAttachment]) {
+        guard let destination = workspace.captureImport(owner) else { return }
+        start(AttachmentImport(destination: destination, owner: owner, workspace: workspace),
+              reading: items.map(AttachmentSource.pasted))
+    }
+
+    private func admitAttachmentPaste(owner: PresentationOwner) -> Bool {
+        guard importsAllowed, inputAvailable, workspace.isCurrent(owner) else { return false }
+        guard store.isConnected else {
+            connectionRequested = true
+            attachmentError = .pasteGuidance("Connect to the bot, then paste again.")
+            return false
         }
-        do {
-            let data = try await photo.loadTransferable(type: Data.self)
-            guard !Task.isCancelled, importsAllowed, photoPicker == picker else { return }
-            guard let data else {
-                attachmentError = "Couldn’t read this photo. Try another image."; return
-            }
-            let type = photo.supportedContentTypes.first(where: { $0.conforms(to: .image) }) ?? .jpeg
-            await picker.workspace.upload(data, filename: "Photo.\(type.preferredFilenameExtension ?? "jpg")",
-                                          mimeType: type.preferredMIMEType ?? "image/jpeg", to: picker.destination)
-        } catch {
-            if !Task.isCancelled, importsAllowed, photoPicker == picker {
-                attachmentError = "Couldn’t attach this photo. \(error.localizedDescription)"
-            }
+        guard canCompose else {
+            attachmentError = .pasteGuidance(screen?.isOpening == true ? "The chat is opening. Paste again when it’s ready." :
+                "The chat isn’t ready for attachments. Reopen it, then paste again.")
+            return false
         }
+        guard !sending, !uploading else {
+            attachmentError = .pasteGuidance(sending ? "Wait for the message to send, then paste again." : "Wait for the current attachment to finish.")
+            return false
+        }
+        return true
+    }
+
+    private func clearPasteGuidance() {
+        if case .pasteGuidance? = attachmentError { attachmentError = nil }
     }
 }
 
-private extension View {
-    @ViewBuilder func composerGlass<S: Shape>(in shape: S) -> some View {
+extension View {
+    @ViewBuilder func controlGlass<S: Shape>(in shape: S) -> some View {
         if #available(iOS 26, *) {
             glassEffect(.regular.interactive(), in: shape)
         } else {
@@ -327,7 +343,7 @@ private extension View {
         }
     }
 
-    @ViewBuilder func composerGlassGroup() -> some View {
+    @ViewBuilder fileprivate func composerGlassGroup() -> some View {
         if #available(iOS 26, *) {
             GlassEffectContainer(spacing: 8) { self }
         } else {
