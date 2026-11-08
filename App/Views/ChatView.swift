@@ -601,11 +601,12 @@ private struct ChatTranscript: View {
     @Environment(\.reportChatModal) private var reportModal
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if DEBUG
-    // The original renderer is accessible only to opt-in matched measurement
-    // fixtures. Normal Debug and Release product flows use the native owner.
+    // Legacy SwiftUI comparator for transcript test fixtures. It flips the scroll
+    // view and rows and lists rows newest first.
+    // Debug and Release product flows use the unchanged native owner.
     var measurementUsesNative = true
     @State private var scrollPolicy = TranscriptScrollPolicy()
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var scrollPosition = ScrollPosition(edge: .top)
     nonisolated private enum Anchor: Hashable, Sendable { case latest }
     #endif
     private struct RenderOwner: Hashable {
@@ -845,13 +846,14 @@ private struct ChatTranscript: View {
                 .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14)
                 .frame(maxWidth: 740).frame(maxWidth: .infinity)
             }
+            .scaleEffect(x: 1, y: -1)
             .accessibilityIdentifier("chat-transcript")
             .scrollDismissesKeyboard(.interactively)
             .scrollPosition($scrollPosition)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(sizeChangesAnchor, for: .sizeChanges)
             .onScrollGeometryChange(for: TranscriptScrollPolicy.Metrics.self) { geometry in
-                TranscriptScrollPolicy.Metrics(geometry)
+                TranscriptScrollPolicy.Metrics(LatestAtTopGeometry.logical(geometry))
             } action: { previous, metrics in
                 if scrollPolicy.geometryChanged(from: previous, to: metrics) { scrollToLatest() }
             }
@@ -864,7 +866,7 @@ private struct ChatTranscript: View {
                 }
             }
             .onScrollPhaseChange { previous, phase, context in
-                scrollPolicy.phaseChanged(from: previous, to: phase, geometry: context.geometry)
+                scrollPolicy.phaseChanged(from: previous, to: phase, geometry: LatestAtTopGeometry.logical(context.geometry))
             }
             .onChange(of: chat) { _, _ in
                 if scrollPolicy.snapshotChanged() {
@@ -875,8 +877,8 @@ private struct ChatTranscript: View {
                 if scrollPolicy.showsLatest {
                     Button {
                         scrollPolicy.requestLatest()
-                        if reduceMotion { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) }
-                        else { withAnimation(.easeOut(duration: 0.2)) { scrollPosition.scrollTo(id: Anchor.latest, anchor: .bottom) } }
+                        if reduceMotion { scrollPosition.scrollTo(id: Anchor.latest, anchor: .top) }
+                        else { withAnimation(.easeOut(duration: 0.2)) { scrollPosition.scrollTo(id: Anchor.latest, anchor: .top) } }
                     } label: {
                         Image(systemName: "arrow.down").font(.subheadline.weight(.semibold))
                             .frame(width: 44, height: 44)
@@ -890,24 +892,27 @@ private struct ChatTranscript: View {
     }
 
     private var sizeChangesAnchor: UnitPoint? {
-        return scrollPolicy.followsLatest ? .bottom : nil
+        return scrollPolicy.followsLatest ? .top : nil
     }
 
     @ViewBuilder private var transcriptStack: some View {
-        LazyVStack(alignment: .leading, spacing: 14) { transcriptRows }
+        LazyVStack(alignment: .leading, spacing: 14) { Group { transcriptRows }.scaleEffect(x: 1, y: -1) }
             .scrollTargetLayout()
     }
 
+    // Newest first. The scroll view and each row are flipped, so the latest row sits at the lazy
+    // stack's leading edge, where it is placed exactly, rather than at an estimated far end.
     @ViewBuilder private var transcriptRows: some View {
         let displayRows = messagePlan.displayRows
         let activeWorkDetailsID = activeWorkDetailsID(in: displayRows)
+        Color.clear.frame(height: 1)
+            .background { if TranscriptMeasurements.current != nil { TranscriptMeasurementPoint(point: .terminal) } }
+            .id(Anchor.latest).accessibilityHidden(true)
+        if workActivity == .typing { TypingIndicator(botName: bot.name) }
+        if workActivity == .working && activeWorkDetailsID == nil { WorkingIndicator(botName: bot.name) }
         if let chat, !visibleMessages.isEmpty {
-            if let firstDate = visibleMessages.first?.timestamp {
-                Text(firstDate, format: .dateTime.month(.abbreviated).day())
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-            }
-            ForEach(displayRows) { row in
+            requestRows
+            ForEach(displayRows.reversed()) { row in
                 switch row {
                 case .workDetails(let tools):
                     WorkDetailsView(messages: tools, isActive: row.id == activeWorkDetailsID)
@@ -921,26 +926,25 @@ private struct ChatTranscript: View {
                     }
                 }
             }
-            requestRows
+            if let firstDate = visibleMessages.first?.timestamp {
+                Text(firstDate, format: .dateTime.month(.abbreviated).day())
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
         } else if screen?.isOpening == true {
             VStack(spacing: 16) {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 64)
                 Text("Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
         } else {
+            requestRows
             VStack(spacing: 16) {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 90)
                 Text("Hello, \(bot.name).").font(.title2.weight(.semibold))
                 Text(store.isConnected ? "A thought, a question, a little job.\nThis is a good place to start." : "No saved messages yet.\nReconnect to start the chat.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
-            requestRows
         }
-        if workActivity == .working && activeWorkDetailsID == nil { WorkingIndicator(botName: bot.name) }
-        if workActivity == .typing { TypingIndicator(botName: bot.name) }
-        Color.clear.frame(height: 1)
-            .background { if TranscriptMeasurements.current != nil { TranscriptMeasurementPoint(point: .terminal) } }
-            .id(Anchor.latest).accessibilityHidden(true)
     }
 
     @ViewBuilder private func messageLayout(_ message: ChatMessage, in chat: Conversation) -> some View {
@@ -949,7 +953,7 @@ private struct ChatTranscript: View {
 
     @ViewBuilder private var requestRows: some View {
         if let screen, let profile = try? ExactID(bot.id) {
-            ForEach(screen.requests) { row in
+            ForEach(screen.requests.reversed()) { row in
                 RequestCard(input: .init(row: row, store: store, workspace: workspace, owner: screen.owner, profile: profile),
                                 canAct: screen.canAct, canEditDraft: screen.canEditDraft)
             }
@@ -962,7 +966,7 @@ private struct ChatTranscript: View {
         // trigger another scroll from the geometry observer indefinitely.
         // Automatic following is immediate, including while tokens arrive.
         withTransaction(Transaction(animation: nil)) {
-            scrollPosition.scrollTo(edge: .bottom)
+            scrollPosition.scrollTo(edge: .top)
         }
     }
     #endif
@@ -982,6 +986,19 @@ private struct ChatTranscript: View {
 }
 
 #if DEBUG
+/// The legacy transcript draws its latest row at the raw top of a flipped scroll view.
+/// TranscriptScrollPolicy reads latest at the bottom, so mirror the distance from the
+/// latest edge into that space once for every policy caller.
+nonisolated enum LatestAtTopGeometry {
+    static func logical(_ raw: ScrollGeometry) -> ScrollGeometry {
+        let insets = raw.contentInsets
+        let range = max(0, raw.contentSize.height + insets.bottom - raw.containerSize.height)
+        let fromLatest = raw.contentOffset.y + insets.top
+        return ScrollGeometry(contentOffset: CGPoint(x: raw.contentOffset.x, y: range - fromLatest - insets.top),
+                              contentSize: raw.contentSize, contentInsets: insets, containerSize: raw.containerSize)
+    }
+}
+
 /// Opt-in matched measurements reuse the same rows, model and action guards.
 /// This is not a launch argument or a product-mode switch.
 @MainActor func transcriptFixture(store: AppStore, bot: BotProfile,
