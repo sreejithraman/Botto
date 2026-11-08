@@ -292,4 +292,31 @@ struct TranscriptScrollPolicyTests {
         #expect(!followsReply)
         #expect(policy.showsLatest)
     }
+
+    #if DEBUG
+    /// The flipped legacy transcript reports its latest row at the raw top edge.
+    @Test func latestAtTopGeometryKeepsThePolicyDistanceFromLatest() {
+        // Independent expectation: near latest means at most 90 pt from the raw top rest position.
+        for (raw, nearLatest) in [
+            (geometry(y: -116), true),
+            (geometry(y: -26), true),
+            (geometry(y: -25), false),
+            (geometry(y: 363), false),
+            (geometry(y: 1028), false),
+            (geometry(y: 0, top: 0), true),
+            (geometry(y: 90, top: 0, bottom: 28), true),
+            (geometry(y: 91, top: 0, bottom: 28), false),
+            (geometry(y: 734, viewport: 658), false),
+            (geometry(y: -116, height: 100), true),
+            (geometry(y: -116, height: 0, bottom: 28), true)
+        ] {
+            let metrics = TranscriptScrollPolicy.Metrics(LatestAtTopGeometry.logical(raw))
+            #expect(metrics.isNearBottom == nearLatest, "Raw: \(raw)")
+            #expect(metrics.contentHeight == raw.contentSize.height)
+        }
+        // Unadapted raw geometry reads latest as history and the oldest end as latest.
+        #expect(!TranscriptScrollPolicy.Metrics(geometry(y: -116)).isNearBottom)
+        #expect(TranscriptScrollPolicy.Metrics(geometry(y: 1028)).isNearBottom)
+    }
+    #endif
 }

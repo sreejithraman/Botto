@@ -216,6 +216,41 @@ single-test selector was not repeated. A false endpoint now fails and records
 its endpoint gates and scroll geometry. `matchedMixedRichHistory` still does not
 fail on a false endpoint, and this work did not run it.
 
+## Legacy transcript layout (8 November 2026)
+
+The Debug legacy comparator now flips its scroll view and rows and lists rows
+newest first. Native Debug and Release paths are unchanged.
+
+`actualVisibleFileAtTheEndOfMixedHistory` used the same 100-message corpus
+(`71f1d96f`), HTML (`61d451f0`), 20-second deadline and OCR oracle throughout, on
+an iPhone 17 Pro Simulator with iOS 27.0. At base `9a51e4a`, native passed 2 of 2
+and legacy failed 2 of 2. Each legacy run stayed blank: no OCR samples, final row
+and terminal not visible, offset near the estimated end (33231 of 33665 and
+35702 of 36136 points). At `113cecb`, native and legacy each passed 2 of 2 with
+all gates true and the file upright. The 18 focused policy, accessibility-order,
+false-endpoint and frozen-corpus tests also passed.
+
+Local diagnostic geometry samples showed realized tail rows far above the
+reported content end. With automatic following disabled, an 11-frame probe on
+an older diagnostic build showed tall plain rows leaving the viewport in unbuilt
+space. This probe is distinct from the original rendered endpoint: with normal
+following, it once passed while the endpoint failed. A mismatch in lazy height
+estimates is an inference from these samples, not an observation of SwiftUI
+internals. The flip puts the latest row at the leading edge. The oldest edge is
+still estimated: legacy content is about 93,000 points against 13,706 for native.
+
+The flip changes legacy realization and estimated extent, so earlier legacy
+timing and memory results, including 4 November, are not comparable.
+`matchedMixedRichHistory` ran only at an earlier head of this change (`3fb135a`),
+where both renderers recorded successful initial, append, update and reflow
+endpoints; it records observations and asserts nothing. A future native-versus-
+legacy comparison must remeasure both renderers at one head.
+
+Not tested: VoiceOver; rich-row, request and indicator accessibility; the Latest
+button, real drags, keyboard and navigation insets; scrolling to the oldest rows.
+Two passes are not a reliability rate. No full gate, CI verify, latency or RSS
+result is claimed.
+
 ## Static custom avatar compatibility (3 November 2026)
 
 Custom character Save and custom creation now export a transparent 512px PNG
