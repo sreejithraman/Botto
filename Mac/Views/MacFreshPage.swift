@@ -140,14 +140,16 @@ struct MacFreshPage: View {
                 .scrollIndicators(.never)
             }
         } modelMenu: {
-            Button {
-                form.model = nil
-            } label: {
-                if form.model == nil { Label("Automatic", systemImage: "checkmark") } else { Text("Automatic") }
+            if form.offersAutomaticModel {
+                Button {
+                    form.selectModel(nil)
+                } label: {
+                    if form.model == nil { Label("Automatic", systemImage: "checkmark") } else { Text("Automatic") }
+                }
+                if !store.models.isEmpty { Divider() }
             }
-            if !store.models.isEmpty { Divider() }
             ForEach(store.models) { option in
-                Button { form.model = option } label: {
+                Button { form.selectModel(option) } label: {
                     if form.model == option { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
                 }
             }

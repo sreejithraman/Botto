@@ -602,9 +602,16 @@ final class MacFreshDraft {
     var name = ""
     var text = ""
     var files: [URL] = []
-    var model: T3ModelOption?
+    private(set) var model: T3ModelOption?
     private(set) var createdSpace: String?
     private(set) var isSubmitting = false
+
+    var offersAutomaticModel: Bool { createdSpace == nil || model == nil }
+
+    func selectModel(_ option: T3ModelOption?) {
+        guard option != nil || offersAutomaticModel else { return }
+        model = option
+    }
 
     func submit(create: (String?) async throws -> String,
                 send: (String, String, [URL], T3ModelOption?) async throws -> Void) async throws -> String? {

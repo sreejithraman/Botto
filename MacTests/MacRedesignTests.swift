@@ -1,4 +1,4 @@
-import BottoCore
+@testable import BottoCore
 import Foundation
 import Testing
 @testable import BottoMac
@@ -52,6 +52,28 @@ struct MacPreviewFileTests {
 }
 
 @MainActor struct MacFreshDraftTests {
+    @Test func modelChoiceCannotReturnToAutomaticAfterAnExplicitSpaceStart() async throws {
+        let draft = MacFreshDraft()
+        let first = T3ModelOption(id: "first", providerInstanceID: "first", providerName: "First",
+                                  modelID: "first", label: "First")
+        let second = T3ModelOption(id: "second", providerInstanceID: "second", providerName: "Second",
+                                   modelID: "second", label: "Second")
+        draft.text = "Keep this"
+        draft.selectModel(first)
+        #expect(draft.offersAutomaticModel)
+        await #expect(throws: HermesServiceError.rejected(400)) {
+            _ = try await draft.submit { _ in "first-space" } send: { _, _, _, model in
+                #expect(model == first)
+                throw HermesServiceError.rejected(400)
+            }
+        }
+        #expect(!draft.offersAutomaticModel)
+        draft.selectModel(nil)
+        #expect(draft.model == first)
+        draft.selectModel(second)
+        #expect(draft.model == second)
+    }
+
     @Test func rejectedFirstSendRetriesInTheCreatedSpaceAndSettlesTheWholeDraft() async throws {
         let draft = MacFreshDraft()
         let file = URL(fileURLWithPath: "/example/plan.txt")
