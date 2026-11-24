@@ -595,6 +595,9 @@ struct T3RoutinesList: View {
             if let error {
                 Section { InlineNotice(message: error) { self.error = nil } }
             }
+            if routines != nil, let loadError {
+                Section { InlineNotice(message: loadError) }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(BottoTheme.paper)

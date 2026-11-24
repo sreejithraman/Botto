@@ -212,6 +212,7 @@ struct T3Workspace: View {
     private func open(_ channel: T3ChannelSummary) {
         guard openingChat == nil else { return }
         let workspace = store.chats
+        store.t3ComposerRequest = nil
         openingChat = channel.id
         openingError = nil
         Task {
@@ -252,6 +253,7 @@ struct T3Workspace: View {
 
     private func startFresh() {
         editing.cancel()
+        store.t3ComposerRequest = nil
         launched = true
         openingError = nil
         showsFresh = true

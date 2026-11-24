@@ -18,6 +18,7 @@ struct T3FreshPage: View {
     @State private var name = ""
     @State private var draft = ""
     @State private var pendingModel: T3ModelOption?
+    @State private var createdSpace: SessionIdentity?
     @State private var starting = false
     @State private var error: String?
     @State private var connectionRequested = false
@@ -233,12 +234,16 @@ struct T3FreshPage: View {
         Task {
             defer { starting = false }
             do {
-                let started = try await store.startT3Space(named: namesSpace ? name : "", with: text, model: model, send: send)
+                let started = try await store.startT3Space(named: namesSpace ? name : "", with: text, model: model,
+                                                          send: send, resuming: createdSpace) { identity in
+                    if store.chats === workspace { createdSpace = identity }
+                }
                 guard store.chats === workspace, let selection = workspace.selection(profile: started.profile),
-                      selection.identity == started, workspace.isCurrent(selection.owner) else { return }
+                      selection.matches(started), workspace.isCurrent(selection.owner) else { return }
                 name = ""
                 draft = ""
                 pendingModel = nil
+                createdSpace = nil
                 store.t3ComposerRequest = attachment.map { .init(kind: $0, owner: selection.owner) }
                 onStarted()
             } catch where store.chats === workspace {
