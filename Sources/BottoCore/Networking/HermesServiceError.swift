@@ -42,7 +42,7 @@ public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
         case .wrongConversation: "Hermes returned a different chat identity. Reopen the bot from the list."
         case .missingChat: "This bot has no unique Bot Chat. Open its chat in Hermes Desktop, then refresh."
         case .timeout: "Hermes did not respond in time. Check the host and reconnect."
-        case .uncertain: "The connection ended before the server confirmed this action. It may have succeeded. Reconnect and check the chat before sending it again."
+        case .uncertain: "The server didn’t confirm this action. It may have succeeded. Reconnect and check before trying again."
         case .rejected(401): "The Hermes session expired. Reconnect to sign in again."
         case .rejected(403): "The host or proxy blocked this request. Check access to the Hermes dashboard."
         case .rejected(-32601): "This Hermes host does not support the requested feature. Update Hermes and reconnect."

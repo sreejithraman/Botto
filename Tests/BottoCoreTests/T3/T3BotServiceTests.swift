@@ -29,6 +29,26 @@ import Testing
         #expect(await host.writtenFiles.isEmpty)
     }
 
+    @Test func explicitPairingRecreatesADeletedProjectWithANewIdentity() async throws {
+        let host = T3ServiceHost()
+        await host.replayDeletedProjectOnFirstCreate()
+        var configuration = try existingConfiguration()
+        configuration.t3?.projectID = nil
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+
+        _ = try await service.connect(configuration: configuration)
+        let requests = await host.projectCreations
+        #expect(requests.count == 2)
+        let first = try #require(requests.first)
+        let replacement = try #require(requests.last)
+        #expect(replacement["projectId"] != first["projectId"])
+        #expect(replacement["commandId"] != first["commandId"])
+        #expect(replacement["workspaceRoot"].text == "/host/.botto/bots/main")
+        #expect(try await service.bots().first?.id == replacement["projectId"].text)
+        #expect(service.currentT3Channels.first(where: \.isMain) != nil)
+    }
+
     @Test func retiresLiveWorkspaceOnRootChangeOrRemoval() async throws {
         for changedRoot in [true, false] {
             let host = T3ServiceHost(existing: true)
@@ -278,6 +298,20 @@ import Testing
         let afterDelete = try await service.listRoutines()
         #expect(Set(afterDelete.map(\.id)) == [weekdays.id, existing.id])
         #expect(await host.interruptedRoutineStreams >= 3)
+    }
+
+    @Test func lostRoutineAcknowledgementReportsAnUncertainCreation() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        await host.loseNextRoutineAcknowledgement()
+        await #expect(throws: HermesServiceError.uncertain) {
+            try await service.createRoutine(name: "Morning brief", prompt: "Summarize inbox",
+                                            cron: "0 9 * * *", threadID: nil)
+        }
+        #expect(await host.routineUpserts.count == 1)
+        #expect(await host.createdThreads.count == 1)
     }
 
     @Test func bootstrapsOneBotAndRunsAChannelThroughTheService() async throws {
@@ -545,6 +579,22 @@ import Testing
         #expect(try await repair() == first)
     }
 
+    @Test func refusesToReplaceATombstonedReplacement() async throws {
+        let host = T3ServiceHost(existing: true)
+        let replacement = T3ProjectionMapper.stableUUID("botto-main:bot-project:replacement:existing-general").uuidString
+        await host.deleteThread("existing-general")
+        await host.deleteThread(replacement)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let profile = try ExactID("bot-project")
+        await #expect(throws: T3ServiceError.mainSpaceRecoveryRequired) {
+            try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
+        }
+        #expect(await host.createdThreads.isEmpty)
+        #expect(try await service.loadBotBrain().manifest.mainThreadID == "existing-general")
+    }
+
     @Test(arguments: [true, false])
     func keepsTheMainPointerWhenItsShellOrLookupIsUnavailable(lookupDenied: Bool) async throws {
         let host = T3ServiceHost(existing: true)
@@ -707,7 +757,7 @@ import Testing
 private actor T3ServiceHost: T3WebSocketTransport {
     private let socket = T3TestSocket()
     private let root = "/host/.botto/bots/main"
-    private let projectID = "bot-project"
+    private var projectID = "bot-project"
     private let time = "2026-11-24T12:00:00Z"
     private let existing: Bool
     private var models: Bool
@@ -731,10 +781,14 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var deniesMainLookup = false
     private var omitsShellProject = false
     private var dropsCommandAcknowledgement = false
+    private var dropsRoutineAcknowledgement = false
+    private var replaysDeletedProject = false
+    private(set) var projectCreations: [HermesJSON] = []
     private(set) var createdThreads: [HermesJSON] = []
     private(set) var dispatchedMessages: [HermesJSON] = []
     private var files: [String: String] = [:]
     private var threads: [String: HermesJSON] = [:]
+    private var deletedThreadIDs: Set<String> = []
     private var sequence = 0
     private var shellStream: String?
     private var threadStreams: [String: String] = [:]
@@ -772,13 +826,18 @@ private actor T3ServiceHost: T3WebSocketTransport {
         (files, threads) = (state.files, state.threads)
     }
     func installModels() { models = true }
-    func deleteThread(_ id: String) { threads[id] = nil }
+    func deleteThread(_ id: String) {
+        threads[id] = nil
+        deletedThreadIDs.insert(id)
+    }
     func write(_ path: String, _ contents: String) { files[path] = contents }
     func rejectNextWrite(to path: String) { rejectedWritePath = path }
     func setArchiveReadDenied(_ denied: Bool) { deniesArchiveReads = denied }
     func setMainLookupDenied(_ denied: Bool) { deniesMainLookup = denied }
     func omitProjectFromShell() { omitsShellProject = true }
     func loseNextCommandAcknowledgement() { dropsCommandAcknowledgement = true }
+    func loseNextRoutineAcknowledgement() { dropsRoutineAcknowledgement = true }
+    func replayDeletedProjectOnFirstCreate() { replaysDeletedProject = true }
 
     func replaceMainWithoutPublishing() throws {
         let stream = try #require(shellStream)
@@ -928,9 +987,13 @@ private actor T3ServiceHost: T3WebSocketTransport {
         case "projects.mutate":
             #expect(!existing)
             #expect(request["type"].text == "project.create")
-            #expect(request["workspaceRoot"].text == "~/.botto/bots/main")
+            #expect(request["workspaceRoot"].text == (projectCreations.isEmpty ? "~/.botto/bots/main" : root))
             #expect(request["createWorkspaceRootIfMissing"].flag == true)
-            reply = project
+            projectCreations.append(request)
+            if replaysDeletedProject { projectID = try #require(request["projectId"].text) }
+            var createdProject = project
+            if replaysDeletedProject, projectCreations.count == 1 { createdProject["deletedAt"] = .string(time) }
+            reply = createdProject
         case "projects.readFile":
             #expect(request["cwd"].text == root)
             let path = try #require(request["relativePath"].text)
@@ -958,7 +1021,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
             switch directory {
             case "": entries = outputsAvailable ? [("skills", "directory"), ("outputs", "directory")] : [("skills", "directory")]
             case "skills": entries = [("skills/check", "directory")]
-            case "outputs": entries = [("outputs/report.txt", "file"), ("outputs/nested", "directory"), ("outputs/unknown.bin", "file")]
+            case "outputs": entries = [("outputs/report.txt", "file"), ("outputs/nested", "directory"),
+                                         ("outputs/Meeting 10:30.md", "file"), ("outputs/unknown.bin", "file")]
             case "outputs/nested": entries = [("outputs/nested/guide.PDF", "file")]
             default: throw T3ServiceError.invalidPath
             }
@@ -1011,6 +1075,12 @@ private actor T3ServiceHost: T3WebSocketTransport {
             ])
             return
         case "orchestration.dispatchCommand":
+            if request["type"].text == "thread.create", let thread = request["threadId"].text,
+               threads[thread] != nil || deletedThreadIDs.contains(thread) {
+                try reject(id, tag: "OrchestrationV2DispatchCommandError",
+                           message: "Thread \(thread) already exists. Use a new thread id.")
+                return
+            }
             try apply(request)
             if dropsCommandAcknowledgement {
                 dropsCommandAcknowledgement = false
@@ -1057,6 +1127,11 @@ private actor T3ServiceHost: T3WebSocketTransport {
             let taskID = "task-\(routineUpserts.count)"
             let task = scheduledTask(id: taskID, input: request)
             scheduledTasks[taskID] = task
+            if dropsRoutineAcknowledgement {
+                dropsRoutineAcknowledgement = false
+                try emit(.object(["_tag": .string("Defect"), "defect": .string("Lost acknowledgement")]))
+                return
+            }
             reply = .object(["task": task])
         case "scheduledTasks.setEnabled":
             let taskID = try #require(request["id"].text)

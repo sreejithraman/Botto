@@ -53,7 +53,21 @@ provider's prompt cache survives and the prompt cannot go stale.
 ## Costs
 
 Botto spends a tool call to learn about another space instead of reading a list
-in its prompt. Unnamed spaces show "New space" until T3 titles them. A connection
-lost between creating the main space and saving its ID leaves one extra space the
-user can archive. A main space archived on the host is missing until the next
-connection or bare open.
+in its prompt. Unnamed spaces show "New space" until T3 titles them. Botto can
+adopt an unsaved replacement on retry. A main space archived on the host is
+missing until the next connection or bare open.
+
+### Recover a missing main space
+
+If Botto creates a replacement but cannot save it in `bot.json`, keep that new
+space so Botto can adopt it on retry. If someone deletes the unsaved replacement,
+T3 reserves its ID and Botto displays a recovery error on bare open.
+
+1. In the Botto project in T3 Code, choose an active space you want to use as the
+   main space. If the project has no active spaces, create one in T3 Code.
+2. Run `t3 thread list --project <workspace path> --json` on the T3 host and copy
+   the chosen space's `threadId`.
+3. Open `bot.json` in that workspace (usually `~/.botto/bots/main`). Set
+   `mainThreadID` to the copied ID and save the file.
+4. Reopen Botto. The chosen space becomes Main Space and the other spaces keep
+   their conversations and IDs.

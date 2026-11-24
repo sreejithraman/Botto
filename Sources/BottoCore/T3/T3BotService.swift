@@ -3,6 +3,7 @@ import Foundation
 public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     case missingConnection, differentEnvironment, differentWorkspace, disconnected, invalidProject, invalidResponse
     case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported, unknownHistoryOffset
+    case mainSpaceRecoveryRequired
     case invalidPath
     case unsupportedRoutineSchedule, protectedMainSpace
 
@@ -17,6 +18,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         case .missingModel: "Set up a model on the T3 Code host before starting a space."
         case .missingChannel: "This space is no longer available."
         case .mainSpaceSynchronizing: "The Main Space is still syncing. Try opening it again."
+        case .mainSpaceRecoveryRequired:
+            "T3 Code has reserved the Main Space’s replacement ID. Set mainThreadID in the Botto project’s bot.json to an active Space’s T3 thread ID, then reopen Botto."
         case .invalidName: "Enter a name."
         case .unsupported: "This action requires T3 Code."
         case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
@@ -346,7 +349,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             for entry in try await listEntries(in: session, directory: directory) {
                 guard let path = entry["path"].text, let slash = path.lastIndex(of: "/"),
                       path[..<slash] == directory else { continue }
-                try Self.validateRelativePath(path)
+                guard (try? Self.validateRelativePath(path)) != nil else { continue }
                 switch entry["kind"].text {
                 case "directory":
                     directories.append(path)
@@ -400,17 +403,19 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let identity = try T3ProjectionMapper.identity(profile: session.profile, threadID: destination)
         try validate(identity, in: session)
         let runtime = session.config["settings"]["defaultRuntimeMode"].nonempty ?? "approval-required"
-        let reply = try await session.rpc.call("scheduledTasks.upsert", payload: .object([
+        let reply = try await mutationReply("scheduledTasks.upsert", payload: .object([
             "commandId": .string(UUID().uuidString), "title": .string(title), "prompt": .string(prompt), "enabled": .bool(true),
             "schedule": schedule, "projectId": .string(session.profile.text), "threadId": .string(destination),
             "threadMode": .string("continue"), "workspaceStrategy": .object(["type": .string("root")]),
             "modelSelection": model, "runtimeMode": .string(runtime), "interactionMode": .string("default"),
             "createdBy": .string("user"), "creationSource": .string("mobile")
-        ]))
+        ]), in: session)
         try check(session)
         let task = reply["task"]
-        guard task["projectId"].text == session.profile.text else { throw T3ServiceError.invalidResponse }
-        return try Self.routine(task)
+        guard task["projectId"].text == session.profile.text, let created = try? Self.routine(task) else {
+            throw HermesServiceError.uncertain
+        }
+        return created
     }
 
     public func setRoutineEnabled(id: String, enabled: Bool) async throws {
@@ -791,12 +796,29 @@ private extension T3BotService {
             return project
         }
         if let project = available.first(where: { $0["id"].text == projectID }) { return project }
-        let commandID = T3ProjectionMapper.stableUUID("botto-main-project-create:" + environmentID).uuidString
         let targetWorkspace = paired.workspaceRoot.nonempty ?? T3BotBootstrap.workspaceRoot
+        let commandID = T3ProjectionMapper.stableUUID("botto-main-project-create:" + environmentID).uuidString
+        let project = try await createProject(id: projectID, commandID: commandID, workspace: targetWorkspace,
+                                              rpc: rpc, attempt: attempt)
+        if project["deletedAt"] == .null { return project }
+        // A fresh pairing can recover a removed project. T3 enforces one live project per workspace root.
+        guard project["id"].text == projectID, let previousRoot = project["workspaceRoot"].nonempty else {
+            throw T3ServiceError.invalidProject
+        }
+        if let replacement = available.first(where: { $0["workspaceRoot"].text == previousRoot }) { return replacement }
+        let id = UUID().uuidString
+        let replacement = try await createProject(id: id, commandID: UUID().uuidString, workspace: previousRoot,
+                                                   rpc: rpc, attempt: attempt)
+        guard replacement["deletedAt"] == .null, replacement["id"].text == id else { throw T3ServiceError.invalidProject }
+        return replacement
+    }
+
+    func createProject(id: String, commandID: String, workspace: String, rpc: T3RPCClient,
+                       attempt: UUID) async throws -> HermesJSON {
         let project = try await rpc.call("projects.mutate", payload: .object([
-            "type": .string("project.create"), "commandId": .string(commandID), "projectId": .string(projectID),
+            "type": .string("project.create"), "commandId": .string(commandID), "projectId": .string(id),
             "title": .string(T3BotBootstrap.defaultManifest.displayName),
-            "workspaceRoot": .string(targetWorkspace), "createWorkspaceRootIfMissing": .bool(true)
+            "workspaceRoot": .string(workspace), "createWorkspaceRootIfMissing": .bool(true)
         ]))
         try checkAttempt(attempt)
         return project
@@ -880,8 +902,15 @@ private extension T3BotService {
             if session.shells[id] == nil, session.archivedShells[id] == nil {
                 guard service.modelSelection(session) != .null else { return }
                 let name = manifest.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                _ = try await service.createThread(title: name.isEmpty ? T3BotBootstrap.defaultManifest.displayName : name,
-                                                    operationID: UUID(), in: session, publish: false, threadID: id)
+                do {
+                    _ = try await service.createThread(title: name.isEmpty ? T3BotBootstrap.defaultManifest.displayName : name,
+                                                        operationID: UUID(), in: session, publish: false, threadID: id)
+                } catch T3RPCError.remote(let tag, let message)
+                    where tag == "OrchestrationV2DispatchCommandError"
+                    && message == "Thread \(id) already exists. Use a new thread id." {
+                    if try await service.mainExists(id, in: session) { throw T3ServiceError.mainSpaceSynchronizing }
+                    throw T3ServiceError.mainSpaceRecoveryRequired
+                }
             }
             manifest = try await service.readManifest(session)
             guard manifest.mainThreadID == savedID || manifest.mainThreadID == id else { return }
@@ -1294,20 +1323,23 @@ private extension T3BotService {
 
     func dispatch(_ command: String, identity: SessionIdentity, operationID: UUID, in session: Session,
                   fields: [String: HermesJSON], admissionID: String? = nil) async throws -> MutationReceipt {
-        try check(session)
         var payload = fields
         payload["type"] = .string(command)
         payload["commandId"] = .string(operationID.uuidString)
         payload["threadId"] = .string(identity.stored.text)
-        let result: HermesJSON
+        let result = try await mutationReply("orchestration.dispatchCommand", payload: .object(payload), in: session)
+        guard let sequence = result["sequence"].integer, sequence >= 0 else { throw HermesServiceError.uncertain }
+        return MutationReceipt(operationID: operationID, source: identity, admissionID: admissionID, journal: .saved)
+    }
+
+    func mutationReply(_ method: String, payload: HermesJSON, in session: Session) async throws -> HermesJSON {
+        try check(session)
         do {
-            result = try await session.rpc.call("orchestration.dispatchCommand", payload: .object(payload))
+            return try await session.rpc.call(method, payload: payload)
         } catch {
             if case T3RPCError.remote = error { throw error }
             throw HermesServiceError.uncertain
         }
-        guard let sequence = result["sequence"].integer, sequence >= 0 else { throw HermesServiceError.uncertain }
-        return MutationReceipt(operationID: operationID, source: identity, admissionID: admissionID, journal: .saved)
     }
 
     func download(_ attachment: ChatAttachment, identity: SessionIdentity, in session: Session,
