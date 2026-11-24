@@ -130,7 +130,7 @@ struct BottoPage: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
-        .onAppear { if name.isEmpty { name = store.primaryT3Bot?.name ?? "" } }
+        .onAppear { if drafts.name.isEmpty { drafts.name = store.primaryT3Bot?.name ?? "" } }
     }
 
     // MARK: Rows
