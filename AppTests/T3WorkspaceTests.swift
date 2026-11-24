@@ -77,6 +77,34 @@ import Testing
         #expect(store.chats.screen(profile: originalService.profile)?.canAct == true)
     }
 
+    @Test func foregroundReconnectKeepsDraftAndReattachmentWarning() async throws {
+        var configuration = t3Configuration()
+        configuration.t3?.workspaceRoot = "/host/.botto/bots/main"
+        defer { LocalHistory.remove(for: configuration.id) }
+        let storage = MemoryConnectionStorage(saved: configuration)
+        let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
+        await store.start()
+        let channel = try #require(store.t3Channels.first)
+        #expect(await store.openT3Channel(channel))
+        let workspace = store.chats
+        let profile = try ExactID("bot-project")
+        let original = try #require(workspace.screen(profile: profile))
+        workspace.editDraft("Keep this with its file", owner: original.owner)
+        let target = try #require(workspace.captureImport(original.owner))
+        await workspace.upload(Data([1]), filename: "plan.txt", mimeType: "text/plain", to: target)
+        #expect(workspace.screen(profile: profile)?.attachments.map(\.name) == ["plan.txt"])
+
+        await store.setActive(false)
+        await store.setActive(true)
+
+        #expect(store.chats === workspace)
+        let recovered = try #require(store.chats.screen(profile: profile))
+        #expect(recovered.needsReattachment)
+        #expect(recovered.attachments.map(\.name) == ["plan.txt"])
+        #expect(workspace.draft(recovered.owner) == "Keep this with its file")
+        #expect(workspace.captureSend(recovered.owner) == nil)
+    }
+
     @Test func loadsAndSavesBotBrainThroughTheMountedService() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -248,6 +276,56 @@ import Testing
         #expect(offline.selectedT3ChannelID == nil)
     }
 
+    @Test func newSpaceDoesNotReportSuccessAfterAFailedAttachment() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        service.openError = .missingChannel
+
+        await #expect(throws: T3ServiceError.missingChannel) { try await store.startT3Space(with: "Keep the draft") }
+        #expect(service.createdThreads.count == 1)
+        #expect(service.sent.isEmpty)
+    }
+
+    @Test func newSpaceDoesNotSendWhenTheChosenModelIsRejected() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        let model = try #require(try await store.availableT3Models().first)
+        service.modelError = .missingModel
+
+        await #expect(throws: T3ServiceError.missingModel) {
+            try await store.startT3Space(with: "Use the chosen provider", model: model)
+        }
+        #expect(service.createdThreads.count == 1)
+        #expect(service.sent.isEmpty)
+    }
+
+    @Test func lateNewSpaceDoesNotTakeOverANewerSelection() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        let gate = WorkspaceGate()
+        service.createGate = gate
+        let starting = Task { try await store.startT3Space(with: "Leave this unsent") }
+        await gate.entered()
+        defer { gate.release() }
+        let release = try #require(store.t3Channels.first { $0.id == "release" })
+        #expect(await store.openT3Channel(release))
+        gate.release()
+
+        await #expect(throws: HermesServiceError.staleConversation) { try await starting.value }
+        #expect(store.selectedT3ChannelID == release.id)
+        #expect(service.createdThreads.count == 1)
+        #expect(service.sent.isEmpty)
+    }
+
     @Test func modelChipNamesEachSpacesModel() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -280,6 +358,9 @@ import Testing
 @MainActor private final class T3WorkspaceService: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
+    var openError: T3ServiceError?
+    var modelError: T3ServiceError?
+    var createGate: WorkspaceGate?
     private(set) var disconnects = 0
     private(set) var openedStoredThreads: [String] = []
     private(set) var downloadedOutputs: [String] = []
@@ -319,6 +400,7 @@ import Testing
         return .init(summaries: summaries, activity: [:], isComplete: true)
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
+        if let openError { throw openError }
         guard case .stored(let identity) = target, identity.profile == profile else { throw T3ServiceError.missingChannel }
         let thread = identity.stored.text
         openedStoredThreads.append(thread)
@@ -356,12 +438,14 @@ import Testing
         return .init(data: Data("# Report".utf8), filename: output.name, mimeType: output.mimeType)
     }
     func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
+        if let modelError { throw modelError }
         channelModels[threadID] = "\(providerInstanceID)/\(model)"
     }
     func markChannelVisited(threadID: String) async throws { visitedThreads.append(threadID) }
 
     func createBot(_ draft: BotDraft) async throws -> BotProfile { throw T3ServiceError.unsupported }
     func createChat(title: String?) async throws -> CreatedSession {
+        await createGate?.wait()
         let id = "chat-\(createdThreads.count + 1)"
         createdTitles.append(title)
         createdThreads.append(id)
@@ -389,7 +473,8 @@ import Testing
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,
                  operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
-        throw T3ServiceError.unsupported
+        _ = try issuer.resolve(access)
+        return .init(name: filename, path: "staged/" + filename, mimeType: mimeType)
     }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         throw T3ServiceError.unsupported

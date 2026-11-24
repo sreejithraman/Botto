@@ -749,8 +749,8 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard ownsNavigation(claim) else { return false }
         let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[summary.identity.profile]) }
         availability[id] = true
-        await attach(id, navigation: request, storedTarget: summary.identity)
-        return !Task.isCancelled && navigationRequest == request && selected == id
+        let attached = await attach(id, navigation: request, storedTarget: summary.identity)
+        return attached != nil && !Task.isCancelled && navigationRequest == request && selected == id
     }
     private func ownsOpening(_ intent: OpeningIntent) -> Bool {
         !Task.isCancelled && !retired && intent.scope == scope && intent.epoch == presentation &&

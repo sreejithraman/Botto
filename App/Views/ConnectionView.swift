@@ -28,7 +28,7 @@ struct ConnectionView: View {
     init(store: AppStore, input: String = "") {
         self.store = store
         _address = State(initialValue: input.isEmpty ? store.configuration?.serverURL.absoluteString ?? "" : input)
-        _backend = State(initialValue: store.isT3Workspace || Self.isT3Link(input) ? .t3 : .hermes)
+        _backend = State(initialValue: Self.backend(for: input, fallback: store.isT3Workspace ? .t3 : .hermes))
     }
     var body: some View {
         NavigationStack {
@@ -188,8 +188,11 @@ struct ConnectionView: View {
         }
         .onAppear { store.pendingConnectionInput = nil }
         .onDisappear { cancelAttempt() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, backend == .t3 { cancelAttempt() }
+        }
         .onChange(of: address) { _, value in
-            if Self.isT3Link(value) { backend = .t3 }
+            backend = Self.backend(for: value, fallback: backend)
         }
         .tint(BottoTheme.action)
     }
@@ -240,8 +243,15 @@ struct ConnectionView: View {
     }
 
     private static func isT3Link(_ input: String) -> Bool {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return text.hasPrefix("t3code://") || text.contains("#token=")
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return URLComponents(string: text)?.scheme?.lowercased() == "t3code" || (try? T3PairingExchange.parse(text)) != nil
+    }
+
+    private static func backend(for input: String, fallback: Backend) -> Backend {
+        if isT3Link(input) { return .t3 }
+        let scheme = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines))?.scheme?.lowercased()
+        if let scheme, ["hermes", "botto"].contains(scheme) { return .hermes }
+        return fallback
     }
 
     private func clearReview() {
@@ -253,10 +263,7 @@ struct ConnectionView: View {
 
     private func receiveInput(_ input: String) {
         clearReview()
-        if Self.isT3Link(input) { backend = .t3 }
-        else if let scheme = URLComponents(string: input)?.scheme?.lowercased(), ["hermes", "botto"].contains(scheme) {
-            backend = .hermes
-        }
+        backend = Self.backend(for: input, fallback: backend)
         address = input
     }
     private var headers: [String: String] {
@@ -299,7 +306,7 @@ struct ConnectionView: View {
                     candidate = ConnectionConfiguration(serverURL: destination, username: submittedUsername, password: submittedPassword, connectionHeaders: submittedHeaders)
                 }
                 try Task.checkCancellation()
-                guard attemptID == owner else { return }
+                guard attemptID == owner, submittedBackend != .t3 || scenePhase == .active else { return }
                 if store.isDemo { store.leaveDemo() }
                 var failure: (any Error)?
                 let connected = await store.connect(candidate, onConnected: {

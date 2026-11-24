@@ -423,6 +423,9 @@ import BottoCore
 
     private func mount(_ history: LocalHistory, configuration: ConnectionConfiguration?) {
         historySaveFailure = nil
+        t3Models = []
+        t3ModelsGeneration = nil
+        t3ComposerRequest = nil
         chats.retireWorkspace()
         library.retire()
         mountedArtifactScope = isDemo ? nil : configuration.map(Self.artifactScope)
@@ -549,9 +552,14 @@ import BottoCore
     var t3ComposerRequest: T3ComposerRequest?
 
     @discardableResult func openT3Channel(_ channel: T3ChannelSummary) async -> Bool {
+        guard let authority = captureBotAuthority() else { return false }
+        return await openT3Channel(channel, authority: authority)
+    }
+
+    private func openT3Channel(_ channel: T3ChannelSummary, authority: BotNavigationAuthority) async -> Bool {
         guard let bot = primaryT3Bot, let profile = try? ExactID(bot.id), let thread = try? ExactID(channel.id),
               let current = t3Channels.first(where: { Data($0.id.utf8) == thread.bytes }),
-              let authority = captureBotAuthority(),
+              ownsBotNavigation(authority),
               selectBotID(bot.id, presentation: .preserveNavigation(authority.claim), while: {
                   ownsBotNavigation(authority)
               }), ownsBotNavigation(authority) else { return false }
@@ -569,22 +577,29 @@ import BottoCore
     /// The new-space page: a space the user named, or one T3 names from the first message, opened and then sent.
     /// It throws only before the space opens. After that the text lives in the space's own draft,
     /// so a failed send keeps it there for a deliberate retry. With `send: false` the text is left as that draft.
-    func startT3Space(named name: String = "", with text: String, model: T3ModelOption? = nil, send: Bool = true) async throws {
+    @discardableResult func startT3Space(named name: String = "", with text: String, model: T3ModelOption? = nil,
+                                         send: Bool = true) async throws -> SessionIdentity {
+        guard let authority = captureBotAuthority(), isConnected else { throw T3ServiceError.disconnected }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let created = try await createT3Space(title: title.isEmpty ? nil : title)
-        let threadID = created.summary.identity.stored.text
+        let identity = created.summary.identity
+        let threadID = identity.stored.text
+        guard ownsBotNavigation(authority) else { throw HermesServiceError.staleConversation }
         if let model {
-            try? await setT3ChannelModel(threadID: threadID, providerInstanceID: model.providerInstanceID, model: model.modelID)
+            try await setT3ChannelModel(threadID: threadID, providerInstanceID: model.providerInstanceID, model: model.modelID)
         }
-        guard let channel = t3Channels.first(where: { $0.id == threadID }), await openT3Channel(channel) else {
+        guard let channel = t3Channels.first(where: { Data($0.id.utf8) == identity.stored.bytes }),
+              await openT3Channel(channel, authority: authority) else {
             throw T3ServiceError.missingChannel
         }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let bot = primaryT3Bot, let profile = try? ExactID(bot.id),
-              let owner = chats.screen(profile: profile)?.owner else { return }
-        chats.editDraft(text, owner: owner)
-        guard send, let intent = chats.captureSend(owner) else { return }
-        await chats.send(intent)
+        let workspace = authority.workspace
+        guard !Task.isCancelled, isCurrentConnection(authority),
+              let selection = workspace.selection(profile: identity.profile), selection.identity == identity,
+              workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
+        workspace.editDraft(text, owner: selection.owner)
+        if send, let intent = workspace.captureSend(selection.owner) { await workspace.send(intent) }
+        return identity
     }
 
     func renameT3Channel(threadID: String, title: String) async throws {
@@ -876,10 +891,13 @@ import BottoCore
         let staged: PendingService?
         let owner: UUID
         let connectingService: any BotService
-        // A saved Hermes reconnect may consume its refresh token even if the
-        // socket fails afterward. Its mounted service already owns that account.
-        let reconnectsSavedHermes = candidate.t3 == nil && candidate == configuration
-        if injectedService == nil, !isDemo, !reconnectsSavedHermes {
+        // A reconnect to the saved workspace keeps its drafts and staged-file warnings.
+        // Unresolved T3 pairing needs a staged service until it establishes its workspace.
+        let boundWorkspace = candidate.t3.map {
+            !$0.environmentID.isEmpty && $0.projectID?.isEmpty == false && $0.workspaceRoot?.isEmpty == false
+        } ?? true
+        let reconnectsSaved = candidate == configuration && boundWorkspace
+        if injectedService == nil, !isDemo, !reconnectsSaved {
             let attempt = PendingService(service: makeService(candidate), configuration: candidate)
             pendingService = attempt
             staged = attempt
