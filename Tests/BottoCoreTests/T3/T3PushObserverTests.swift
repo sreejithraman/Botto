@@ -73,7 +73,7 @@ import Testing
         #expect(observer.requests(frame(pending), in: shell, now: now).isEmpty)
     }
 
-    @Test func childThreadsOnlyNotifyForRequestsThatNeedTheUser() {
+    @Test func childThreadsOnlyNotifyForSupportedApprovals() {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
         var child: HermesJSON = .object([
             "id": .string("space-42"), "status": .string("completed"), "latestRunId": .string("child-run"),
@@ -85,7 +85,7 @@ import Testing
         child["pendingRuntimeRequest"] = .object(["id": .string("input"), "kind": .string("user_input"), "createdAt": .string(timestamp)])
         #expect(observer.shellActivity(in: child, now: now) == nil)
         child["pendingRuntimeRequest"]["userOnly"] = .bool(true)
-        #expect(observer.shellActivity(in: child, now: now)?.kind == .question)
+        #expect(observer.shellActivity(in: child, now: now) == nil)
         child["pendingRuntimeRequest"]["kind"] = .string("command")
         #expect(observer.shellActivity(in: child, now: now)?.kind == .approval)
     }

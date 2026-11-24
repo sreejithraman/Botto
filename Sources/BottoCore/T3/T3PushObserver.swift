@@ -111,12 +111,9 @@ struct T3PushObserver {
     private mutating func childRequest(in shell: HermesJSON, now: Date) -> T3PushActivity? {
         let request = shell["pendingRuntimeRequest"]
         guard shell["lineage"]["relationshipToParent"].text == "subagent", shell["creationSource"].text != "provider",
-              shell["activityRunStatus"] != .null, let requestKind = request["kind"].text else { return nil }
-        let kind: PushEventKind
-        if T3ProjectionMapper.approvalKinds.contains(requestKind) { kind = .approval }
-        else if requestKind == "user_input", request["userOnly"].flag == true { kind = .question }
-        else { return nil }
-        return activity(in: shell, id: request["id"].nonempty, kind: kind, date: T3ProjectionMapper.date(request["createdAt"]),
+              shell["activityRunStatus"] != .null, let requestKind = request["kind"].text,
+              T3ProjectionMapper.approvalKinds.contains(requestKind) else { return nil }
+        return activity(in: shell, id: request["id"].nonempty, kind: .approval, date: T3ProjectionMapper.date(request["createdAt"]),
                         cancelled: false, now: now)
     }
 

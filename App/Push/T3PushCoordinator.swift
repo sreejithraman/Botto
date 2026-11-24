@@ -119,6 +119,7 @@ import Observation
             catch { notice = error.localizedDescription; return }
         }
         if !removed { notice = removalNotice }
+        else if notice == removalNotice { notice = nil }
     }
 
     private var removalNotice: String {

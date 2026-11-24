@@ -18,7 +18,7 @@ changes to upstream T3 are unnecessary.
   including a routine run, once no background work holds it open. Stopped
   runs and monitor progress wakes while the monitor is active stay quiet.
   Supported pending requests alert for approvals and questions. Child
-  questions meant for the coordinating agent stay quiet. Resolving, cancelling, or expiring a request cancels queued
+  alerts cover supported approvals. Secret and link cards open in T3 Code. Resolving, cancelling, or expiring a request cancels queued
   relay delivery. Work that completed before observation started stays quiet.
   Recent snapshots can recover events across a socket reconnect. Event and
   request IDs stay stable across duplicates. Mac-to-relay submission is

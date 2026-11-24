@@ -206,11 +206,16 @@ import UIKit
         let current = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
         let previous = T3PushScope(environmentID: "old-mac", projectID: "old-project")
         var saved: [T3PushPairing] = []
+        var macsReachable = false
         let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
             authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
             send: { request, _ in
-                if request.target == nil { throw T3PushRegistrationError.bridgeUnavailable }
-                return .init(.registered, installationID: String(repeating: "a", count: 64))
+                let installation = String(repeating: "a", count: 64)
+                if request.target == nil {
+                    guard macsReachable else { throw T3PushRegistrationError.bridgeUnavailable }
+                    return .init(.removed, installationID: installation)
+                }
+                return .init(.registered, installationID: installation)
             })
         await push.enable(code: try pushInvitation(host: "192.0.2.5", scope: current, digit: "a").code(), scope: current)
         await push.enable(code: try pushInvitation(host: "192.0.2.9", scope: previous, digit: "b").code(), scope: previous)
@@ -220,6 +225,11 @@ import UIKit
         await store.forgetConnectionWithPush()
         #expect(store.configuration == nil)
         #expect(saved.count == 2 && saved.allSatisfy { $0.registration.target == nil })
+        #expect(push.notice != nil)
+        macsReachable = true
+        await push.resume(scope: nil)
+        #expect(saved.isEmpty)
+        #expect(push.notice == nil)
     }
 
     private func pushInvitation(host: String, scope: T3PushScope, digit: String) -> T3PushInvitation {
