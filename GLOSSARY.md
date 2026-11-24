@@ -9,6 +9,16 @@ the shared identities, avatar concepts, and notification relationships.
 An ongoing exchange with one bot, including its messages and related work.
 _Avoid_: Conversation or session as interface labels
 
+**Space**:
+A lasting place in a T3 Code workspace for one ongoing part of the user's life with
+Botto. It is the T3 counterpart of a chat.
+_Avoid_: Chat, thread or channel as interface labels in a T3 workspace; `#` before a name
+
+**Main space**:
+The one space that anchors a T3 bot and coordinates its other spaces. It has whatever
+name the user gives it.
+_Avoid_: General, home channel
+
 **Bot**:
 A Hermes assistant shown in Botto, with its own identity, configuration, and chats.
 _Avoid_: Account, chat

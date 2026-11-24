@@ -3,6 +3,21 @@ import Testing
 @testable import BottoCore
 
 @Suite(.serialized) @MainActor struct HermesTransportLimitTests {
+    @Test(arguments: [nil, "26214401"] as [String?])
+    func t3SignedOutputIsBoundedWhileReceiving(_ length: String?) async throws {
+        let url = URL(string: "https://t3.invalid/api/assets/signed/report")!
+        let fixture = TransportResponse(repeatedBytes: DownloadedArtifact.maximumBytes + 1,
+            headers: length.map { ["Content-Length": $0] } ?? [:])
+        TransportBodyProtocol.install(fixture, at: url)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TransportBodyProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel(); TransportBodyProtocol.remove(url) }
+        await #expect(throws: HermesServiceError.artifactTooLarge) {
+            try await T3PairingExchange.directHTTP(URLRequest(url: url), in: session)
+        }
+    }
+
     @Test(arguments: [nil, "1", "26214401"] as [String?])
     func refusesOversizedArtifactRegardlessOfContentLength(_ length: String?) async throws {
         let fixture = TransportResponse(repeatedBytes: 25 * 1024 * 1024 + 1,
