@@ -51,6 +51,15 @@ import Testing
         #expect(observer.receive(frame("runtime-request.updated", pending), spaceID: "space-42", title: "Trips", now: now).isEmpty)
     }
 
+    @Test func childThreadsOnlyNotifyForActionableRequests() {
+        var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
+        let run = frame("run.updated", ["id": "child-run", "status": "completed", "completedAt": "2027-01-15T08:00:00Z"])
+        let approval = frame("runtime-request.updated", ["id": "approval", "kind": "command", "status": "pending",
+                                                           "createdAt": "2027-01-15T08:00:00Z"])
+        #expect(observer.receive(run, spaceID: "space-42", title: "Child", includesCompletion: false, now: now).isEmpty)
+        #expect(observer.receive(approval, spaceID: "space-42", title: "Child", includesCompletion: false, now: now).first?.kind == .approval)
+    }
+
     private func frame(_ type: String, _ fields: [String: String], space: String = "space-42") -> HermesJSON {
         .object(["kind": .string("event"), "event": .object([
             "type": .string(type), "threadId": .string(space), "payload": .object(fields.mapValues(HermesJSON.string))

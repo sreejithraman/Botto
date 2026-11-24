@@ -11,6 +11,20 @@ actor T3PushBridge {
         let codeExpiry: Int
         var registration: T3PushRegistration
         var confirmed: Bool
+        var providerRetired: Bool?
+    }
+
+    private struct RelayReply: Decodable {
+        struct Target: Decodable {
+            let deviceID: String
+            let status: String
+
+            enum CodingKeys: String, CodingKey { case deviceID = "device_id", status }
+        }
+
+        let v: Int
+        let status: String
+        let targets: [Target]?
     }
 
     private struct State: Codable {
@@ -61,8 +75,8 @@ actor T3PushBridge {
         self.scope = scope
     }
 
-    func makeInvitation(host: String, port: UInt16, scope: T3PushScope) throws -> T3PushInvitation {
-        guard self.scope == scope else { throw T3PushRegistrationError.bridgeUnavailable }
+    func makeInvitation(host: String, port: UInt16) throws -> T3PushInvitation {
+        guard let scope else { throw T3PushRegistrationError.bridgeUnavailable }
         let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let expiresAt = Int(Date.now.timeIntervalSince1970) + 300
         return .init(host: host, port: port, scope: scope, deviceID: id,
@@ -88,15 +102,18 @@ actor T3PushBridge {
             guard request.generation >= old.generation,
                   request.generation != old.generation || old == request,
                   old.target != nil || request.target == nil else { return reply(.retired) }
+            if previous.providerRetired == true, let target = request.target, target == old.target {
+                return reply(.retired)
+            }
             if old == request, previous.confirmed { return reply(old.target == nil ? .removed : .registered) }
         } else {
             let now = Int(Date.now.timeIntervalSince1970)
             if request.target == nil && expiresAt <= now { return reply(.removed) }
             guard expiresAt > now else { return reply(.retired) }
-            guard request.generation == 1 || request.target == nil else { return reply(.retired) }
-            if request.target != nil, state.devices.values.count(where: { $0.registration.target != nil }) >= 8 {
-                return reply(.retry)
-            }
+        }
+        if request.target != nil, previous == nil || previous?.providerRetired == true,
+           state.devices.values.count(where: { $0.registration.target != nil && $0.providerRetired != true }) >= 8 {
+            return reply(.retry)
         }
         // A saved pairing can always revoke, even after its original project or engine goes offline.
         guard request.target == nil || scope == request.scope else { return reply(.differentWorkspace) }
@@ -111,13 +128,16 @@ actor T3PushBridge {
                     "environment": target.environment.rawValue,
                     "preferences": ["replies": true, "requests": true, "failures": false, "previews": true],
                     "visible_chat": NSNull(), "visible_until": 0
-                ])
-                if status == "revoked" || status == "stale" { return reply(.retired) }
+                ]).status
+                if status == "revoked" || status == "stale" {
+                    try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: false, providerRetired: true))
+                    return reply(.retired)
+                }
                 guard status == "accepted" || status == "duplicate" else { return reply(.retry) }
             } else {
                 let status = try await relay(path + "/revoke", body: [
                     "v": 1, "generation": request.generation
-                ])
+                ]).status
                 guard ["accepted", "duplicate", "revoked"].contains(status) else { return reply(.retry) }
             }
             try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: true))
@@ -128,20 +148,24 @@ actor T3PushBridge {
     }
 
     func publish(_ activity: T3PushActivity) async {
-        guard scope == activity.scope, activity.expiresAt > Int(Date.now.timeIntervalSince1970) else { return }
-        let devices = state.devices.filter {
-            $0.value.confirmed && $0.value.registration.target != nil && $0.value.registration.scope == activity.scope
-        }
-        guard !devices.isEmpty else { return }
+        guard activity.expiresAt > Int(Date.now.timeIntervalSince1970) else { return }
         do {
             let coordinates = [activity.scope.environmentID, activity.scope.projectID, activity.spaceID]
             let requestID = activity.kind == .reply ? nil : try state.opaque(["request"] + coordinates + [activity.id])
             if activity.cancelled, let requestID {
+                guard state.devices.values.contains(where: {
+                    $0.registration.scope == activity.scope && $0.providerRetired != true
+                        && ($0.registration.target != nil || !$0.confirmed)
+                }) else { return }
                 _ = try await relay("/cancellations", body: [
                     "v": 1, "request_id": requestID, "expires_at": activity.expiresAt
                 ])
                 return
             }
+            let devices = state.devices.filter {
+                $0.value.confirmed && $0.value.registration.target != nil && $0.value.registration.scope == activity.scope
+            }
+            guard !devices.isEmpty else { return }
             let eventID = try state.opaque(["event", activity.kind.rawValue] + coordinates + [activity.id])
             let threadID = try state.opaque(["space"] + coordinates)
             let destination = activity.scope.destination(spaceID: activity.spaceID)
@@ -163,17 +187,24 @@ actor T3PushBridge {
                 let sealed = try (try? envelope.encrypting(preview, key: key)) ?? envelope.encrypting(routing, key: key)
                 return ["device_id": sealed.deviceID, "generation": sealed.generation, "sealed": sealed.sealed]
             }
-            _ = try await relay("/events", body: [
+            let delivery = try await relay("/events", body: [
                 "v": 1, "event_id": eventID, "thread_id": threadID, "kind": activity.kind.rawValue,
                 "request_id": requestID.map { $0 as Any } ?? NSNull(), "created_at": activity.createdAt,
                 "expires_at": activity.expiresAt, "targets": targets
             ])
+            for outcome in delivery.targets ?? [] where outcome.status == "invalid_target" || outcome.status == "revoked" {
+                guard let sent = devices[outcome.deviceID], var current = state.devices[outcome.deviceID],
+                      current.confirmed, sent.registration == current.registration else { continue }
+                current.confirmed = false
+                current.providerRetired = true
+                try saveDevice(outcome.deviceID, current)
+            }
         } catch {
             log.error("Couldn’t submit a T3 notification to the relay.")
         }
     }
 
-    private func relay(_ suffix: String, method: String = "POST", body: [String: Any]) async throws -> String {
+    private func relay(_ suffix: String, method: String = "POST", body: [String: Any]) async throws -> RelayReply {
         var request = URLRequest(url: state.relay.appending(path: "/v1/installations/" + state.installationID + suffix))
         request.httpMethod = method
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -182,11 +213,10 @@ actor T3PushBridge {
         request.setValue("Bearer " + state.token, forHTTPHeaderField: "Authorization")
         let (data, response) = try await transport(request)
         guard (200..<300).contains(response.statusCode),
-              let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              result["v"] as? Int == 1, let status = result["status"] as? String else {
+              let result = try? JSONDecoder().decode(RelayReply.self, from: data), result.v == 1 else {
             throw T3PushRegistrationError.relayUnavailable
         }
-        return status
+        return result
     }
 
     private func saveDevice(_ id: String, _ device: Device) throws {

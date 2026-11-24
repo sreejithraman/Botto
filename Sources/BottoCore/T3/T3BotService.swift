@@ -34,19 +34,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 @MainActor public final class T3BotService: T3BotBrainControlling {
     public typealias WebSocketFactory = @Sendable (URLRequest) throws -> any T3WebSocketTransport
     public var onEvent: ((BotServiceEvent) -> Void)?
-    public var onPushActivity: ((T3PushActivity) -> Void)? {
-        didSet {
-            if onPushActivity == nil {
-                pushObserver = nil
-                if let session {
-                    session.pushTasks.values.forEach { $0.cancel() }
-                    session.pushTasks.removeAll()
-                }
-            } else if let session, session.ready {
-                syncPushSpaces(session)
-            }
-        }
-    }
+    public var onPushActivity: ((T3PushActivity) -> Void)?
     public var currentPushScope: T3PushScope? {
         guard let session, session.ready else { return nil }
         return pushScope(session)
@@ -1211,8 +1199,11 @@ private extension T3BotService {
                         for try await item in stream {
                             guard let self, self.session === session, !Task.isCancelled,
                                   let shell = session.shells[id] else { return }
+                            let lineage = shell["lineage"]
+                            let listsAsSpace = lineage["relationshipToParent"].text != "subagent"
+                                && lineage["sideChat"].flag != true && lineage["workflowStep"].flag != true
                             let activities = self.pushObserver?.receive(item, spaceID: id,
-                                title: shell["title"].nonempty ?? "Botto") ?? []
+                                title: shell["title"].nonempty ?? "Botto", includesCompletion: listsAsSpace) ?? []
                             for activity in activities { self.onPushActivity?(activity) }
                         }
                     } catch {

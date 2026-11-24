@@ -139,12 +139,14 @@ struct PushSettingsView: View {
 struct T3PushSettingsView: View {
     let store: AppStore
     @Environment(\.openURL) private var openURL
-    @State private var enteringCode = false
+    private enum CodePurpose { case enroll, updateAddress }
+    @State private var codePurpose: CodePurpose?
     @State private var code = ""
 
     private var coordinator: T3PushCoordinator { store.t3Push }
     private var scope: T3PushScope? { store.t3PushScope }
     private var pairing: T3PushPairing? { coordinator.pairing(scope) }
+    private var hasPendingRemoval: Bool { coordinator.pendingRemoval(scope) != nil }
 
     var body: some View {
         Form {
@@ -152,38 +154,46 @@ struct T3PushSettingsView: View {
                 Toggle("Space notifications", isOn: Binding(
                     get: { pairing?.registration.target != nil && pairing?.confirmed == true },
                     set: { enabled in
-                        if enabled { enteringCode = true }
+                        if enabled { codePurpose = .enroll }
                         else if let scope { Task { await coordinator.disable(scope: scope) } }
                     }
                 ))
                 .accessibilityIdentifier("t3-push-toggle")
                 .disabled(scope == nil || coordinator.isBusy || (pairing != nil && pairing?.confirmed == false))
 
-                if enteringCode, pairing == nil, let scope {
+                if pairing != nil || hasPendingRemoval {
+                    Button("Update Mac Address") { codePurpose = .updateAddress }
+                        .disabled(coordinator.isBusy || codePurpose != nil)
+                }
+                if let codePurpose, let scope {
+                    let updatingAddress = codePurpose == .updateAddress
                     SecureField("Notification code from your Mac", text: $code)
                         .textContentType(.password)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Button("Enable Notifications") {
+                    Button(updatingAddress ? "Update Address" : "Enable Notifications") {
                         Task {
-                            await coordinator.enable(code: code, scope: scope)
-                            if coordinator.pairing(scope) != nil { enteringCode = false }
+                            if updatingAddress { await coordinator.updateMacAddress(code: code, scope: scope) }
+                            else { await coordinator.enable(code: code, scope: scope) }
+                            if coordinator.notice == nil || (!updatingAddress && coordinator.pairing(scope) != nil) {
+                                self.codePurpose = nil
+                            }
                             code = ""
                         }
                     }
                     .disabled(code.isEmpty || coordinator.isBusy)
                     Button("Cancel", role: .cancel) {
-                        enteringCode = false
+                        self.codePurpose = nil
                         code = ""
                     }
                     .disabled(coordinator.isBusy)
                 }
-                if let pairing, !pairing.confirmed {
-                    Button(pairing.registration.target == nil ? "Retry Removal" : "Retry Setup") {
+                if hasPendingRemoval || pairing?.confirmed == false {
+                    Button(pairing?.confirmed == false ? "Retry Setup" : "Retry Removal") {
                         Task { await coordinator.resume(scope: scope) }
                     }
                     .disabled(coordinator.isBusy)
-                    if pairing.registration.target != nil, let scope {
+                    if pairing?.confirmed == false, let scope {
                         Button("Turn Off", role: .destructive) { Task { await coordinator.disable(scope: scope) } }
                             .disabled(coordinator.isBusy)
                     }

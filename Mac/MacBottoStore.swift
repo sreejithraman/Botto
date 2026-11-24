@@ -73,7 +73,6 @@ final class MacBottoStore {
 
     private let service: any T3BotBrainControlling
     private var pushService: T3BotService? { service as? T3BotService }
-    var pushScope: T3PushScope? { pushService?.currentPushScope }
 
     func observePush(_ activity: @escaping (T3PushActivity) -> Void) {
         pushService?.onPushActivity = activity

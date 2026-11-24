@@ -43,8 +43,8 @@ changes to upstream T3 are unnecessary.
 ### Owner-operated setup
 
 Have a Cloudflare account with Workers access, an Apple Developer team that can
-sign Botto for the test iPhone, and a Mac and iPhone paired over LAN or
-Tailscale. Choose the app bundle ID, Apple signing team, and APNs environment
+sign Botto for the test iPhone, and a Mac and iPhone that can reach each
+other over LAN or Tailscale. Choose the app bundle ID, Apple signing team, and APNs environment
 before configuring the relay. The APNs provider inputs are the Team ID, Key ID,
 and private `.p8` key authorized for that bundle ID and environment.
 
@@ -79,6 +79,9 @@ and private `.p8` key authorized for that bundle ID and environment.
    defaults write com.sree.botto.mac T3PushRelayURL -string 'https://your-relay.example'
    ```
 
+   If you chose a custom app bundle ID, use that ID with `.mac` appended
+   as the defaults domain.
+
    A Mac bridge keeps its registrations bound to one relay origin. For a
    planned move to another Worker, turn off notifications on the paired
    phones and confirm removal while the previous relay is reachable. Quit
@@ -94,7 +97,9 @@ and private `.p8` key authorized for that bundle ID and environment.
    reflects relay confirmation. Turning it off retires local preview and tap
    access. When the Mac is unreachable, Botto saves the pending removal and
    retries on return. Alerts already submitted to Apple can still appear
-   with generic text.
+   with generic text. If the Mac's address changes, copy a fresh code on
+   the same Mac and use **Update Mac Address** on the iPhone to recover the
+   existing pairing or finish a pending removal.
 
 ### W5 physical acceptance
 

@@ -49,7 +49,8 @@ struct T3PushObserver {
         self.since = since
     }
 
-    mutating func receive(_ item: HermesJSON, spaceID: String, title: String, now: Date = .now) -> [T3PushActivity] {
+    mutating func receive(_ item: HermesJSON, spaceID: String, title: String, includesCompletion: Bool = true,
+                          now: Date = .now) -> [T3PushActivity] {
         let records: [(String, HermesJSON)]
         switch item["kind"].text {
         case "snapshot":
@@ -73,7 +74,7 @@ struct T3PushObserver {
             let cancelled: Bool
             switch type {
             case "run.updated":
-                guard record["status"].text == "completed" else { return nil }
+                guard includesCompletion, record["status"].text == "completed" else { return nil }
                 kind = .reply
                 date = T3ProjectionMapper.date(record["completedAt"])
                 cancelled = false

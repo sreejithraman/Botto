@@ -212,7 +212,8 @@ import BottoCore
     }
 
     func shouldPresentPush(_ envelope: PushEnvelope) -> Bool {
-        if let scope = t3PushScope { return t3Push.shouldPresent(envelope, scope: scope) }
+        if let scope = t3PushScope { return t3Push.shouldPresent(envelope, scope: scope,
+                                        visible: chats.visibleChatIdentity.map(PushDestination.init)) }
         return push.shouldPresent(envelope)
     }
     private(set) var notificationNavigationRevision = UUID()
@@ -236,10 +237,10 @@ import BottoCore
         var claim: NavigationClaim?
         var supersededOpening: Bool
     }
-    private var pendingPushNotification: PendingPushNavigation?
-    var hasPendingT3Notification: Bool {
-        if case .t3 = pendingPushNotification?.intent.source { return true }
-        return false
+    @ObservationIgnored private var pendingPushNotification: PendingPushNavigation?
+    private var t3NotificationLaunchScope: T3PushScope?
+    var t3NotificationOwnsLaunch: Bool {
+        t3NotificationLaunchScope.map { $0 == t3PushScope } ?? false
     }
     @ObservationIgnored private var notificationRouting: UUID?
     /// A tap attached nothing after superseding the selected bot's opening.
@@ -466,9 +467,7 @@ import BottoCore
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
         var chatWasVisible = false
         chats.onVisibleChatChange = { [weak self] identity in
-            let visible = identity.map(PushDestination.init)
-            self?.push.updateVisibility(destination: visible)
-            self?.t3Push.visible = visible
+            self?.push.updateVisibility(destination: identity.map(PushDestination.init))
             // Repeated hidden publications must not cancel feedback in a covering sheet.
             if chatWasVisible, identity == nil { BottoHaptics.shared.cancel() }
             chatWasVisible = identity != nil
@@ -1353,6 +1352,7 @@ import BottoCore
             return
         }
         // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
+        if case .t3(let scope) = intent.source { t3NotificationLaunchScope = scope }
         let supersededOpening = pendingPushNotification?.supersededOpening == true || hasUnsettledOpening
         pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim(), supersededOpening: supersededOpening)
         await resumePushNavigation()
@@ -1750,7 +1750,6 @@ import BottoCore
         if !value {
             discardPendingService()
             push.deactivate()
-            t3Push.visible = nil
             flush()
             service.disconnect()
             chats.retireConnection()
@@ -1762,7 +1761,6 @@ import BottoCore
             if started, !isConnected, pendingService == nil, connection.candidate == nil, let configuration {
                 if await connect(configuration) { return }
             }
-            await resumePushNavigation()
             await t3Push.resume(scope: t3PushScope)
         }
     }
@@ -1778,6 +1776,7 @@ import BottoCore
         catch { notice = error.localizedDescription; return }
         let oldID = configuration?.id
         pendingPushNotification = nil; notificationRouting = nil
+        t3NotificationLaunchScope = nil
         if let oldID { artifactCache.discard(configurationID: oldID) }
         else { artifactCache.prune(reachableConfigurationIDs: []) }
         Task { [weak self, artifactCache] in

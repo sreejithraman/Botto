@@ -107,7 +107,7 @@ enum PushPairingVault {
 }
 
 struct T3PushPairing: Codable, Equatable, Sendable {
-    let invitation: T3PushInvitation
+    var invitation: T3PushInvitation
     var registration: T3PushRegistration
     var installationID: String?
     var confirmed: Bool

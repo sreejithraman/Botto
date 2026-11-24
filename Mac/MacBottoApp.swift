@@ -115,7 +115,6 @@ final class MacBottoDelegate: MacEngineLifecycle {
     private(set) var pushListener: T3PushListener?
     private(set) var pushBridge: T3PushBridge?
     private(set) var pushSetupFailed = false
-    private var pushEvents: AsyncStream<T3PushActivity>.Continuation?
     private var connectionTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -128,7 +127,6 @@ final class MacBottoDelegate: MacEngineLifecycle {
                 pushListener = try T3PushListener(bridge: bridge, port: 3775)
                 pushBridge = bridge
                 let (activities, events) = AsyncStream<T3PushActivity>.makeStream(bufferingPolicy: .bufferingNewest(256))
-                pushEvents = events
                 store.observePush { events.yield($0) }
                 store.onPushScope = { scope in Task { await bridge.setScope(scope) } }
                 Task { for await activity in activities { await bridge.publish(activity) } }
@@ -165,7 +163,6 @@ final class MacBottoDelegate: MacEngineLifecycle {
     }
 
     override func applicationWillTerminate(_ notification: Notification) {
-        pushEvents?.finish()
         pushListener?.stop()
         super.applicationWillTerminate(notification)
     }
@@ -206,13 +203,13 @@ private struct MacEngineSettings: View {
 
     private func copyPushCode(host: String?) {
         guard let host, let port = delegate.pushListener?.port, let bridge = delegate.pushBridge,
-              let scope = delegate.store.pushScope else {
+              delegate.store.isConnected else {
             pushNotice = "Wake Botto and check your Mac’s network connection."
             return
         }
         Task {
             do {
-                let invitation = try await bridge.makeInvitation(host: host, port: port, scope: scope)
+                let invitation = try await bridge.makeInvitation(host: host, port: port)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(try invitation.code(), forType: .string)
                 pushNotice = "Code copied. Paste it in Notifications on your phone within five minutes."

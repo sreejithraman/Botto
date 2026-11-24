@@ -3,7 +3,7 @@ import Foundation
 import Network
 
 public enum T3PushRegistrationError: LocalizedError, Sendable {
-    case invalidCode, wrongMac, bridgeUnavailable, relayUnavailable, expiredCode
+    case invalidCode, wrongMac, bridgeUnavailable, relayUnavailable, expiredCode, targetRetired
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +12,7 @@ public enum T3PushRegistrationError: LocalizedError, Sendable {
         case .bridgeUnavailable: "Botto couldn’t reach the notification bridge. Check that your Mac is awake and reachable."
         case .relayUnavailable: "Your Mac couldn’t confirm the notification change with the relay. Try again."
         case .expiredCode: "Copy a fresh notification code from Botto on your Mac."
+        case .targetRetired: "This iPhone’s notification address is no longer active. Use a fresh code to turn notifications back on."
         }
     }
 }
