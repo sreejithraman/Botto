@@ -11,6 +11,10 @@ bundled release, with PATH and the usual macOS binary directories as a fallback.
 version, commit and runtime. Upstream publishes the macOS CLI archive for Apple
 Silicon. Intel builds use Settings or PATH.
 
+The bundled engine and a Settings override share the server data folder. A newer
+engine can migrate that data. Back up the folder shown in Settings before trying
+a build you may roll back.
+
 ## Adopt a new release
 
 Run these two commands from the repo root, substituting the upstream release tag
@@ -58,4 +62,5 @@ headless `serve` command and uses the same executable to mint Pair Phone links.
 After building the Apple Silicon app, run
 `python3 scripts/check-botto-mac-sigterm.py /path/to/BottoMac.app` to exercise
 SIGTERM and Quit against the bundled engine. The test uses disposable data and
-verifies that a separately launched engine keeps responding in both cases.
+verifies that a separately launched engine keeps responding in both cases. It
+also checks escalation when an engine's child ignores SIGTERM.

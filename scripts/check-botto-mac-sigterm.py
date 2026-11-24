@@ -61,6 +61,11 @@ def engine_processes(base):
     return [row for row in processes() if argument in row[3] and "/T3Engine/t3 serve " in row[3]]
 
 
+def startup_failure(directory):
+    failure = directory / "startup-failure"
+    return failure.read_text() if failure.exists() else "Bundled engine did not start"
+
+
 @contextlib.contextmanager
 def launch(argv, home):
     home.mkdir()
@@ -73,8 +78,12 @@ def launch(argv, home):
             yield process
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
 
 
 def exercise(harness, engine, directory, action, override=None):
@@ -95,13 +104,15 @@ def exercise(harness, engine, directory, action, override=None):
             resistant_pid = None
             owned_group = None
             try:
-                assert wait_for(lambda: responds(port), 30), "Bundled engine did not start"
+                assert wait_for(lambda: engine_processes(base) or app.poll() is not None, 15)
+                assert app.poll() is None, startup_failure(directory)
                 (pid, parent, group, _), = engine_processes(base)
-                if override is None:
-                    assert parent == app.pid and group == pid, "Listener is not the app's child group"
-                else:
-                    assert parent == group, "Wrapped engine is outside the owned group"
-                    assert any(row[:3] == (group, app.pid, group) for row in processes())
+                leader = pid if override is None else parent
+                assert leader == group and any(row[:3] == (group, app.pid, group) for row in processes()), (
+                    "Engine is outside the app's child group"
+                )
+                owned_group = group
+                if override is not None:
                     child_pid = base / "resistant-pid"
                     assert wait_for(lambda: child_pid.exists() and (base / "resistant-ready").exists()), (
                         "SIGTERM-resistant child did not start"
@@ -109,7 +120,9 @@ def exercise(harness, engine, directory, action, override=None):
                     resistant_pid = int(child_pid.read_text())
                     assert any(row[0] == resistant_pid and row[2] == group for row in processes())
                     print(f"Wrapped engine has a SIGTERM-responsive leader and a resistant child PID={resistant_pid}", flush=True)
-                owned_group = group
+                assert wait_for(lambda: responds(port) or app.poll() is not None, 30) and app.poll() is None, (
+                    startup_failure(directory)
+                )
                 print(f"PATH=/usr/bin:/bin; {action}; app={app.pid}; bundled engine={pid}; group={group}; protocol=2", flush=True)
                 if action == "SIGTERM":
                     app.send_signal(signal.SIGTERM)
@@ -128,15 +141,17 @@ def exercise(harness, engine, directory, action, override=None):
                 assert independent_alive, f"{action} stopped the independent engine"
                 assert status == 0, f"{action} exited with status {status}"
             finally:
-                for pid, parent, group, _ in engine_processes(base):
-                    if pid == group and parent in (app.pid, 1):
-                        with contextlib.suppress(ProcessLookupError):
-                            os.killpg(group, signal.SIGKILL)
+                owned = {
+                    group for pid, parent, group, _ in engine_processes(base)
+                    if group == owned_group or (pid == group and parent in (app.pid, 1))
+                }
                 if resistant_pid is not None and owned_group is not None and any(
                     row[0] == resistant_pid and row[2] == owned_group for row in processes()
                 ):
+                    owned.add(owned_group)
+                for group in owned:
                     with contextlib.suppress(ProcessLookupError):
-                        os.kill(resistant_pid, signal.SIGKILL)
+                        os.killpg(group, signal.SIGKILL)
 
 
 def main():
