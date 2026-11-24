@@ -105,6 +105,43 @@ import Testing
         #expect(workspace.captureSend(recovered.owner) == nil)
     }
 
+    @Test func explicitPairingOfTheSameVerifiedProjectPreservesCachedConversationAndDraft() async throws {
+        var previous = t3Configuration()
+        previous.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let previousID = previous.id
+        let resolved = try #require(previous.t3)
+        let next = ConnectionConfiguration(serverURL: previous.serverURL,
+            t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"))
+        defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
+        let original = T3WorkspaceService()
+        let replacement = T3WorkspaceService()
+        replacement.resolvedPairing = next.t3.map {
+            var bound = $0
+            bound.projectID = resolved.projectID
+            bound.workspaceRoot = resolved.workspaceRoot
+            return bound
+        }
+        let storage = MemoryConnectionStorage(saved: previous)
+        let store = AppStore(persistence: storage.persistence, makeService: {
+            $0?.id == next.id ? replacement : original
+        })
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        await store.open(bot)
+        #expect(store.selectedT3ChannelID == "release")
+        await store.testEdit("Keep the typed draft", for: bot.id)
+        try #require(store.flush())
+        let workspace = store.chats
+
+        #expect(await store.connect(next))
+        #expect(store.chats !== workspace)
+        #expect(storage.saved?.id == next.id)
+        #expect(storage.saved?.t3?.projectID == resolved.projectID)
+        #expect(storage.saved?.t3?.accessToken == "new-fixture-token")
+        #expect(store.draft(for: bot.id) == "Keep the typed draft")
+        #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
+    }
+
     @Test func loadsAndSavesBotBrainThroughTheMountedService() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -283,10 +320,20 @@ import Testing
         let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
         service.openError = .missingChannel
+        var created: SessionIdentity?
 
-        await #expect(throws: T3ServiceError.missingChannel) { try await store.startT3Space(with: "Keep the draft") }
+        await #expect(throws: T3ServiceError.missingChannel) {
+            try await store.startT3Space(with: "Keep the draft", onCreated: { created = $0 })
+        }
         #expect(service.createdThreads.count == 1)
         #expect(service.sent.isEmpty)
+
+        service.openError = nil
+        let identity = try #require(created)
+        let opened = try await store.startT3Space(with: "Keep the draft", resuming: identity)
+        #expect(opened == identity)
+        #expect(service.createdThreads.count == 1)
+        #expect(service.sent[opened.stored.text] == ["Keep the draft"])
     }
 
     @Test func newSpaceDoesNotSendWhenTheChosenModelIsRejected() async throws {
@@ -358,6 +405,7 @@ import Testing
 @MainActor private final class T3WorkspaceService: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
+    var resolvedPairing: T3Connection?
     var openError: T3ServiceError?
     var modelError: T3ServiceError?
     var createGate: WorkspaceGate?
@@ -385,6 +433,11 @@ import Testing
 
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
         if let connectError { throw connectError }
+        if let resolvedPairing {
+            var connected = configuration
+            connected.t3 = resolvedPairing
+            onEvent?(.configuration(connected))
+        }
         return .init(version: "fixture", installID: configuration.t3?.environmentID)
     }
     func disconnect() { disconnects += 1; issuer.retireAttachment() }

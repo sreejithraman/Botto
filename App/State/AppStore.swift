@@ -552,13 +552,13 @@ import BottoCore
     var t3ComposerRequest: T3ComposerRequest?
 
     @discardableResult func openT3Channel(_ channel: T3ChannelSummary) async -> Bool {
-        guard let authority = captureBotAuthority() else { return false }
-        return await openT3Channel(channel, authority: authority)
+        await openT3Channel(channel, authority: nil)
     }
 
-    private func openT3Channel(_ channel: T3ChannelSummary, authority: BotNavigationAuthority) async -> Bool {
-        guard let bot = primaryT3Bot, let profile = try? ExactID(bot.id), let thread = try? ExactID(channel.id),
+    private func openT3Channel(_ channel: T3ChannelSummary, authority savedAuthority: BotNavigationAuthority?) async -> Bool {
+        guard !Task.isCancelled, let bot = primaryT3Bot, let profile = try? ExactID(bot.id), let thread = try? ExactID(channel.id),
               let current = t3Channels.first(where: { Data($0.id.utf8) == thread.bytes }),
+              let authority = savedAuthority ?? captureBotAuthority(),
               ownsBotNavigation(authority),
               selectBotID(bot.id, presentation: .preserveNavigation(authority.claim), while: {
                   ownsBotNavigation(authority)
@@ -575,21 +575,31 @@ import BottoCore
     }
 
     /// The new-space page: a space the user named, or one T3 names from the first message, opened and then sent.
-    /// It throws only before the space opens. After that the text lives in the space's own draft,
-    /// so a failed send keeps it there for a deliberate retry. With `send: false` the text is left as that draft.
+    /// Report the creation before attaching so a deliberate retry can use the same Space.
+    /// Once open, a failed send keeps the text in that Space's own draft.
     @discardableResult func startT3Space(named name: String = "", with text: String, model: T3ModelOption? = nil,
-                                         send: Bool = true) async throws -> SessionIdentity {
-        guard let authority = captureBotAuthority(), isConnected else { throw T3ServiceError.disconnected }
-        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let created = try await createT3Space(title: title.isEmpty ? nil : title)
-        let identity = created.summary.identity
+                                         send: Bool = true, resuming existing: SessionIdentity? = nil,
+                                         onCreated: @MainActor (SessionIdentity) -> Void = { _ in }) async throws -> SessionIdentity {
+        try Task.checkCancellation()
+        guard isConnected, let authority = captureBotAuthority() else { throw T3ServiceError.disconnected }
+        let identity: SessionIdentity
+        if let existing {
+            identity = existing
+        } else {
+            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            identity = try await createT3Space(title: title.isEmpty ? nil : title).summary.identity
+            onCreated(identity)
+        }
         let threadID = identity.stored.text
         guard ownsBotNavigation(authority) else { throw HermesServiceError.staleConversation }
+        guard primaryT3Bot.map({ Data($0.id.utf8) }) == identity.profile.bytes,
+              let channel = t3Channels.first(where: { Data($0.id.utf8) == identity.stored.bytes }) else {
+            throw T3ServiceError.missingChannel
+        }
         if let model {
             try await setT3ChannelModel(threadID: threadID, providerInstanceID: model.providerInstanceID, model: model.modelID)
         }
-        guard let channel = t3Channels.first(where: { Data($0.id.utf8) == identity.stored.bytes }),
-              await openT3Channel(channel, authority: authority) else {
+        guard await openT3Channel(channel, authority: authority) else {
             throw T3ServiceError.missingChannel
         }
         let workspace = authority.workspace
@@ -1054,14 +1064,20 @@ import BottoCore
         guard !isDemo, let previous = configuration,
               Self.backendAccount(previous) == Self.backendAccount(candidate),
               let installID = info.installID, !installID.isEmpty, previous.installID == installID,
-              !previous.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              previous.username == candidate.username,
               let oldOrigin = try? PairingAddress.parse(previous.serverURL.absoluteString, allowInsecureHTTP: true),
               let newOrigin = try? PairingAddress.parse(candidate.serverURL.absoluteString, allowInsecureHTTP: true),
               oldOrigin.scheme == newOrigin.scheme, oldOrigin.host == newOrigin.host,
               (oldOrigin.port ?? (oldOrigin.scheme == "https" ? 443 : 80))
                 == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)) else { return false }
+        if let paired = previous.t3, let verified = candidate.t3 {
+            guard paired.environmentID == installID, verified.environmentID == installID,
+                  let project = paired.projectID, !project.isEmpty,
+                  let oldRoot = paired.workspaceRoot, !oldRoot.isEmpty, let newRoot = verified.workspaceRoot else { return false }
+            return oldRoot.utf8.elementsEqual(newRoot.utf8)
+        }
         // Both password login and native basic verify this account through /api/auth/me.
+        guard !previous.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              previous.username == candidate.username else { return false }
         let provider = previous.nativeCredential?.provider ?? "basic"
         return !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && provider == (candidate.nativeCredential?.provider ?? "basic")
@@ -1593,7 +1609,11 @@ import BottoCore
         interruptOpeningForUITest(opening)
         #endif
         guard canOpenBot(opening) else { return }
-        await opening.authority.workspace.open(opening.intent)
+        if isT3Workspace, let space = T3ChatShelf.initialSpace(t3Channels) {
+            await openT3Channel(space, authority: opening.authority)
+        } else {
+            await opening.authority.workspace.open(opening.intent)
+        }
         settleInterruptedOpening()
     }
     #if DEBUG
