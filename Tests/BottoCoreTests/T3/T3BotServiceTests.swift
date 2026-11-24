@@ -411,6 +411,28 @@ import Testing
         #expect(try await service.loadBotBrain().manifest.mainThreadID == main.id)
     }
 
+    @Test(arguments: ["AGENTS.md", "CLAUDE.md", "bot.json"])
+    func retryConvergesPromptFilesAndManifest(afterFailedWrite path: String) async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let bot = try #require(try await service.bots().first)
+        let original = try await service.readProjectFile(relativePath: "bot.json")
+        var expected = try await service.loadBotBrain().manifest
+        expected.displayName = "Kit"
+        await host.rejectNextWrite(to: path)
+
+        await #expect(throws: T3RPCError.remote(tag: "ProjectWriteFileError", message: "Write refused")) {
+            try await service.updateProfile(.init(name: "Kit"), for: bot)
+        }
+        #expect(try await service.readProjectFile(relativePath: "bot.json") == original)
+        _ = try await service.updateProfile(.init(name: "Kit"), for: bot)
+        #expect(try await service.loadBotBrain().manifest == expected)
+        #expect(try await service.readProjectFile(relativePath: "AGENTS.md") == T3BotBootstrap.agentsMarkdown(expected))
+        #expect(try await service.readProjectFile(relativePath: "CLAUDE.md") == T3BotBootstrap.claudeMarkdown(expected))
+    }
+
     @Test func bootstrapUpgradesOnlyAGeneratedPrompt() async throws {
         let host = T3ServiceHost(existing: true)
         let manifest = T3BotManifest(displayName: "Existing Bot", description: "A pre-existing bot")
@@ -532,6 +554,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private(set) var ticketAttempts = 0
     private(set) var threadSubscriptions: [String] = []
     private(set) var writtenFiles: [String] = []
+    private var rejectedWritePath: String?
     private(set) var createdThreads: [HermesJSON] = []
     private(set) var dispatchedMessages: [HermesJSON] = []
     private var files: [String: String] = [:]
@@ -575,6 +598,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
     func installModels() { models = true }
     func deleteThread(_ id: String) { threads[id] = nil }
     func write(_ path: String, _ contents: String) { files[path] = contents }
+    func rejectNextWrite(to path: String) { rejectedWritePath = path }
 
     func addOutputs() { outputsAvailable = true }
 
@@ -710,6 +734,11 @@ private actor T3ServiceHost: T3WebSocketTransport {
         case "projects.writeFile":
             #expect(request["cwd"].text == root)
             let path = try #require(request["relativePath"].text)
+            if rejectedWritePath == path {
+                rejectedWritePath = nil
+                try reject(id, tag: "ProjectWriteFileError", message: "Write refused")
+                return
+            }
             let contents = try #require(request["contents"].text)
             files[path] = contents
             writtenFiles.append(path)
@@ -954,6 +983,14 @@ private actor T3ServiceHost: T3WebSocketTransport {
 
     private func chunk(_ requestID: String, values: [HermesJSON]) throws {
         try emit(.object(["_tag": .string("Chunk"), "requestId": .string(requestID), "values": .array(values)]))
+    }
+
+    private func reject(_ id: String, tag: String, message: String) throws {
+        try emit(.object(["_tag": .string("Exit"), "requestId": .string(id), "exit": .object([
+            "_tag": .string("Failure"), "cause": .array([
+                .object(["_tag": .string("Fail"), "error": .object(["_tag": .string(tag), "message": .string(message)])])
+            ])
+        ])]))
     }
 
     private func emit(_ frame: HermesJSON) throws { socket.incoming.yield(try frame.data) }

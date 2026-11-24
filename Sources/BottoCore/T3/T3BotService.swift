@@ -811,12 +811,12 @@ private extension T3BotService {
             let previous = manifest
             try update(&manifest)
             manifest.displayName = try Self.name(manifest.displayName)
-            try await service.persistManifest(manifest, in: session)
             // Looks, models and spaces never touch the prompt; only what it actually says about the bot does.
             if T3BotBootstrap.agentsMarkdown(manifest) != T3BotBootstrap.agentsMarkdown(previous) {
                 try await service.writeFile("AGENTS.md", contents: T3BotBootstrap.agentsMarkdown(manifest), in: session)
                 try await service.writeFile("CLAUDE.md", contents: T3BotBootstrap.claudeMarkdown(manifest), in: session)
             }
+            try await service.persistManifest(manifest, in: session)
         }
     }
 
