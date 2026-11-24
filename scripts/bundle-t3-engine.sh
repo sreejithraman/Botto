@@ -27,11 +27,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-repository="$(read_key repository "$pin")"
+input="$scratch/pin.json"
+cp "$pin" "$input"
+repository="$(read_key repository "$input")"
 [[ "$repository" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
     die "Expected a GitHub repository URL in $pin"
 raw="https://raw.githubusercontent.com/${repository#https://github.com/}"
-input="$pin"
 
 if [[ "${1:-}" == --pin ]]; then
     tag="$2"
@@ -50,8 +51,7 @@ if [[ "${1:-}" == --pin ]]; then
     download "$repository/releases/download/$tag/SHA256SUMS" "$scratch/SHA256SUMS"
     digest="$(/usr/bin/awk -v asset="$asset" '$2 == asset {print $1}' "$scratch/SHA256SUMS")"
     [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || die "$tag has no checksummed $asset release asset"
-    license="$(read_key licensePath "$pin")"
-    input="$scratch/pin.json"
+    license="$(read_key licensePath "$input")"
     cat > "$input" <<EOF
 {
   "repository": "$repository",

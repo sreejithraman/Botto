@@ -212,7 +212,7 @@ final class LocalT3ServerManager {
     func mintPairingLink() async throws -> String {
         guard state == .running, let server else { throw T3LocalError.serverStopped }
         guard pairingCommand == nil else { throw T3LocalError.pairingInProgress }
-        let command = try T3Command(executable: server.process.executableURL!, arguments: [
+        let command = try T3Command(executable: server.executable, arguments: [
             "pair", "--base-dir", baseDirectory.path
         ], directory: baseDirectory)
         pairingCommand = command
@@ -221,7 +221,7 @@ final class LocalT3ServerManager {
         let finished = await command.collect(timeout: .seconds(12)) { links.consume($0) }
         try Task.checkCancellation()
         guard self.server === server, state == .running else { throw T3LocalError.serverStopped }
-        guard finished, command.process.terminationStatus == 0,
+        guard finished, command.terminationStatus == 0,
               let url = links.pairingURL, T3RouteFormatter.pairingURL(from: url, routeOrigin: loopbackOrigin) != nil else {
             throw T3LocalError.pairingFailed
         }
@@ -242,7 +242,7 @@ final class LocalT3ServerManager {
         let finished = await command.collect(timeout: .seconds(4)) { line in
             if Self.isTailscaleIP(line) { tailnetAddress = line }
         }
-        if finished, !Task.isCancelled, command.process.terminationStatus == 0 {
+        if finished, !Task.isCancelled, command.terminationStatus == 0 {
             tailscaleOrigin = tailnetAddress.flatMap { origin(for: $0) }
         }
     }
@@ -314,37 +314,29 @@ enum T3LocalError: LocalizedError {
 
 @MainActor
 private final class T3Command {
-    let process = Process()
+    let executable: URL
     let lines: AsyncStream<String>
     let exitCodes: AsyncStream<Int32>
+    private(set) var terminationStatus: Int32?
     private let output: AsyncStream<String>.Continuation
+    private let reportExit: AsyncStream<Int32>.Continuation
+    private let pid: pid_t
 
     init(executable: URL, arguments: [String], directory: URL? = nil) throws {
+        self.executable = executable
         let pipe = Pipe()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = LocalT3ServerManager.executableDirectories.joined(separator: ":")
         environment["NO_COLOR"] = "1"
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = pipe
-        process.standardError = pipe
 
         let (lines, continuation) = AsyncStream.makeStream(of: String.self)
         self.lines = lines
         output = continuation
-        let (exitCodes, reportExit) = AsyncStream.makeStream(of: Int32.self)
-        self.exitCodes = exitCodes
-        process.terminationHandler = { process in
-            reportExit.yield(process.terminationStatus)
-            reportExit.finish()
-        }
-        try process.run()
+        (exitCodes, reportExit) = AsyncStream.makeStream(of: Int32.self)
+        pid = try Self.spawn(executable, arguments: arguments, directory: directory, environment: environment, pipe: pipe)
         try? pipe.fileHandleForWriting.close()
         let reader = pipe.fileHandleForReading
-        DispatchQueue.global(qos: .utility).async { [process] in
+        DispatchQueue.global(qos: .utility).async {
             var pending = Data()
             while true {
                 let chunk = reader.availableData
@@ -356,8 +348,13 @@ private final class T3Command {
                 }
             }
             if !pending.isEmpty { continuation.yield(String(decoding: pending, as: UTF8.self)) }
-            process.waitUntilExit()
             continuation.finish()
+        }
+        DispatchQueue.global(qos: .utility).async { [self, pid] in
+            // Observe the leader even when a descendant keeps the output pipe open.
+            var info = siginfo_t()
+            while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1, errno == EINTR {}
+            Task { @MainActor in reapGroup() }
         }
     }
 
@@ -370,22 +367,82 @@ private final class T3Command {
         defer { deadline.cancel() }
         return await withTaskCancellationHandler {
             for await line in lines { consume(line) }
-            return !process.isRunning
+            var codes = exitCodes.makeAsyncIterator()
+            return await codes.next() != nil
         } onCancel: {
             Task { @MainActor in self.stop() }
         }
     }
 
     func stop() {
-        defer { output.finish() }
-        guard process.isRunning else { return }
-        let pid = process.processIdentifier
-        let target = getpgid(pid) == pid ? -pid : pid
-        kill(target, SIGTERM)
+        reapGroup()
+        output.finish()
+    }
+
+    private func reapGroup() {
+        guard terminationStatus == nil else { return }
+        // Keep the leader unreaped so its group ID cannot be reused during escalation.
+        let group = -pid
+        kill(group, SIGTERM)
         let deadline = ContinuousClock.now + .seconds(1)
-        while process.isRunning, ContinuousClock.now < deadline { usleep(20_000) }
-        if process.isRunning { kill(target, SIGKILL) }
-        process.waitUntilExit()
+        while kill(group, 0) == 0, ContinuousClock.now < deadline { usleep(20_000) }
+        kill(group, SIGKILL)
+
+        var status: Int32 = 0
+        var waited: pid_t
+        repeat { waited = waitpid(pid, &status, 0) } while waited == -1 && errno == EINTR
+        let terminatingSignal = status & 0x7f
+        let code = terminatingSignal == 0 ? (status >> 8) & 0xff : terminatingSignal
+        terminationStatus = waited == pid ? code : -1
+        reportExit.yield(waited == pid ? code : -1)
+        reportExit.finish()
+    }
+
+    private static func spawn(_ executable: URL, arguments: [String], directory: URL?,
+                              environment: [String: String], pipe: Pipe) throws -> pid_t {
+        var attributes: posix_spawnattr_t?
+        try check(posix_spawnattr_init(&attributes))
+        defer { posix_spawnattr_destroy(&attributes) }
+        try check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)))
+        try check(posix_spawnattr_setpgroup(&attributes, 0))
+
+        var actions: posix_spawn_file_actions_t?
+        try check(posix_spawn_file_actions_init(&actions))
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        if let directory {
+            if #available(macOS 26, *) {
+                try check(posix_spawn_file_actions_addchdir(&actions, directory.path))
+            } else {
+                try check(posix_spawn_file_actions_addchdir_np(&actions, directory.path))
+            }
+        }
+        let writer = pipe.fileHandleForWriting.fileDescriptor
+        try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
+        try check(posix_spawn_file_actions_adddup2(&actions, writer, STDOUT_FILENO))
+        try check(posix_spawn_file_actions_adddup2(&actions, writer, STDERR_FILENO))
+
+        var pid: pid_t = 0
+        try withCStringArray([executable.path] + arguments) { argv in
+            try withCStringArray(environment.map { "\($0.key)=\($0.value)" }) { envp in
+                try check(posix_spawn(&pid, executable.path, &actions, &attributes, argv, envp))
+            }
+        }
+        return pid
+    }
+
+    private static func withCStringArray(_ strings: [String],
+                                        _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) throws -> Void) throws {
+        var pointers = strings.map { strdup($0) }
+        defer { pointers.forEach { free($0) } }
+        guard !pointers.contains(nil) else { throw POSIXError(.ENOMEM) }
+        pointers.append(nil)
+        try pointers.withUnsafeMutableBufferPointer { try body($0.baseAddress!) }
+    }
+
+    private static func check(_ code: Int32) throws {
+        if code != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
     }
 }
 

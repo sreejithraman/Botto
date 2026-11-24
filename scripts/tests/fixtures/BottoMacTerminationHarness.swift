@@ -8,6 +8,9 @@ struct BottoMacTerminationHarness {
             port: Int(arguments[1])!,
             baseDirectory: URL(fileURLWithPath: arguments[2], isDirectory: true)
         )
+        if arguments.count > 4 {
+            server.executableOverride = arguments[4]
+        }
         let delegate = MacBottoDelegate(server: server)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)

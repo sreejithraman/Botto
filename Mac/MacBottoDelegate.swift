@@ -16,11 +16,14 @@ final class MacBottoDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        source.setEventHandler {
-            MainActor.assumeIsolated { NSApp.terminate(nil) }
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.server.terminateSync()
+                exit(EXIT_SUCCESS)
+            }
         }
         // A caught signal resets on exec, so child processes retain normal SIGTERM behavior.
-        signal(SIGTERM) { _ in }
+        signal(SIGTERM, deferSIGTERMToDispatch)
         terminationSignal = source
         source.activate()
     }
@@ -46,3 +49,5 @@ final class MacBottoDelegate: NSObject, NSApplicationDelegate {
         server.terminateSync()
     }
 }
+
+private nonisolated func deferSIGTERMToDispatch(_: Int32) {}
