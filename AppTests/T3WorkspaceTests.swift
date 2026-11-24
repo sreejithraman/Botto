@@ -339,6 +339,64 @@ import Testing
         #expect(service.sent[opened.stored.text] == ["Keep the draft"])
     }
 
+    @Test(arguments: [false, true])
+    func freshRetryDoesNotReplaceASeparateDraftOrSendItsAttachments(hasFile: Bool) async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        service.openError = .missingChannel
+        var created: SessionIdentity?
+        await #expect(throws: T3ServiceError.missingChannel) {
+            try await store.startT3Space(with: "Fresh message", onCreated: { created = $0 })
+        }
+
+        service.openError = nil
+        let identity = try #require(created)
+        let channel = try #require(store.t3Channels.first { $0.id == identity.stored.text })
+        #expect(await store.openT3Channel(channel))
+        let screen = try #require(store.chats.screen(profile: identity.profile))
+        let otherDraft = hasFile ? "" : "I wrote this inside the Space"
+        if hasFile {
+            let target = try #require(store.chats.captureImport(screen.owner))
+            await store.chats.upload(Data([1]), filename: "draft.txt", mimeType: "text/plain", to: target)
+        } else {
+            store.chats.editDraft(otherDraft, owner: screen.owner)
+        }
+
+        await #expect(throws: AppStore.T3FreshDraftConflict.self) {
+            try await store.startT3Space(with: "Fresh message", resuming: identity)
+        }
+        let preserved = try #require(store.chats.screen(profile: identity.profile))
+        #expect(store.chats.draft(preserved.owner) == otherDraft)
+        #expect(preserved.attachments.map(\.name) == (hasFile ? ["draft.txt"] : []))
+        #expect(service.createdThreads.count == 1)
+        #expect(service.sent.isEmpty)
+    }
+
+    @Test func emptyT3InventoryStillAllowsARetryOfCanonicalMain() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        service.currentT3Channels = []
+        service.openError = .missingChannel
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        let profile = try ExactID(bot.id)
+        let first = try #require(store.prepareBotOpening(bot))
+        await store.openBot(first)
+        let provisional = try #require(store.chats.screen(profile: profile))
+        await store.chats.refreshDirectory(provisional.owner)
+
+        service.openError = nil
+        service.canonicalThread = "recovered-main"
+        let retry = try #require(store.prepareBotOpening(bot))
+        await store.openBot(retry)
+        #expect(store.chats.selection(profile: profile)?.identity?.stored.text == "recovered-main")
+    }
+
     @Test func newSpaceDoesNotSendWhenTheChosenModelIsRejected() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -410,6 +468,7 @@ import Testing
     var connectError: T3ServiceError?
     var resolvedPairing: T3Connection?
     var openError: T3ServiceError?
+    var canonicalThread: String?
     var modelError: T3ServiceError?
     var createGate: WorkspaceGate?
     private(set) var disconnects = 0
@@ -427,7 +486,7 @@ import Testing
     private let profile = try! ExactID("bot-project")
 
     let currentBotWorkspaceRoot: String? = "/host/.botto/bots/main"
-    private(set) var currentT3Channels: [T3ChannelSummary] = [
+    var currentT3Channels: [T3ChannelSummary] = [
         .init(id: "general", title: "#general", isMain: true, isPinned: false, isArchived: false, isUnread: false,
               status: .idle, preview: "", updatedAt: nil),
         .init(id: "release", title: "Release", isPinned: false, isArchived: false, isUnread: true,
@@ -457,9 +516,19 @@ import Testing
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         if let openError { throw openError }
-        guard case .stored(let identity) = target, identity.profile == profile else { throw T3ServiceError.missingChannel }
+        let identity: SessionIdentity
+        switch target {
+        case .stored(let requested) where requested.profile == profile:
+            identity = requested
+            openedStoredThreads.append(identity.stored.text)
+        case .canonical(let requested, nil) where requested == profile:
+            guard let canonicalThread else { throw T3ServiceError.missingChannel }
+            let id = try ExactID(canonicalThread)
+            identity = .init(profile: profile, root: id, stored: id, aliases: [])
+        default:
+            throw T3ServiceError.missingChannel
+        }
         let thread = identity.stored.text
-        openedStoredThreads.append(thread)
         let snapshot = Conversation(id: thread, storedID: thread, profileID: profile.text,
                                     messages: [.init(id: "reply", role: .assistant, text: "Chat in \(thread)")])
         return .init(identity: identity, snapshot: snapshot, access: try issuer.issue(identity))

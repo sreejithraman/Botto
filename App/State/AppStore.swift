@@ -606,10 +606,17 @@ import BottoCore
         guard !Task.isCancelled, isCurrentConnection(authority),
               let selection = workspace.selection(profile: identity.profile), selection.matches(identity),
               workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
+        guard !workspace.hasDraftContent(selection.owner) else { throw T3FreshDraftConflict() }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
         workspace.editDraft(text, owner: selection.owner)
         if send, let intent = workspace.captureSend(selection.owner) { await workspace.send(intent) }
         return identity
+    }
+
+    struct T3FreshDraftConflict: LocalizedError {
+        var errorDescription: String? {
+            String(localized: "This Space already has a draft or attachments. Send or clear them in that Space, then try again.")
+        }
     }
 
     func renameT3Channel(threadID: String, title: String) async throws {

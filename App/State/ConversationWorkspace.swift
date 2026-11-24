@@ -1171,6 +1171,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             if directory.isComplete {
                 for record in book.ordered(profile) where !available.contains(record.id) {
+                    // A provisional T3 Main can still be resolved by a canonical open.
+                    if service is any T3BotBrainControlling, case .provisionalMain = record.binding { continue }
                     availability[record.id] = false
                     if selected == record.id, let current = live {
                         retiredRecoveryAccesses.insert(current.access)
@@ -1213,6 +1215,9 @@ private struct ReadObservationKey: Hashable, Sendable {
         scheduleInboxHistory(profiles: [profile])
     }
     func draft(_ owner: PresentationOwner) -> String { draftBook.record(owner.chat)?.draft.text ?? "" }
+    func hasDraftContent(_ owner: PresentationOwner) -> Bool {
+        !draft(owner).isEmpty || staging[owner.chat]?.isEmpty == false || pendingImports[owner.chat]?.isEmpty == false
+    }
     /// Follows the saved opening choice, which can differ from the selected chat.
     func openingDraft(profile: ExactID) -> String {
         let complete = completeBook
