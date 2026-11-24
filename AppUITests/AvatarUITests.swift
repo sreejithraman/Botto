@@ -43,6 +43,32 @@ final class AvatarUITests: XCTestCase {
         XCTAssertTrue(save.isHittable && save.isEnabled)
     }
 
+    @MainActor func testDemoSampleCharacterCanBeColoredSavedAndRestoredAfterCancel() {
+        continueAfterFailure = false
+        let app = launch()
+        openLook(in: app)
+        app.buttons["Preview sample character"].tap()
+        let cat = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Cat ·")).firstMatch
+        XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        let teal = app.buttons["avatar-color-teal"]
+        for _ in 0..<8 where !teal.isHittable { app.swipeUp() }
+        XCTAssertTrue(teal.isHittable && teal.isEnabled)
+        teal.tap()
+        XCTAssertTrue(teal.isSelected)
+        app.buttons["botto-look-save"].tap()
+
+        let look = app.buttons["botto-page-change-look"]
+        XCTAssertTrue(look.waitForExistence(timeout: 5))
+        look.tap()
+        XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        XCTAssertTrue(teal.isSelected)
+        chooseShape("circle", in: app)
+        app.navigationBars.buttons.firstMatch.tap()
+        look.tap()
+        XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        XCTAssertTrue(teal.isSelected)
+    }
+
     @MainActor private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--isolated-ui-test", "--demo"] + arguments

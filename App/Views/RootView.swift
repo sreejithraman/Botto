@@ -47,17 +47,17 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if store.configuration == nil {
+            if store.configuration != nil {
+                T3Workspace(store: store, presentation: presentation,
+                            rootCovered: sheet != nil || store.showsConnection,
+                            onSettings: { presentSheet(.settings) })
+                    .id(ObjectIdentifier(store.chats))
+            } else {
                 if let onExitDemoPreview {
                     Color.clear.onAppear(perform: onExitDemoPreview)
                 } else {
                     OnboardingView(store: store)
                 }
-            } else {
-                T3Workspace(store: store, presentation: presentation,
-                            rootCovered: sheet != nil || store.showsConnection,
-                            onSettings: { presentSheet(.settings) })
-                    .id(ObjectIdentifier(store.chats))
             }
         }
         .onAppear {

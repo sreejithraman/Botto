@@ -282,10 +282,11 @@ import UniformTypeIdentifiers
         let rich = DemoBotService()
         _ = try await rich.connect(configuration: connection)
         #expect(try await rich.bots().map(\.id) == ["milo"])
-        let canvas = try #require(try await rich.bots().first { $0.id == "canvas" })
-        #expect(canvas.name == "Canvas")
+        let canvas = try #require(rich.currentT3Channels.first { $0.id == "canvas" })
+        #expect(canvas.displayTitle == "Project update")
         #expect(canvas.isPinned)
-        let opened = try await rich.openChat(.canonical(profile: try ExactID(canvas.id), expectedRoot: nil))
+        let identity = try demoSpaceIdentity(canvas.id)
+        let opened = try await rich.openChat(.stored(identity))
         let chat = opened.snapshot
         let text = try #require(chat.messages.last?.text)
         #expect(text.contains("Before the dashboard"))
@@ -294,7 +295,7 @@ import UniformTypeIdentifiers
         #expect(text.contains("```svg"))
         #expect(text.contains("```swift"))
         for name in ["report.pdf", "notes.txt", "chart.png", "report.html"] {
-            let opened = try await rich.openChat(.canonical(profile: try ExactID(canvas.id), expectedRoot: nil))
+            let opened = try await rich.openChat(.stored(identity))
             let attachment = ChatAttachment(name: name, path: "/demo/canvas/" + name)
             let first = try await rich.downloadArtifact(attachment, access: opened.access)
             let second = try await rich.downloadArtifact(attachment, access: opened.access)

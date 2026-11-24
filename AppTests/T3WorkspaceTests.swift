@@ -385,6 +385,51 @@ import UIKit
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
     }
 
+    enum Replacement: CaseIterable {
+        case sameWorkspace, differentAddress, differentEnvironment, differentProject, failedSave
+    }
+
+    @Test(arguments: Replacement.allCases)
+    func replacingSetupOnlyCarriesDraftsToTheSameT3Workspace(_ replacement: Replacement) async throws {
+        let original = t3Configuration()
+        var candidate = t3Configuration()
+        candidate.t3?.accessToken = "rotated-fixture-token"
+        switch replacement {
+        case .differentAddress: candidate.serverURL = try #require(URL(string: "https://other.example"))
+        case .differentEnvironment: candidate.t3?.environmentID = "other-environment"
+        case .differentProject: candidate.t3?.projectID = "other-project"
+        case .sameWorkspace, .failedSave: break
+        }
+        defer {
+            LocalHistory.remove(for: original.id)
+            LocalHistory.remove(for: candidate.id)
+        }
+        let storage = MemoryConnectionStorage(saved: original)
+        let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
+        await store.start()
+        let general = try #require(store.t3Channels.first(where: \.isMain))
+        try #require(await store.openT3Channel(general))
+        let profile = try ExactID("bot-project")
+        let owner = try #require(store.chats.screen(profile: profile)?.owner)
+        let draft = "Keep the original Space draft"
+        store.chats.editDraft(draft, owner: owner)
+        storage.failSave = replacement == .failedSave
+
+        let replaced = await store.connect(candidate)
+
+        if replacement == .failedSave {
+            #expect(!replaced)
+            #expect(storage.saved == original)
+            #expect(store.chats.draft(owner) == draft)
+        } else {
+            try #require(replaced)
+            #expect(storage.saved?.id == candidate.id)
+            try #require(await store.openT3Channel(general))
+            let current = try #require(store.chats.screen(profile: profile)?.owner)
+            #expect(store.chats.draft(current) == (replacement == .sameWorkspace ? draft : ""))
+        }
+    }
+
     @Test func loadsAndSavesBotBrainThroughTheMountedService() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -445,6 +490,26 @@ import UIKit
         #expect(prior.configuration == nil)
         #expect(prior.link == .unconfigured)
         #expect(storage.saved == older)
+    }
+
+    @Test func retryingAnOlderSavedSetupAllowsT3Pairing() async throws {
+        let candidate = t3Configuration()
+        let older = ConnectionConfiguration(serverURL: candidate.serverURL)
+        defer { LocalHistory.remove(for: candidate.id) }
+        let storage = MemoryConnectionStorage(saved: older)
+        storage.failLoad = true
+        let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
+        #expect(store.savedSetupLoadFailed)
+
+        storage.failLoad = false
+        try #require(store.retrySavedSetup())
+
+        #expect(!store.savedSetupLoadFailed)
+        #expect(store.configuration == nil)
+        #expect(storage.saved == older)
+        try #require(await store.connect(candidate))
+        #expect(store.configuration == candidate)
+        #expect(storage.saved == candidate)
     }
 
     @Test func passesOutputsThroughTheMountedService() async throws {

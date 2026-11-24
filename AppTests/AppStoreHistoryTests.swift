@@ -7,7 +7,7 @@ import BottoCore
     @Test func saveRecoveryKeepsUnrelatedNoticeAndPersistsTheLatestDraft() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://history-notice.example")!)
         let storage = MemoryConnectionStorage(saved: connection)
-        let store = AppStore(service: StoreTestService(), persistence: storage.persistence)
+        let store = AppStore(service: StoreTestService(profiles: [.init(id: "milo", name: "Milo")]), persistence: storage.persistence)
         #expect(await store.connect(connection))
         await store.testEdit("Latest draft", for: "milo")
         let cache = try blockHistoryCache(for: connection.id)
@@ -42,7 +42,7 @@ import BottoCore
 
     @Test func foregroundRetriesHistorySavingEvenWhenReconnectFails() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://history-foreground.example")!)
-        let storage = MemoryConnectionStorage(saved: connection), service = StoreTestService()
+        let storage = MemoryConnectionStorage(saved: connection), service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: storage.persistence)
         await store.start()
         await store.testEdit("Keep this while reconnecting", for: "milo")

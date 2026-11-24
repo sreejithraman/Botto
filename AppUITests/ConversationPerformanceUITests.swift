@@ -180,9 +180,7 @@ final class ConversationPerformanceUITests: XCTestCase {
             app.launchEnvironment["BOTTO_SCROLL_GEOMETRY_TRACE"] = "1"
         }
         app.launch()
-        let scout = app.buttons["Scout, pinned"]
-        XCTAssertTrue(scout.waitForExistence(timeout: 10))
-        scout.tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         let transcript = app.descendants(matching: .any)["chat-transcript"]

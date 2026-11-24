@@ -1103,6 +1103,14 @@ struct T3FaceEditor: View {
                 BotAvatar(profile: preview, size: 110)
                     .frame(maxWidth: .infinity)
                     .accessibilityLabel("Preview of \(preview.name)’s look")
+                if store.isDemo {
+                    Button("Preview sample character") {
+                        let appearance = preview.appearance
+                        let color = appearance?.color.map(BotAvatarEdit.Color.value) ?? .automatic
+                        selection = .geometry(DemoBotService.sampleCharacter, color: color)
+                    }
+                    .disabled(saving)
+                }
                 BotAvatarPicker(profileID: preview.id, current: destination.profile.appearance ?? BotAppearance(),
                                 selection: $selection)
                 if !store.isConnected { ConnectionStatusView(store: store) }

@@ -294,6 +294,9 @@ import BottoCore
             .appendingPathComponent("Botto/\(candidate.id.uuidString).json")
         try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cacheURL); LocalHistory.remove(for: old.id) }
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let store = AppStore(service: StoreTestService(), persistence: storage.persistence)
         await store.testEdit("Keep this draft", for: "milo")
@@ -324,7 +327,7 @@ import BottoCore
     @Test func attachmentTotalIsCheckedBeforeUploadAndRemovalAndSendFreeCapacity() async throws {
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         let bot = BotProfile(id: "milo", name: "Milo")
@@ -386,6 +389,9 @@ import BottoCore
         defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
         var cached = LocalHistory(); try cached.fixtureDraft("Existing candidate history", profile: "milo")
         try cached.save(for: candidate.id)
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         var cleanups: [UUID?] = []
         let store = AppStore(service: StoreTestService(), persistence: storage.persistence, cleanupHistory: { cleanups.append($0) })
@@ -438,7 +444,7 @@ import BottoCore
     func failedOrRetiredUploadReleasesItsReservation(retired: Bool) async throws {
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         let bot = BotProfile(id: "milo", name: "Milo")
@@ -469,7 +475,7 @@ import BottoCore
     func imageReservationsUsePreparedSizesWithAConservativeLegacyFallback(reportsSize: Bool) async throws {
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         service.uploadedByteCount = reportsSize ? 5 * 1024 * 1024 : nil
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
@@ -483,21 +489,11 @@ import BottoCore
         #expect(store.attachments(for: bot.id).count == (reportsSize ? 3 : 2))
     }
 
-    enum Reauthentication: CaseIterable {
-        case password, accessHeaders, native, passwordToNativeBasic, nativeBasicToPassword
-    }
-
-    enum IdentityMismatch: CaseIterable {
-        case origin, port, scheme, installation, account, provider
-        case missingOldInstall, emptyOldInstall, missingConfirmedInstall, emptyConfirmedInstall
-        case missingOldAccount, missingNewAccount, missingBothAccounts, blankAccounts, emptyProvider
-    }
-
     @Test func pendingProviderReadCannotUploadToReplacementWithIdenticalChatIDs() async throws {
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
         let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
         defer { LocalHistory.remove(for: original.id); LocalHistory.remove(for: replacement.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(original))
@@ -527,7 +523,7 @@ import BottoCore
     @Test func currentAttachmentDestinationUploadsAndStagesTheReturnedFile() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -550,7 +546,7 @@ import BottoCore
     func pendingProviderReadRejectsRetiredDestinations(_ change: DestinationChange) async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -600,7 +596,7 @@ import BottoCore
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
         let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
         defer { LocalHistory.remove(for: original.id); LocalHistory.remove(for: replacement.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(original))
@@ -640,7 +636,7 @@ import BottoCore
     @Test func retiredUploadCannotClearARecoveredConnectionsCurrentUpload() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -690,6 +686,9 @@ import BottoCore
 
     @Test func failedReplacementPreservesTheSavedConnectionAndDraft() async throws {
         let old = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let service = StoreTestService()
         service.connectError = ConversationServiceError.authentication
@@ -761,7 +760,7 @@ import BottoCore
         let real = ConnectionConfiguration(serverURL: URL(string: "https://my-mac.example")!)
         defer { LocalHistory.remove(for: real.id) }
         let storage = MemoryConnectionStorage()
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: storage.persistence)
         #expect(await store.connect(real))
         await store.testEdit("  Keep my latest draft  ", for: "milo")
@@ -802,11 +801,14 @@ import BottoCore
         await store.enterDemo()
         let main = try #require(store.t3Channels.first { $0.isMain })
         let sibling = try #require(store.t3Channels.first { $0.id == "scout" })
+        #expect(sibling.isUnread)
         let profile = try ExactID("milo")
         #expect(await store.openT3Channel(main))
         let mainOwner = try #require(store.chats.screen(profile: profile)?.owner)
         store.chats.editDraft("Keep this thought", owner: mainOwner)
         #expect(await store.openT3Channel(sibling))
+        #expect(store.t3Channels.first { $0.id == sibling.id }?.isUnread == false)
+        #expect(store.t3Channels.first { $0.id == "canvas" }?.isUnread == true)
         let siblingOwner = try #require(store.chats.screen(profile: profile)?.owner)
         store.chats.editDraft("A second thought", owner: siblingOwner)
         #expect(await store.openT3Channel(main))

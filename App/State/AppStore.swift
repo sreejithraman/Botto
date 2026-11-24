@@ -385,6 +385,7 @@ import BottoCore
     @discardableResult private func loadSavedSetup() -> Bool {
         do {
             let saved = try persistence.load()
+            savedSetupLoadFailed = false
             configuration = saved.flatMap { $0.t3 != nil || injectedService != nil ? $0 : nil }
             // Leave older setup and cache alone until the user successfully pairs a Mac.
             if saved != nil, configuration == nil {
@@ -396,7 +397,6 @@ import BottoCore
             savedSetupLoadFailed = true; connection.savedSetupFailed(error)
             return false
         }
-        savedSetupLoadFailed = false
         liveService = injectedService ?? makeService(configuration)
         service = liveService
         artifactCache.prune(reachableConfigurationIDs: Set(configuration.map { [$0.id] } ?? []))
@@ -569,7 +569,9 @@ import BottoCore
         let identity = SessionIdentity(profile: profile, root: thread, stored: thread, aliases: [])
         let summary = SessionSummary(identity: identity, title: current.displayTitle, isCanonical: false, persistence: .durable,
                                      preview: current.preview.isEmpty ? nil : current.preview, updatedAt: current.updatedAt)
-        return await authority.workspace.openStoredChat(summary, claim: authority.claim)
+        let opened = await authority.workspace.openStoredChat(summary, claim: authority.claim)
+        if opened, isCurrentLifetime(authority) { publishT3Channels() }
+        return opened
     }
 
     /// A space without a title is named by T3 from its first message.

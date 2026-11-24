@@ -206,7 +206,7 @@ final class ScheduledHandoffUITests: XCTestCase {
     /// `isHittable` can still be true there. Only this area is one a person can read and tap.
     @MainActor private func readingArea(of transcript: XCUIElement, in app: XCUIApplication) -> CGRect {
         let banner = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Demo workspace.")).firstMatch
-        let top = app.buttons["bot-profile-button"].frame.maxY
+        let top = app.buttons["t3-chat-header"].frame.maxY
         let visible = transcript.frame.intersection(app.frame)
         return CGRect(x: visible.minX, y: top, width: visible.width, height: banner.frame.minY - top)
     }

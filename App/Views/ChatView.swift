@@ -327,8 +327,6 @@ struct ChatTranscript: View {
     let messageDisplayRevision: [NativeTranscriptRowValue]
     let isExposed: Bool
     let onOpenArtifact: (AppStore.ArtifactDestination) -> Void
-    var preview: NativeTranscriptPreview? = nil
-    var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
     var searchFocus: SearchMessageFocus? = nil
     var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
@@ -380,8 +378,7 @@ struct ChatTranscript: View {
             readerLifetime: screen?.selectedViewLifetime),
             snapshot: chat, rows: nativeRows, active: isExposed, currentTaskSnapshot: taskSnapshot(),
             currentReaderSnapshot: readerSnapshot(),
-            admitsAction: admitsAction, preview: preview, topContentInset: topContentInset,
-            bottomContentInset: bottomContentInset,
+            admitsAction: admitsAction, bottomContentInset: bottomContentInset,
             searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
     }
 

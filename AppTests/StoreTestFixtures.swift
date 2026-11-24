@@ -36,7 +36,7 @@ import BottoCore
     var connectBarrier: StoreTestBarrier?
     var connectCount = 0
     var connectedConfigurations: [ConnectionConfiguration] = []
-    var profiles: [BotProfile] = []
+    var profiles: [BotProfile]
     var botsBarrier: StoreTestBarrier?
     var createdBot: BotProfile?
     var avatarGenerator: ((String, BotProfile) async throws -> BotAvatarGeometry)?
@@ -50,6 +50,9 @@ import BottoCore
     private var recovery: Task<Void, Never>?
     private var releaseRecovery: (() -> Void)?
     private(set) var recovered = false
+
+    init(profiles: [BotProfile] = []) { self.profiles = profiles }
+
     func scheduleRecovery() {
         onEvent?(.disconnected("Transient handshake failure"))
         let (stream, continuation) = AsyncStream<Void>.makeStream()

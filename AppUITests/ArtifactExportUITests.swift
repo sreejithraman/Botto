@@ -160,7 +160,7 @@ final class ArtifactExportUITests: XCTestCase {
         #endif
     }
 
-    @MainActor func testLibrarySaveToFilesAndReopenSavedOriginal() throws {
+    @MainActor func testSpaceAttachmentSaveToFilesAndReopenSavedOriginal() throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("The durable export fixture writes only to an owned CI simulator.")
         #else
@@ -171,7 +171,7 @@ final class ArtifactExportUITests: XCTestCase {
         identity.lifetime = .keepAlways
         add(identity)
 
-        let app = openLibraryReference("notes.txt")
+        let app = openArtifact("notes.txt")
         tapOutput("artifact-save", label: "Save to Files", in: app)
         let picker = readyFilesPicker(in: app, captureName: "Files picker before default-name Save")
         let save = picker.buttons["Save"]
@@ -185,16 +185,16 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
         XCTAssertFalse(app.alerts["Export Failed"].exists)
         let preview = app.descendants(matching: .any).matching(identifier: "artifact-preview").firstMatch
-        let library = app.scrollViews["artifact-library"]
+        let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         let close = app.buttons["artifact-done"]
         XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isEnabled)
         close.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !preview.exists && library.exists && library.isHittable }
+            MainActor.assumeIsolated { !preview.exists && transcript.exists && transcript.isHittable }
         }, object: nil)
         let dismissedReader = XCTWaiter.wait(for: [closed], timeout: 5)
         capture("Closed preview after Files Save", app: app)
-        XCTAssertEqual(dismissedReader, .completed, "Close must dismiss the reader and restore the usable library.")
+        XCTAssertEqual(dismissedReader, .completed, "Close must return to the Space transcript.")
         app.terminate()
         reopenSavedOriginalInFiles(stem: stem)
         // The runner proves absence before Save and reads these provider bytes afterward.
@@ -216,21 +216,6 @@ final class ArtifactExportUITests: XCTestCase {
               checked <= Date().timeIntervalSince1970 else {
             throw XCTSkip("Run through check.sh with verified absence for this exact owned Simulator.")
         }
-    }
-
-    @MainActor private func openLibraryReference(_ filename: String) -> XCUIApplication {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--reduce-motion"]
-        app.launch()
-        WorkspaceNavigation.openDrawer(in: app)
-        let search = app.textFields["t3-drawer-search"]
-        search.tap()
-        search.typeText(filename)
-        let file = app.buttons["File " + filename]
-        XCTAssertTrue(file.waitForExistence(timeout: 10))
-        file.tap()
-        return app
     }
 
     /// Files hosts this alert out of process, where `app.buttons` doesn't reach it.

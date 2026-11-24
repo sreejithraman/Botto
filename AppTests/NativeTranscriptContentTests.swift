@@ -295,3 +295,15 @@ import BottoCore
         try #require(condition(), "Timed out: \(reason)")
     }
 }
+
+@MainActor struct MarkdownSelectionTests {
+    @Test(arguments: [2, 3, 4, 5])
+    func headingStyleSurvivesParagraphSeparators(_ newlines: Int) throws {
+        let separator = String(repeating: "\n", count: newlines)
+        let source = "Intro" + separator + "# Heading\n\nBody"
+        let rendered = MarkdownBody(text: source, isReply: true).attributed(source)
+        let heading = try #require(rendered.range(of: "Heading"))
+        #expect(rendered[heading].font == .title3.weight(.semibold))
+        #expect(String(rendered.characters) == "Intro" + separator + "Heading\n\nBody")
+    }
+}
