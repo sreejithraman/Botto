@@ -1,27 +1,32 @@
 import SwiftUI
 import BottoCore
 
+@MainActor @Observable final class T3BrainDrafts {
+    var soul = ""
+    var memory = ""
+    var soulAutosave: T3Autosave?
+    var memoryAutosave: T3Autosave?
+    var name = ""
+    var nameError: String?
+    var submittedName: String?
+    @ObservationIgnored var nameSave: Task<Void, Never>?
+}
+
 /// One page for who Botto is: face and name, personality, memory, routines, skills,
 /// the files it made, and one quiet Advanced row. Edits save on their own.
 struct BottoPage: View {
     let store: AppStore
     let outputs: T3OutputsModel
+    @Bindable var drafts: T3BrainDrafts
     let onOpenChat: (T3ChannelSummary) -> Void
     var onSettings: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var brain: T3BotBrainSnapshot?
-    @State private var soul = ""
-    @State private var memory = ""
-    @State private var soulAutosave: T3Autosave?
-    @State private var memoryAutosave: T3Autosave?
     @State private var routines: [T3ScheduledRoutine]?
     @State private var routinesError: String?
-    @State private var name = ""
-    @State private var nameSave: Task<Void, Never>?
-    @State private var submittedName: String?
+    @State private var latestRoutineRead = UUID()
     @State private var loadError: String?
-    @State private var saveError: String?
     @State private var retry = 0
     @State private var openedOutput: T3OutputFile?
     @FocusState private var editingName: Bool
@@ -29,10 +34,11 @@ struct BottoPage: View {
 
     private struct BrainLoad: Equatable { let online: Bool; let retry: Int }
 
-    init(store: AppStore, outputs: T3OutputsModel, onOpenChat: @escaping (T3ChannelSummary) -> Void,
+    init(store: AppStore, outputs: T3OutputsModel, drafts: T3BrainDrafts, onOpenChat: @escaping (T3ChannelSummary) -> Void,
          onSettings: (() -> Void)? = nil) {
         self.store = store
         self.outputs = outputs
+        self.drafts = drafts
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings
         workspace = store.chats
@@ -54,7 +60,9 @@ struct BottoPage: View {
                         }
                         .padding(.top, 16)
                     }
-                    if let saveError { InlineNotice(message: saveError) { self.saveError = nil }.padding(.top, 16) }
+                    if let error = drafts.nameError {
+                        InlineNotice(message: error) { drafts.nameError = nil }.padding(.top, 16)
+                    }
                     rows.padding(.top, 18)
                     shelf.padding(.top, 22)
                     advancedRow.padding(.top, 22)
@@ -80,8 +88,9 @@ struct BottoPage: View {
         .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
         .task(id: BrainLoad(online: store.isConnected, retry: retry)) { await load() }
         .task(id: store.isConnected) { await loadRoutines() }
+        .task(id: store.isConnected) { await outputs.load(store) }
         .onChange(of: store.primaryT3Bot?.name) { _, value in
-            if !editingName, submittedName == nil, let value { name = value }
+            if !editingName, drafts.submittedName == nil, drafts.nameError == nil, let value { drafts.name = value }
         }
         .onDisappear { commitName() }
     }
@@ -100,7 +109,7 @@ struct BottoPage: View {
             }
             .frame(height: 112, alignment: .bottom)
             .accessibilityHidden(true)
-            TextField("Name", text: $name)
+            TextField("Name", text: $drafts.name)
                 .font(.system(.largeTitle, design: .rounded, weight: .heavy))
                 .multilineTextAlignment(.center)
                 .textContentType(.nickname)
@@ -132,8 +141,8 @@ struct BottoPage: View {
 
     private var rows: some View {
         VStack(spacing: 0) {
-            row(.personality, title: "Personality", detail: T3BrainText.personalitySummary(soul), loaded: brain != nil)
-            row(.memory, title: "What Botto remembers", detail: T3BrainText.memorySummary(memory), loaded: brain != nil)
+            row(.personality, title: "Personality", detail: T3BrainText.personalitySummary(drafts.soul), loaded: drafts.soulAutosave != nil)
+            row(.memory, title: "What Botto remembers", detail: T3BrainText.memorySummary(drafts.memory), loaded: drafts.memoryAutosave != nil)
             row(.routines, title: "Routines", detail: routineSummary, loaded: true)
             row(.skills, title: "Skills", detail: skillsSummary, loaded: brain != nil, last: true)
         }
@@ -248,14 +257,16 @@ struct BottoPage: View {
     @ViewBuilder private func destination(for destination: Destination) -> some View {
         switch destination {
         case .personality:
-            if let soulAutosave {
+            if let soulAutosave = drafts.soulAutosave {
                 T3ProseEditor(title: "Personality",
                               blurb: "How Botto sounds and what it cares about. It reads this in every space.",
-                              text: $soul, autosave: soulAutosave)
-                    .onDisappear { soulAutosave.flush(soul) }
+                              text: $drafts.soul, autosave: soulAutosave)
+                    .onDisappear { soulAutosave.flush(drafts.soul) }
             }
         case .memory:
-            if let memoryAutosave { T3MemoryView(text: $memory, autosave: memoryAutosave) }
+            if let memoryAutosave = drafts.memoryAutosave {
+                T3MemoryView(text: $drafts.memory, autosave: memoryAutosave)
+            }
         case .routines:
             T3RoutinesList(store: store, routines: $routines, loadError: routinesError, reload: loadRoutines,
                            isCurrent: { isCurrent }, onOpenChat: { channel in dismiss(); onOpenChat(channel) })
@@ -279,52 +290,64 @@ struct BottoPage: View {
     private func load() async {
         guard isCurrent, brain == nil, store.isConnected else { return }
         loadError = nil
+        let soulRead = drafts.soulAutosave?.refreshRevision
+        let memoryRead = drafts.memoryAutosave?.refreshRevision
         do {
             let loaded = try await store.loadT3BotBrain()
             guard !Task.isCancelled, isCurrent else { return }
-            soul = loaded.soulMarkdown
-            memory = loaded.memoryMarkdown
-            soulAutosave = T3Autosave(saved: soul) { value in
-                guard isCurrent else { throw T3ServiceError.disconnected }
-                try await store.saveT3Soul(value)
+            if let autosave = drafts.soulAutosave {
+                if autosave.refresh(loaded.soulMarkdown, revision: soulRead) { drafts.soul = loaded.soulMarkdown }
+            } else {
+                drafts.soul = loaded.soulMarkdown
+                drafts.soulAutosave = T3Autosave(saved: drafts.soul) { [store, workspace] value in
+                    guard store.chats === workspace else { throw T3ServiceError.disconnected }
+                    try await store.saveT3Soul(value)
+                }
             }
-            memoryAutosave = T3Autosave(saved: memory) { value in
-                guard isCurrent else { throw T3ServiceError.disconnected }
-                try await store.saveT3Memory(value)
+            if let autosave = drafts.memoryAutosave {
+                if autosave.refresh(loaded.memoryMarkdown, revision: memoryRead) { drafts.memory = loaded.memoryMarkdown }
+            } else {
+                drafts.memory = loaded.memoryMarkdown
+                drafts.memoryAutosave = T3Autosave(saved: drafts.memory) { [store, workspace] value in
+                    guard store.chats === workspace else { throw T3ServiceError.disconnected }
+                    try await store.saveT3Memory(value)
+                }
             }
             brain = loaded
-            if !editingName { name = loaded.manifest.displayName }
+            if !editingName, drafts.name.isEmpty { drafts.name = store.primaryT3Bot?.name ?? loaded.manifest.displayName }
         } catch where !Task.isCancelled { loadError = error.localizedDescription }
         catch { }
     }
 
     private func loadRoutines() async {
         guard isCurrent, store.isConnected else { return }
+        let request = UUID()
+        latestRoutineRead = request
         do {
             let loaded = try await store.listT3Routines()
-            guard !Task.isCancelled, isCurrent else { return }
+            guard !Task.isCancelled, isCurrent, latestRoutineRead == request else { return }
             routines = loaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             routinesError = nil
-        } catch where !Task.isCancelled && isCurrent {
+        } catch where !Task.isCancelled && isCurrent && latestRoutineRead == request {
             routinesError = error.localizedDescription
         } catch { }
     }
 
     private func commitName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = drafts.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isCurrent, let current = store.primaryT3Bot?.name else { return }
-        guard !trimmed.isEmpty else { name = current; return }
-        guard trimmed != (submittedName ?? current) else { return }
-        submittedName = trimmed
-        let previous = nameSave
-        saveError = nil
-        nameSave = Task {
+        guard !trimmed.isEmpty else { drafts.name = current; return }
+        guard trimmed != (drafts.submittedName ?? current) else { return }
+        drafts.submittedName = trimmed
+        let previous = drafts.nameSave
+        drafts.nameError = nil
+        drafts.nameSave = Task {
             await previous?.value
-            guard isCurrent, submittedName == trimmed else { return }
-            defer { if submittedName == trimmed { submittedName = nil } }
+            guard isCurrent, drafts.submittedName == trimmed else { return }
+            defer { if drafts.submittedName == trimmed { drafts.submittedName = nil; drafts.nameSave = nil } }
             do { try await store.renameT3Bot(trimmed) }
-            catch where isCurrent && submittedName == trimmed {
-                saveError = String(localized: "Couldn’t rename Botto. \(error.localizedDescription)")
+            catch where isCurrent && drafts.submittedName == trimmed {
+                drafts.nameError = String(localized: "Couldn’t rename Botto. \(error.localizedDescription)")
             } catch { }
         }
     }
@@ -401,6 +424,7 @@ enum T3BrainText {
     private var desired: String
     private var debounce: Task<Void, Never>?
     private var isWriting = false
+    private var revision = UUID()
     private let delay: Duration
     private let write: @MainActor (String) async throws -> Void
 
@@ -412,6 +436,8 @@ enum T3BrainText {
     }
 
     func edited(_ text: String) {
+        if text != desired, case .failed = state { state = .idle }
+        if text != desired { revision = UUID() }
         desired = text
         debounce?.cancel()
         guard !isWriting, text != saved else { return }
@@ -436,9 +462,20 @@ enum T3BrainText {
         persistLatest()
     }
 
+    var refreshRevision: UUID? { !isWriting && desired == saved ? revision : nil }
+
+    func refresh(_ text: String, revision observed: UUID?) -> Bool {
+        guard let observed, observed == refreshRevision else { return false }
+        saved = text
+        desired = text
+        revision = UUID()
+        return true
+    }
+
     private func persistLatest() {
         guard !isWriting, desired != saved else { return }
         let text = desired
+        revision = UUID()
         isWriting = true
         state = .saving
         // Only the debounce can be cancelled. A dispatched write may already have reached the host.
@@ -612,6 +649,7 @@ struct T3RoutinesList: View {
             T3RoutineCreator(store: store, isCurrent: isCurrent) { routine in
                 routines = ((routines ?? []).filter { $0.id != routine.id } + [routine])
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                Task { await reload() }
             }
         }
         .confirmationDialog("Delete this routine?", isPresented: Binding(
@@ -673,7 +711,7 @@ struct T3RoutinesList: View {
     private func delete(_ routine: T3ScheduledRoutine) {
         perform(routine) {
             try await store.deleteT3Routine(id: routine.id)
-            routines?.removeAll { $0.id == routine.id }
+            await reload()
         }
     }
 

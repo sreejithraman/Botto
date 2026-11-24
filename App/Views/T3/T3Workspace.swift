@@ -13,6 +13,8 @@ struct T3Workspace: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editing = ComposerEditingHandle()
     @State private var outputs = T3OutputsModel()
+    @State private var brainDrafts = T3BrainDrafts()
+    @State private var freshDraft = T3FreshDraft()
     @State private var drawerOpen = false
     @GestureState private var drawerDrag: CGFloat = 0
     @State private var showsFresh = true
@@ -73,7 +75,7 @@ struct T3Workspace: View {
         }
         .background(BottoTheme.paper.ignoresSafeArea())
         .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
-            BottoPage(store: store, outputs: outputs, onOpenChat: { channel in
+            BottoPage(store: store, outputs: outputs, drafts: brainDrafts, onOpenChat: { channel in
                 pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
                 showsBotto = false
             }, onSettings: {
@@ -118,8 +120,9 @@ struct T3Workspace: View {
                 .bottoNavigationChrome()
                 .navigationBarTitleDisplayMode(.inline)
         } else {
-            T3FreshPage(store: store, namesSpace: launched, isExposed: !conversationCovered && scenePhase == .active,
-                        onOpenChat: open, onStarted: showConversation)
+            T3FreshPage(store: store, form: freshDraft, namesSpace: launched,
+                        isExposed: !conversationCovered && scenePhase == .active,
+                        onOpenChat: open, onDraft: { launched = true }, onStarted: showConversation)
                 .safeAreaInset(edge: .top) {
                     if !drawerOpen, let openingError {
                         InlineNotice(message: openingError) { self.openingError = nil }.padding(.horizontal, 20)
@@ -205,8 +208,10 @@ struct T3Workspace: View {
             launched = true
             return
         }
-        if await store.openT3Channel(initial), !Task.isCancelled { showConversation() }
-        else if !Task.isCancelled { reportOpenFailure() }
+        let opened = await store.openT3Channel(initial)
+        guard !Task.isCancelled, !launched, freshDraft.message.isEmpty else { return }
+        if opened { showConversation() }
+        else { reportOpenFailure() }
     }
 
     private func open(_ channel: T3ChannelSummary) {

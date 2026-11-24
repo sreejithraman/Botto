@@ -577,6 +577,16 @@ import UIKit
         #expect(autosave.state == .saved)
     }
 
+    @Test func staleBrainReloadDoesNotReplaceADraftEditedDuringRead() {
+        let autosave = T3Autosave(saved: "original", delay: .seconds(60)) { _ in }
+        let workspaceDrafts = T3BrainDrafts()
+        workspaceDrafts.memoryAutosave = autosave
+        let observed = autosave.refreshRevision
+        autosave.edited("my draft")
+        #expect(!workspaceDrafts.memoryAutosave!.refresh("older host text", revision: observed))
+        autosave.edited("original") // Cancels the test's debounce without dispatching a write.
+    }
+
     @Test func routineScheduleBuilderProducesCronTheServiceAccepts() throws {
         #expect(T3RoutineSchedule.daily.cron(hour: 9, minute: 0) == "0 9 * * *")
         #expect(T3RoutineSchedule.weekdays.cron(hour: 8, minute: 30) == "30 8 * * 1-5")

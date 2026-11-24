@@ -1,32 +1,37 @@
 import SwiftUI
 import BottoCore
 
+@MainActor @Observable final class T3FreshDraft {
+    var name = ""
+    var message = ""
+    var model: T3ModelOption?
+    var created: SessionIdentity?
+    var isStarting = false
+    var error: String?
+}
+
 /// Where a new space starts: a greeting, at most two quiet notes, an optional name, and a composer.
 /// Without a name, T3 names the space from its first message.
 struct T3FreshPage: View {
     let store: AppStore
+    @Bindable var form: T3FreshDraft
     /// False while launch is still finding the main space, when there is nothing to name yet.
     let namesSpace: Bool
     let isExposed: Bool
     let onOpenChat: (T3ChannelSummary) -> Void
+    let onDraft: () -> Void
     let onStarted: () -> Void
 
     @Environment(\.t3Chrome) private var chrome
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private enum Field { case name, message }
     @FocusState private var focused: Field?
-    @State private var name = ""
-    @State private var draft = ""
-    @State private var pendingModel: T3ModelOption?
-    @State private var createdSpace: SessionIdentity?
-    @State private var starting = false
-    @State private var error: String?
     @State private var connectionRequested = false
 
-    private var hasMessage: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var hasName: Bool { namesSpace && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var hasMessage: Bool { !form.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var hasName: Bool { namesSpace && !form.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// A name alone is enough to make a space.
-    private var canSend: Bool { (hasMessage || hasName) && !starting && isExposed }
+    private var canSend: Bool { (hasMessage || hasName) && !form.isStarting && isExposed }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +58,7 @@ struct T3FreshPage: View {
                     .accessibilityIdentifier("t3-open-drawer")
             }
         }
+        .onChange(of: form.message) { _, value in if !value.isEmpty { onDraft() } }
         .onChange(of: isExposed) { _, exposed in if !exposed { focused = nil } }
         .onChange(of: store.isConnected) { _, connected in if connected { connectionRequested = false } }
     }
@@ -152,15 +158,15 @@ struct T3FreshPage: View {
             if connectionRequested, !store.isConnected {
                 ConnectionStatusView(store: store).padding(.horizontal, 16)
             }
-            if let error {
-                InlineNotice(message: error) { self.error = nil }.padding(.horizontal, 16)
+            if let error = form.error {
+                InlineNotice(message: error) { form.error = nil }.padding(.horizontal, 16)
             }
             if namesSpace { nameField }
             VStack(alignment: .leading, spacing: 2) {
-                TextField("Message \(store.primaryT3Bot?.name ?? "Botto")", text: $draft, axis: .vertical)
+                TextField("Message \(store.primaryT3Bot?.name ?? "Botto")", text: $form.message, axis: .vertical)
                     .lineLimit(1...6)
                     .focused($focused, equals: .message)
-                    .disabled(starting)
+                    .disabled(form.isStarting)
                     .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
                     .accessibilityIdentifier("t3-fresh-composer")
                 HStack(spacing: 6) {
@@ -173,23 +179,23 @@ struct T3FreshPage: View {
                             .frame(width: 44, height: 44).contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(starting || !isExposed)
+                    .disabled(form.isStarting || !isExposed)
                     .accessibilityLabel("Add attachment")
-                    T3ModelChip(store: store, pending: $pendingModel)
+                    T3ModelChip(store: store, pending: $form.model)
                     Spacer(minLength: 0)
                     Button(action: send) {
                         Group {
-                            if starting { ProgressView().tint(BottoTheme.onAction) }
+                            if form.isStarting { ProgressView().tint(BottoTheme.onAction) }
                             else { Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold)) }
                         }
-                        .foregroundStyle(canSend || starting ? BottoTheme.onAction : BottoTheme.disabledForeground)
+                        .foregroundStyle(canSend || form.isStarting ? BottoTheme.onAction : BottoTheme.disabledForeground)
                         .frame(width: 44, height: 44)
-                        .background(canSend || starting ? BottoTheme.action : .clear, in: Circle())
+                        .background(canSend || form.isStarting ? BottoTheme.action : .clear, in: Circle())
                         .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
-                    .accessibilityLabel(starting ? "Starting space" : hasMessage || !hasName ? "Send message" : "Create space")
+                    .accessibilityLabel(form.isStarting ? "Starting space" : hasMessage || !hasName ? "Send message" : "Create space")
                     .accessibilityIdentifier("t3-fresh-send")
                 }
             }
@@ -203,12 +209,12 @@ struct T3FreshPage: View {
 
     /// Quiet on purpose: a name is an option, not a step.
     private var nameField: some View {
-        TextField("Name this space (optional)", text: $name)
+        TextField("Name this space (optional)", text: $form.name)
             .font(.subheadline.weight(.medium))
             .focused($focused, equals: .name)
             .submitLabel(.next)
             .onSubmit { focused = .message }
-            .disabled(starting)
+            .disabled(form.isStarting || form.created != nil)
             .padding(.horizontal, 26).frame(minHeight: 44)
             .frame(maxWidth: 780)
             .accessibilityIdentifier("t3-space-name")
@@ -216,38 +222,40 @@ struct T3FreshPage: View {
 
     private func send() {
         guard canSend else { return }
-        start(text: draft, send: hasMessage, attachment: nil)
+        start(text: form.message, send: hasMessage, attachment: nil)
     }
 
     private func startWithAttachment(_ kind: AppStore.T3ComposerRequest.Kind) {
-        guard !starting, isExposed else { return }
-        start(text: draft, send: false, attachment: kind)
+        guard !form.isStarting, isExposed else { return }
+        start(text: form.message, send: false, attachment: kind)
     }
 
     private func start(text: String, send: Bool, attachment: AppStore.T3ComposerRequest.Kind?) {
         guard store.isConnected else { connectionRequested = true; return }
         focused = nil
-        starting = true
-        error = nil
+        form.isStarting = true
+        form.error = nil
         let workspace = store.chats
-        let model = pendingModel
+        let model = form.model
+        let title = namesSpace ? form.name : ""
+        let existing = form.created
         Task {
-            defer { starting = false }
+            defer { form.isStarting = false }
             do {
-                let started = try await store.startT3Space(named: namesSpace ? name : "", with: text, model: model,
-                                                          send: send, resuming: createdSpace) { identity in
-                    if store.chats === workspace { createdSpace = identity }
+                let started = try await store.startT3Space(named: title, with: text, model: model,
+                                                          send: send, resuming: existing) { identity in
+                    if store.chats === workspace { form.created = identity }
                 }
                 guard store.chats === workspace, let selection = workspace.selection(profile: started.profile),
                       selection.matches(started), workspace.isCurrent(selection.owner) else { return }
-                name = ""
-                draft = ""
-                pendingModel = nil
-                createdSpace = nil
+                form.name = ""
+                form.message = ""
+                form.model = nil
+                form.created = nil
                 store.t3ComposerRequest = attachment.map { .init(kind: $0, owner: selection.owner) }
                 onStarted()
             } catch where store.chats === workspace {
-                self.error = error.localizedDescription
+                form.error = error.localizedDescription
                 if !store.isConnected { connectionRequested = true }
             } catch { }
         }
