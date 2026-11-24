@@ -178,13 +178,19 @@ enum T3ProjectionMapper {
 }
 
 struct T3ThreadProjection {
+    private struct TimelineRow {
+        let item: HermesJSON
+        let isLocal: Bool
+
+        var ordinal: Int? { item["ordinal"].integer }
+    }
+
     private var thread: HermesJSON
     private var runs: [HermesJSON]
     private var messages: [HermesJSON]
     private var runtimeRequests: [HermesJSON]
     private var turnItems: [HermesJSON]
-    private var visibleItems: [HermesJSON]
-    private var visibleIDs: Set<String>
+    private var timeline: [TimelineRow]
     private(set) var sequence: Int
     private let hasMoreHistory: Bool
     private(set) var activity: ConversationActivity
@@ -195,8 +201,13 @@ struct T3ThreadProjection {
         messages = snapshot["messages"].list ?? []
         runtimeRequests = snapshot["runtimeRequests"].list ?? []
         turnItems = snapshot["turnItems"].list ?? []
-        visibleItems = snapshot["visibleTurnItems"].list.map(T3ProjectionMapper.visibleItems) ?? turnItems
-        visibleIDs = Set(visibleItems.compactMap { $0["id"].text })
+        if let rows = snapshot["visibleTurnItems"].list {
+            timeline = rows.sorted { ($0["position"].integer ?? 0) < ($1["position"].integer ?? 0) }.map {
+                TimelineRow(item: $0["item"], isLocal: ($0["visibility"].text ?? "local") == "local")
+            }
+        } else {
+            timeline = turnItems.map { TimelineRow(item: $0, isLocal: true) }
+        }
         self.sequence = sequence
         self.hasMoreHistory = hasMoreHistory
         activity = ConversationActivity(lineage: lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil)
@@ -215,7 +226,7 @@ struct T3ThreadProjection {
     var hasUserMessages: Bool {
         messages.contains { $0["role"].text == "user" }
             || turnItems.contains { $0["type"].text == "user_message" }
-            || visibleItems.contains { $0["type"].text == "user_message" }
+            || timeline.contains { $0.item["type"].text == "user_message" }
     }
 
     private var queuedRuns: [HermesJSON] {
@@ -244,11 +255,14 @@ struct T3ThreadProjection {
 
     func requestItem(_ id: String?) -> HermesJSON? {
         guard let id else { return nil }
-        return turnItems.last { $0["requestId"].text == id } ?? visibleItems.last { $0["requestId"].text == id }
+        return turnItems.last { $0["requestId"].text == id } ?? timeline.last { $0.item["requestId"].text == id }?.item
     }
 
     func conversation(_ identity: SessionIdentity) -> Conversation {
-        let queuedIDs = Set(queuedRuns.compactMap { $0["id"].text })
+        let removedRuns = Set(runs.filter { $0["status"].text == "rolled_back" }.compactMap { $0["id"].text })
+        let undeliveredRuns = Set(runs.filter {
+            $0["status"].text == "queued" || ($0["status"].text == "cancelled" && $0["startedAt"] == .null)
+        }.compactMap { $0["id"].text })
         let queued = queuedRuns.compactMap { run -> QueuedMessage? in
             guard let runID = run["id"].nonempty, let messageID = run["userMessageId"].nonempty else { return nil }
             let text = messages.first { $0["id"].text == messageID }?["text"].text
@@ -257,10 +271,11 @@ struct T3ThreadProjection {
                                  isSteering: run["steerWhenReadyRunId"] != .null)
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(messages)
-        let rows = visibleItems.filter { item in
-            guard let run = item["runId"].text else { return true }
-            return !queuedIDs.contains(run)
-        }.compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: messagesByID) }
+        let rows = timeline.filter { row in
+            let item = row.item
+            guard row.isLocal, let run = item["runId"].text else { return true }
+            return !removedRuns.contains(run) && !(Self.isHeldInput(item) && undeliveredRuns.contains(run))
+        }.compactMap { T3ProjectionMapper.chatMessage($0.item, messagesByID: messagesByID) }
         return Conversation(id: identity.root.text, storedID: identity.stored.text, profileID: identity.profile.text,
                             messages: rows, pendingRequests: pendingRequests, queuedMessages: queued,
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
@@ -279,6 +294,12 @@ struct T3ThreadProjection {
         case "run.created", "run.updated":
             let oldRunStatus = runs.first { $0["id"] == payload["id"] }?["status"].text
             Self.upsert(payload, into: &runs)
+            if oldRunStatus == "queued", payload["status"].text != "queued", let runID = payload["id"].text {
+                // A snapshot can retain a held prompt in turnItems but exclude it from the timeline.
+                for item in turnItems where item["runId"].text == runID && Self.isHeldInput(item) {
+                    updateTimeline(item, wasLoaded: true)
+                }
+            }
             if live, let eventID, let oldRunStatus, T3ProjectionMapper.activeStatuses.contains(oldRunStatus) {
                 if let completedAt = T3ProjectionMapper.date(payload["completedAt"]) ?? eventTime {
                     switch payload["status"].text {
@@ -301,11 +322,10 @@ struct T3ThreadProjection {
             Self.upsert(payload, into: &turnItems)
             if let id = payload["id"].nonempty, T3ProjectionMapper.chatMessage(payload) != nil {
                 let messagesByID = T3ProjectionMapper.messageTextLookup(messages)
-                let old = visibleItems.last { $0["id"].text == id }
+                let old = timeline.last { $0.item["id"].text == id }?.item
                 let oldText = old.map { T3ProjectionMapper.resolvedText($0, messagesByID: messagesByID) } ?? ""
                 let newText = T3ProjectionMapper.resolvedText(payload, messagesByID: messagesByID)
-                if visibleIDs.insert(id).inserted { visibleItems.append(payload) }
-                else { Self.upsert(payload, into: &visibleItems) }
+                updateTimeline(payload)
                 if live, let eventID, payload["type"].text == "assistant_message",
                    !newText.isEmpty, oldText != newText {
                     signal = .init(id: eventID, kind: .replyText)
@@ -319,6 +339,33 @@ struct T3ThreadProjection {
             signal = .init(id: eventID, kind: .turnStarted)
         }
         refreshActivity(eventTime: eventTime, reaction: reaction, signal: signal, sameRun: previousActive == activeRunID)
+    }
+
+    private static func isHeldInput(_ item: HermesJSON) -> Bool {
+        item["type"].text == "user_message" && item["inputIntent"].text == "queued_turn"
+    }
+
+    private mutating func updateTimeline(_ item: HermesJSON, wasLoaded: Bool = false) {
+        let row = TimelineRow(item: item, isLocal: true)
+        let existing = timeline.lastIndex { $0.item["id"] == item["id"] }
+        if let existing {
+            if timeline[existing].isLocal, timeline[existing].ordinal == row.ordinal {
+                timeline[existing] = row
+                return
+            }
+            timeline.remove(at: existing)
+        } else if hasMoreHistory, !wasLoaded, let ordinal = row.ordinal,
+                  let oldest = timeline.first(where: { $0.isLocal && $0.ordinal != nil })?.ordinal,
+                  ordinal < oldest {
+            // Finished rows below a bounded snapshot belong to history, not the live window.
+            let run = runs.first { $0["id"] == item["runId"] }
+            let status = run?["status"].text ?? ""
+            guard status == "queued" || T3ProjectionMapper.activeStatuses.contains(status) else { return }
+        }
+        let insertion = row.ordinal.flatMap { ordinal in
+            timeline.firstIndex { $0.isLocal && ($0.ordinal ?? ordinal) > ordinal }
+        } ?? timeline.endIndex
+        timeline.insert(row, at: insertion)
     }
 
     private mutating func refreshActivity(eventTime: Date? = nil, reaction: TurnReaction? = nil,

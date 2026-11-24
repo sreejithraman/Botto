@@ -7,8 +7,12 @@ actor T3TestSocket: T3WebSocketTransport {
     nonisolated let sent: AsyncStream<HermesJSON>
     private let outgoing: AsyncStream<HermesJSON>.Continuation
     private var iterator: AsyncThrowingStream<Data, Error>.Iterator
+    private let stalledTag: String?
+    private var stalledWrites: [CheckedContinuation<Void, Error>] = []
+    private(set) var isClosed = false
 
-    init() {
+    init(stalledTag: String? = nil) {
+        self.stalledTag = stalledTag
         let messages = AsyncThrowingStream<Data, Error>.makeStream()
         incoming = messages.continuation
         iterator = messages.stream.makeAsyncIterator()
@@ -17,7 +21,14 @@ actor T3TestSocket: T3WebSocketTransport {
         outgoing = frames.continuation
     }
 
-    func send(_ data: Data) throws { outgoing.yield(try JSONDecoder().decode(HermesJSON.self, from: data)) }
+    func send(_ data: Data) async throws {
+        guard !isClosed else { throw T3RPCError.closed }
+        let frame = try JSONDecoder().decode(HermesJSON.self, from: data)
+        outgoing.yield(frame)
+        if let stalledTag, frame["_tag"].text == stalledTag {
+            try await withCheckedThrowingContinuation { stalledWrites.append($0) }
+        }
+    }
 
     func receive() async throws -> Data {
         var reader = iterator
@@ -27,6 +38,9 @@ actor T3TestSocket: T3WebSocketTransport {
     }
 
     func close() {
+        isClosed = true
+        for write in stalledWrites { write.resume(throwing: T3RPCError.closed) }
+        stalledWrites.removeAll()
         incoming.finish()
         outgoing.finish()
     }
@@ -35,6 +49,22 @@ actor T3TestSocket: T3WebSocketTransport {
 }
 
 @Suite(.timeLimit(.minutes(1))) struct T3RPCClientTests {
+    @Test(arguments: ["Request", "Ping"]) func stalledSocketWriteClosesAtItsDeadline(_ stalledTag: String) async throws {
+        let socket = T3TestSocket(stalledTag: stalledTag)
+        let client = T3RPCClient(transport: socket,
+                                 heartbeatInterval: stalledTag == "Ping" ? .milliseconds(10) : .seconds(5),
+                                 pongTimeout: .milliseconds(30),
+                                 requestTimeout: stalledTag == "Request" ? .milliseconds(30) : .seconds(5))
+        var sent = socket.sent.makeAsyncIterator()
+        let call = Task { try await client.call("server.getConfig") }
+        #expect(await sent.next()?["_tag"].text == "Request")
+        if stalledTag == "Ping" { #expect(await sent.next()?["_tag"].text == "Ping") }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await socket.isClosed)
+        await client.close()
+        await #expect(throws: T3RPCError.timeout) { try await call.value }
+    }
+
     @Test func requestsReturnValuesAndTypedFailures() async throws {
         let socket = T3TestSocket()
         let client = T3RPCClient(transport: socket)

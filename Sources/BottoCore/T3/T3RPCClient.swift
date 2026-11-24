@@ -115,7 +115,7 @@ actor T3RPCClient {
         let (id, stream) = try await request(method, payload: payload, isStream: firstStreamValue, timed: true)
         var iterator = stream.makeAsyncIterator()
         if let result = try await iterator.next() {
-            if firstStreamValue { await interrupt(id) }
+            if firstStreamValue { interrupt(id) }
             return result
         }
         try Task.checkCancellation()
@@ -153,11 +153,12 @@ actor T3RPCClient {
         do {
             try await send(frame)
         } catch {
-            await terminate(with: .transport)
-            throw T3RPCError.transport
+            let error = failure ?? .transport
+            await terminate(with: error)
+            throw error
         }
         if Task.isCancelled {
-            await interrupt(id)
+            interrupt(id)
             throw CancellationError()
         }
         return (id, stream)
@@ -196,7 +197,7 @@ actor T3RPCClient {
     private func ping() async throws -> Bool {
         guard failure == nil else { return false }
         awaitingPong = true
-        try await send(.object(["_tag": .string("Ping")]))
+        try await send(.object(["_tag": .string("Ping")]), timeout: pongTimeout)
         return true
     }
 
@@ -205,7 +206,16 @@ actor T3RPCClient {
         return failure == nil
     }
 
-    private func send(_ frame: HermesJSON) async throws {
+    private func send(_ frame: HermesJSON, timeout: Duration? = nil) async throws {
+        if let failure { throw failure }
+        let deadline = ContinuousClock.now + (timeout ?? requestTimeout)
+        let writeTimeout = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) }
+            catch { return }
+            // Writes can wait for an upgrade or network progress. Closing releases the transport's waiter.
+            await self?.terminate(with: .timeout)
+        }
+        defer { writeTimeout.cancel() }
         try await transport.send(frame.data)
     }
 
@@ -263,14 +273,16 @@ actor T3RPCClient {
         return reasons.contains { $0["_tag"].text == "Interrupt" } ? .interrupted : .invalidFrame
     }
 
-    private func interrupt(_ id: String, with error: T3RPCError = .interrupted) async {
+    private func interrupt(_ id: String, with error: T3RPCError = .interrupted) {
         guard let request = pending.removeValue(forKey: id) else { return }
         request.timeout?.cancel()
         request.continuation.finish(throwing: error)
-        do {
-            try await send(.object(["_tag": .string("Interrupt"), "requestId": .string(id)]))
-        } catch {
-            await terminate(with: .transport)
+        Task { [weak self] in
+            do {
+                try await self?.send(.object(["_tag": .string("Interrupt"), "requestId": .string(id)]))
+            } catch {
+                await self?.terminate(with: .transport)
+            }
         }
     }
 

@@ -167,6 +167,43 @@ import Testing
         #expect(projection.activity.signal?.kind == .replyText)
     }
 
+    @Test func liveTimelineOrdersLocalTurnsAndHidesRolledBackOrUndeliveredRows() throws {
+        let source = try T3ProjectionMapper.identity(profile: ExactID("project"), threadID: "thread")
+        let initial = try t3JSON("""
+        {"thread":{"id":"thread"},
+         "runs":[{"id":"old","status":"completed","ordinal":1},{"id":"current","status":"running","ordinal":2}],
+         "visibleTurnItems":[
+           {"position":0,"visibility":"inherited","item":{"id":"parent","type":"assistant_message","text":"Shared context","runId":"old","ordinal":1000}},
+           {"position":1,"visibility":"local","item":{"id":"prompt","type":"user_message","text":"Current prompt","runId":"current","ordinal":200}},
+           {"position":2,"visibility":"local","item":{"id":"answer","type":"assistant_message","text":"Current answer","runId":"current","ordinal":220}}]}
+        """)
+        var projection = T3ThreadProjection(snapshot: initial, sequence: 1, hasMoreHistory: true, lineage: UUID())
+        projection.apply(try event("turn-item.updated", #"{"id":"late","type":"assistant_message","text":"Older work","runId":"old","ordinal":110}"#), sequence: 2, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"early","type":"assistant_message","text":"First reply","runId":"current","ordinal":210}"#), sequence: 3, live: true)
+        #expect(projection.conversation(source).messages.map(\.text) == ["Shared context", "Current prompt", "First reply", "Current answer"])
+
+        projection.apply(try event("run.created", #"{"id":"queued","status":"queued","ordinal":3}"#), sequence: 4, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Never delivered","runId":"queued","ordinal":300}"#), sequence: 5, live: true)
+        projection.apply(try event("run.updated", #"{"id":"queued","status":"cancelled","ordinal":3,"startedAt":null}"#), sequence: 6, live: true)
+        #expect(!projection.conversation(source).messages.contains { $0.text == "Never delivered" })
+
+        projection.apply(try event("run.updated", #"{"id":"current","status":"rolled_back","ordinal":2}"#), sequence: 7, live: true)
+        #expect(projection.conversation(source).messages.map(\.text) == ["Shared context"])
+    }
+
+    @Test func deliveryRestoresHeldPromptLoadedInSnapshot() throws {
+        let source = try T3ProjectionMapper.identity(profile: ExactID("project"), threadID: "thread")
+        let initial = try t3JSON("""
+        {"thread":{"id":"thread"},"runs":[{"id":"queued","status":"queued","ordinal":1}],
+         "turnItems":[{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Held","runId":"queued","ordinal":100}],
+         "visibleTurnItems":[]}
+        """)
+        var projection = T3ThreadProjection(snapshot: initial, sequence: 1, hasMoreHistory: false, lineage: UUID())
+        #expect(projection.conversation(source).messages.isEmpty)
+        projection.apply(try event("run.updated", #"{"id":"queued","status":"preparing","ordinal":1}"#), sequence: 2, live: true)
+        #expect(projection.conversation(source).messages.map(\.text) == ["Held"])
+    }
+
     private func event(_ type: String, _ payload: String) throws -> HermesJSON {
         try t3JSON("""
         {"id":"event-\(type)","threadId":"thread","type":"\(type)","occurredAt":"2026-11-24T12:01:04Z","payload":\(payload)}
