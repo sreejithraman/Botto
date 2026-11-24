@@ -52,3 +52,10 @@ The upstream archive stays intact, including its web assets and adjacent native
 packages. This keeps Botto's packaging independent of the server's internal
 dependency layout and preserves the upstream HTTP routes. The app runs the
 headless `serve` command and uses the same executable to mint Pair Phone links.
+
+## Check engine shutdown
+
+After building the Apple Silicon app, run
+`python3 scripts/check-botto-mac-sigterm.py /path/to/BottoMac.app` to exercise
+SIGTERM and Quit against the bundled engine. The test uses disposable data and
+verifies that a separately launched engine keeps responding in both cases.

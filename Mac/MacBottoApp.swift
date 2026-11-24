@@ -107,33 +107,6 @@ struct MacEngineMenu: View {
     }
 }
 
-@MainActor
-final class MacBottoDelegate: NSObject, NSApplicationDelegate {
-    let server = LocalT3ServerManager()
-    let store = MacBottoStore()
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard store.hasUnsavedProse else { return .terminateNow }
-        Task {
-            await store.flushProse()
-            guard store.hasUnsavedProse else { sender.reply(toApplicationShouldTerminate: true); return }
-            let alert = NSAlert()
-            alert.messageText = "Botto couldn’t save your changes."
-            alert.informativeText = "Keep Botto open to retry or copy the unsaved text."
-            alert.addButton(withTitle: "Keep Botto Open")
-            alert.addButton(withTitle: "Quit Without Saving")
-            sender.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
-        }
-        return .terminateLater
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        server.terminateSync()
-    }
-}
-
 private struct MacEngineSettings: View {
     @Bindable var server: LocalT3ServerManager
 
