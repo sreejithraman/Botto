@@ -1,4 +1,4 @@
-// Shared Hermes defaults adapted from Hermex. MIT; see LICENSES/Hermex.txt.
+// Avatar defaults adapted from Hermex. MIT; see LICENSES/Hermex.txt.
 import Foundation
 
 public enum BotAvatarShape: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -98,7 +98,7 @@ public struct BotAvatarEdit: Equatable, Sendable {
 /// Explicit choices replace any existing image with a drawn face.
 public enum BotAvatarChoice: Equatable, Sendable {
     case automatic
-    /// A classic shape with no color override: Hermes derives the color from the profile name.
+    /// A classic shape with no color override: Botto derives the color from the profile name.
     case shape(BotAvatarShape)
     case face(BotFace)
     case edit(BotAvatarEdit)
@@ -144,58 +144,17 @@ extension BotProfile {
 extension BotAvatarChoice {
     func validate(current: BotAppearance? = nil) throws {
         if case .edit(let edit) = self {
-            guard edit.shape != nil || edit.color != nil else { throw HermesServiceError.invalidAvatar }
+            guard edit.shape != nil || edit.color != nil else { throw ConversationServiceError.invalidAvatar }
             // Blobatar ignores classic color overrides: conversion needs an explicit classic shape.
             if current?.isGenerated == true, edit.color != nil, edit.shape == nil {
-                throw HermesServiceError.invalidAvatar
+                throw ConversationServiceError.invalidAvatar
             }
         }
         if let shape = appearance.shape, !BotAvatarShape.pickerCases.contains(shape) {
-            throw HermesServiceError.invalidAvatar
+            throw ConversationServiceError.invalidAvatar
         }
         if let color = appearance.color, !BotAvatarColors.isValid(color) {
-            throw HermesServiceError.invalidAvatar
+            throw ConversationServiceError.invalidAvatar
         }
-    }
-
-    func merging(into received: [String: HermesJSON]) -> [String: HermesJSON] {
-        var look = received
-        look.removeValue(forKey: "bottoPreviewSHA256")
-        switch self {
-        case .automatic:
-            for key in ["shape", "color", "custom", "imageKind"] { look.removeValue(forKey: key) }
-        case .shape(let shape):
-            look["shape"] = .string(shape.rawValue)
-            look.removeValue(forKey: "color")
-            look["custom"] = .bool(true)
-            look["imageKind"] = .string("shape")
-        case .face(let face):
-            look["shape"] = .string(face.shape.rawValue)
-            look["color"] = .string(face.sharedColor)
-            look["custom"] = .bool(true)
-            look["imageKind"] = .string("shape")
-        case .geometry(let geometry, let color):
-            look["shape"] = .string(geometry.recipe)
-            switch color {
-            case .automatic: look.removeValue(forKey: "color")
-            case .value(let value): look["color"] = .string(BotAvatarColors.preset(for: value)?.shared ?? value)
-            case nil: break
-            }
-            look["custom"] = .bool(true)
-            look["imageKind"] = .string("shape")
-        case .edit(let edit):
-            if let shape = edit.shape { look["shape"] = .string(shape.rawValue) }
-            switch edit.color {
-            case .automatic: look.removeValue(forKey: "color")
-            case .value(let color): look["color"] = .string(BotAvatarColors.preset(for: color)?.shared ?? color)
-            case nil:
-                if let color = look["color"]?.text, let preset = BotAvatarColors.preset(for: color) {
-                    look["color"] = .string(preset.shared)
-                }
-            }
-            look["custom"] = .bool(true)
-            look["imageKind"] = .string("shape")
-        }
-        return look
     }
 }

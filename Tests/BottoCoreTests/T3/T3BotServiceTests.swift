@@ -77,7 +77,7 @@ import Testing
         defer { service.disconnect() }
         _ = try await service.connect(configuration: existingConfiguration())
         await host.loseNextCommandAcknowledgement()
-        await #expect(throws: HermesServiceError.uncertain) {
+        await #expect(throws: ConversationServiceError.uncertain) {
             try await service.setChannelPinned(threadID: "existing-general", pinned: true)
         }
         let state = await host.state
@@ -159,7 +159,7 @@ import Testing
         #expect(reattached.access != originallyOpened.access)
         #expect(await host.ticketAttempts == 3)
         #expect(await recoveredHost.threadSubscriptions == ["archived-channel"])
-        await #expect(throws: HermesServiceError.staleConversation) {
+        await #expect(throws: ConversationServiceError.staleConversation) {
             try await service.stop(access: originallyOpened.access, operationID: UUID())
         }
     }
@@ -358,7 +358,7 @@ import Testing
         defer { service.disconnect() }
         _ = try await service.connect(configuration: existingConfiguration())
         await host.loseNextRoutineAcknowledgement()
-        await #expect(throws: HermesServiceError.uncertain) {
+        await #expect(throws: ConversationServiceError.uncertain) {
             try await service.createRoutine(name: "Morning brief", prompt: "Summarize inbox",
                                             cron: "0 9 * * *", threadID: nil)
         }
@@ -449,7 +449,7 @@ import Testing
                                               mimeType: "text/plain", access: firstOpen.access)
         let mainIdentity = try T3ProjectionMapper.identity(profile: profile, threadID: mainID)
         let otherSpace = try await service.openChat(.stored(mainIdentity))
-        await #expect(throws: HermesServiceError.invalidAttachment) {
+        await #expect(throws: ConversationServiceError.invalidAttachment) {
             try await service.send(text: "Start", attachments: [upload], delivery: .queue,
                                    access: otherSpace.access, operationID: UUID())
         }
@@ -476,7 +476,7 @@ import Testing
         let waiting = try await nextConversation(&published) { $0.snapshot.pendingRequests.count == 2 }
         let approval = try #require(waiting.snapshot.pendingRequests.first(where: { $0.kind == .approval }))
         let question = try #require(waiting.snapshot.pendingRequests.first(where: { $0.kind == .question }))
-        await #expect(throws: HermesServiceError.invalidResponse) {
+        await #expect(throws: ConversationServiceError.invalidResponse) {
             try await service.respond(to: question, response: .text(""), access: opened.access, operationID: UUID())
         }
         _ = try await service.respond(to: approval, response: .choice("accept"), access: opened.access, operationID: UUID())
@@ -516,7 +516,7 @@ import Testing
                                                  aliases: [main.identity.root])
         let reopened = try await service.openChat(.stored(bookMergedIdentity))
         #expect(reopened.identity.stored == main.identity.stored)
-        await #expect(throws: HermesServiceError.staleConversation) {
+        await #expect(throws: ConversationServiceError.staleConversation) {
             try await service.send(text: "Bad route", attachments: [], delivery: .queue, access: opened.access, operationID: UUID())
         }
     }
@@ -1006,17 +1006,17 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var probedSignedOut: Bool
     private var refused: String?
     private let ticketStatuses: [Int]
-    nonisolated let visits: AsyncStream<HermesJSON>
-    private let visitCommands: AsyncStream<HermesJSON>.Continuation
+    nonisolated let visits: AsyncStream<JSONValue>
+    private let visitCommands: AsyncStream<JSONValue>.Continuation
     private var withholdFirstVisitReply: Bool
     private var withheldVisitID: String?
-    private(set) var modelCommands: [HermesJSON] = []
+    private(set) var modelCommands: [JSONValue] = []
     private var outputsAvailable = false
     private(set) var listedDirectories: [String] = []
-    private var scheduledTasks: [String: HermesJSON] = [:]
+    private var scheduledTasks: [String: JSONValue] = [:]
     private var routineStreams: Set<String> = []
     private(set) var interruptedRoutineStreams = 0
-    private(set) var routineUpserts: [HermesJSON] = []
+    private(set) var routineUpserts: [JSONValue] = []
     private(set) var ticketAttempts = 0
     private(set) var threadSubscriptions: [String] = []
     private(set) var writtenFiles: [String] = []
@@ -1027,11 +1027,11 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var dropsCommandAcknowledgement = false
     private var dropsRoutineAcknowledgement = false
     private var replaysDeletedProject = false
-    private(set) var projectCreations: [HermesJSON] = []
-    private(set) var createdThreads: [HermesJSON] = []
-    private(set) var dispatchedMessages: [HermesJSON] = []
+    private(set) var projectCreations: [JSONValue] = []
+    private(set) var createdThreads: [JSONValue] = []
+    private(set) var dispatchedMessages: [JSONValue] = []
     private var files: [String: String] = [:]
-    private var threads: [String: HermesJSON] = [:]
+    private var threads: [String: JSONValue] = [:]
     private var deletedThreadIDs: Set<String> = []
     private var sequence = 0
     private var shellStream: String?
@@ -1072,8 +1072,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
         try shellUpdate(thread)
     }
 
-    var state: (files: [String: String], threads: [String: HermesJSON]) { (files, threads) }
-    func restore(_ state: (files: [String: String], threads: [String: HermesJSON])) {
+    var state: (files: [String: String], threads: [String: JSONValue]) { (files, threads) }
+    func restore(_ state: (files: [String: String], threads: [String: JSONValue])) {
         (files, threads) = (state.files, state.threads)
     }
     func installModels() { models = true }
@@ -1141,7 +1141,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
         scheduledTasks["other-task"] = other
     }
 
-    private func scheduledTask(id: String, input: HermesJSON, lastRun: HermesJSON = .null) -> HermesJSON {
+    private func scheduledTask(id: String, input: JSONValue, lastRun: JSONValue = .null) -> JSONValue {
         var task = input
         task["id"] = .string(id)
         task["createdAt"] = .string(time)
@@ -1180,7 +1180,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
             """
         case "/api/projects":
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer bearer")
-            json = try String(decoding: HermesJSON.object(["projects": .array(existing ? [project] : [])]).data, as: UTF8.self)
+            json = try String(decoding: JSONValue.object(["projects": .array(existing ? [project] : [])]).data, as: UTF8.self)
             status = 200
         case "/api/attachments/upload/signed":
             #expect(request.httpMethod == "POST")
@@ -1219,7 +1219,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
     }
 
     func send(_ data: Data) throws {
-        let frame = try JSONDecoder().decode(HermesJSON.self, from: data)
+        let frame = try JSONDecoder().decode(JSONValue.self, from: data)
         switch frame["_tag"].text {
         case "Ack", "Pong": return
         case "Interrupt":
@@ -1242,7 +1242,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
             """))
             return
         }
-        let reply: HermesJSON
+        let reply: JSONValue
         switch frame["tag"].text {
         case "server.getConfig", "server.refreshProviders":
             // Only a refresh looks again; the config repeats what was last found.
@@ -1316,7 +1316,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
                 return
             }
             let ids = try #require(request["threadIds"].list)
-            var metadata: [String: HermesJSON] = [:]
+            var metadata: [String: JSONValue] = [:]
             for id in ids.compactMap(\.text) {
                 if let thread = threads[id] {
                     metadata[id] = .object(["projectId": thread["projectId"], "title": thread["title"]])
@@ -1467,11 +1467,11 @@ private actor T3ServiceHost: T3WebSocketTransport {
         try event("runtime-request.updated", payload: t3JSON(#"{"id":"question","kind":"user_input","status":"pending"}"#), thread: thread)
     }
 
-    private var project: HermesJSON {
+    private var project: JSONValue {
         .object(["id": .string(projectID), "workspaceRoot": .string(root), "defaultModelSelection": .null])
     }
 
-    private func apply(_ command: HermesJSON) throws {
+    private func apply(_ command: JSONValue) throws {
         let thread = try #require(command["threadId"].text)
         switch command["type"].text {
         case "thread.create":
@@ -1548,7 +1548,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private func shellUpdate(_ thread: String) throws {
         guard let stream = shellStream, let shell = threads[thread] else { return }
         sequence += 1
-        let item: HermesJSON
+        let item: JSONValue
         if shell["archivedAt"] == .null {
             item = .object(["kind": .string("thread.updated"), "sequence": .number(Double(sequence)),
                             "location": .string("active"), "thread": shell])
@@ -1559,15 +1559,15 @@ private actor T3ServiceHost: T3WebSocketTransport {
         try chunk(stream, values: [item])
     }
 
-    private func event(_ type: String, payload: HermesJSON, thread: String) throws {
+    private func event(_ type: String, payload: JSONValue, thread: String) throws {
         let stream = try #require(threadStreams[thread])
         sequence += 1
-        let event: HermesJSON = .object(["id": .string("event-\(sequence)"), "threadId": .string(thread),
+        let event: JSONValue = .object(["id": .string("event-\(sequence)"), "threadId": .string(thread),
                                          "type": .string(type), "occurredAt": .string(time), "payload": payload])
         try chunk(stream, values: [.object(["kind": .string("event"), "sequence": .number(Double(sequence)), "event": event])])
     }
 
-    private func chunk(_ requestID: String, values: [HermesJSON]) throws {
+    private func chunk(_ requestID: String, values: [JSONValue]) throws {
         try emit(.object(["_tag": .string("Chunk"), "requestId": .string(requestID), "values": .array(values)]))
     }
 
@@ -1579,5 +1579,5 @@ private actor T3ServiceHost: T3WebSocketTransport {
         ])]))
     }
 
-    private func emit(_ frame: HermesJSON) throws { socket.incoming.yield(try frame.data) }
+    private func emit(_ frame: JSONValue) throws { socket.incoming.yield(try frame.data) }
 }

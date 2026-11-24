@@ -3,7 +3,7 @@
 In Debug and Internal builds, open **Settings → Developer menu**. The menu
 contains **Avatar playground** and **Haptics playground**. No unlock gesture or
 saved preference is required. Before connecting a host, choose **Explore the
-demo**, then open Settings from the inbox.
+demo**, then open Settings from Botto’s page.
 
 The avatar playground uses isolated sample bots and the app's avatar renderer.
 Its embedded demo returns to the gallery when you leave; host pairing stays

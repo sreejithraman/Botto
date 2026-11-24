@@ -2,25 +2,7 @@ import Foundation
 import Testing
 @testable import BottoCore
 
-@MainActor struct QueuedNotificationPresentationTests {
-    @Test func authorityPendingProcessUsesProducerIdentityWithoutChangingRawQueue() async throws {
-        let host = try HermesTestHost()
-        let payload = "[IMPORTANT: Background process proc_53119008f80b completed normally (exit code 0).\nCommand: python3 tools/bot_mode_dm.py --run-delivery\nOutput: delivered]"
-        host.snapshot["pending"] = .array([
-            .object(["admission_id": .string("process-admission"), "input_id": .string(#"["completion","proc_53119008f80b",1793268000]"#),
-                     "text": .string(payload), "status": .string("queued"), "controls": .array([])])
-        ])
-        let service = host.service()
-        defer { service.disconnect() }
-        _ = try await service.connect(configuration: host.configuration)
-        let opened = try await service.openChat(.canonical(profile: try ExactID(host.bot.id), expectedRoot: nil))
-        let queued = try #require(opened.snapshot.queuedMessages.first)
-        #expect(queued.sourceMessage?.displayKind == "process_complete")
-        #expect(queued.sourceMessage?.text == payload)
-        #expect(queued.text == payload)
-        #expect(!queued.canEdit)
-    }
-
+struct QueuedNotificationPresentationTests {
     @Test(arguments: [
         #"["async_delegation","deleg_24a7fa61",""]"#,
         #"["async_delegation","deleg_24a7fa61","task_failure:0"]"#,

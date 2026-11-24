@@ -10,7 +10,7 @@ public extension QueuedMessage {
         if submissionID.hasPrefix("bot:"), submissionID.count > 4 {
             kind = "internal_notification"
         } else {
-            guard let identity = try? HermesJSON.decode(Data(submissionID.utf8)).list,
+            guard let identity = try? JSONValue.decode(Data(submissionID.utf8)).list,
                   identity.count == 3, identity[1].nonempty != nil else { return nil }
             switch identity[0].text {
             case "completion":

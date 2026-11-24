@@ -61,7 +61,7 @@ public struct T3ProviderStatus: Identifiable, Equatable, Sendable {
         self.state = state
     }
 
-    init?(_ provider: HermesJSON) {
+    init?(_ provider: JSONValue) {
         guard let id = provider["instanceId"].nonempty else { return nil }
         let state: State
         if provider["enabled"].flag != true { state = .off }
@@ -73,7 +73,7 @@ public struct T3ProviderStatus: Identifiable, Equatable, Sendable {
     }
 
     /// Only a provider that says so. Some can't tell.
-    static func isSignedOut(_ provider: HermesJSON) -> Bool { provider["auth"]["status"].text == "unauthenticated" }
+    static func isSignedOut(_ provider: JSONValue) -> Bool { provider["auth"]["status"].text == "unauthenticated" }
 }
 
 extension T3BotBrainControlling {

@@ -1,77 +1,12 @@
 import Foundation
 
-@MainActor protocol HermesSocket: AnyObject {
-    func receive() async throws -> Data
-    func send(_ data: Data) async throws
-    func close()
-}
-
-@MainActor protocol HermesTransport: AnyObject {
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse)
-    func socket(for request: URLRequest) throws -> any HermesSocket
-    func invalidate()
-}
-
-/// Reject every redirect, including same-origin redirects of password POSTs and upgrades.
-/// A new ephemeral session per connection keeps cookies out of the shared browser jar.
-final class HermesRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
-private enum HermesTransportLimits {
-    // 50 MiB of images becomes 66 2/3 MiB of base64. Leave about 29 MiB
-    // for JSON, text and other rows, without allowing unbounded histories.
-    static let history = 96 * 1024 * 1024
-    static let ordinary = 32 * 1024 * 1024
-
-    static func httpBody(for request: URLRequest) -> Int {
-        if isArtifact(request) { return DownloadedArtifact.maximumBytes }
-        let path = request.url?.path.split(separator: "/") ?? []
-        if request.httpMethod == "GET", path.count == 4,
-           path[0] == "api", path[1] == "sessions", path[3] == "messages" {
-            return history
-        }
-        return ordinary
-    }
-
-    static func isArtifact(_ request: URLRequest) -> Bool {
-        request.httpMethod == "GET" && request.url?.path == "/api/fs/download"
-    }
-}
-
-@MainActor final class NativeHermesTransport: HermesTransport {
-    private let session: URLSession
-    init(configuration: URLSessionConfiguration = .ephemeral) {
-        let configuration = configuration.copy() as! URLSessionConfiguration
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 30
-        configuration.urlCache = nil
-        session = URLSession(configuration: configuration, delegate: HermesRedirectGuard(), delegateQueue: nil)
-    }
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        try await BoundedHTTPReceiver.receive(request, in: session, limit: HermesTransportLimits.httpBody(for: request),
-            limitError: HermesTransportLimits.isArtifact(request) ? .artifactTooLarge : .incompatible)
-    }
-    func socket(for request: URLRequest) throws -> any HermesSocket {
-        let task = session.webSocketTask(with: request)
-        task.maximumMessageSize = HermesTransportLimits.history
-        task.resume()
-        return NativeHermesSocket(task: task)
-    }
-    func invalidate() { session.invalidateAndCancel() }
-}
-
 /// Accumulate URLSession chunks off the main actor. All mutable state is locked;
 /// cancellation may race the serial delegate callbacks, including before start.
 nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     typealias Response = (Data, HTTPURLResponse)
     private let url: URL?
     private let limit: Int
-    private let limitError: HermesServiceError
+    private let limitError: ConversationServiceError
     private let lock = NSLock()
     private var data = Data()
     private var response: HTTPURLResponse?
@@ -80,7 +15,7 @@ nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @
     private var earlyResult: Result<Response, any Error>?
 
     static func receive(_ request: URLRequest, in session: URLSession, limit: Int,
-                        limitError: HermesServiceError) async throws -> Response {
+                        limitError: ConversationServiceError) async throws -> Response {
         let receiver = BoundedHTTPReceiver(url: request.url, limit: limit, limitError: limitError)
         let task = session.dataTask(with: request)
         task.delegate = receiver
@@ -92,7 +27,7 @@ nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @
         }
     }
 
-    private init(url: URL?, limit: Int, limitError: HermesServiceError) {
+    private init(url: URL?, limit: Int, limitError: ConversationServiceError) {
         self.url = url; self.limit = limit; self.limitError = limitError
     }
 
@@ -125,7 +60,7 @@ nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        finish(.failure(HermesServiceError.redirected))
+        finish(.failure(ConversationServiceError.redirected))
         completionHandler(nil)
         task.cancel()
     }
@@ -133,10 +68,10 @@ nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
         guard let response = response as? HTTPURLResponse else {
-            finish(.failure(HermesServiceError.disconnected)); completionHandler(.cancel); return
+            finish(.failure(ConversationServiceError.disconnected)); completionHandler(.cancel); return
         }
         guard response.url == url, !(300..<400).contains(response.statusCode) else {
-            finish(.failure(HermesServiceError.redirected)); completionHandler(.cancel); return
+            finish(.failure(ConversationServiceError.redirected)); completionHandler(.cancel); return
         }
         // This is only an early refusal. The actual delivered bytes remain bounded
         // when Content-Length is missing, false, or describes compressed bytes.
@@ -167,24 +102,9 @@ nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         let result: Result<Response, any Error> = lock.withLock {
             if let error { return .failure(error) }
-            guard let response else { return .failure(HermesServiceError.disconnected) }
+            guard let response else { return .failure(ConversationServiceError.disconnected) }
             return .success((data, response))
         }
         finish(result)
     }
-}
-
-@MainActor final class NativeHermesSocket: HermesSocket {
-    private let task: URLSessionWebSocketTask
-    init(task: URLSessionWebSocketTask) { self.task = task }
-    var messageLimit: Int { task.maximumMessageSize }
-    func receive() async throws -> Data {
-        switch try await task.receive() {
-        case .data(let data): return data
-        case .string(let text): return Data(text.utf8)
-        @unknown default: throw HermesServiceError.incompatible
-        }
-    }
-    func send(_ data: Data) async throws { try await task.send(.string(String(decoding: data, as: UTF8.self))) }
-    func close() { task.cancel(with: .goingAway, reason: nil) }
 }

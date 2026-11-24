@@ -5,13 +5,13 @@
 Choose quiet or playful touch feedback for accepted actions, finished replies,
 requests, selected sheets, and milestones. **Done** is a small cue that a reply
 finished normally; it does not judge the answer. **Ta-da** belongs to milestones
-such as creating a bot, saving its profile, and completing setup.
+such as saving the bot’s appearance and completing setup.
 
 ## How to get to it
 
 - `haptics.e.settings`: Settings → **Touch** → **Haptics** and **Pulse while streaming**.
-- `haptics.e.chat`: open a bot and send, answer a request, or stop controlled work.
-- `haptics.e.sheet`: open Settings, New bot, bot profile, work details, or a rich reply preview.
+- `haptics.e.chat`: open a Space and send, answer a request, or stop controlled work.
+- `haptics.e.sheet`: open Settings, Botto’s page, work details, or a rich reply preview.
 - `haptics.e.playground`: Debug/Internal Settings → **Developer menu** → **Haptics playground**.
 
 ## Interactive checks

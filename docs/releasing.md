@@ -13,12 +13,12 @@ Apple build.
    to the same `MARKETING_VERSION` in `project.yml`, then regenerate the project
    with XcodeGen 2.46.0.
 2. Run the [contributor checks](../CONTRIBUTING.md#check-a-change), including the
-   relevant UI and file-export workflows. Check signed login, real Hermes
-   workflows, and physical notification delivery separately from unsigned tests.
+   relevant UI and file-export workflows. Verify signed T3 pairing, live Space workflows, and physical notification
+   delivery separately from unsigned tests.
    Resolve failures and update the [verification record](verification.md).
 3. Clone the exact candidate into a clean directory. Follow the README and run
    checks there without relying on local source checkouts or generated files.
-4. Refresh the README's sample-data screenshots. Review source, fixtures,
+4. Refresh any published sample-data screenshots. Review source, fixtures,
    documentation, dependencies, media, and archive metadata for private content.
    Keep credentials and signing material out of source and release assets.
 5. Preserve `LICENSE`, `LICENSES/`, `THIRD_PARTY_NOTICES.md`, and component licenses.

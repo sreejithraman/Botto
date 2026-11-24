@@ -26,7 +26,7 @@ struct T3FirstRunTests {
 
     @Test func providersReadAsWhatSomeoneStillHasToDo() throws {
         func state(_ json: String) throws -> T3ProviderStatus.State? {
-            T3ProviderStatus(try JSONDecoder().decode(HermesJSON.self, from: Data(json.utf8)))?.state
+            T3ProviderStatus(try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))?.state
         }
         let models = #""models":[{"slug":"m"}]"#
         #expect(try state(#"{"instanceId":"a","enabled":true,"installed":true,"status":"ready","auth":{"status":"authenticated"},\#(models)}"#) == .ready)
@@ -41,7 +41,7 @@ struct T3FirstRunTests {
 
     @Test func setupFailuresStayPlain() {
         #expect(T3FirstRun.message(for: T3ServiceError.invalidName) == "Enter a name.")
-        let failures: [any Error] = [T3ServiceError.disconnected, HermesServiceError.uncertain, T3RPCError.timeout, T3RPCError.transport,
+        let failures: [any Error] = [T3ServiceError.disconnected, ConversationServiceError.uncertain, T3RPCError.timeout, T3RPCError.transport,
                                      T3RPCError.remote(tag: "Dispatch", message: "T3 Code refused")]
         for failure in failures { #expect(!T3FirstRun.message(for: failure).contains("T3")) }
     }

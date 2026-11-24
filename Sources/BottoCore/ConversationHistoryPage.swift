@@ -14,7 +14,7 @@ public struct ConversationHistoryPage: Sendable {
             self.identity = identity; self.unavailableMessageIDs = unavailableMessageIDs
             self.sourceIDs = sourceIDs; self.exceedsRowLimit = exceedsRowLimit
         }
-        public var errorDescription: String? { HermesServiceError.incompatible.errorDescription }
+        public var errorDescription: String? { ConversationServiceError.incompatible.errorDescription }
     }
     public let messages: [ChatMessage]
     public let nextOffset: Int?

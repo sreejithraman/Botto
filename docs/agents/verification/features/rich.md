@@ -9,10 +9,10 @@ fallback, isolated resources, and stable reading while previews leave/return.
 
 ## How to get to it
 
-- `rich.e.demo`: welcome → **Explore the demo** → scroll to the **Canvas** row.
+- `rich.e.demo`: welcome → **Explore the demo** → open **Canvas** from the Spaces drawer.
   Scroll up from newest content to **Launch dashboard**,
   Mermaid diagram, SVG, and ordinary code.
-- `rich.e.host`: open a connected bot whose assistant reply contains complete
+- `rich.e.host`: open a Space whose assistant reply contains complete
   `html`/`htm`, `mermaid`, or `svg` fenced blocks.
 - `rich.e.controls`: **Show HTML source** / **Show Mermaid source** / **Show SVG
   source** (visible title Source); **Expand HTML preview** / **Expand Mermaid
@@ -97,7 +97,7 @@ Workflow `rich.boundaries`:
    Proof: source byte/edge manifest, error/source capture, responsive app.
 2. `.a2` On a disposable controlled host, deliver attempts at remote resource,
    navigation/download, parent bridge, cookie/storage access and infinite script.
-   Expect no Hermes secrets/native bridge/file/network access, no modal escape,
+   Expect no T3 secrets/native bridge/file/network access, no modal escape,
    and bounded failure with readable source. Retain controlled endpoint request
    counts and screen/log evidence. Source injection into a component supports
    sandbox checks but does not prove reply projection and UI wiring.

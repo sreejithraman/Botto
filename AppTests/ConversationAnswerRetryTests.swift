@@ -289,8 +289,8 @@ import BottoCore
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.uploads.isEmpty)
     }
 
-    @Test(arguments: [ConversationServiceError.invalidResponse, .responseTooLong])
-    func definiteValidationRejectionRenewsOnlyAttemptAndKeepsRowAuthority(rejection: ConversationServiceError) async throws {
+    @Test(arguments: [BottoCore.ConversationServiceError.invalidResponse, .responseTooLong])
+    func definiteValidationRejectionRenewsOnlyAttemptAndKeepsRowAuthority(rejection: BottoCore.ConversationServiceError) async throws {
         let (workspace, service, row) = try await fixture()
         let owner = try #require(workspace.screen(profile: service.profile)?.owner)
         service.responseError = rejection

@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { renderAvatarSvg } from '../../../scripts/avatar-engine/upstream/render.ts';
 import { examples } from '../../../scripts/avatar-engine/upstream/examples.ts';
-const presets = JSON.parse(readFileSync('Sources/BottoCore/Resources/HermesAvatarDefinitions.json', 'utf8'));
+const presets = JSON.parse(readFileSync('Sources/BottoCore/Resources/AvatarPresetDefinitions.json', 'utf8'));
 const source = '3a5119877844165eebafe57d3100da475f67d0a8';
 const color = '#b0c8e0';
 // Botto intentionally paints 85%-opaque black eyes over this opaque body.

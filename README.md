@@ -2,83 +2,53 @@
 
 # Botto
 
-Botto is a simple native iPhone and iPad app for your Hermes bots.
+Botto is a native Mac, iPhone, and iPad companion powered by T3 Code
+Orchestrator v2. Your Mac runs the work. Pair your phone directly to the Mac
+over LAN, Tailscale, or an HTTPS tunnel you operate.
 
 [![iOS checks](https://github.com/sreejithraman/Botto/actions/workflows/ios.yml/badge.svg?branch=main)](https://github.com/sreejithraman/Botto/actions/workflows/ios.yml)
 
-<p>
-  <img src="docs/screenshots/welcome.png" width="240" alt="Botto welcome screen with three bots and the tagline Big ideas. Little sidekicks.">
-  <img src="docs/screenshots/inbox.png" width="240" alt="Botto inbox with sample bots and their activity">
-  <img src="docs/screenshots/chat.png" width="240" alt="Botto chat with a sample bot and an approval request">
-</p>
-
-**Big ideas. Little sidekicks.**
-
-Chat with your bots, follow their work, and answer requests from your phone.
-Keep separate chats and drafts, attach photos and files, and preview what your
-bots create. Your Hermes host runs the work. Botto connects directly to it.
-
-Use **Bots** to chat, **Artifacts** to browse delivered work, and the separate
-**Search** tab to find bots, chats, messages, and files. Artifacts keeps the
-originating bot and chat attached to each result, with native preview, Save,
-and Share. Include references to also see inputs and other linked files.
-
-Optional [encrypted push notifications](docs/push-notifications.md) are
-experimental. They require an unreleased Hermes observer patch, a configured
-relay, and Apple provisioning. Signed physical-device delivery remains unverified.
+Use the **Main Space** to coordinate your work with Botto. Keep ongoing work
+in named **Spaces** with their own history and drafts. Send files and photos,
+answer approvals and questions, and preview the files Botto makes.
 
 ## Try it
 
-1. Open `Botto.xcodeproj` in Xcode and select the **Botto** scheme.
-2. Choose an iPhone or iPad Simulator and run.
-3. Choose **Explore the demo** to try sample bots without a server, or
-   **Pair with your Mac** to use your own. **Use a Hermes server** is on the
-   pairing screen.
+1. Open `Botto.xcodeproj` in Xcode and run **BottoMac** on your Mac. This
+   checkout uses an installed T3 CLI. Botto Settings accepts a custom executable
+   path.
+2. Set up a model provider in T3, then name your bot and choose its face in Botto.
+3. On the Mac, open **Pair Phone…**. On iPhone or iPad, choose **Pair with your
+   Mac** and scan the code or paste the link. Pairing uses a short-lived local
+   credential and requires no T3 Cloud account.
+4. Choose **Explore the demo** on iPhone or iPad to try sample Spaces without a
+   Mac connection.
 
-Botto supports iOS and iPadOS 18 or later. Building requires Xcode 27.1 or later
-with an installed iOS Simulator runtime. Physical-device builds require your
-own app and extension identifiers, signing team, Push Notifications provisioning,
-and shared Keychain configuration. See [build and signing](docs/setup.md#build-and-signing).
-
-[Connection setup](docs/setup.md) covers Hermes compatibility, sign-in, QR codes,
-and host reachability. [Rich replies and files](docs/rich-content.md) explains
-previews and supported formats. Demo content stays in a separate sample workspace.
+Botto supports macOS 15, iOS 18, and iPadOS 18 or later. See
+[setup and signing](docs/setup.md) for prerequisites and connection recovery,
+and [rich replies and files](docs/rich-content.md) for supported previews.
 
 ## Development
 
-The Xcode project is checked in. You only need XcodeGen when changing
-[project.yml](project.yml).
-
-Debug and Internal builds include **Settings → Developer menu** with avatar and
-haptics playgrounds. Use the **Botto Internal** scheme for internal TestFlight;
-public Release builds exclude these tools. See [developer tools](docs/developer-tools.md).
+The Xcode project is checked in. Regenerate it with XcodeGen when
+[project.yml](project.yml) changes. Debug and Internal builds include
+[developer tools](docs/developer-tools.md).
 
 ```sh
 ./scripts/check-core.sh
 ```
 
-This runs the Swift package tests and a MainActor compatibility build.
-See [Contributing](CONTRIBUTING.md) for native tests, CI, and the full UI and
-file-export checks. [Verification results](docs/verification.md) record what
-has actually been tested and the remaining limits.
+This runs the Swift package tests and a MainActor compatibility build. See
+[local checks](docs/local-checks.md), [BottoCore integration](docs/core-integration.md),
+and the [verification record](docs/verification.md).
 
-## Thanks to Hermex
+## License and credits
 
-Botto owes a great deal to [Hermex](https://github.com/uzairansaruzi/hermex),
-by Uzair Ansar. Its design and implementation shaped this project, and parts of
-Botto adapt Hermex code. Thank you for sharing that work openly.
+Botto is licensed under the [MIT License](LICENSE). Botto uses
+[T3 Code](https://github.com/pingdotgg/t3code) and adapts work from
+[Hermex](https://github.com/uzairansaruzi/hermex) by Uzair Ansar. See
+[third-party notices](THIRD_PARTY_NOTICES.md) and the bundled [licenses](LICENSES/).
 
-Botto is an independent client for [Hermes Agent](https://github.com/NousResearch/hermes-agent),
-by Nous Research. See [Third-party notices](THIRD_PARTY_NOTICES.md) and the
-bundled [licenses](LICENSES/) for attribution and license terms.
-
-## License
-
-Botto is licensed under the [MIT License](LICENSE). Third-party code retains
-its own notices and license terms.
-
-See the [changelog](CHANGELOG.md) for release notes and
-[verification status](docs/verification.md) for tested platforms and known limits.
-
-For bugs and changes, see [Contributing](CONTRIBUTING.md).
-For sensitive reports, see [Security](SECURITY.md).
+See the [changelog](CHANGELOG.md) for release notes,
+[Contributing](CONTRIBUTING.md) for changes, and [Security](SECURITY.md) for
+sensitive reports.

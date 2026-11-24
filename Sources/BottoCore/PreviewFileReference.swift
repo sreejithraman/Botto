@@ -1,6 +1,6 @@
 import Foundation
 
-/// A Hermes `::preview` file is an opaque host path, never an iPhone file URL.
+/// A `::preview` file is an opaque host path, never an iPhone file URL.
 public struct PreviewFileReference: Equatable, Sendable {
     public let attachment: ChatAttachment
     public let initialHeight: Int?

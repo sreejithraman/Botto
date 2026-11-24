@@ -5,7 +5,7 @@ import Foundation
 public struct ExactID: Hashable, Codable, Sendable {
     public let bytes: Data
     public init(_ text: String) throws {
-        guard !text.isEmpty else { throw HermesServiceError.wrongConversation }
+        guard !text.isEmpty else { throw ConversationServiceError.wrongConversation }
         bytes = Data(text.utf8)
     }
     public var text: String { String(decoding: bytes, as: UTF8.self) }
@@ -82,14 +82,14 @@ public struct ConversationAccess: Hashable, Sendable {
     private var closed = false
     public init() {}
     public func issue(_ context: Context) throws -> ConversationAccess {
-        guard !closed else { throw HermesServiceError.staleConversation }
+        guard !closed else { throw ConversationServiceError.staleConversation }
         let nonce = UUID()
         current = (nonce, context)
         return ConversationAccess(issuer: identity, nonce: nonce)
     }
     public func resolve(_ access: ConversationAccess) throws -> Context {
         guard !closed, access.issuer == identity, let current,
-              current.nonce == access.nonce else { throw HermesServiceError.staleConversation }
+              current.nonce == access.nonce else { throw ConversationServiceError.staleConversation }
         return current.context
     }
     public func retireAttachment() { current = nil }

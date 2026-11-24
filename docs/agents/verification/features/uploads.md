@@ -2,7 +2,7 @@
 
 ## User-facing description
 
-Add files or library images to a bot's draft, or paste them into the composer,
+Add files or library images to a Space's draft, or paste them into the composer,
 remove staged attachments, and send them into the selected conversation.
 Sub-features: system Files/Photos pickers, native paste, thumbnail tiles,
 per-tile progress, budgets, attachment-only send, the sent deck, and retirement
@@ -31,7 +31,7 @@ when the originating conversation or connection changes.
 ## Interactive checks
 
 Use [shared setup](../index.md), run-owned local files and photo-library fixtures
-with known original/prepared bytes, two bots, and a disposable host. Upload can
+with known original/prepared bytes, two Spaces in a disposable workspace. Upload can
 write remotely before Send; removing a chip is not remote file deletion. Retain
 only harmless fixture names/content. **Draft; no complete recipe run here.** See
 the 4 November 2026 [verification record](../../../verification.md) for what ran.
@@ -98,7 +98,7 @@ Workflow `uploads.retirement`:
 1. `.a1` Hold Files read, Photos read, and host upload separately. While pending,
    leave the conversation, select a sibling chat, open a different bot, background, or replace/reconnect
    the workspace. Release the old operation; expect no bytes/chip/error published
-   into the new owner. Proof: both bot identities, before/after snapshots and
+   into the new owner. Proof: both Space identities, before/after snapshots and
    independent host file/message association. Repeat success and late error.
 2. `.a2` Complete a staged upload, select a sibling chat, and return. Expect the
    unconsumed file still sendable only in its original chat. Then restart with
@@ -119,7 +119,7 @@ Source: [ChatComposer](../../../../App/Views/ChatComposer.swift),
 [AttachmentLimits](../../../../Sources/BottoCore/AttachmentLimits.swift).
 [Verification history](../../../verification.md) records small-iPhone Files
 upload, host acknowledgment and canonical reopen, and core network round trips
-against both backends. Native state tests cover stale destinations and budgets;
+with the previous backend. Run these assertions separately on T3. Native state tests cover stale destinations and budgets.
 they do not prove all public picker cancellation/replacement paths. Actual
 Photos permissions and structured native-image history remain partly unproved.
 An old upload may already exist remotely after cancellation; require no wrong

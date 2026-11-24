@@ -9,20 +9,20 @@ import Testing
     (#"{"output":"Success","error":"   ","exit_code":0}"#, nil)
 ] as [(String, String?)])
 func collapsedDetailsIdentifyFailureAlongsideOutput(_ example: (String, String?)) {
-    #expect(HermesDetailPayload.failureSummary(example.0) == example.1)
+    #expect(ToolDetailPayload.failureSummary(example.0) == example.1)
 }
 
-@Test func hermesDetailsDecodeToolContentWithoutLosingMetadata() {
+@Test func toolDetailsDecodeToolContentWithoutLosingMetadata() {
     let raw = ###"{"content":"## Native daily worker\n\nFiles updated.","success":true}"###
-    let sections = HermesDetailPayload.sections(raw)
+    let sections = ToolDetailPayload.sections(raw)
 
     #expect(sections.map(\.text) == ["## Native daily worker\n\nFiles updated.", "{\n  \"success\": true\n}"])
     #expect(sections.map(\.format) == [.markdown, .json])
 }
 
-@Test func hermesDetailsPreserveJSONTokensAndEscapedStrings() {
+@Test func toolDetailsPreserveJSONTokensAndEscapedStrings() {
     let raw = #"[{"id":1234567890123456789012345678901234567890,"id":-0.00e+12,"literal":"a, b: {c} \\\"quoted\\\"","empty":[]}]"#
-    let sections = HermesDetailPayload.sections(raw)
+    let sections = ToolDetailPayload.sections(raw)
 
     #expect(sections.count == 1)
     #expect(sections[0].format == .json)
@@ -32,10 +32,10 @@ func collapsedDetailsIdentifyFailureAlongsideOutput(_ example: (String, String?)
     #expect((try? JSONSerialization.jsonObject(with: Data(sections[0].text.utf8))) != nil)
 }
 
-@Test func hermesDetailsDecodeNestedResultStrings() throws {
+@Test func toolDetailsDecodeNestedResultStrings() throws {
     let nested = #"{"result":{"output":"first\nsecond","exit_code":0},"ok":true}"#
     let raw = String(decoding: try JSONSerialization.data(withJSONObject: ["result": nested]), as: UTF8.self)
-    let sections = HermesDetailPayload.sections(raw)
+    let sections = ToolDetailPayload.sections(raw)
 
     #expect(sections.contains { $0.format == .markdown && $0.text == "first\nsecond" })
     #expect(sections.contains { $0.format == .json && $0.text.contains("\"exit_code\": 0") })
@@ -43,36 +43,36 @@ func collapsedDetailsIdentifyFailureAlongsideOutput(_ example: (String, String?)
 }
 
 @Test(arguments: ["  ordinary\\ntext  ", "{broken", "[1,]", "true", "42", #""quoted\ntext""#, "{\"n\": NaN}"])
-func hermesDetailsPreserveUnstructuredInputExactly(raw: String) {
-    let sections = HermesDetailPayload.sections(raw)
+func toolDetailsPreserveUnstructuredInputExactly(raw: String) {
+    let sections = ToolDetailPayload.sections(raw)
     #expect(sections.count == 1)
     #expect(sections[0].text == raw)
     #expect(sections[0].format == .plain)
 }
 
-@Test func hermesDetailsBoundOversizedAndDeepInput() {
+@Test func toolDetailsBoundOversizedAndDeepInput() {
     let oversized = "{\"content\":\"" + String(repeating: "é", count: 132_000) + "\"}"
     let deep = String(repeating: "[", count: 33) + "0" + String(repeating: "]", count: 33)
     for raw in [oversized, deep] {
-        #expect(HermesDetailPayload.sections(raw).map(\.text) == [raw])
-        #expect(HermesDetailPayload.sections(raw).map(\.format) == [.plain])
+        #expect(ToolDetailPayload.sections(raw).map(\.text) == [raw])
+        #expect(ToolDetailPayload.sections(raw).map(\.format) == [.plain])
     }
 }
 
-@Test func hermesDetailsBoundNestedStringWrappers() throws {
+@Test func toolDetailsBoundNestedStringWrappers() throws {
     var raw = #"{"content":"text"}"#
     for _ in 0..<8 {
         raw = String(decoding: try JSONSerialization.data(withJSONObject: ["result": raw]), as: UTF8.self)
     }
-    let sections = HermesDetailPayload.sections(raw)
+    let sections = ToolDetailPayload.sections(raw)
     #expect(sections.count == 1)
     #expect(sections[0].format == .json)
     #expect(sections[0].text.contains("result"))
 }
 
-@Test func hermesDetailsUnwrapTextBlocksAndRetainNonTextBlocks() {
+@Test func toolDetailsUnwrapTextBlocksAndRetainNonTextBlocks() {
     let raw = #"{"content":[{"type":"text","text":"Read\nthis"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}"#
-    let sections = HermesDetailPayload.sections(raw)
+    let sections = ToolDetailPayload.sections(raw)
 
     #expect(sections.contains { $0.format == .markdown && $0.text == "Read\nthis" })
     #expect(sections.contains { $0.format == .json && $0.text.contains("https://example.com/a.png") })

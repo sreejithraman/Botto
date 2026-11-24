@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated public enum HermesDetailPayload {
+nonisolated public enum ToolDetailPayload {
     nonisolated public enum Format: Equatable, Sendable { case plain, markdown, json }
 
     nonisolated public struct Section: Equatable, Sendable {

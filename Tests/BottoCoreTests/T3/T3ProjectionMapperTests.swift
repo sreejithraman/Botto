@@ -228,13 +228,13 @@ import Testing
         #expect(projection.conversation(source).messages.map(\.text) == ["Held"])
     }
 
-    private func event(_ type: String, _ payload: String) throws -> HermesJSON {
+    private func event(_ type: String, _ payload: String) throws -> JSONValue {
         try t3JSON("""
         {"id":"event-\(type)","threadId":"thread","type":"\(type)","occurredAt":"2026-11-24T12:01:04Z","payload":\(payload)}
         """)
     }
 }
 
-func t3JSON(_ source: String) throws -> HermesJSON {
-    try JSONDecoder().decode(HermesJSON.self, from: Data(source.utf8))
+func t3JSON(_ source: String) throws -> JSONValue {
+    try JSONDecoder().decode(JSONValue.self, from: Data(source.utf8))
 }

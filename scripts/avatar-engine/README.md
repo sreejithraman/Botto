@@ -21,7 +21,7 @@ the first canonical hexagon, rounds the triangle with tangent circular arcs and
 enlarges the cloud's center puff. The cloud is mirrored so its larger side puff
 sits on the right. Shape IDs, colors and eye definitions stay independent of
 those contours. Regenerate resting frames after editing
-`HermesAvatarDefinitions.json`.
+`AvatarPresetDefinitions.json`.
 
 Regenerate the local JavaScriptCore bundle and canonical resting preset frames:
 

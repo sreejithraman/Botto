@@ -89,6 +89,22 @@ public struct BotDraft: Equatable, Sendable {
     }
 }
 
+public enum BotAvatarGenerationError: Error, LocalizedError, Equatable, Sendable {
+    case invalidDescription, alreadyGenerating, unsupportedHost, missingChat, invalidResult, failed, timedOut
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidDescription: "Describe a character using 1–1,000 characters."
+        case .alreadyGenerating: "A character is already being created for this bot."
+        case .unsupportedHost: "This connection does not support creating characters in Botto."
+        case .missingChat: "Open the main conversation before creating a character."
+        case .invalidResult: "The host returned an invalid character. Your previous avatar is unchanged. Try a simpler description."
+        case .failed: "The host couldn’t create this character. Check its model configuration, then try again."
+        case .timedOut: "Creating the character took too long. Your previous avatar is unchanged. Try again when the host is ready."
+        }
+    }
+}
+
 /// Only fields deliberately changed in the profile editor. Identity remains stable.
 public struct BotProfileEdit: Equatable, Sendable {
     public var name: String?
@@ -267,7 +283,7 @@ public enum MessageDelivery: Equatable, Sendable {
     func createBot(_ draft: BotDraft) async throws -> BotProfile
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
-    /// Creates an unsaved drawing through Hermes routing without changing chat history.
+    /// Creates an unsaved drawing without changing chat history.
     func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
@@ -302,11 +318,11 @@ public extension BotService {
     func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws { throw PushError.unsupported }
     func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult { throw PushError.unsupported }
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
 
     func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
 
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
@@ -314,11 +330,11 @@ public extension BotService {
     }
 
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
     func replaceQueuedMessage(_ message: QueuedMessage, text: String, access: ConversationAccess,
                               operationID: UUID) async throws -> MutationReceipt {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
 
     func send(text: String, attachments: [ChatAttachment], access: ConversationAccess,
@@ -327,10 +343,10 @@ public extension BotService {
     }
 
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
 
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
-        throw HermesServiceError.rejected(-32601)
+        throw ConversationServiceError.rejected(-32601)
     }
 }

@@ -39,7 +39,7 @@ not a promise that people will distinguish them until tested.
 | Event | Pattern | Trigger and visible landmark |
 | --- | --- | --- |
 | Send, steer, or queue a message | Tap | A definite host receipt is accepted and the UI reflects admission. A button press alone is insufficient. |
-| Submit an approval, denial, or answer | Tap | Hermes confirms the response. Denial is a valid choice and gets the same acknowledgment. |
+| Submit an approval, denial, or answer | Tap | The host confirms the response. Denial is a valid choice and gets the same acknowledgment. |
 | Copy text or finish a requested attachment import | Tap | The pasteboard write or import succeeds and Copied or the attachment chip appears. A picker cancellation stays quiet. |
 | Choose an avatar shape, color, or chat | Tick | The user's choice changes the local selection. An avatar preview is a local choice, not a saved profile. |
 | Open a selected sheet | Cushion | The actual sheet reaches its presented state. See the sheet map below. |
