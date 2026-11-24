@@ -163,8 +163,8 @@ import Testing
         manifest.description = "Tracks releases."
         manifest.providerInstanceID = model.providerInstanceID
         manifest.model = model.modelID
-        try await store.saveT3Soul("# Be curious")
-        try await store.saveT3Memory("# Release checklist")
+        try await store.saveT3Soul("# Be curious", replacing: original.soulMarkdown)
+        try await store.saveT3Memory("# Release checklist", replacing: original.memoryMarkdown)
         try await store.saveT3Manifest(manifest)
 
         let saved = try await store.loadT3BotBrain()
@@ -468,8 +468,14 @@ import Testing
         .init(manifest: manifest, soulMarkdown: soul, memoryMarkdown: memory, skills: ["skills/check"],
               workspaceRoot: "/host/.botto/bots/main")
     }
-    func saveSoul(_ markdown: String) async throws { soul = markdown }
-    func saveMemory(_ markdown: String) async throws { memory = markdown }
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws {
+        if let expected, expected != soul { throw T3ServiceError.proseChanged }
+        soul = markdown
+    }
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws {
+        if let expected, expected != memory { throw T3ServiceError.proseChanged }
+        memory = markdown
+    }
     func saveManifest(_ manifest: T3BotManifest) async throws { self.manifest = manifest }
     func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
         manifest.providerInstanceID = option?.providerInstanceID

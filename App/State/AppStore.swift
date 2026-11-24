@@ -628,12 +628,12 @@ import BottoCore
         try await withT3Service { try await $0.loadBotBrain() }
     }
 
-    func saveT3Soul(_ markdown: String) async throws {
-        try await withT3Service { try await $0.saveSoul(markdown) }
+    func saveT3Soul(_ markdown: String, replacing expected: String) async throws {
+        try await withT3Service { try await $0.saveSoul(markdown, replacing: expected) }
     }
 
-    func saveT3Memory(_ markdown: String) async throws {
-        try await withT3Service { try await $0.saveMemory(markdown) }
+    func saveT3Memory(_ markdown: String, replacing expected: String) async throws {
+        try await withT3Service { try await $0.saveMemory(markdown, replacing: expected) }
     }
 
     func saveT3Manifest(_ manifest: T3BotManifest) async throws {
