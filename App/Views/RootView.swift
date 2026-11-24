@@ -50,7 +50,10 @@ struct RootView: View {
             if store.configuration != nil {
                 T3Workspace(store: store, presentation: presentation,
                             rootCovered: sheet != nil || store.showsConnection,
-                            onSettings: { presentSheet(.settings) })
+                            onSettings: {
+                                guard sheet == nil, !store.showsConnection else { return }
+                                presentSheet(.settings)
+                            })
                     .id(ObjectIdentifier(store.chats))
             } else {
                 if let onExitDemoPreview {

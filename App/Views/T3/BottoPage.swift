@@ -31,6 +31,7 @@ struct BottoPage: View {
     @State private var openedOutput: T3OutputFile?
     @FocusState private var editingName: Bool
     private let workspace: ConversationWorkspace
+    private let scope: ArtifactCacheScope?
 
     private struct BrainLoad: Equatable { let online: Bool; let retry: Int }
 
@@ -42,9 +43,10 @@ struct BottoPage: View {
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings
         workspace = store.chats
+        scope = store.connectionScope
     }
 
-    private var isCurrent: Bool { store.chats === workspace }
+    private var isCurrent: Bool { store.chats === workspace && store.connectionScope == scope }
 
     var body: some View {
         NavigationStack {
@@ -92,6 +94,7 @@ struct BottoPage: View {
         .onChange(of: store.primaryT3Bot?.name) { _, value in
             if !editingName, drafts.submittedName == nil, drafts.nameError == nil, let value { drafts.name = value }
         }
+        .onChange(of: store.connectionScope) { _, _ in if !isCurrent { dismiss() } }
     }
 
     // MARK: Hero
@@ -1104,10 +1107,12 @@ struct T3FaceEditor: View {
                     .frame(maxWidth: .infinity)
                     .accessibilityLabel("Preview of \(preview.name)’s look")
                 if store.isDemo {
-                    Button("Preview sample character") {
+                    Button {
                         let appearance = preview.appearance
                         let color = appearance?.color.map(BotAvatarEdit.Color.value) ?? .automatic
                         selection = .geometry(DemoBotService.sampleCharacter, color: color)
+                    } label: {
+                        Text("Preview sample character").frame(minHeight: 44)
                     }
                     .disabled(saving)
                 }

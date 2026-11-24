@@ -342,6 +342,8 @@ import BottoCore
     @ObservationIgnored private let artifactCache: ArtifactCache
     private var mountedArtifactScope: ArtifactCacheScope?
     @ObservationIgnored private let persistence: ConnectionPersistence
+    private var olderSavedSetupID: UUID?
+    var hasOlderSavedSetup: Bool { olderSavedSetupID != nil }
     @ObservationIgnored private let cleanupHistory: (UUID?) throws -> Void
     @ObservationIgnored private var richReplies: RichReplyPresentations?
     private var generation: UUID { connection.generation }
@@ -387,6 +389,7 @@ import BottoCore
             let saved = try persistence.load()
             savedSetupLoadFailed = false
             configuration = saved.flatMap { $0.t3 != nil || injectedService != nil ? $0 : nil }
+            olderSavedSetupID = configuration == nil ? saved?.id : nil
             // Leave older setup and cache alone until the user successfully pairs a Mac.
             if saved != nil, configuration == nil {
                 connection.restore(hasSavedSetup: false)
@@ -425,6 +428,10 @@ import BottoCore
             installationID: configuration.installID.map { Data($0.utf8) }, username: Data(configuration.username.utf8),
             provider: configuration.nativeCredential.map { Data($0.provider.utf8) },
             backend: configuration.t3.map { _ in backendAccount(configuration) })
+    }
+
+    var connectionScope: ArtifactCacheScope? {
+        configuration.map(Self.artifactScope)
     }
 
     private func mount(_ history: LocalHistory, configuration: ConnectionConfiguration?) {
@@ -967,6 +974,7 @@ import BottoCore
             chats.setOnline(true)
             reconcileArtifactPresentation()
             if !isDemo {
+                olderSavedSetupID = nil
                 if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) { LocalHistory.remove(for: previousID) }
                 cleanHistory(keeping: saved.id)
             }
@@ -1596,7 +1604,8 @@ import BottoCore
             }
         }
         catch { notice = error.localizedDescription; return }
-        let oldID = configuration?.id
+        let oldID = configuration?.id ?? olderSavedSetupID
+        olderSavedSetupID = nil
         pendingPushNotification = nil; notificationRouting = nil
         t3NotificationLaunchScope = nil
         if let oldID { artifactCache.discard(configurationID: oldID) }

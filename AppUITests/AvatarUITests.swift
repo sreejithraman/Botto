@@ -61,11 +61,14 @@ final class AvatarUITests: XCTestCase {
         XCTAssertTrue(look.waitForExistence(timeout: 5))
         look.tap()
         XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        for _ in 0..<8 where !teal.isHittable { app.swipeUp() }
         XCTAssertTrue(teal.isSelected)
+        for _ in 0..<8 where !app.buttons["avatar-shape-circle"].isHittable { app.swipeDown() }
         chooseShape("circle", in: app)
         app.navigationBars.buttons.firstMatch.tap()
         look.tap()
         XCTAssertTrue(cat.waitForExistence(timeout: 5))
+        for _ in 0..<8 where !teal.isHittable { app.swipeUp() }
         XCTAssertTrue(teal.isSelected)
     }
 

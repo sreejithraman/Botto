@@ -8,7 +8,6 @@ struct T3Workspace: View {
     let presentation: WorkspacePresentation
     let rootCovered: Bool
     let onSettings: () -> Void
-
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editing = ComposerEditingHandle()
@@ -311,7 +310,7 @@ struct T3Workspace: View {
     private func routeFromBotto() {
         guard let pending = pendingBottoDestination else { return }
         pendingBottoDestination = nil
-        guard pending.workspace == ObjectIdentifier(store.chats), !rootCovered else { return }
+        guard pending.workspace == ObjectIdentifier(store.chats), !rootCovered, !store.showsConnection else { return }
         switch pending.destination {
         case .space(let channel): open(channel)
         case .settings: onSettings()

@@ -407,7 +407,7 @@ import UIKit
         let storage = MemoryConnectionStorage(saved: original)
         let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
         await store.start()
-        let general = try #require(store.t3Channels.first(where: \.isMain))
+        let general = try #require(store.t3Channels.first { $0.isMain })
         try #require(await store.openT3Channel(general))
         let profile = try ExactID("bot-project")
         let owner = try #require(store.chats.screen(profile: profile)?.owner)
@@ -418,9 +418,11 @@ import UIKit
         let replaced = await store.connect(candidate)
 
         if replacement == .failedSave {
+            let candidateCache = try LocalHistory.file(for: candidate.id)
             #expect(!replaced)
             #expect(storage.saved == original)
             #expect(store.chats.draft(owner) == draft)
+            #expect(!FileManager.default.fileExists(atPath: candidateCache.path))
         } else {
             try #require(replaced)
             #expect(storage.saved?.id == candidate.id)
@@ -506,10 +508,35 @@ import UIKit
 
         #expect(!store.savedSetupLoadFailed)
         #expect(store.configuration == nil)
+        #expect(store.hasOlderSavedSetup)
         #expect(storage.saved == older)
         try #require(await store.connect(candidate))
         #expect(store.configuration == candidate)
         #expect(storage.saved == candidate)
+        #expect(!store.hasOlderSavedSetup)
+    }
+
+    @Test func olderSavedSetupCanBeForgottenWithoutConnecting() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        defer { LocalHistory.remove(for: older.id) }
+        var history = LocalHistory()
+        try history.fixtureDraft("An older draft", profile: "milo")
+        try history.save(for: older.id)
+        let cache = try LocalHistory.file(for: older.id)
+        let storage = MemoryConnectionStorage(saved: older)
+        let store = AppStore(persistence: storage.persistence)
+
+        try await withHosted(RootView(store: store)) { window in
+            let options = try await labels(in: window) { $0.contains("Forget saved setup") }
+            #expect(options.contains("Pair with your Mac"))
+            #expect(options.contains("Explore the demo"))
+        }
+        store.forgetConnection()
+
+        #expect(storage.saved == nil)
+        #expect(!store.hasOlderSavedSetup)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
     }
 
     @Test func passesOutputsThroughTheMountedService() async throws {
@@ -671,6 +698,29 @@ import UIKit
             _ = try await header(in: window)
             #expect(store.selectedT3ChannelID == "release")
             #expect(service.openedStoredThreads == ["release"])
+        }
+    }
+
+    @Test func aResolvedProjectChangeReopensTheInitialSpaceWithTheSameSetupID() async throws {
+        let original = t3Configuration()
+        var replacement = original
+        replacement.t3?.projectID = "another-project"
+        defer { LocalHistory.remove(for: original.id) }
+        let first = T3WorkspaceService(), next = T3WorkspaceService()
+        let store = AppStore(persistence: MemoryConnectionStorage(saved: original).persistence, makeService: { configuration in
+            configuration?.t3?.projectID == "another-project" ? next : first
+        })
+        await store.start()
+
+        try await withHosted(RootView(store: store)) { window in
+            _ = try await header(in: window)
+            #expect(first.openedStoredThreads == ["release"])
+            try #require(await store.connect(replacement))
+            _ = try await header(in: window)
+            #expect(store.configuration?.id == original.id)
+            #expect(store.configuration?.t3?.projectID == "another-project")
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(next.openedStoredThreads == ["release"])
         }
     }
 
