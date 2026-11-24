@@ -50,20 +50,31 @@ final class MacAutosaver {
         await commit()
     }
 
+    var refreshRevision: UUID? { hasUnsavedEdits ? nil : revision }
+
+    func refresh(_ loaded: String, revision observed: UUID?) {
+        guard let observed, observed == refreshRevision else { return }
+        accept(loaded)
+    }
+
     func reload(using read: @MainActor () async throws -> String) async {
         let observed = revision
         do {
             let loaded = try await read()
             guard !Task.isCancelled, observed == revision, inFlight == nil else { return }
-            timer?.cancel()
-            pending = nil
-            text = loaded
-            saved = loaded
-            revision = UUID()
-            state = .idle
+            accept(loaded)
         } catch where !Task.isCancelled && observed == revision {
             state = .failed(error.localizedDescription)
         } catch { }
+    }
+
+    private func accept(_ loaded: String) {
+        timer?.cancel()
+        pending = nil
+        text = loaded
+        saved = loaded
+        revision = UUID()
+        state = .idle
     }
 
     private func commit() async {

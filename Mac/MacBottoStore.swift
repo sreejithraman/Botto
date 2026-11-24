@@ -16,11 +16,8 @@ final class MacBottoStore {
     private(set) var memoryDraft: MacAutosaver?
     private var proseWorkspace: ProseWorkspace?
     var drafts: [String: String] = [:]
-    var freshDraft = ""
-    var freshName = ""
-    var freshFiles: [URL] = []
-    private var freshCreatedSpace: String?
-    private var pendingMutationNotice: String?
+    let fresh = MacFreshDraft()
+    private(set) var pendingMutationNotice: String?
 
     private struct ProseWorkspace: Equatable {
         let profile: String
@@ -33,7 +30,6 @@ final class MacBottoStore {
     private(set) var isConnected = false
     private(set) var isConnecting = false
     private(set) var isOpeningChannel = false
-    private(set) var isStartingSpace = false
     private(set) var isSending = false
     private(set) var isStopping = false
     private(set) var respondingRequestIDs: Set<String> = []
@@ -41,8 +37,6 @@ final class MacBottoStore {
     private(set) var error: String?
     /// The trailing Botto inspector (⌘I).
     var showsInspector = false
-    /// The model the next new space starts with. Nil keeps Botto's default.
-    var freshModel: T3ModelOption?
 
     var selectedChannel: T3ChannelSummary? { channels.first { $0.id == selectedChannelID } }
     /// Botto's folder. The local engine runs on this Mac, so the path is a real local folder.
@@ -97,6 +91,7 @@ final class MacBottoStore {
             isConnected = true
             isConnecting = false
             Task { await loadModels() }
+            if selectedChannelID == nil, fresh.createdSpace != nil { return }
             // Reopen the space from before a restart, else one that needs attention, else the main space.
             // The new-space page only stands in when the host can't hold a main space yet.
             if !channels.contains(where: { $0.isMain }) {
@@ -128,7 +123,6 @@ final class MacBottoStore {
         isConnected = false
         isConnecting = false
         isOpeningChannel = false
-        isStartingSpace = false
         isSending = false
         isStopping = false
         respondingRequestIDs.removeAll()
@@ -150,15 +144,7 @@ final class MacBottoStore {
         error = nil
         defer { if openID == attempt { isOpeningChannel = false } }
         do {
-            let profile = try ExactID(bot.id)
-            let target: SessionTarget
-            if let id {
-                let thread = try ExactID(id)
-                target = .stored(.init(profile: profile, root: thread, stored: thread, aliases: []))
-            } else {
-                target = .canonical(profile: profile, expectedRoot: nil)
-            }
-            let opened = try await service.openChat(target)
+            let opened = try await readChannel(id, bot: bot)
             guard openID == attempt else { return }
             selectedChannelID = opened.identity.stored.text
             if openedConversation?.access != opened.access { openedConversation = opened }
@@ -169,6 +155,13 @@ final class MacBottoStore {
         }
     }
 
+    private func readChannel(_ id: String?, bot: BotProfile) async throws -> OpenedConversation {
+        let profile = try ExactID(bot.id)
+        guard let id else { return try await service.openChat(.canonical(profile: profile, expectedRoot: nil)) }
+        let thread = try ExactID(id)
+        return try await service.openChat(.stored(.init(profile: profile, root: thread, stored: thread, aliases: [])))
+    }
+
     /// Leaves the open space for the new-space page. Nothing is created until it has a name or a message.
     func showFreshPage() {
         openID = UUID()
@@ -176,73 +169,45 @@ final class MacBottoStore {
         openedConversation = nil
         stagedAttachments.removeAll()
         isOpeningChannel = false
-        freshModel = nil
         error = nil
     }
 
-    /// Starts a space from the new-space page: create, open, attach, then send the first message.
-    /// Without a name, T3 names it from that message; with one, the message is optional.
-    /// Returns the created space when its first message did not go out, so the caller can keep the draft there.
-    func startSpace(named name: String = "", text: String, files: [URL]) async -> (spaceID: String?, sent: Bool) {
-        guard pendingMutationNotice == nil else { error = pendingMutationNotice; return (nil, false) }
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isConnected, !isStartingSpace, !text.isEmpty || !files.isEmpty || !name.isEmpty else { return (nil, false) }
-        let connection = connectionID
+    func startSpace() async {
+        guard pendingMutationNotice == nil, isConnected, selectedChannelID == nil, let bot else { return }
         let navigation = openID
-        let model = freshModel
-        isStartingSpace = true
-        defer { if connectionID == connection { isStartingSpace = false } }
-        let id: String
-        if let created = freshCreatedSpace {
-            guard channels.contains(where: { $0.id == created && !$0.isArchived }) else {
-                error = T3ServiceError.missingChannel.localizedDescription
-                return (created, false)
+        var completed: String?
+        await perform {
+            completed = try await fresh.submit { title in
+                let created = try await service.createChat(title: title)
+                channels = service.currentT3Channels
+                return created.summary.identity.stored.text
+            } send: { id, text, files, model in
+                guard openID == navigation else { throw CancellationError() }
+                guard channels.contains(where: { $0.id == id && !$0.isArchived }) else {
+                    throw T3ServiceError.missingChannel
+                }
+                if let model {
+                    try await service.setChannelModel(threadID: id, providerInstanceID: model.providerInstanceID, model: model.modelID)
+                }
+                guard !text.isEmpty || !files.isEmpty else { return }
+                let opened = try await readChannel(id, bot: bot)
+                let attachments = try await uploadFreshFiles(files, access: opened.access)
+                guard openID == navigation else { throw CancellationError() }
+                _ = try await service.send(text: text, attachments: attachments, delivery: .queue,
+                                           access: opened.access, operationID: UUID())
             }
-            id = created
-        } else {
-            var created: String?
-            let current = await perform {
-                created = try await service.createChat(title: name.isEmpty ? nil : name).summary.identity.stored.text
-            }
-            guard let created else { return (nil, false) }
-            freshCreatedSpace = created
-            guard current else { return (created, false) }
-            id = created
         }
-        channels = service.currentT3Channels
-        guard openID == navigation else { return (id, false) }
-        if let model {
-            guard await perform({
-                try await service.setChannelModel(threadID: id, providerInstanceID: model.providerInstanceID, model: model.modelID)
-            }) else { return (id, false) }
-        }
-        guard connectionID == connection, openID == navigation else { return (id, false) }
-        freshModel = nil
-        await openChannel(id)
-        guard connectionID == connection, let opened = openedConversation, opened.identity.stored.text == id else {
-            return (id, false)
-        }
-        if text.isEmpty, files.isEmpty {
-            freshCreatedSpace = nil
-            return (id, true)
-        }
-        let batch = await attach(files)
-        guard connectionID == connection, batch.count == files.count else { return (id, false) }
-        let sent = await send(text: text, firstSend: (opened.access, batch))
-        if sent { freshCreatedSpace = nil }
-        return (id, sent)
+        if let completed, openID == navigation { await openChannel(completed) }
     }
 
     @discardableResult
-    func send(text: String, firstSend: (access: ConversationAccess, files: [ChatAttachment])? = nil) async -> Bool {
-        guard pendingMutationNotice == nil else { error = pendingMutationNotice; return false }
+    func send(text: String) async -> Bool {
+        guard pendingMutationNotice == nil else { return false }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = readyAttachments
         guard !text.isEmpty || !attachments.isEmpty, !isSending, stagedAttachments.count == attachments.count,
               selectedChannel?.isArchived != true,
               let access = openedConversation?.access else { return false }
-        if let firstSend, access != firstSend.access || attachments != firstSend.files { return false }
         let connection = connectionID
         isSending = true
         defer { if connectionID == connection { isSending = false } }
@@ -258,27 +223,20 @@ final class MacBottoStore {
     }
 
     /// Reads, checks and uploads local files into the open space's staging area.
-    @discardableResult
-    func attach(_ urls: [URL]) async -> [ChatAttachment] {
-        guard let access = openedConversation?.access, selectedChannel?.isArchived != true else { return [] }
-        var batch: [ChatAttachment] = []
+    func attach(_ urls: [URL]) async {
+        guard let access = openedConversation?.access, selectedChannel?.isArchived != true else { return }
         let channel = selectedChannelID
         error = nil
         for url in urls where url.isFileURL {
             guard stagedAttachments.count < AttachmentLimits.count else {
                 error = AttachmentLimits.message
-                return batch
+                return
             }
             let name = url.lastPathComponent
             let mimeType = MacAttachmentKind.mimeType(for: url)
-            let read = await Task.detached { () -> Result<Data, any Error> in
-                Result { try Data(contentsOf: url, options: .mappedIfSafe) }
-            }.value
-            guard selectedChannelID == channel, openedConversation?.access == access else { return batch }
-            let data: Data
-            switch read {
-            case .success(let loaded): data = loaded
-            case .failure:
+            let loaded = try? await Self.readLocalFile(url)
+            guard selectedChannelID == channel, openedConversation?.access == access else { return }
+            guard let data = loaded else {
                 error = "Couldn’t read “\(name)”."
                 continue
             }
@@ -293,20 +251,48 @@ final class MacBottoStore {
             do {
                 let uploaded = try await service.upload(data: data, filename: name, mimeType: mimeType, access: access)
                 guard selectedChannelID == channel, openedConversation?.access == access,
-                      let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return batch }
+                      let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return }
                 stagedAttachments[index].state = .ready(uploaded)
-                batch.append(uploaded)
             } catch {
-                guard let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return batch }
+                guard let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return }
                 stagedAttachments[index].state = .failed(error.localizedDescription)
             }
         }
-        return batch
+    }
+
+    private func uploadFreshFiles(_ urls: [URL], access: ConversationAccess) async throws -> [ChatAttachment] {
+        guard urls.count <= AttachmentLimits.count else { throw HermesServiceError.attachmentLimit }
+        var attachments: [ChatAttachment] = []
+        var bytes = 0
+        for url in urls {
+            let data = try await Self.readLocalFile(url)
+            bytes += data.count
+            guard bytes <= AttachmentLimits.totalBytes else { throw HermesServiceError.attachmentLimit }
+            let attachment = try await service.upload(data: data, filename: url.lastPathComponent,
+                                                      mimeType: MacAttachmentKind.mimeType(for: url), access: access)
+            attachments.append(attachment)
+        }
+        return attachments
+    }
+
+    private static func readLocalFile(_ url: URL) async throws -> Data {
+        try await Task.detached { try Data(contentsOf: url, options: .mappedIfSafe) }.value
     }
 
     func dismissError() {
-        pendingMutationNotice = nil
         error = nil
+    }
+
+    func acknowledgeUncertainAction() {
+        pendingMutationNotice = nil
+    }
+
+    func recordMutationFailure(_ failure: any Error) {
+        if case HermesServiceError.uncertain = failure {
+            pendingMutationNotice = failure.localizedDescription
+        } else if !(failure is CancellationError) {
+            error = failure.localizedDescription
+        }
     }
 
     func removeStagedAttachment(_ id: UUID) {
@@ -375,13 +361,18 @@ final class MacBottoStore {
 
     func loadBrain() async {
         let connection = connectionID
+        let soulRevision = soulDraft?.refreshRevision
+        let memoryRevision = memoryDraft?.refreshRevision
         await perform {
             let snapshot = try await service.loadBotBrain()
             try checkConnection(connection)
             brain = snapshot
             guard let bot else { return }
             let scope = ProseWorkspace(profile: bot.id, root: snapshot.workspaceRoot)
-            if proseWorkspace != scope {
+            if proseWorkspace == scope {
+                soulDraft?.refresh(snapshot.soulMarkdown, revision: soulRevision)
+                memoryDraft?.refresh(snapshot.memoryMarkdown, revision: memoryRevision)
+            } else {
                 proseWorkspace = scope
                 soulDraft = MacAutosaver(initial: snapshot.soulMarkdown) { [weak self] value, expected in
                     guard let self, self.ownsProse(scope) else { throw T3ServiceError.disconnected }
@@ -505,9 +496,8 @@ final class MacBottoStore {
             try checkConnection(connection)
             return true
         } catch {
-            if connectionID == connection {
-                if case HermesServiceError.uncertain = error { pendingMutationNotice = error.localizedDescription }
-                if !Task.isCancelled { self.error = error.localizedDescription }
+            if (error as? HermesServiceError) == .uncertain || (connectionID == connection && !Task.isCancelled) {
+                recordMutationFailure(error)
             }
             return false
         }
@@ -578,7 +568,7 @@ final class MacBottoStore {
         case .connected:
             isConnected = true
             isConnecting = false
-            error = pendingMutationNotice
+            error = nil
             channels = service.currentT3Channels
             let connection = connectionID
             Task {
@@ -597,7 +587,6 @@ final class MacBottoStore {
             isConnected = false
             isConnecting = false
             isOpeningChannel = false
-            isStartingSpace = false
             isSending = false
             isStopping = false
             respondingRequestIDs.removeAll()
@@ -605,6 +594,41 @@ final class MacBottoStore {
             error = reason
         default: break
         }
+    }
+}
+
+@MainActor @Observable
+final class MacFreshDraft {
+    var name = ""
+    var text = ""
+    var files: [URL] = []
+    var model: T3ModelOption?
+    private(set) var createdSpace: String?
+    private(set) var isSubmitting = false
+
+    func submit(create: (String?) async throws -> String,
+                send: (String, String, [URL], T3ModelOption?) async throws -> Void) async throws -> String? {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isSubmitting, !title.isEmpty || !message.isEmpty || !files.isEmpty else { return nil }
+        let files = files
+        let model = model
+        isSubmitting = true
+        defer { isSubmitting = false }
+        let id: String
+        if let createdSpace {
+            id = createdSpace
+        } else {
+            id = try await create(title.isEmpty ? nil : title)
+            createdSpace = id
+        }
+        try await send(id, message, files, model)
+        createdSpace = nil
+        name = ""
+        text = ""
+        self.files = []
+        self.model = nil
+        return id
     }
 }
 

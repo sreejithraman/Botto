@@ -15,7 +15,19 @@ struct MacRootView: View {
                 .navigationSplitViewColumnWidth(min: 230, ideal: 272, max: 340)
         } detail: {
             VStack(spacing: 0) {
-                if let error = store.error { errorBanner(error) }
+                if let notice = store.pendingMutationNotice {
+                    errorBanner(notice) {
+                        Button("Acknowledge", action: store.acknowledgeUncertainAction)
+                    }
+                }
+                if let error = store.error {
+                    errorBanner(error) {
+                        Button(action: store.dismissError) { Image(systemName: "xmark").font(.caption.weight(.bold)) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Dismiss message")
+                    }
+                }
                 detail
             }
             .background(MacTheme.paper)
@@ -52,15 +64,12 @@ struct MacRootView: View {
         .sheet(item: $previewing) { item in MacFilePreview(item: item) }
     }
 
-    private func errorBanner(_ error: String) -> some View {
+    private func errorBanner<Control: View>(_ error: String, @ViewBuilder control: () -> Control) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(MacTheme.error)
             Text(error).font(.callout).lineLimit(4).textSelection(.enabled)
             Spacer(minLength: 0)
-            Button { store.dismissError() } label: { Image(systemName: "xmark").font(.caption.weight(.bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Dismiss message")
+            control()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -116,9 +125,7 @@ struct MacRootView: View {
                         Button("New Space") { store.showFreshPage() }.buttonStyle(MacPillButtonStyle(prominent: false))
                     }
                 } else {
-                    MacFreshPage(store: store, name: $store.freshName, draft: $store.freshDraft, files: $store.freshFiles) { space, text in
-                        if store.drafts[space, default: ""].isEmpty { store.drafts[space] = text }
-                    }
+                    MacFreshPage(store: store, form: store.fresh)
                 }
             }
         }

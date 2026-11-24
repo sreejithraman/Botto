@@ -19,6 +19,22 @@ struct MacPreviewFileTests {
 }
 
 @MainActor struct MacProseConflictTests {
+    @Test func refreshesCleanProseWithoutOverwritingAnEditDuringTheRead() async {
+        var replaced: [String] = []
+        let autosaver = MacAutosaver(initial: "Old host text", delay: .seconds(60)) { _, expected in
+            replaced.append(expected)
+        }
+        autosaver.refresh("Current host text", revision: autosaver.refreshRevision)
+        #expect(autosaver.text == "Current host text")
+
+        let readRevision = autosaver.refreshRevision
+        autosaver.edit("My draft")
+        autosaver.refresh("A host update", revision: readRevision)
+        #expect(autosaver.text == "My draft")
+        await autosaver.flush()
+        #expect(replaced == ["Current host text"])
+    }
+
     @Test func keepsTheDraftUntilAnExplicitReload() async {
         let current = "Host updated this"
         let autosaver = MacAutosaver(initial: "Previous host text", delay: .seconds(60)) { _, expected in
@@ -32,6 +48,44 @@ struct MacPreviewFileTests {
         await autosaver.reload { current }
         #expect(autosaver.text == current)
         #expect(!autosaver.hasUnsavedEdits)
+    }
+}
+
+@MainActor struct MacFreshDraftTests {
+    @Test func rejectedFirstSendRetriesInTheCreatedSpaceAndSettlesTheWholeDraft() async throws {
+        let draft = MacFreshDraft()
+        let file = URL(fileURLWithPath: "/example/plan.txt")
+        draft.name = "Weekend"
+        draft.text = "Plan a trip"
+        draft.files = [file]
+        var created: [String?] = []
+        var delivered: [String] = []
+        var reject = true
+        func create(_ title: String?) async throws -> String {
+            created.append(title)
+            return "weekend-space"
+        }
+        func send(_ id: String, _ text: String, _ files: [URL], _: T3ModelOption?) async throws {
+            #expect(id == "weekend-space")
+            #expect(files == [file])
+            if reject { throw HermesServiceError.rejected(400) }
+            delivered.append(text)
+        }
+        await #expect(throws: HermesServiceError.rejected(400)) {
+            _ = try await draft.submit(create: create, send: send)
+        }
+        #expect(draft.createdSpace == "weekend-space")
+        #expect(draft.text == "Plan a trip")
+        #expect(draft.files == [file])
+        #expect(delivered.isEmpty)
+
+        reject = false
+        #expect(try await draft.submit(create: create, send: send) == "weekend-space")
+        #expect(created == ["Weekend"])
+        #expect(delivered == ["Plan a trip"])
+        #expect(draft.createdSpace == nil)
+        #expect(draft.name.isEmpty && draft.text.isEmpty && draft.files.isEmpty)
+        #expect(try await draft.submit(create: create, send: send) == nil)
     }
 }
 
@@ -155,14 +209,32 @@ struct MacPresentationTests {
         let store = try store()
         #expect(store.selectedChannelID == nil)
         #expect(store.modelLabel(for: nil) == "Automatic")
-        let started = await store.startSpace(text: "Plan the Kyoto trip", files: [])
-        #expect(started.spaceID == nil && !started.sent)
-        let named = await store.startSpace(named: "Kyoto trip", text: "", files: [])
-        #expect(named.spaceID == nil && !named.sent)
+        store.fresh.text = "Plan the Kyoto trip"
+        await store.startSpace()
+        #expect(store.fresh.createdSpace == nil && store.fresh.text == "Plan the Kyoto trip")
+        store.fresh.text = ""
+        store.fresh.name = "Kyoto trip"
+        await store.startSpace()
+        #expect(store.fresh.createdSpace == nil && store.fresh.name == "Kyoto trip")
         #expect(!(await store.send(text: "hello")))
         await #expect(throws: T3ServiceError.disconnected) { try await store.saveSoul("Be kind.") }
         store.showFreshPage()
         #expect(store.openedConversation == nil)
+    }
+
+    @Test func uncertainActionSurvivesNavigationAndDismissingAnotherError() throws {
+        let store = try store()
+        store.recordMutationFailure(HermesServiceError.uncertain)
+        let notice = try #require(store.pendingMutationNotice)
+        store.showFreshPage()
+        #expect(store.pendingMutationNotice == notice)
+        store.recordMutationFailure(HermesServiceError.invalidAttachment)
+        _ = try #require(store.error)
+        store.dismissError()
+        #expect(store.error == nil)
+        #expect(store.pendingMutationNotice == notice)
+        store.acknowledgeUncertainAction()
+        #expect(store.pendingMutationNotice == nil)
     }
 
     @Test func modelChipPrefersTheSpacesOwnModel() throws {

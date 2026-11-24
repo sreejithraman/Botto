@@ -4,11 +4,7 @@ import SwiftUI
 /// The page a new space starts from. Nothing exists on the host until it has a name or a first message.
 struct MacFreshPage: View {
     let store: MacBottoStore
-    @Binding var name: String
-    @Binding var draft: String
-    @Binding var files: [URL]
-    /// The space was created but its first message didn't go out; keep the words with that space.
-    let onUnsent: (_ spaceID: String, _ text: String) -> Void
+    @Bindable var form: MacFreshDraft
     @State private var dropTargeted = false
     @State private var composerFocusRequests = 0
 
@@ -20,7 +16,7 @@ struct MacFreshPage: View {
             Spacer(minLength: 24)
             VStack(spacing: 0) {
                 MacBotAvatarView(profileID: store.bot?.id ?? "main", appearance: store.bot?.appearance,
-                                 activity: store.isStartingSpace ? .thinking : MacAvatarActivity(status: store.botStatus))
+                                 activity: form.isSubmitting ? .thinking : MacAvatarActivity(status: store.botStatus))
                     .frame(width: 118, height: 118)
                 TimelineView(.everyMinute) { context in
                     Text(T3ChatShelf.greeting(at: context.date).rawValue)
@@ -53,7 +49,7 @@ struct MacFreshPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(MacTheme.paper)
         .overlay {
-            if dropTargeted {
+            if dropTargeted && !form.isSubmitting {
                 RoundedRectangle(cornerRadius: 22)
                     .strokeBorder(MacTheme.action, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                     .padding(14)
@@ -61,8 +57,9 @@ struct MacFreshPage: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
+            guard !form.isSubmitting else { return false }
             let picked = urls.filter(\.isFileURL)
-            files += picked
+            form.files += picked
             return !picked.isEmpty
         } isTargeted: { dropTargeted = $0 }
     }
@@ -100,36 +97,36 @@ struct MacFreshPage: View {
         .accessibilityHint("Opens \(chat.displayTitle)")
     }
 
-    private var hasName: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var hasName: Bool { !form.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     /// Quiet on purpose: a name is an option, not a step.
     private var nameField: some View {
-        TextField("Name this space (optional)", text: $name)
+        TextField("Name this space (optional)", text: $form.name)
             .textFieldStyle(.plain)
             .font(.body.weight(.medium))
             .onSubmit { composerFocusRequests += 1 }
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
-            .disabled(!store.isConnected || store.isStartingSpace)
+            .disabled(!store.isConnected || form.isSubmitting || form.createdSpace != nil)
             .accessibilityIdentifier("mac-space-name")
     }
 
     private var composer: some View {
-        MacComposer(draft: $draft, placeholder: "Message \(botName)",
-                    modelLabel: store.freshModel?.label ?? store.modelLabel(for: nil),
-                    isWorking: false, isBusy: store.isStartingSpace, hasAttachments: !files.isEmpty, canStop: false,
+        MacComposer(draft: $form.text, placeholder: "Message \(botName)",
+                    modelLabel: form.model?.label ?? store.modelLabel(for: nil),
+                    isWorking: false, isBusy: form.isSubmitting, hasAttachments: !form.files.isEmpty, canStop: false,
                     allowsEmpty: hasName, focusRequests: composerFocusRequests,
-                    onAttach: { files += MacFilePicker.pick(message: "Choose files to share with \(botName).") },
-                    onSend: start, onStop: {}) {
-            if !files.isEmpty {
+                    onAttach: { form.files += MacFilePicker.pick(message: "Choose files to share with \(botName).") },
+                    onSend: { Task { await store.startSpace() } }, onStop: {}) {
+            if !form.files.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
-                        ForEach(files, id: \.self) { url in
+                        ForEach(form.files, id: \.self) { url in
                             HStack(spacing: 6) {
                                 Image(systemName: MacAttachmentKind.symbol(for: MacAttachmentKind.mimeType(for: url)))
                                     .foregroundStyle(MacTheme.action)
                                 Text(url.lastPathComponent).font(.caption.weight(.medium)).lineLimit(1)
-                                Button { files.removeAll { $0 == url } } label: { Image(systemName: "xmark.circle.fill") }
+                                Button { form.files.removeAll { $0 == url } } label: { Image(systemName: "xmark.circle.fill") }
                                     .buttonStyle(.plain)
                                     .foregroundStyle(.secondary)
                                     .accessibilityLabel("Remove \(url.lastPathComponent)")
@@ -144,34 +141,18 @@ struct MacFreshPage: View {
             }
         } modelMenu: {
             Button {
-                store.freshModel = nil
+                form.model = nil
             } label: {
-                if store.freshModel == nil { Label("Automatic", systemImage: "checkmark") } else { Text("Automatic") }
+                if form.model == nil { Label("Automatic", systemImage: "checkmark") } else { Text("Automatic") }
             }
             if !store.models.isEmpty { Divider() }
             ForEach(store.models) { option in
-                Button { store.freshModel = option } label: {
-                    if store.freshModel == option { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
+                Button { form.model = option } label: {
+                    if form.model == option { Label(option.label, systemImage: "checkmark") } else { Text(option.label) }
                 }
             }
         }
-        .disabled(!store.isConnected)
-    }
-
-    private func start() {
-        let text = draft
-        let title = name
-        let attached = files
-        Task {
-            let result = await store.startSpace(named: title, text: text, files: attached)
-            guard result.sent else {
-                if let space = result.spaceID, store.selectedChannelID == space { onUnsent(space, text) }
-                return
-            }
-            if name == title { name = "" }
-            if draft == text { draft = "" }
-            if files == attached { files = [] }
-        }
+        .disabled(!store.isConnected || form.isSubmitting)
     }
 
     private func firstLine(_ text: String) -> String {
