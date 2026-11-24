@@ -208,6 +208,30 @@ public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
     func deleteRoutine(id: String) async throws
 }
 
+public extension T3BotBrainControlling {
+    func markChannelVisited(threadID: String) async throws { throw T3ServiceError.unsupported }
+
+    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
+        throw T3ServiceError.unsupported
+    }
+
+    func listOutputs() async throws -> [T3OutputFile] { [] }
+
+    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact {
+        throw T3ServiceError.unsupported
+    }
+
+    func listRoutines() async throws -> [T3ScheduledRoutine] { [] }
+
+    func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
+        throw T3ServiceError.unsupported
+    }
+
+    func setRoutineEnabled(id: String, enabled: Bool) async throws { throw T3ServiceError.unsupported }
+
+    func deleteRoutine(id: String) async throws { throw T3ServiceError.unsupported }
+}
+
 public enum T3BotBootstrap {
     public static let workspaceRoot = "~/.botto/bots/main"
     public static let defaultManifest = T3BotManifest(displayName: "Botto")
