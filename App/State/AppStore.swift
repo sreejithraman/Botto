@@ -575,21 +575,16 @@ import BottoCore
     }
 
     /// The new-space page: a space the user named, or one T3 names from the first message, opened and then sent.
-    /// Report the creation before attaching so a deliberate retry can use the same Space.
+    /// Report the creation before opening so the user can find an interrupted start in Spaces.
     /// Once open, a failed send keeps the text in that Space's own draft.
     @discardableResult func startT3Space(named name: String = "", with text: String, model: T3ModelOption? = nil,
-                                         send: Bool = true, resuming existing: SessionIdentity? = nil,
+                                         send: Bool = true,
                                          onCreated: @MainActor (SessionIdentity) -> Void = { _ in }) async throws -> SessionIdentity {
         try Task.checkCancellation()
         guard isConnected, let authority = captureBotAuthority() else { throw T3ServiceError.disconnected }
-        let identity: SessionIdentity
-        if let existing {
-            identity = existing
-        } else {
-            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            identity = try await createT3Space(title: title.isEmpty ? nil : title).summary.identity
-            onCreated(identity)
-        }
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let identity = try await createT3Space(title: title.isEmpty ? nil : title).summary.identity
+        onCreated(identity)
         let threadID = identity.stored.text
         guard ownsBotNavigation(authority) else { throw HermesServiceError.staleConversation }
         guard primaryT3Bot.map({ Data($0.id.utf8) }) == identity.profile.bytes,
@@ -606,17 +601,10 @@ import BottoCore
         guard !Task.isCancelled, isCurrentConnection(authority),
               let selection = workspace.selection(profile: identity.profile), selection.matches(identity),
               workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
-        guard !workspace.hasDraftContent(selection.owner) else { throw T3FreshDraftConflict() }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
         workspace.editDraft(text, owner: selection.owner)
         if send, let intent = workspace.captureSend(selection.owner) { await workspace.send(intent) }
         return identity
-    }
-
-    struct T3FreshDraftConflict: LocalizedError {
-        var errorDescription: String? {
-            String(localized: "This Space already has a draft or attachments. Send or clear them in that Space, then try again.")
-        }
     }
 
     func renameT3Channel(threadID: String, title: String) async throws {

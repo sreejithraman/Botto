@@ -331,48 +331,8 @@ import Testing
         #expect(service.sent.isEmpty)
         #expect(store.selectedT3ChannelID == release.id)
 
-        service.openError = nil
         let identity = try #require(created)
-        let opened = try await store.startT3Space(with: "Keep the draft", resuming: identity)
-        #expect(opened == identity)
-        #expect(service.createdThreads.count == 1)
-        #expect(service.sent[opened.stored.text] == ["Keep the draft"])
-    }
-
-    @Test(arguments: [false, true])
-    func freshRetryDoesNotReplaceASeparateDraftOrSendItsAttachments(hasFile: Bool) async throws {
-        let configuration = t3Configuration()
-        defer { LocalHistory.remove(for: configuration.id) }
-        let service = T3WorkspaceService()
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
-        await store.start()
-        service.openError = .missingChannel
-        var created: SessionIdentity?
-        await #expect(throws: T3ServiceError.missingChannel) {
-            try await store.startT3Space(with: "Fresh message", onCreated: { created = $0 })
-        }
-
-        service.openError = nil
-        let identity = try #require(created)
-        let channel = try #require(store.t3Channels.first { $0.id == identity.stored.text })
-        #expect(await store.openT3Channel(channel))
-        let screen = try #require(store.chats.screen(profile: identity.profile))
-        let otherDraft = hasFile ? "" : "I wrote this inside the Space"
-        if hasFile {
-            let target = try #require(store.chats.captureImport(screen.owner))
-            await store.chats.upload(Data([1]), filename: "draft.txt", mimeType: "text/plain", to: target)
-        } else {
-            store.chats.editDraft(otherDraft, owner: screen.owner)
-        }
-
-        await #expect(throws: AppStore.T3FreshDraftConflict.self) {
-            try await store.startT3Space(with: "Fresh message", resuming: identity)
-        }
-        let preserved = try #require(store.chats.screen(profile: identity.profile))
-        #expect(store.chats.draft(preserved.owner) == otherDraft)
-        #expect(preserved.attachments.map(\.name) == (hasFile ? ["draft.txt"] : []))
-        #expect(service.createdThreads.count == 1)
-        #expect(service.sent.isEmpty)
+        #expect(service.createdThreads == [identity.stored.text])
     }
 
     @Test func emptyT3InventoryStillAllowsARetryOfCanonicalMain() async throws {

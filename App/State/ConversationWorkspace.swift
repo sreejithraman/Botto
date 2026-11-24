@@ -1215,9 +1215,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         scheduleInboxHistory(profiles: [profile])
     }
     func draft(_ owner: PresentationOwner) -> String { draftBook.record(owner.chat)?.draft.text ?? "" }
-    func hasDraftContent(_ owner: PresentationOwner) -> Bool {
-        !draft(owner).isEmpty || staging[owner.chat]?.isEmpty == false || pendingImports[owner.chat]?.isEmpty == false
-    }
     /// Follows the saved opening choice, which can differ from the selected chat.
     func openingDraft(profile: ExactID) -> String {
         let complete = completeBook
