@@ -21,7 +21,8 @@ Each bot has one main space, the anchor of the list and the coordinator over
 the others. Connecting adopts the thread in `bot.json`'s `mainThreadID`. If there
 is none, or the host deleted it, connecting creates one titled with the bot's
 name and `titleRenamed`, so T3 keeps that name. The user can rename it like any
-other space, and renaming the bot leaves it alone. It cannot be archived from
+other space, and renaming the bot leaves it alone. First-run setup is the one
+exception: naming a new bot also names its main space. It cannot be archived from
 Botto; if another client archives it, the next connection restores it. A main
 space still titled `#general` by an older build takes the bot's name once.
 

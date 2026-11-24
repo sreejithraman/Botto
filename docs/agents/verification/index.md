@@ -30,7 +30,7 @@ native parity, cold preparation, cue containment or lifecycle acceptance. Follow
 
 | Feature ID | Recipe | Workflows |
 | --- | --- | --- |
-| `start` | [Welcome, demo, and destination review](features/start.md) | `start.first-run`, `start.demo`, `start.setup`, `start.address`, `start.qr`, `start.external` |
+| `start` | [Welcome, demo, and destination review](features/start.md) | `start.first-run`, `start.demo`, `start.pair`, `start.setup`, `start.address`, `start.qr`, `start.external` |
 | `auth` | [Sign in and recover a connection](features/auth.md) | `auth.password`, `auth.browser`, `auth.access`, `auth.interruption`, `auth.recovery` |
 | `inbox` | [Find bots and track attention](features/inbox.md) | `inbox.find`, `inbox.activity`, `inbox.pins`, `inbox.navigation` |
 | `library` | [Browse artifacts and search chats](features/library.md) | `library.navigation`, `library.outputs`, `library.search`, `library.captures` |

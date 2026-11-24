@@ -47,12 +47,12 @@ import VisionKit
                         }
                     }
                 } footer: {
-                    Text(isT3 ? "Scan a T3 pairing link. You’ll review the address before connecting."
+                    Text(isT3 ? "Point at the code in Botto’s Pair Phone window on your Mac. You’ll review the address before connecting."
                               : "Scan a Hermes server address. You’ll review it before connecting.")
                 }
 
-                Section("Paste or enter a connection code") {
-                    TextField("HTTPS address or connection code", text: $input, axis: .vertical)
+                Section(isT3 ? "Paste or enter a pairing link" : "Paste or enter a connection code") {
+                    TextField(isT3 ? "Pairing link" : "HTTPS address or connection code", text: $input, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .privacySensitive()
@@ -72,7 +72,7 @@ import VisionKit
                     if let importMessage { Text(importMessage).foregroundStyle(.secondary) }
                 }
             }
-            .navigationTitle(isT3 ? "Connect to T3 Code" : "Connect to Hermes")
+            .navigationTitle(isT3 ? "Scan your Mac’s code" : "Connect to Hermes")
             .task { await prepareCamera() }
             .task(id: selectedPhoto) { await readPhoto() }
             .onChange(of: scenePhase) { _, phase in

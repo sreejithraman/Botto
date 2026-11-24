@@ -51,7 +51,7 @@ private struct MacBottoCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Space") { store.showFreshPage() }
                 .keyboardShortcut("n")
-                .disabled(!store.isConnected)
+                .disabled(!store.canStartSpace)
         }
         CommandGroup(after: .sidebar) {
             Button(store.showsInspector ? "Hide Botto" : "Show Botto") { store.showsInspector.toggle() }

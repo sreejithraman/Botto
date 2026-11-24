@@ -8,7 +8,7 @@ final class SetupUITests: XCTestCase {
         #endif
     }
 
-    @MainActor private func launch(largeText: Bool = false) -> XCUIApplication {
+    @MainActor private func launch(largeText: Bool = false, openingHermes: Bool = true) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--isolated-ui-test"]
@@ -17,9 +17,12 @@ final class SetupUITests: XCTestCase {
         }
         app.launch()
         addTeardownBlock { app.terminate() }
-        XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 10))
-        reach(app.buttons["Connect your Hermes"], in: app)
-        app.buttons["Connect your Hermes"].tap()
+        XCTAssertTrue(app.buttons["Pair with your Mac"].waitForExistence(timeout: 10))
+        reach(app.buttons["Pair with your Mac"], in: app)
+        app.buttons["Pair with your Mac"].tap()
+        guard openingHermes else { return app }
+        reach(app.buttons["Use a Hermes server"], in: app)
+        app.buttons["Use a Hermes server"].tap()
         reach(app.buttons["Review destination"], in: app)
         return app
     }
@@ -106,7 +109,7 @@ final class SetupUITests: XCTestCase {
             capture(repeated ? "Setup prompt copied again" : "Setup prompt copied", in: app)
             assertPastedPrompt(in: app)
             app.buttons["Cancel"].tap()
-            XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Pair with your Mac"].waitForExistence(timeout: 5))
         }
     }
 
@@ -141,7 +144,7 @@ final class SetupUITests: XCTestCase {
         XCTAssertEqual(field.value as? String, "https://hermes.example.com")
         assertPastedPrompt(in: app)
         app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Pair with your Mac"].waitForExistence(timeout: 5))
     }
 
     @MainActor func testSetupActionsAtLargestTextSize() {
@@ -165,7 +168,7 @@ final class SetupUITests: XCTestCase {
         copyFromShareSheet(in: app)
         assertPastedPrompt(in: app)
         app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Pair with your Mac"].waitForExistence(timeout: 5))
     }
 
     @MainActor func testReturnedLinkStillRequiresDestinationReview() {
@@ -184,7 +187,7 @@ final class SetupUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["https://replacement.example"].waitForExistence(timeout: 5))
         capture("Returned link waits for sign-in", in: app)
         app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["Connect your Hermes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Pair with your Mac"].waitForExistence(timeout: 5))
     }
     @MainActor func testReturnedLinkClosesPreviewSheetAndKeepsReviewExplicit() {
         let app = launch()
@@ -226,6 +229,20 @@ final class SetupUITests: XCTestCase {
         dismissPromptPreview(in: app)
         XCTAssertTrue(sheetTitle.waitForNonExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, "https://hermes.example.com")
+    }
+
+    @MainActor func testHermesCodeOnThePairingPageOpensItsOwnForm() {
+        let app = launch(openingHermes: false)
+        app.buttons["t3-pair-type"].tap()
+        let address = app.descendants(matching: .any)["t3-pair-address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap()
+        address.typeText("botto://hermes/connect?url=https%3A%2F%2Fhermes.example.com")
+        reach(app.buttons["t3-pair-review"], in: app)
+        app.buttons["t3-pair-review"].tap()
+        XCTAssertTrue(app.buttons["Review destination"].waitForExistence(timeout: 5))
+        XCTAssertEqual(addressField(in: app).value as? String, "botto://hermes/connect?url=https%3A%2F%2Fhermes.example.com")
+        XCTAssertFalse(app.buttons["Change address"].exists)
     }
 
     @MainActor func testScanActionOpensScannerFromAddressRow() {

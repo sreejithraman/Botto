@@ -32,7 +32,8 @@ relay, and Apple provisioning. Signed physical-device delivery remains unverifie
 1. Open `Botto.xcodeproj` in Xcode and select the **Botto** scheme.
 2. Choose an iPhone or iPad Simulator and run.
 3. Choose **Explore the demo** to try sample bots without a server, or
-   **Connect your Hermes** to use your own bots.
+   **Pair with your Mac** to use your own. **Use a Hermes server** is on the
+   pairing screen.
 
 Botto supports iOS and iPadOS 18 or later. Building requires Xcode 27.1 or later
 with an installed iOS Simulator runtime. Physical-device builds require your

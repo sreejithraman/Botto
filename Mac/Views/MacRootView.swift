@@ -6,10 +6,39 @@ import SwiftUI
 struct MacRootView: View {
     let server: LocalT3ServerManager
     @Bindable var store: MacBottoStore
+    @State private var firstBot = MacFirstBotDraft()
     @State private var renaming: T3ChannelSummary?
     @State private var previewing: MacPreviewItem?
 
     var body: some View {
+        Group {
+            if store.needsBotSetup, let bot = store.bot {
+                // Nothing else in the window makes sense until the bot has a name and a face.
+                MacFirstBotPage(store: store, bot: bot, draft: $firstBot)
+                    .toolbarBackground(MacTheme.paper, for: .windowToolbar)
+                    .toolbar(removing: .title)
+                    .navigationTitle("Botto")
+            } else {
+                workspace
+            }
+        }
+        .tint(MacTheme.action)
+        .task(id: server.state) {
+            if server.state == .running {
+                await store.connect(to: server)
+            } else {
+                store.disconnect()
+            }
+        }
+        .onChange(of: server.state) { _, state in if state != .running { previewing = nil } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Coming back from Terminal or a download page is when a provider has usually just been set up.
+            guard store.wantsProviderCheck else { return }
+            Task { await store.loadProviders() }
+        }
+    }
+
+    private var workspace: some View {
         NavigationSplitView {
             MacChatSidebar(server: server, store: store, onRename: { renaming = $0 }, onPreview: { previewing = $0 })
                 .navigationSplitViewColumnWidth(min: 230, ideal: 272, max: 340)
@@ -28,6 +57,7 @@ struct MacRootView: View {
                             .accessibilityLabel("Dismiss message")
                     }
                 }
+                if !store.providersNeedingSetup.isEmpty, !store.showsProviderGuide { MacProviderBanner(store: store) }
                 detail
             }
             .background(MacTheme.paper)
@@ -37,14 +67,13 @@ struct MacRootView: View {
             MacBottoInspector(server: server, store: store, onPreview: { previewing = $0 })
                 .inspectorColumnWidth(min: 300, ideal: 340, max: 460)
         }
-        .tint(MacTheme.action)
         .toolbar(removing: .title)
         .toolbarBackground(MacTheme.paper, for: .windowToolbar)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { store.showFreshPage() } label: { Label("New Space", systemImage: "square.and.pencil") }
                     .help("New Space (⌘N)")
-                    .disabled(!store.isConnected)
+                    .disabled(!store.canStartSpace)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { store.showsInspector.toggle() } label: { Label("Botto", systemImage: "sidebar.trailing") }
@@ -52,14 +81,6 @@ struct MacRootView: View {
                     .disabled(!store.isConnected)
             }
         }
-        .task(id: server.state) {
-            if server.state == .running {
-                await store.connect(to: server)
-            } else {
-                store.disconnect()
-            }
-        }
-        .onChange(of: server.state) { _, state in if state != .running { previewing = nil } }
         .sheet(item: $renaming) { chat in MacRenameSpaceSheet(chat: chat, store: store) }
         .sheet(item: $previewing) { item in MacFilePreview(item: item) }
     }
@@ -84,7 +105,9 @@ struct MacRootView: View {
         let profileID = store.bot?.id ?? "main"
         let appearance = store.bot?.appearance
         let name = store.bot?.name ?? "Botto"
-        if let opened = store.openedConversation {
+        if store.showsProviderGuide {
+            MacProviderGuide(store: store)
+        } else if let opened = store.openedConversation {
             let id = opened.identity.stored.text
             MacChatPane(store: store, opened: opened, draft: Binding(
                 get: { store.drafts[id, default: ""] },

@@ -703,6 +703,194 @@ import Testing
         #expect(service.currentT3Channels.map(\.isMain) == [true])
     }
 
+    @Test func firstSetupNamesTheBotAndItsMainSpaceAndSavesTheFace() async throws {
+        let host = T3ServiceHost()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        let fresh = try #require(try await service.bots().first)
+        #expect(T3FirstRun.needsBotSetup(fresh, spaces: service.currentT3Channels))
+
+        await #expect(throws: T3ServiceError.invalidName) {
+            try await service.setUpBot(name: "  ", face: BotFace(shape: .cloud, color: "orange"))
+        }
+        #expect(T3FirstRun.needsBotSetup(fresh, spaces: service.currentT3Channels))
+        let orange = try #require(BotAvatarColors.presets.first { $0.id == "orange" })
+        try await service.setUpBot(name: " Miso ", face: BotFace(shape: .cloud, color: orange.hex))
+
+        let (files, threads) = await host.state
+        let saved = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(files["bot.json"]).utf8))
+        #expect(saved.displayName == "Miso")
+        #expect(saved.avatar?.shape == .cloud)
+        #expect(saved.avatar?.color == orange.shared)
+        let main = try #require(saved.mainThreadID)
+        #expect(threads[main]?["title"].text == "Miso")
+        #expect(threads.count == 1)
+        #expect(files["AGENTS.md"]?.hasPrefix("# Miso\n") == true)
+
+        // Another device reads the same files, so setup is finished there too.
+        let phoneHost = T3ServiceHost()
+        await phoneHost.restore((files, threads))
+        let phone = T3BotService(transport: { try await phoneHost.http($0) }, webSocket: { _ in phoneHost })
+        defer { phone.disconnect() }
+        _ = try await phone.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        let bot = try #require(try await phone.bots().first)
+        #expect(bot.name == "Miso")
+        #expect(!T3FirstRun.needsBotSetup(bot, spaces: phone.currentT3Channels))
+        #expect(phone.currentT3Channels.map(\.displayTitle) == ["Miso"])
+    }
+
+    @Test func interruptedSetupKeepsWhatWasSavedAndCanBeTriedAgain() async throws {
+        let host = T3ServiceHost()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        let face = BotFace(shape: .cloud, color: "#f97316")
+
+        // Without its name and face saved, nothing else may say the bot is set up.
+        await host.refuse("projects.writeFile")
+        await #expect(throws: (any Error).self) { try await service.setUpBot(name: "Miso", face: face) }
+        let untouched = try #require(try await service.bots().first)
+        #expect(T3FirstRun.needsBotSetup(untouched, spaces: service.currentT3Channels))
+        #expect(service.currentT3Channels.map(\.displayTitle) == ["Botto"])
+
+        // bot.json lands last, so a retry writes the prompts it missed.
+        for path in ["AGENTS.md", "CLAUDE.md", "bot.json"] {
+            await host.refuse(path)
+            await #expect(throws: (any Error).self) { try await service.setUpBot(name: "Miso", face: face) }
+            let files = await host.state.files
+            let kept = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(files["bot.json"]).utf8))
+            #expect(kept.displayName == "Botto")
+        }
+        // Going back to the saved name takes the prompts back too.
+        await host.refuse("thread.metadata.update")
+        await #expect(throws: (any Error).self) { try await service.setUpBot(name: "Botto", face: face) }
+        #expect(await host.state.files["AGENTS.md"]?.hasPrefix("# Botto\n") == true)
+        #expect(await host.state.files["CLAUDE.md"]?.hasPrefix("# Botto\n") == true)
+
+        await host.refuse("thread.metadata.update")
+        await #expect(throws: (any Error).self) { try await service.setUpBot(name: "Miso", face: face) }
+        #expect(await host.state.files["AGENTS.md"]?.hasPrefix("# Miso\n") == true)
+        #expect(await host.state.files["CLAUDE.md"]?.hasPrefix("# Miso\n") == true)
+        var saved = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(await host.state.files["bot.json"]).utf8))
+        #expect(saved.displayName == "Miso")
+        #expect(saved.avatar?.shape == .cloud)
+        #expect(service.currentT3Channels.map(\.displayTitle) == ["Botto"])
+
+        await host.refuse(nil)
+        try await service.setUpBot(name: "Mochi", face: face)
+        saved = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(await host.state.files["bot.json"]).utf8))
+        #expect(saved.displayName == "Mochi")
+        #expect(service.currentT3Channels.map(\.displayTitle) == ["Mochi"])
+    }
+
+    @Test func setupLeftOpenKeepsWhatAnotherDeviceChose() async throws {
+        let host = T3ServiceHost()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        var other = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(await host.state.files["bot.json"]).utf8))
+        other.displayName = "Mochi"
+        other.avatar = BotAppearance(shape: .drop)
+        try await host.write("bot.json", T3BotBootstrap.manifestJSON(other))
+
+        try await service.setUpBot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
+        let saved = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(await host.state.files["bot.json"]).utf8))
+        #expect(saved.displayName == "Mochi")
+        #expect(saved.avatar == other.avatar)
+        // This device has caught up.
+        let bot = try #require(try await service.bots().first)
+        #expect(bot.name == "Mochi")
+        #expect(bot.appearance == other.avatar)
+        #expect(service.currentT3Channels.map(\.displayTitle) == ["Mochi"])
+    }
+
+    @Test(arguments: ["Mochi", "Botto"]) func setupFinishedOnAnotherDeviceReachesAConnectedOne(named name: String) async throws {
+        let host = T3ServiceHost()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        let main = try #require(service.currentT3Channels.first { $0.isMain }?.id)
+        var other = try JSONDecoder().decode(T3BotManifest.self, from: Data(try #require(await host.state.files["bot.json"]).utf8))
+        other.displayName = name
+        other.avatar = BotAppearance(shape: .drop)
+        try await host.write("bot.json", T3BotBootstrap.manifestJSON(other))
+        try await host.renameFromAnotherClient(main, to: name)
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while try await service.bots().first?.appearance == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let bot = try #require(try await service.bots().first)
+        #expect(bot.name == name)
+        #expect(bot.appearance == other.avatar)
+    }
+
+    @Test func aSpaceOnlyASignedOutProviderCouldAnswerWaitsToBecomeMain() async throws {
+        let host = T3ServiceHost(signedOut: true)
+        await host.write("bot.json", #"{"displayName":"Botto","providerInstanceID":"claude-1","model":"claude-test"}"#)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        #expect(await host.createdThreads.isEmpty)
+        // Nor does just opening the bot make one.
+        let profile = try ExactID("bot-project")
+        await #expect(throws: T3ServiceError.missingModel) {
+            _ = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
+        }
+        #expect(await host.createdThreads.isEmpty)
+        // One someone starts anyway keeps the model they chose.
+        _ = try await service.createChat(title: "Kyoto")
+        #expect(await host.createdThreads.count == 1)
+
+        await host.signIn()
+        _ = try await service.providers()
+        _ = try await service.availableModels()
+        #expect(service.currentT3Channels.first { $0.isMain }?.displayTitle == "Botto")
+    }
+
+    @Test func aSignedOutDefaultNeverStartsASpace() async throws {
+        let host = T3ServiceHost(signedOutDefault: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        let created = try #require(await host.createdThreads.first)
+        #expect(created["modelSelection"]["instanceId"].text == "claude-1")
+        // The choice itself is kept for when it signs in again.
+        #expect(await host.state.files["bot.json"]?.contains("codex-1") == true)
+    }
+
+    @Test func aBotNamedBeforeAProviderExistsGivesItsNameToTheMainSpaceLater() async throws {
+        let host = T3ServiceHost(models: false, signedOut: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let origin = try #require(URL(string: "https://t3.example"))
+        _ = try await service.connect(configuration: .init(serverURL: origin, t3: T3Connection(environmentID: "", accessToken: "bearer")))
+        #expect(service.currentT3Channels.isEmpty)
+        let waiting = try await service.providers()
+        #expect(waiting == [T3ProviderStatus(id: "claude-1", driver: "claudeAgent", state: .needsSignIn)])
+        #expect(T3FirstRun.providersNeedingSetup(waiting) == waiting)
+
+        try await service.setUpBot(name: "Miso", face: BotFace(shape: .drop, color: "#8b5cf6"))
+        #expect(service.currentT3Channels.isEmpty)
+
+        // Models a signed-out provider lists are no use yet.
+        await host.installModels()
+        #expect(try await service.availableModels().isEmpty)
+        #expect(service.currentT3Channels.isEmpty)
+        await host.signIn()
+        let ready = try await service.providers()
+        #expect(ready.map(\.state) == [.ready])
+        #expect(T3FirstRun.providersNeedingSetup(ready).isEmpty)
+        #expect(try await service.availableModels().map(\.modelID) == ["claude-test"])
+        #expect(service.currentT3Channels.map(\.displayTitle) == ["Miso"])
+        #expect(service.currentT3Channels.map(\.isMain) == [true])
+    }
+
     @Test func autosavedBrainEditsApplyInOrderWithoutCollisions() async throws {
         let host = T3ServiceHost(existing: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
@@ -777,6 +965,10 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private let time = "2026-11-24T12:00:00Z"
     private let existing: Bool
     private var models: Bool
+    private var signedOut: Bool
+    private let signedOutDefault: Bool
+    private var probedSignedOut: Bool
+    private var refused: String?
     private let ticketStatuses: [Int]
     nonisolated let visits: AsyncStream<HermesJSON>
     private let visitCommands: AsyncStream<HermesJSON>.Continuation
@@ -810,9 +1002,13 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var threadStreams: [String: String] = [:]
 
     init(existing: Bool = false, archivedChannel: Bool = false, ticketStatuses: [Int] = [200],
-         withholdFirstVisitReply: Bool = false, models: Bool = true) {
+         withholdFirstVisitReply: Bool = false, models: Bool = true, signedOut: Bool = false,
+         signedOutDefault: Bool = false) {
         self.existing = existing
         self.models = models
+        self.signedOut = signedOut
+        probedSignedOut = signedOut
+        self.signedOutDefault = signedOutDefault
         self.ticketStatuses = ticketStatuses
         self.withholdFirstVisitReply = withholdFirstVisitReply
         (visits, visitCommands) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
@@ -823,6 +1019,9 @@ private actor T3ServiceHost: T3WebSocketTransport {
             ]
             threads["existing-general"] = .object(["id": .string("existing-general"), "projectId": .string(projectID),
                                                   "title": .string("#general"), "status": .string("idle")])
+        }
+        if signedOutDefault {
+            files["bot.json"] = #"{"displayName":"Botto","description":"","providerInstanceID":"codex-1","model":"gpt-test"}"#
         }
         if archivedChannel {
             threads["archived-channel"] = .object([
@@ -842,6 +1041,13 @@ private actor T3ServiceHost: T3WebSocketTransport {
         (files, threads) = (state.files, state.threads)
     }
     func installModels() { models = true }
+    func signIn() { signedOut = false }
+    func renameFromAnotherClient(_ thread: String, to title: String) throws {
+        threads[thread]?["title"] = .string(title)
+        try shellUpdate(thread)
+    }
+    /// Fails one RPC, thread command or file write until told otherwise.
+    func refuse(_ name: String?) { refused = name }
     func deleteThread(_ id: String) {
         threads[id] = nil
         deletedThreadIDs.insert(id)
@@ -991,14 +1197,26 @@ private actor T3ServiceHost: T3WebSocketTransport {
         }
         let id = try #require(frame["id"].text)
         let request = frame["payload"]
+        if let refused, frame["tag"].text == refused || request["type"].text == refused
+            || (frame["tag"].text == "projects.writeFile" && request["relativePath"].text == refused) {
+            try emit(t3JSON("""
+            {"_tag":"Exit","requestId":"\(id)","exit":{"_tag":"Failure","cause":[
+             {"_tag":"Fail","error":{"_tag":"DispatchError","message":"Refused"}}
+            ]}}
+            """))
+            return
+        }
         let reply: HermesJSON
         switch frame["tag"].text {
-        case "server.getConfig":
+        case "server.getConfig", "server.refreshProviders":
+            // Only a refresh looks again; the config repeats what was last found.
+            if frame["tag"].text == "server.refreshProviders" { probedSignedOut = signedOut }
             reply = try t3JSON("""
             {"cwd":"/srv","environment":{"environmentId":"environment"},"threadSnapshotPagination":true,
              "settings":{"defaultRuntimeMode":"approval-required"},
-             "providers":[{"instanceId":"claude-1","driver":"claude","displayName":"Claude",
-               "installed":true,"enabled":true,"models":[\(models ? #"{"slug":"claude-test","name":"Claude Test","isDefault":true}"# : "")]}]}
+             "providers":[{"instanceId":"claude-1","driver":"claudeAgent","displayName":"Claude",
+               "installed":true,"enabled":true,"auth":{"status":"\(probedSignedOut ? "unauthenticated" : "authenticated")"},"models":[\(models ? #"{"slug":"claude-test","name":"Claude Test","isDefault":true}"# : "")]}
+             \(signedOutDefault ? #",{"instanceId":"codex-1","driver":"codex","installed":true,"enabled":true,"auth":{"status":"unauthenticated"},"models":[{"slug":"gpt-test"}]}"# : "")]}
             """)
         case "projects.mutate":
             #expect(!existing)

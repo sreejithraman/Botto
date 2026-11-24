@@ -25,8 +25,8 @@ struct MacChatSidebar: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(store.isConnected ? MacTheme.action : Color.secondary)
-            .disabled(!store.isConnected)
+            .foregroundStyle(store.canStartSpace ? MacTheme.action : Color.secondary)
+            .disabled(!store.canStartSpace)
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
             .accessibilityIdentifier("mac-new-space")
