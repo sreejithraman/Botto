@@ -4,7 +4,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     case missingConnection, differentEnvironment, differentWorkspace, disconnected, invalidProject, invalidResponse
     case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported, unknownHistoryOffset
     case mainSpaceRecoveryRequired
-    case invalidPath
+    case invalidPath, proseChanged
     case unsupportedRoutineSchedule, protectedMainSpace
 
     public var errorDescription: String? {
@@ -24,6 +24,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         case .unsupported: "This action requires T3 Code."
         case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
         case .invalidPath: "Choose a file inside the bot project."
+        case .proseChanged: "This file changed elsewhere. Copy your edits before reloading it from the host."
         case .unsupportedRoutineSchedule: "Enter a cron expression with a fixed minute and hour, optional weekdays, and * for day of month and month."
         case .protectedMainSpace: "The main space stays. You can rename it instead."
         }
@@ -294,12 +295,12 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                                   skills: skills, workspaceRoot: session.workspace)
     }
 
-    public func saveSoul(_ markdown: String) async throws {
-        try await autosave("SOUL.md", contents: markdown, in: requireSession())
+    public func saveSoul(_ markdown: String, replacing expected: String? = nil) async throws {
+        try await autosave("SOUL.md", contents: markdown, replacing: expected, in: requireSession())
     }
 
-    public func saveMemory(_ markdown: String) async throws {
-        try await autosave("MEMORY.md", contents: markdown, in: requireSession())
+    public func saveMemory(_ markdown: String, replacing expected: String? = nil) async throws {
+        try await autosave("MEMORY.md", contents: markdown, replacing: expected, in: requireSession())
     }
 
     public func saveManifest(_ manifest: T3BotManifest) async throws {
@@ -952,13 +953,17 @@ private extension T3BotService {
         }
     }
 
-    func autosave(_ path: String, contents: String, in session: Session) async throws {
+    func autosave(_ path: String, contents: String, replacing expected: String?, in session: Session) async throws {
         let token = UUID()
         let previous = session.fileWrites[path]?.tail
         let write = Task { @MainActor [weak self] in
             _ = await previous?.result
             guard let self else { throw T3ServiceError.disconnected }
             guard session.fileWrites[path]?.token == token else { return }
+            if let expected {
+                let current = try await self.readFile(path, in: session)
+                guard current?.utf8.elementsEqual(expected.utf8) == true else { throw T3ServiceError.proseChanged }
+            }
             try await self.writeFile(path, contents: contents, in: session)
         }
         session.fileWrites[path] = (token, write)

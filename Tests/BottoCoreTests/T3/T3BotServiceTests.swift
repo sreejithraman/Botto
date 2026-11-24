@@ -84,6 +84,22 @@ import Testing
         #expect(state.threads["existing-general"]?["pinnedAt"] != .null)
     }
 
+    @Test func refusesAProseSaveAfterTheHostFileChanges() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let loaded = try await service.loadBotBrain().memoryMarkdown
+        let draft = loaded + "\nMy new note."
+        let hostText = loaded + "\nBotto’s new note."
+        await host.write("MEMORY.md", hostText)
+
+        await #expect(throws: T3ServiceError.proseChanged) { try await service.saveMemory(draft, replacing: loaded) }
+        #expect(try await service.readProjectFile(relativePath: "MEMORY.md") == hostText)
+        #expect(await !host.writtenFiles.contains("MEMORY.md"))
+        #expect(draft == loaded + "\nMy new note.")
+    }
+
     @Test func modelChangeMergesWithProfileEditsAndClearsSavedEffectiveChoice() async throws {
         let host = T3ServiceHost(existing: true)
         var saved = try existingConfiguration()

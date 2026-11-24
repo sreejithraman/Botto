@@ -188,8 +188,8 @@ public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
     var currentBotWorkspaceRoot: String? { get }
     var currentT3Channels: [T3ChannelSummary] { get }
     func loadBotBrain() async throws -> T3BotBrainSnapshot
-    func saveSoul(_ markdown: String) async throws
-    func saveMemory(_ markdown: String) async throws
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws
     func saveManifest(_ manifest: T3BotManifest) async throws
     @discardableResult func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest
     /// Creates a space. A title is kept as given; without one, T3 names the space from its first message.
