@@ -1,5 +1,6 @@
 import SwiftUI
 import BottoCore
+import UIKit
 
 @MainActor @Observable final class T3FreshDraft {
     var name = ""
@@ -8,6 +9,15 @@ import BottoCore
     var created: SessionIdentity?
     var isStarting = false
     var error: String?
+
+    var canStart: Bool { !isStarting && created == nil }
+
+    func beginStart() -> Bool {
+        guard canStart else { return false }
+        isStarting = true
+        error = nil
+        return true
+    }
 }
 
 /// Where a new space starts: a greeting, at most two quiet notes, an optional name, and a composer.
@@ -31,7 +41,7 @@ struct T3FreshPage: View {
     private var hasMessage: Bool { !form.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var hasName: Bool { namesSpace && !form.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// A name alone is enough to make a space.
-    private var canSend: Bool { (hasMessage || hasName) && !form.isStarting && isExposed }
+    private var canSend: Bool { (hasMessage || hasName) && form.canStart && isExposed }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -161,6 +171,7 @@ struct T3FreshPage: View {
             if let error = form.error {
                 InlineNotice(message: error) { form.error = nil }.padding(.horizontal, 16)
             }
+            if let created = form.created, !form.isStarting { recoveryActions(created) }
             if namesSpace { nameField }
             VStack(alignment: .leading, spacing: 2) {
                 TextField("Message \(store.primaryT3Bot?.name ?? "Botto")", text: $form.message, axis: .vertical)
@@ -179,9 +190,10 @@ struct T3FreshPage: View {
                             .frame(width: 44, height: 44).contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(form.isStarting || !isExposed)
+                    .disabled(!form.canStart || !isExposed)
                     .accessibilityLabel("Add attachment")
                     T3ModelChip(store: store, pending: $form.model)
+                        .disabled(!form.canStart)
                     Spacer(minLength: 0)
                     Button(action: send) {
                         Group {
@@ -207,6 +219,31 @@ struct T3FreshPage: View {
         .frame(maxWidth: .infinity)
     }
 
+    private func recoveryActions(_ created: SessionIdentity) -> some View {
+        let channel = store.t3Channels.first { Data($0.id.utf8) == created.stored.bytes }
+        return VStack(spacing: 8) {
+            Text("The Space was created. Open it to continue.")
+                .font(.footnote).foregroundStyle(.secondary)
+            HStack {
+                Button("Open Space") {
+                    guard let channel else { return }
+                    if store.selectedT3ChannelID == channel.id { onStarted() }
+                    else { onOpenChat(channel) }
+                }
+                .disabled(channel == nil)
+                if hasMessage {
+                    Button("Copy Text") { UIPasteboard.general.string = form.message }
+                }
+            }
+            Button("Start Another Space") {
+                form.created = nil
+                form.error = nil
+            }
+            .font(.footnote)
+        }
+        .padding(.horizontal, 16)
+    }
+
     /// Quiet on purpose: a name is an option, not a step.
     private var nameField: some View {
         TextField("Name this space (optional)", text: $form.name)
@@ -226,24 +263,22 @@ struct T3FreshPage: View {
     }
 
     private func startWithAttachment(_ kind: AppStore.T3ComposerRequest.Kind) {
-        guard !form.isStarting, isExposed else { return }
+        guard form.canStart, isExposed else { return }
         start(text: form.message, send: false, attachment: kind)
     }
 
     private func start(text: String, send: Bool, attachment: AppStore.T3ComposerRequest.Kind?) {
         guard store.isConnected else { connectionRequested = true; return }
+        guard form.beginStart() else { return }
         focused = nil
-        form.isStarting = true
-        form.error = nil
         let workspace = store.chats
         let model = form.model
         let title = namesSpace ? form.name : ""
-        let existing = form.created
         Task {
             defer { form.isStarting = false }
             do {
                 let started = try await store.startT3Space(named: title, with: text, model: model,
-                                                          send: send, resuming: existing) { identity in
+                                                          send: send) { identity in
                     if store.chats === workspace { form.created = identity }
                 }
                 guard store.chats === workspace else { return }

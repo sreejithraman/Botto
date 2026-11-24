@@ -92,7 +92,6 @@ struct BottoPage: View {
         .onChange(of: store.primaryT3Bot?.name) { _, value in
             if !editingName, drafts.submittedName == nil, drafts.nameError == nil, let value { drafts.name = value }
         }
-        .onDisappear { commitName() }
     }
 
     // MARK: Hero
@@ -116,7 +115,6 @@ struct BottoPage: View {
                 .submitLabel(.done)
                 .focused($editingName)
                 .onSubmit(commitName)
-                .onChange(of: editingName) { _, focused in if !focused { commitName() } }
                 .padding(.top, 14)
                 .accessibilityLabel("Name")
                 .accessibilityIdentifier("botto-page-name")

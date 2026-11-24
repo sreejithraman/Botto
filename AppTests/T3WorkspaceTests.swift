@@ -467,6 +467,42 @@ import UIKit
         #expect(service.sent.isEmpty)
     }
 
+    @Test func failedFreshStartWithACreatedSpaceDoesNotRetryIntoItsDraft() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        let form = T3FreshDraft()
+        form.message = "Only in Fresh"
+        await store.start()
+        service.openError = .missingChannel
+        #expect(form.beginStart())
+        await #expect(throws: T3ServiceError.missingChannel) {
+            try await store.startT3Space(with: form.message) { form.created = $0 }
+        }
+        form.isStarting = false
+        let created = try #require(form.created)
+        service.openError = nil
+        let space = try #require(store.t3Channels.first { $0.id == created.stored.text })
+        #expect(await store.openT3Channel(space))
+        let screen = try #require(store.chats.screen(profile: created.profile))
+        store.chats.editDraft("Only in the Space", owner: screen.owner)
+        let target = try #require(store.chats.captureImport(screen.owner))
+        await store.chats.upload(Data([1]), filename: "keep.txt", mimeType: "text/plain", to: target)
+        try await store.setT3ChannelModel(threadID: space.id, providerInstanceID: "other", model: "explicit")
+        let writes = service.channelModels
+
+        #expect(!form.beginStart())
+        #expect(form.message == "Only in Fresh")
+        #expect(form.created == created)
+        let preserved = try #require(store.chats.screen(profile: created.profile))
+        #expect(store.chats.draft(preserved.owner) == "Only in the Space")
+        #expect(preserved.attachments.map(\.name) == ["keep.txt"])
+        #expect(service.createdThreads == [space.id])
+        #expect(service.channelModels == writes)
+        #expect(service.sent.isEmpty)
+    }
+
     @Test func lateNewSpaceDoesNotTakeOverANewerSelection() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
