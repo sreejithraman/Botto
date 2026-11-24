@@ -72,6 +72,14 @@ final class MacBottoStore {
     var canStartSpace: Bool { isConnected && !showsProviderGuide }
 
     private let service: any T3BotBrainControlling
+    private var pushService: T3BotService? { service as? T3BotService }
+    var pushScope: T3PushScope? { pushService?.currentPushScope }
+
+    func observePush(_ activity: @escaping (T3PushActivity) -> Void) {
+        pushService?.onPushActivity = activity
+    }
+
+    @ObservationIgnored var onPushScope: ((T3PushScope?) -> Void)?
     private let exchange = T3PairingExchange()
     private let session: MacSessionPersistence
     private var connectionID = UUID()
@@ -141,6 +149,7 @@ final class MacBottoStore {
         connectionID = UUID()
         openID = UUID()
         service.disconnect()
+        onPushScope?(nil)
         bot = nil
         channels = []
         openedConversation = nil
@@ -639,6 +648,7 @@ final class MacBottoStore {
         case .connected:
             // Connecting looks around on its own; a reconnection has to.
             if !isConnecting { lookAround() }
+            onPushScope?(pushService?.currentPushScope)
             isConnected = true
             isConnecting = false
             error = nil
@@ -655,6 +665,7 @@ final class MacBottoStore {
                   (openedConversation == nil && (isOpeningChannel || isConnected)) else { return }
             openedConversation = opened
         case .disconnected(let reason):
+            onPushScope?(nil)
             openID = UUID()
             openedConversation = nil
             isConnected = false

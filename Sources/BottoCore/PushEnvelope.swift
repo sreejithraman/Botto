@@ -40,13 +40,34 @@ public struct PushEnvelope: Codable, Equatable, Sendable {
         guard data.count <= 4_096 else { throw PushError.invalidPayload }
         return try JSONDecoder().decode(Self.self, from: data)
     }
+    private var authenticatedData: Data {
+        Data("botto-push:v1\n\(installationID)\n\(deviceID)\n\(generation)\n\(eventID)".utf8)
+    }
+
+    public func encrypting(_ preview: PushPreview, key: Data) throws -> Self {
+        _ = try preview.destination.validated()
+        guard preview.v == 1, key.count == 32, preview.title.utf8.count <= 160, preview.body.utf8.count <= 1_024 else {
+            throw PushError.invalidPayload
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let clear = try encoder.encode(preview)
+        // Leave space in the APNs payload for the generic alert and the routing metadata.
+        guard clear.count <= 2_500,
+              let sealed = try AES.GCM.seal(clear, using: SymmetricKey(data: key), authenticating: authenticatedData).combined else {
+            throw PushError.invalidPayload
+        }
+        var result = self
+        result.sealed = sealed.base64EncodedString()
+        return result
+    }
+
     public func decrypt(key: Data, now: Date = .now) throws -> PushPreview {
         guard v == 1, Self.validHex(installationID, count: 64), Self.validHex(deviceID, count: 32),
               Self.validHex(eventID, count: 64), generation > 0, expiresAt > Int(now.timeIntervalSince1970),
               key.count == 32, let combined = Data(base64Encoded: sealed), combined.count >= 28, combined.count <= 3_072
         else { throw PushError.invalidPayload }
-        let aad = Data("botto-push:v1\n\(installationID)\n\(deviceID)\n\(generation)\n\(eventID)".utf8)
-        let clear = try AES.GCM.open(AES.GCM.SealedBox(combined: combined), using: SymmetricKey(data: key), authenticating: aad)
+        let clear = try AES.GCM.open(AES.GCM.SealedBox(combined: combined), using: SymmetricKey(data: key), authenticating: authenticatedData)
         guard clear.count <= 2_800 else { throw PushError.invalidPayload }
         let preview = try JSONDecoder().decode(PushPreview.self, from: clear)
         guard preview.v == 1, preview.title.utf8.count <= 160, preview.body.utf8.count <= 1_024 else { throw PushError.invalidPayload }

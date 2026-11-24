@@ -62,8 +62,12 @@ struct SettingsView: View {
                 if !store.isDemo {
                     Section {
                         NavigationLink {
-                            PushSettingsView(coordinator: store.push,
-                                testDestination: store.notificationTestDestination)
+                            if store.isT3Workspace {
+                                T3PushSettingsView(store: store)
+                            } else {
+                                PushSettingsView(coordinator: store.push,
+                                    testDestination: store.notificationTestDestination)
+                            }
                         } label: {
                             Label("Notifications", systemImage: "bell.badge")
                         }
@@ -158,7 +162,7 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(store.isT3Workspace
-                     ? "Saved pairing details, drafts, and cached messages will be removed locally. Botto’s memory and spaces stay on the host."
+                     ? "Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the host."
                      : "Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
             }
         }.tint(BottoTheme.action)

@@ -785,7 +785,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     /// `commit` settles the caller's selection before this chat, its saved selection or its grant is published.
     @discardableResult func openNotificationChat(_ destination: SessionIdentity, claim: NavigationClaim,
-                                                  isCurrent: @MainActor () -> Bool,
+                                                  exact: Bool = false, isCurrent: @MainActor () -> Bool,
                                                   commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> Bool {
         guard isCurrent(), online, ownsNavigation(claim), !Task.isCancelled else { return false }
         let request = claim.request, connection = recovery
@@ -800,7 +800,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             guard isCurrent(), online, !Task.isCancelled,
                   recovery == connection, ownsNavigation(claim) else { return false }
             let matches = directory.summaries.filter { summary in
-                summary.identity.profile == destination.profile
+                if exact { return summary.identity == destination }
+                return summary.identity.profile == destination.profile
                     && (summary.identity.root == destination.root || summary.identity.aliases.contains(destination.root))
             }
             guard matches.count == 1, let summary = matches.first else { return false }
@@ -810,7 +811,9 @@ private struct ReadObservationKey: Hashable, Sendable {
             // A cold notification needs a local picker owner while its target remains uncommitted.
             if selected == nil { selected = book.opening(destination.profile) }
             guard let accepted = await attach(id, selectionCommit: .afterAttachment, navigation: request,
-                                             accepts: { _, _ in isCurrent() }, commit: commit) else { return false }
+                                             storedTarget: exact ? destination : nil,
+                                             accepts: { identity, _ in isCurrent() && (!exact || identity == destination) },
+                                             commit: commit) else { return false }
             return isCurrent() && recovery == connection && ownsNavigation(claim) && live?.identity == accepted
         } catch { return false }
     }

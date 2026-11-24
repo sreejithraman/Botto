@@ -1,12 +1,97 @@
 # Encrypted push notifications
 
-Optional push uses a Hermes plugin, Cloudflare relay, APNs, and Botto's
-notification extension. Chats and decisions still use direct authenticated
-Hermes connections. The design is recorded in
-[ADR 0009](adr/0009-optional-push-delivery.md). This feature is experimental;
-signed physical-device background delivery remains unverified.
+Botto can send optional encrypted notifications from a paired Mac to iPhone.
+Space messages and request responses still travel directly over the existing T3
+connection. Botto's notification relay and Apple's APNs carry the alerts. The
+relay operator and Apple signing team are the remaining deployment decision
+(W6-D2).
 
-## Prerequisites and setup
+## T3 Spaces
+
+BottoMac subscribes to the stock T3 Orchestrator v2 shell and Space streams
+through its existing loopback connection. Stock T3 Agent Awareness publishes
+through the T3 Cloud relay, and routine webhooks trigger work on the server.
+Botto uses the local streams for outbound alerts, so a T3 Cloud account and
+changes to upstream T3 are unnecessary.
+
+- The Mac watches live Spaces in its Botto project even when the window is
+  closed. The engine must be awake. A terminal `run.updated` record with
+  status `completed` is the v2 completion signal, including a routine run.
+  Supported pending `runtime-request.updated` records alert for approvals
+  and questions. Resolving, cancelling, or expiring a request cancels queued
+  relay delivery. Work that completed before observation started stays quiet.
+  Recent snapshots can recover events across a socket reconnect. Event and
+  request IDs stay stable across duplicates. Mac-to-relay submission is
+  best-effort, and the relay handles provider retries after admission.
+- The Mac issues a five-minute, device-specific notification code. The iPhone
+  checks it against its saved T3 environment and project. The code authenticates
+  and encrypts registration over LAN or Tailscale TCP. An APNs token, its
+  environment and bundle ID go to the Mac, which registers the device using
+  the existing [Botto relay protocol](../Push/PROTOCOL.md). Each device has a
+  monotonic registration generation. The Mac keeps the relay credential and
+  registration state in an owner-only file under `~/.botto/t3-push/`.
+- The Mac encrypts the Space title, a short event label, and the exact project
+  and Space IDs separately for each device. Only the delivery metadata,
+  opaque IDs and ciphertext go to the relay. The iOS service extension uses
+  the existing shared Keychain and AES-GCM envelope to render the preview.
+  Chat text, tool arguments and T3 credentials stay off the relay.
+- iOS suppresses foreground banners for the Space currently on screen.
+  A tap decrypts the original envelope and checks the current T3 pairing
+  before opening the exact Space from the canonical directory. Opening the
+  Space needs the original Mac to be reachable. The tap never answers a
+  request or opens a different Space if its destination was deleted.
+
+### Configure a Mac and iPhone
+
+1. An operator provisions the existing [relay](../Push/relay/README.md), an
+   authorized Apple APNs key and the bundle ID and environment allowlist. The
+   iOS app and extension need matching signing and shared push Keychain
+   configuration. Debug uses APNs sandbox. Internal and Release use APNs
+   production.
+2. Set the HTTPS relay origin on the Mac and relaunch Botto. The bridge keeps
+   its registrations bound to that relay origin.
+
+   ```sh
+   defaults write com.sree.botto.mac T3PushRelayURL -string 'https://your-relay.example'
+   ```
+
+3. Wake Botto and pair your phone with this Mac using the existing T3 pairing
+   flow. On the Mac, open Settings and copy a LAN or Tailscale notification
+   code under **Phone notifications**. Allow TCP port 3775 on the chosen
+   private route. An HTTP-only tunnel can serve chat but cannot forward the
+   registration connection. Enrollment and token updates require the phone to
+   reach the Mac directly.
+4. In Botto on the iPhone, open **Settings → Notifications**, turn on
+   **Space notifications**, paste the code, and allow iOS notifications.
+   The toggle reflects relay confirmation. Disabling immediately retires the
+   local preview and tap authority. If the Mac is unreachable, Botto saves
+   pending removal and retries when the app returns and can reach the Mac.
+   APNs messages submitted before removal can still appear as generic alerts.
+
+### Verification
+
+The Swift tests drive the T3 observer with WebSocket frames, including a
+completion from a Space that the user has not opened. The BottoMac tests drive
+registration over loopback TCP against a relay fixture and decrypt the actual
+relay submission with the phone's preview key. The iOS tests cover matching
+and missing Space IDs, tampered envelopes, cold launch, and foreground visibility. This is
+automated proof of the local and encrypted contracts. Physical background and
+terminated delivery through Apple remains unverified.
+
+For physical-device proof in W5 or the signing follow-up, use a signed build
+and the matching relay allowlist and APNs credentials. Pair a physical iPhone,
+enable notifications, background or terminate Botto, then complete a Space
+run (including a routine) and trigger an approval and question. Check the
+delivered banner and tap each alert into its originating Space. Remove the
+pairing and check that later events stop producing alerts.
+
+## Hermes
+
+Hermes uses its own plugin and the same encrypted APNs contract. The design is
+recorded in [ADR 0009](adr/0009-optional-push-delivery.md). Signed physical
+delivery for Hermes also remains unverified.
+
+### Hermes prerequisites and setup
 
 1. Use the supported native observer in the [upstream contribution](../Push/upstream/README.md).
    This is **not a released Hermes capability**. Until it lands upstream, use
@@ -49,7 +134,7 @@ authorized Apple identity. The [protocol](../Push/PROTOCOL.md) keeps callers
 independent of Workers bindings; another backend still needs adapters and
 behavior verification.
 
-## Privacy and recovery
+### Hermes privacy and recovery
 
 The host encrypts a bounded bot name and excerpt separately for each device.
 The extension decrypts locally using device-only Keychain storage; it does not
@@ -83,7 +168,7 @@ device ID and key. A changed Apple token can recover a still-authorized pairing
 automatically; a device removed by its owner stays removed. Other devices keep
 their pairings.
 
-## Evidence
+### Hermes evidence
 
 The [verification record](verification.md) owns observed outcomes and limits.
 Native fixtures, independent encrypted fixtures, workerd tests, and the patched

@@ -34,6 +34,24 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 @MainActor public final class T3BotService: T3BotBrainControlling {
     public typealias WebSocketFactory = @Sendable (URLRequest) throws -> any T3WebSocketTransport
     public var onEvent: ((BotServiceEvent) -> Void)?
+    public var onPushActivity: ((T3PushActivity) -> Void)? {
+        didSet {
+            if onPushActivity == nil {
+                pushObserver = nil
+                if let session {
+                    session.pushTasks.values.forEach { $0.cancel() }
+                    session.pushTasks.removeAll()
+                }
+            } else if let session, session.ready {
+                syncPushSpaces(session)
+            }
+        }
+    }
+    public var currentPushScope: T3PushScope? {
+        guard let session, session.ready else { return nil }
+        return pushScope(session)
+    }
+    private var pushObserver: T3PushObserver?
     public private(set) var currentT3Channels: [T3ChannelSummary] = []
     public var currentBotWorkspaceRoot: String? { session.flatMap { $0.ready ? $0.workspace : nil } }
 
@@ -49,6 +67,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         var project: HermesJSON
         var manifest = T3BotBootstrap.defaultManifest
         var shellTask: Task<Void, Never>?
+        var pushTasks: [String: Task<Void, Never>] = [:]
         var shellFailure: Error?
         var shells: [String: HermesJSON] = [:]
         var archivedShells: [String: HermesJSON] = [:]
@@ -177,6 +196,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             if let failure = connected.shellFailure ?? connected.selection?.streamFailure { throw failure }
             updateConfiguration(connected)
             connected.ready = true
+            syncPushSpaces(connected)
             reconnectTask = nil
             let info = ServerInfo(version: descriptor.serverVersion, installID: descriptor.environmentId)
             if connected.configuration != configuration { onEvent?(.configuration(connected.configuration)) }
@@ -206,6 +226,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         if let session {
             session.issuer.close()
             session.shellTask?.cancel()
+            session.pushTasks.values.forEach { $0.cancel() }
             session.archiveRefresh?.cancel()
             session.selection?.task?.cancel()
             let rpc = session.rpc
@@ -1166,6 +1187,44 @@ private extension T3BotService {
         try await Self.waitForSubscription(ready)
     }
 
+    func pushScope(_ session: Session) -> T3PushScope {
+        .init(environmentID: session.configuration.t3?.environmentID ?? "", projectID: session.profile.text)
+    }
+
+    func syncPushSpaces(_ session: Session) {
+        guard onPushActivity != nil else { return }
+        let scope = pushScope(session)
+        if pushObserver?.scope != scope { pushObserver = .init(scope: scope, since: .now) }
+        for id in Array(session.pushTasks.keys) where session.shells[id] == nil {
+            session.pushTasks.removeValue(forKey: id)?.cancel()
+        }
+        for id in session.shells.keys where session.pushTasks[id] == nil {
+            session.pushTasks[id] = Task { [weak self, weak session] in
+                guard let session else { return }
+                while !Task.isCancelled {
+                    do {
+                        let stream = try await session.rpc.subscribe("orchestration.subscribeThread", payload: .object([
+                            "threadId": .string(id),
+                            "requestCompletionMarker": .bool(true),
+                            "acceptBoundedSnapshot": .bool(session.config["threadSnapshotPagination"].flag == true)
+                        ]))
+                        for try await item in stream {
+                            guard let self, self.session === session, !Task.isCancelled,
+                                  let shell = session.shells[id] else { return }
+                            let activities = self.pushObserver?.receive(item, spaceID: id,
+                                title: shell["title"].nonempty ?? "Botto") ?? []
+                            for activity in activities { self.onPushActivity?(activity) }
+                        }
+                    } catch {
+                        // A denied or interrupted detail subscription must not end the chat connection.
+                    }
+                    do { try await Task.sleep(for: .seconds(5)) }
+                    catch { return }
+                }
+            }
+        }
+    }
+
     func applyShell(_ item: HermesJSON, in session: Session) throws {
         var changed = false
         switch item["kind"].text {
@@ -1230,7 +1289,10 @@ private extension T3BotService {
         case "snapshot-required": throw T3ServiceError.invalidResponse
         default: break
         }
-        if changed, session.ready { publishDirectory(session) }
+        if changed, session.ready {
+            syncPushSpaces(session)
+            publishDirectory(session)
+        }
     }
 
     // Current T3 streams active shells. An active removal can also be a move into the archive.
