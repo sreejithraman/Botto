@@ -80,10 +80,16 @@ struct RootView: View {
                     OnboardingView(store: store)
                 }
             } else {
-                WorkspaceTabs(store: store, presentation: presentation,
-                              rootCovered: sheet != nil || createdBotOpening != nil || store.showsConnection,
-                              onSettings: { presentSheet(.settings) },
-                              onNewBot: { presentSheet(.newBot) })
+                if store.isT3Workspace {
+                    T3Workspace(store: store, presentation: presentation,
+                                rootCovered: sheet != nil || store.showsConnection,
+                                onSettings: { presentSheet(.settings) })
+                } else {
+                    WorkspaceTabs(store: store, presentation: presentation,
+                                  rootCovered: sheet != nil || createdBotOpening != nil || store.showsConnection,
+                                  onSettings: { presentSheet(.settings) },
+                                  onNewBot: { presentSheet(.newBot) })
+                }
             }
         }
         // Captures only what it settles: holding `self` would keep this receipt alive through its own state.

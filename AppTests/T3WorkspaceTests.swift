@@ -1,5 +1,7 @@
 import Foundation
+import SwiftUI
 import Testing
+import UIKit
 @testable import Botto
 @testable import BottoCore
 
@@ -220,6 +222,33 @@ import Testing
         }
     }
 
+    @Test func managesRoutinesThroughTheMountedService() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+
+        #expect(try await store.listT3Routines().isEmpty)
+        let created = try await store.createT3Routine(name: "Standup", prompt: "Summarize yesterday.",
+                                                      cron: "30 8 * * 1-5", threadID: "release")
+        #expect(created.cron == "30 8 * * 1-5")
+        #expect(created.threadID == "release")
+        #expect(created.enabled)
+        // Without a space, the routine gets its own.
+        let general = try await store.createT3Routine(name: "Digest", prompt: "Daily digest.", cron: "0 9 * * *", threadID: nil)
+        #expect(general.threadID == "routine-Digest")
+        #expect(try await store.listT3Routines().map(\.name) == ["Standup", "Digest"])
+
+        try await store.setT3RoutineEnabled(id: created.id, enabled: false)
+        #expect(try await store.listT3Routines().first { $0.id == created.id }?.enabled == false)
+        try await store.deleteT3Routine(id: general.id)
+        #expect(try await store.listT3Routines().map(\.id) == [created.id])
+        await #expect(throws: T3ServiceError.unsupportedRoutineSchedule) {
+            try await store.createT3Routine(name: "Bad", prompt: "Nope", cron: "*/5 * * * *", threadID: nil)
+        }
+    }
+
     @Test func switchesChannelModelsAndMarksChannelsVisited() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -283,6 +312,66 @@ import Testing
         #expect(store.selectedT3ChannelID == second)
         #expect(service.sent[second] == nil)
         #expect(store.draft(for: "bot-project") == "Here is the itinerary")
+    }
+
+    @Test func launchOpensASpaceWhoseHeaderSharesTheBarsCenterLine() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: T3Workspace(
+            store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {}))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+
+        // Release is waiting, so it opens first instead of a blank page.
+        let (bar, title) = try await header(in: window)
+        #expect(store.selectedT3ChannelID == "release")
+        try checkHeader(title, in: bar)
+
+        // A long name truncates in place without pushing the buttons away or leaving the center.
+        try await store.startT3Space(named: String(repeating: "A very long space name ", count: 8), with: "", send: false)
+        try await Task.sleep(for: .milliseconds(800))
+        let (longBar, longTitle) = try await header(in: window)
+        #expect(store.selectedT3ChannelTitle?.hasPrefix("A very long") == true)
+        try checkHeader(longTitle, in: longBar)
+    }
+
+    private func header(in window: UIWindow) async throws -> (UINavigationBar, UIView) {
+        func find(_ view: UIView) -> UINavigationBar? {
+            if let bar = view as? UINavigationBar, !bar.isHidden { return bar }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        let deadline = ContinuousClock.now + .seconds(15)
+        while ContinuousClock.now < deadline {
+            window.layoutIfNeeded()
+            if let bar = find(window), let title = bar.topItem?.titleView, title.window === window, title.bounds.width > 60 {
+                try await Task.sleep(for: .milliseconds(500))
+                return (bar, title)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw T3ServiceError.missingChannel
+    }
+
+    private func checkHeader(_ title: UIView, in bar: UINavigationBar) throws {
+        let frame = title.convert(title.bounds, to: bar)
+        #expect(bar.bounds.insetBy(dx: 0, dy: -1).contains(frame), "\(frame) in \(bar.bounds)")
+        #expect(abs(frame.midX - bar.bounds.midX) < 2, "\(frame) in \(bar.bounds)")
+        let item = try #require(bar.topItem)
+        for button in [item.leftBarButtonItems?.first ?? item.leadingItemGroups.first?.barButtonItems.first,
+                       item.rightBarButtonItems?.first ?? item.trailingItemGroups.first?.barButtonItems.first] {
+            let barButton = try #require(button)
+            let view = try #require(barButton.value(forKey: "view") as? UIView)
+            let other = view.convert(view.bounds, to: bar)
+            #expect(abs(other.midY - frame.midY) < 2, "\(other) beside \(frame)")
+            #expect(!other.intersects(frame), "\(other) over \(frame)")
+        }
     }
 
     @Test func newSpacePageKeepsTheNameTheUserChose() async throws {
@@ -417,6 +506,79 @@ import Testing
         #expect(store.primaryT3Bot?.name == "Kit")
     }
 
+    @Test func brainTextReadsAsProse() {
+        let memory = "# Memory\n\n- You're vegetarian on weekdays\n* Prefers **slow** mornings\n1. Lives in Tokyo\n\n"
+        #expect(T3BrainText.memoryItems(memory) == ["You're vegetarian on weekdays", "Prefers slow mornings", "Lives in Tokyo"])
+        #expect(T3BrainText.memorySummary(memory) == "3 things · last: “Lives in Tokyo”")
+        #expect(T3BrainText.memorySummary("# Memory\n") == "Nothing yet")
+        let forgotten = T3BrainText.forgetting("Prefers slow mornings", in: memory)
+        #expect(forgotten == "# Memory\n\n- You're vegetarian on weekdays\n1. Lives in Tokyo\n\n")
+        #expect(T3BrainText.personalitySummary("# Soul\n\nCurious, a little dry.\nKeeps answers short.") == "Curious, a little dry.")
+        #expect(T3BrainText.skillName("skills/trip-planning") == "Trip Planning")
+        #expect(T3BrainText.fileTitle("kyoto_5-slow-days.md") == "kyoto 5 slow days")
+    }
+
+    @Test func autosaveCoalescesTypingAndKeepsFailuresForRetry() async throws {
+        var writes: [String] = []
+        var failing = false
+        let autosave = T3Autosave(saved: "start", delay: .milliseconds(30)) { text in
+            if failing { throw T3ServiceError.disconnected }
+            writes.append(text)
+        }
+        autosave.edited("s")
+        autosave.edited("st")
+        autosave.edited("start")
+        try await Task.sleep(for: .milliseconds(90))
+        #expect(writes.isEmpty)
+        autosave.edited("one")
+        autosave.edited("one two")
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(writes == ["one two"])
+        #expect(autosave.state == .saved)
+
+        failing = true
+        autosave.flush("one two three")
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(writes == ["one two"])
+        guard case .failed = autosave.state else { Issue.record("Expected a failed save"); return }
+        failing = false
+        autosave.retry("one two three")
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(writes == ["one two", "one two three"])
+        #expect(autosave.state == .saved)
+    }
+
+    @Test func routineScheduleBuilderProducesCronTheServiceAccepts() throws {
+        #expect(T3RoutineSchedule.daily.cron(hour: 9, minute: 0) == "0 9 * * *")
+        #expect(T3RoutineSchedule.weekdays.cron(hour: 8, minute: 30) == "30 8 * * 1-5")
+        #expect(T3RoutineSchedule.days([5, 1, 3]).cron(hour: 18, minute: 5) == "5 18 * * 1,3,5")
+        #expect(T3RoutineSchedule.days(Set(0...6)).cron(hour: 7, minute: 15) == "15 7 * * *")
+        #expect(!T3RoutineSchedule.days([]).isValid)
+
+        #expect(T3RoutineSchedule.parse("30 8 * * 1-5")?.schedule == .weekdays)
+        #expect(T3RoutineSchedule.parse("0 9 * * 0,1,2,3,4,5,6")?.schedule == .daily)
+        #expect(T3RoutineSchedule.parse("0 9 * * MON,WED")?.schedule == .days([1, 3]))
+        #expect(T3RoutineSchedule.parse("0 9 * * 7")?.schedule == .days([0]))
+        #expect(T3RoutineSchedule.parse("*/5 * * * *") == nil)
+        #expect(T3RoutineSchedule.parse("0 9 1 * *") == nil)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
+        calendar.locale = Locale(identifier: "en_GB")
+        let locale = Locale(identifier: "en_GB")
+        func time(_ hour: Int, _ minute: Int) throws -> String {
+            let date = try #require(calendar.date(from: DateComponents(hour: hour, minute: minute)))
+            return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar,
+                                                   timeZone: calendar.timeZone))
+        }
+        #expect(T3RoutineSchedule.summary("0 9 * * *", calendar: calendar, locale: locale) == "Daily · \(try time(9, 0))")
+        #expect(T3RoutineSchedule.summary("30 8 * * 1-5", calendar: calendar, locale: locale) == "Weekdays · \(try time(8, 30))")
+        #expect(T3RoutineSchedule.summary("0 10 * * 0,6", calendar: calendar, locale: locale) == "Weekends · \(try time(10, 0))")
+        #expect(T3RoutineSchedule.summary("15 7 * * 1,3", calendar: calendar, locale: locale) == "Mon, Wed · \(try time(7, 15))")
+        #expect(T3RoutineSchedule.summary("", calendar: calendar, locale: locale) == "Custom schedule")
+        #expect(T3RoutineSchedule.summary("*/5 * * * *", calendar: calendar, locale: locale) == "Cron · */5 * * * *")
+    }
+
     private func t3Configuration() -> ConnectionConfiguration {
         .init(serverURL: URL(string: "https://studio.example")!, installID: "studio-id",
               t3: .init(environmentID: "studio-id", label: "Studio", accessToken: "fixture-only", projectID: "bot-project"))
@@ -439,6 +601,7 @@ import Testing
     private(set) var createdTitles: [String?] = []
     private(set) var createdThreads: [String] = []
     private(set) var sent: [String: [String]] = [:]
+    private var routines: [T3ScheduledRoutine] = []
     private var manifest = T3BotManifest(displayName: "Studio Bot")
     private var soul = "# Soul"
     private var memory = "# Memory"
@@ -527,6 +690,25 @@ import Testing
         guard output.relativePath.hasPrefix("outputs/") else { throw T3ServiceError.invalidPath }
         downloadedOutputs.append(output.relativePath)
         return .init(data: Data("# Report".utf8), filename: output.name, mimeType: output.mimeType)
+    }
+    func listRoutines() async throws -> [T3ScheduledRoutine] { routines }
+    func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
+        guard T3RoutineSchedule.parse(cron) != nil else { throw T3ServiceError.unsupportedRoutineSchedule }
+        let routine = T3ScheduledRoutine(id: "routine-\(routines.count + 1)", name: name, prompt: prompt, cron: cron,
+                                         enabled: true, threadID: threadID ?? "routine-\(name)",
+                                         nextRunAt: nil, lastRunAt: nil)
+        routines.append(routine)
+        return routine
+    }
+    func setRoutineEnabled(id: String, enabled: Bool) async throws {
+        guard let index = routines.firstIndex(where: { $0.id == id }) else { throw T3ServiceError.invalidResponse }
+        let old = routines[index]
+        routines[index] = .init(id: old.id, name: old.name, prompt: old.prompt, cron: old.cron, enabled: enabled,
+                                threadID: old.threadID, nextRunAt: old.nextRunAt, lastRunAt: old.lastRunAt)
+    }
+    func deleteRoutine(id: String) async throws {
+        guard routines.contains(where: { $0.id == id }) else { throw T3ServiceError.invalidResponse }
+        routines.removeAll { $0.id == id }
     }
     func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
         if let modelError { throw modelError }
