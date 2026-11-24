@@ -352,7 +352,7 @@ import BottoCore
     private var generation: UUID { connection.generation }
     private var avatarWorkspaceGeneration = UUID()
     private var attachmentRecoveryGeneration: UUID { connection.recoveryGeneration }
-    @ObservationIgnored private var started = false
+    private(set) var hasStarted = false
     #if DEBUG
     @ObservationIgnored private var interruptsFirstOpening = ProcessInfo.processInfo.arguments.contains("--interrupted-opening-demo")
     #endif
@@ -899,8 +899,8 @@ import BottoCore
     }
 
     func start() async {
-        guard !started else { return }
-        started = true
+        guard !hasStarted else { return }
+        hasStarted = true
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--demo") {
@@ -1065,6 +1065,7 @@ import BottoCore
     private func prepareServiceTransition(to candidate: ConnectionConfiguration) {
         if candidate.id != configuration?.id || configuration.map(Self.richReplyAccount) != Self.richReplyAccount(candidate) {
             pendingPushNotification = nil
+            t3NotificationLaunchScope = nil
             retireArtifactPresentation()
         }
         avatars.reset()
@@ -1336,9 +1337,14 @@ import BottoCore
     }
 
     func openPushNotification(_ envelope: PushEnvelope) async {
+        guard admitPushNotification(envelope) else { return }
+        await resumePushNavigation()
+    }
+
+    func admitPushNotification(_ envelope: PushEnvelope) -> Bool {
         guard !isDemo, configuration != nil else {
             notice = isDemo ? "Leave demo to open this notification." : "Connect to your Botto host to open this notification."
-            return
+            return false
         }
         let intent: PushNavigationIntent?
         if let scope = t3PushScope {
@@ -1349,13 +1355,13 @@ import BottoCore
         }
         guard let intent else {
             notice = "This notification no longer has a verified destination."
-            return
+            return false
         }
         // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
         if case .t3(let scope) = intent.source { t3NotificationLaunchScope = scope }
         let supersededOpening = pendingPushNotification?.supersededOpening == true || hasUnsettledOpening
         pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim(), supersededOpening: supersededOpening)
-        await resumePushNavigation()
+        return true
     }
     /// Recovery can retire the admitted claim without retiring the tap. A retained tap may then claim
     /// again, because every newer navigation intent cancels the tap when it is admitted.
@@ -1373,7 +1379,7 @@ import BottoCore
         }
     }
 
-    private func resumePushNavigation() async {
+    func resumePushNavigation() async {
         guard active, notificationRouting == nil, let intent = pendingPushNotification?.intent,
               !isDemo, let configuration else { return }
         let attempt = UUID(); notificationRouting = attempt
@@ -1491,15 +1497,19 @@ import BottoCore
         let owner = generation
         let connectionID = configuration?.id
         let account = configuration.map(Self.richReplyAccount)
-        if let scope = t3PushScope {
-            guard await t3Push.disable(scope: scope) else {
+        let isT3 = isT3Workspace
+        if isT3 || t3Push.hasOtherPairings(than: nil) {
+            guard await t3Push.disablePairings(matching: { _ in true }) else {
                 notice = t3Push.notice ?? "Finish updating notifications before forgetting this connection."
                 return
             }
-            guard generation == owner, configuration?.id == connectionID else { return }
-            forgetConnection()
-            if configuration == nil { notice = t3Push.notice }
-            return
+            guard generation == owner, configuration?.id == connectionID,
+                  configuration.map(Self.richReplyAccount) == account else { return }
+            if isT3 {
+                forgetConnection()
+                if configuration == nil { notice = t3Push.notice }
+                return
+            }
         }
         let removed = await push.prepareToForget()
         guard generation == owner, !isDemo, configuration?.id == connectionID,
@@ -1508,7 +1518,7 @@ import BottoCore
             notice = push.notice ?? "Botto couldn’t remove notification pairings. Check Notifications, then try again."
             return
         }
-        let pushNotice = push.notice
+        let pushNotice = push.notice ?? t3Push.notice
         forgetConnection()
         if configuration == nil, let pushNotice { notice = pushNotice }
     }
@@ -1758,7 +1768,7 @@ import BottoCore
         } else {
             // Local persistence can recover after unlocking even if the network cannot.
             flush()
-            if started, !isConnected, pendingService == nil, connection.candidate == nil, let configuration {
+            if hasStarted, !isConnected, pendingService == nil, connection.candidate == nil, let configuration {
                 if await connect(configuration) { return }
             }
             await t3Push.resume(scope: t3PushScope)
@@ -1813,6 +1823,7 @@ import BottoCore
     }
 
     func leaveDemo() {
+        t3NotificationLaunchScope = nil
         retireAvatarWorkspace(ifReplacingWith: nil)
         service.onEvent = nil; service.disconnect(); service = liveService
         connection.suspend(hasSavedSetup: false)

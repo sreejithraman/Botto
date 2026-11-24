@@ -69,7 +69,8 @@ private struct BottoWorkspace: View {
                     store?.shouldPresentPush(envelope) ?? false
                 }
                 PushNotificationBridge.onTap = { [weak store] envelope in
-                    Task { await store?.openPushNotification(envelope) }
+                    guard let store, store.admitPushNotification(envelope) else { return }
+                    Task { await store.resumePushNavigation() }
                 }
                 await store.start()
             }

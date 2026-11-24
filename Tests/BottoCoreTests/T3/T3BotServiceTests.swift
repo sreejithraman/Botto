@@ -206,6 +206,7 @@ import Testing
         let deadline = ContinuousClock.now + .seconds(3)
         while await host.threadSubscriptions.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
         #expect(await host.threadSubscriptions == ["existing-general"])
+        try await host.completeForPush("existing-general", id: "blocked-run", holding: true)
         try await host.completeForPush("existing-general")
         let activity = try #require(await firstActivity(activities))
         #expect(activity.scope == T3PushScope(environmentID: "environment", projectID: "bot-project"))
@@ -1428,13 +1429,14 @@ private actor T3ServiceHost: T3WebSocketTransport {
     func close() async { await socket.close() }
     func dropSocket() { socket.incoming.finish(throwing: T3RPCError.transport) }
 
-    func completeForPush(_ thread: String) throws {
+    func completeForPush(_ thread: String, id: String = "fixture-routine-run", holding: Bool = false) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        try event("run.updated", payload: .object([
-            "id": .string("fixture-routine-run"), "status": .string("completed"),
-            "completedAt": .string(formatter.string(from: .now))
-        ]), thread: thread)
+        threads[thread]?["status"] = .string("completed")
+        threads[thread]?["latestRunId"] = .string(id)
+        threads[thread]?["latestRunCompletedAt"] = .string(formatter.string(from: .now))
+        threads[thread]?["pendingBackgroundTasks"] = holding ? .array([.object(["kind": .string("subagent")])]) : .array([])
+        try shellUpdate(thread)
     }
 
     func endShellStream() throws { try endStream(#require(shellStream)) }

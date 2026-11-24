@@ -34,8 +34,12 @@ import Observation
         pairings.first { $0.invitation.scope == scope && $0.registration.target != nil }
     }
 
-    func pendingRemoval(_ scope: T3PushScope?) -> T3PushPairing? {
-        pairings.first { $0.invitation.scope == scope && $0.registration.target == nil }
+    func hasPendingRemoval(_ scope: T3PushScope?) -> Bool {
+        pairings.contains { $0.invitation.scope == scope && $0.registration.target == nil }
+    }
+
+    func hasOtherPairings(than scope: T3PushScope?) -> Bool {
+        pairings.contains { $0.invitation.scope != scope && $0.registration.target != nil }
     }
 
     func enable(code: String, scope: T3PushScope) async {
@@ -52,50 +56,56 @@ import Observation
             }
             guard try await authorization.requestPermission() else { throw PushError.permissionDenied }
             let token = try await authorization.deviceToken()
+            let removed = await retryRemovals(matching: { $0 == scope }, at: invitation)
             let registration = T3PushRegistration(scope: scope, generation: 1, target: target(token))
             let pairing = T3PushPairing(invitation: invitation, registration: registration, installationID: nil, confirmed: false)
             try replace(pairing)
             try await reconcile(pairing)
-            notice = nil
+            notice = removed ? nil : removalNotice
         } catch { notice = error.localizedDescription }
     }
 
     func updateMacAddress(code: String, scope: T3PushScope) async {
-        guard !isBusy, var pairing = pairing(scope) ?? pendingRemoval(scope) else { return }
+        guard !isBusy, pairing(scope) != nil || hasPendingRemoval(scope) else { return }
         isBusy = true
         defer { isBusy = false }
         do {
             let address = try T3PushInvitation(code: code)
             guard address.scope == scope else { throw T3PushRegistrationError.wrongMac }
-            let original = pairing.invitation
-            pairing.invitation = .init(host: address.host, port: address.port, scope: original.scope,
-                                       deviceID: original.deviceID, expiresAt: original.expiresAt, secret: original.secret)
-            // The saved device credential has to authenticate the Mac at the new address before we persist it.
-            try await reconcile(pairing)
-            notice = nil
+            let removed = await retryRemovals(matching: { $0 == scope }, at: address)
+            if let active = pairing(scope) { try await reconcile(active, at: address) }
+            notice = removed ? nil : removalNotice
         } catch { notice = error.localizedDescription }
     }
 
     @discardableResult func disable(scope: T3PushScope) async -> Bool {
+        await disablePairings { $0 == scope }
+    }
+
+    @discardableResult func disablePairings(matching: (T3PushScope) -> Bool) async -> Bool {
         guard !isBusy else { return false }
         isBusy = true
         defer { isBusy = false }
-        var savedRemoval = false
         do {
             pairings = try load()
-            guard var pairing = pairing(scope) else { return true }
-            pairing.registration = .init(scope: scope, generation: pairing.registration.generation + 1, target: nil)
-            pairing.confirmed = false
-            try replace(pairing)
-            savedRemoval = true
-            try await reconcile(pairing)
-            notice = nil
+            let retired = pairings.map { pairing in
+                let scope = pairing.invitation.scope
+                guard matching(scope), pairing.registration.target != nil else { return pairing }
+                var removal = pairing
+                removal.registration = .init(scope: scope, generation: pairing.registration.generation + 1, target: nil)
+                removal.confirmed = false
+                return removal
+            }
+            if retired != pairings {
+                try save(retired)
+                pairings = retired
+            }
+            notice = await retryRemovals(matching: matching) ? nil : removalNotice
+            return true
         } catch {
-            notice = savedRemoval
-                ? "Turned off on this iPhone. Botto will retry removal when it can reach your Mac."
-                : error.localizedDescription
+            notice = error.localizedDescription
+            return false
         }
-        return savedRemoval
     }
 
     func resume(scope: T3PushScope?) async {
@@ -103,24 +113,30 @@ import Observation
         isBusy = true
         defer { isBusy = false }
         reload()
-        let hadActivePairing = pairing(scope) != nil
-        if let scope, hadActivePairing {
+        let removed = await retryRemovals(matching: { _ in true })
+        if let scope, pairing(scope) != nil {
             do { try await update(scope: scope, token: authorization.deviceToken()) }
-            catch { notice = error.localizedDescription }
+            catch { notice = error.localizedDescription; return }
         }
-        let removals = pairings.filter { $0.registration.target == nil }
-        var removalFailed = false
+        if !removed { notice = removalNotice }
+    }
+
+    private var removalNotice: String {
+        "Turned off on this iPhone. Botto will retry removal when it can reach your Mac."
+    }
+
+    private func retryRemovals(matching: (T3PushScope) -> Bool, at address: T3PushInvitation? = nil) async -> Bool {
+        let removals = pairings.filter { $0.registration.target == nil && matching($0.invitation.scope) }
+        var removed = true
         for removal in removals {
-            do { try await reconcile(removal) }
-            catch { removalFailed = true }
+            do { try await reconcile(removal, at: address) }
+            catch { removed = false }
         }
-        if !removals.isEmpty, !hadActivePairing {
-            notice = removalFailed ? "Botto will retry removal when it can reach your Mac." : nil
-        }
+        return removed
     }
 
     func didRegister(token: String, scope: T3PushScope?) async {
-        guard !isBusy, let scope, pairing(scope)?.registration.target != nil else { return }
+        guard !isBusy, let scope, pairing(scope) != nil else { return }
         isBusy = true
         defer { isBusy = false }
         do { try await update(scope: scope, token: token) }
@@ -135,7 +151,7 @@ import Observation
 
     func authorizes(_ intent: PushNavigationIntent, scope: T3PushScope?) -> Bool {
         guard case .t3(let original) = intent.source, original == scope, let pairing = pairing(scope) else { return false }
-        return pairing.registration.target != nil && pairing.installationID == intent.installationID
+        return pairing.installationID == intent.installationID
             && pairing.invitation.deviceID == intent.deviceID
     }
 
@@ -156,11 +172,19 @@ import Observation
             pairing.confirmed = false
             try replace(pairing)
         }
-        try await reconcile(pairing)
+        do { try await reconcile(pairing) }
+        catch T3PushRegistrationError.bridgeUnavailable where pairing.confirmed { return }
+        catch T3PushRegistrationError.relayUnavailable where pairing.confirmed { return }
         notice = nil
     }
 
-    private func reconcile(_ pairing: T3PushPairing) async throws {
+    private func reconcile(_ original: T3PushPairing, at address: T3PushInvitation? = nil) async throws {
+        var pairing = original
+        if let address {
+            let identity = original.invitation
+            pairing.invitation = .init(host: address.host, port: address.port, scope: identity.scope,
+                                       deviceID: identity.deviceID, expiresAt: identity.expiresAt, secret: identity.secret)
+        }
         let response = try await send(pairing.registration, pairing.invitation)
         guard PushEnvelope.validHex(response.installationID, count: 64),
               pairing.installationID == nil || pairing.installationID == response.installationID else {

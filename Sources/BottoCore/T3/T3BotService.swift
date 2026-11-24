@@ -1186,7 +1186,9 @@ private extension T3BotService {
         for id in Array(session.pushTasks.keys) where session.shells[id] == nil {
             session.pushTasks.removeValue(forKey: id)?.cancel()
         }
-        for id in session.shells.keys where session.pushTasks[id] == nil {
+        for (id, shell) in session.shells {
+            if let activity = pushObserver?.shellActivity(in: shell) { onPushActivity?(activity) }
+            guard session.pushTasks[id] == nil else { continue }
             session.pushTasks[id] = Task { [weak self, weak session] in
                 guard let session else { return }
                 while !Task.isCancelled {
@@ -1199,11 +1201,7 @@ private extension T3BotService {
                         for try await item in stream {
                             guard let self, self.session === session, !Task.isCancelled,
                                   let shell = session.shells[id] else { return }
-                            let lineage = shell["lineage"]
-                            let listsAsSpace = lineage["relationshipToParent"].text != "subagent"
-                                && lineage["sideChat"].flag != true && lineage["workflowStep"].flag != true
-                            let activities = self.pushObserver?.receive(item, spaceID: id,
-                                title: shell["title"].nonempty ?? "Botto", includesCompletion: listsAsSpace) ?? []
+                            let activities = self.pushObserver?.requests(item, in: shell) ?? []
                             for activity in activities { self.onPushActivity?(activity) }
                         }
                     } catch {

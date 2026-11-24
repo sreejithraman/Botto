@@ -184,6 +184,8 @@ private struct MacEngineSettings: View {
                     Text("Check the relay configuration and restart Botto.")
                 } else if delegate.pushBridge == nil {
                     Text("Set up a Botto push relay to enable phone notifications.")
+                } else if delegate.pushListener?.failed == true {
+                    Text("Botto couldn’t open notification port 3775. Free the port and restart Botto.")
                 } else {
                     Button("Copy LAN Notification Code") { copyPushCode(host: server.lanOrigin?.host) }
                         .disabled(!delegate.store.isConnected || server.lanOrigin == nil)

@@ -14,10 +14,11 @@ Botto uses the local streams for outbound alerts, so a T3 Cloud account and
 changes to upstream T3 are unnecessary.
 
 - The Mac watches live Spaces in its Botto project even when the window is
-  closed. The engine must be awake. A terminal `run.updated` record with
-  status `completed` is the v2 completion signal, including a routine run.
-  Supported pending `runtime-request.updated` records alert for approvals
-  and questions. Resolving, cancelling, or expiring a request cancels queued
+  closed. The engine must be awake. The v2 Space shell reports completion,
+  including a routine run, once no background work holds it open. Stopped
+  runs and monitor progress wakes while the monitor is active stay quiet.
+  Supported pending requests alert for approvals and questions. Child
+  questions meant for the coordinating agent stay quiet. Resolving, cancelling, or expiring a request cancels queued
   relay delivery. Work that completed before observation started stays quiet.
   Recent snapshots can recover events across a socket reconnect. Event and
   request IDs stay stable across duplicates. Mac-to-relay submission is
@@ -99,7 +100,10 @@ and private `.p8` key authorized for that bundle ID and environment.
    retries on return. Alerts already submitted to Apple can still appear
    with generic text. If the Mac's address changes, copy a fresh code on
    the same Mac and use **Update Mac Address** on the iPhone to recover the
-   existing pairing or finish a pending removal.
+   existing pairing or finish a pending removal. To turn off pairings from a
+   previous Mac, use **Turn Off Notifications from Other Macs** in Settings.
+   Forgetting the connection retires local notification access for all
+   saved Mac pairings.
 
 ### W5 physical acceptance
 
@@ -116,8 +120,9 @@ so a tap that opens the wrong Space is visible.
    background. Observe the alerts, tap each into its own Space, and confirm
    Botto shows the current request without answering it. With that Space
    visible, confirm another alert for it stays quiet.
-4. Turn off notifications on the test device and confirm removal. Trigger
-   a new event and confirm the device gets no alert. Record observed delivery,
+4. Turn off notifications on the test device and confirm removal. Put
+   Botto in the background, trigger a new event, and confirm the device
+   gets no alert. Record observed delivery,
    decrypted preview, exact routing, and removal separately.
 
 Automated proof covers the local WebSocket observer, encrypted loopback

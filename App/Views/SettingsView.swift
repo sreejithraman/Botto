@@ -72,6 +72,16 @@ struct SettingsView: View {
                             Label("Notifications", systemImage: "bell.badge")
                         }
                         .accessibilityIdentifier("settings.notifications")
+                        if store.t3Push.hasOtherPairings(than: store.t3PushScope) {
+                            Button("Turn Off Notifications from Other Macs", role: .destructive) {
+                                let current = store.t3PushScope
+                                Task {
+                                    await store.t3Push.disablePairings { $0 != current }
+                                    store.notice = store.t3Push.notice
+                                }
+                            }
+                            .disabled(store.t3Push.isBusy)
+                        }
                     }
                 }
                 #if DEBUG || BOTTO_INTERNAL_TOOLS

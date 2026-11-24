@@ -2,6 +2,7 @@ import BottoCore
 import CryptoKit
 import Foundation
 import Network
+import Observation
 import os
 
 /// Owns local enrollment and the relay installation. The relay never receives a
@@ -105,7 +106,7 @@ actor T3PushBridge {
             if previous.providerRetired == true, let target = request.target, target == old.target {
                 return reply(.retired)
             }
-            if old == request, previous.confirmed { return reply(old.target == nil ? .removed : .registered) }
+            if old == request, previous.confirmed, old.target == nil { return reply(.removed) }
         } else {
             let now = Int(Date.now.timeIntervalSince1970)
             if request.target == nil && expiresAt <= now { return reply(.removed) }
@@ -115,12 +116,15 @@ actor T3PushBridge {
            state.devices.values.count(where: { $0.registration.target != nil && $0.providerRetired != true }) >= 8 {
             return reply(.retry)
         }
-        // A saved pairing can always revoke, even after its original project or engine goes offline.
-        guard request.target == nil || scope == request.scope else { return reply(.differentWorkspace) }
+        let confirmedEarlier = previous?.confirmed == true && previous?.registration == request
+        // An existing pairing can revoke or recheck its target while the engine is asleep.
+        guard request.target == nil || confirmedEarlier || scope == request.scope else { return reply(.differentWorkspace) }
         busy.insert(id)
         defer { busy.remove(id) }
         do {
-            try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: false))
+            if !confirmedEarlier {
+                try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: false))
+            }
             let path = "/devices/" + id
             if let target = request.target {
                 let status = try await relay(path, method: "PUT", body: [
@@ -140,7 +144,9 @@ actor T3PushBridge {
                 ]).status
                 guard ["accepted", "duplicate", "revoked"].contains(status) else { return reply(.retry) }
             }
-            try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: true))
+            if !confirmedEarlier {
+                try saveDevice(id, Device(codeExpiry: expiresAt, registration: request, confirmed: true))
+            }
             return reply(request.target == nil ? .removed : .registered)
         } catch {
             return reply(.retry)
@@ -234,16 +240,18 @@ actor T3PushBridge {
     }
 }
 
-@MainActor final class T3PushListener {
+@MainActor @Observable final class T3PushListener {
     private let listener: NWListener
     private var activeConnections = 0
     private(set) var port: UInt16?
+    private(set) var failed = false
 
     init(bridge: T3PushBridge, port: NWEndpoint.Port? = nil) throws {
         listener = try NWListener(using: .tcp, on: port ?? .any)
         listener.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
+                if case .failed = state { self.failed = true }
                 self.port = state == .ready ? self.listener.port?.rawValue : nil
             }
         }

@@ -146,7 +146,7 @@ struct T3PushSettingsView: View {
     private var coordinator: T3PushCoordinator { store.t3Push }
     private var scope: T3PushScope? { store.t3PushScope }
     private var pairing: T3PushPairing? { coordinator.pairing(scope) }
-    private var hasPendingRemoval: Bool { coordinator.pendingRemoval(scope) != nil }
+    private var hasPendingRemoval: Bool { coordinator.hasPendingRemoval(scope) }
 
     var body: some View {
         Form {

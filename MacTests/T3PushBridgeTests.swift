@@ -26,7 +26,7 @@ import Testing
         #expect(result.status == .registered)
         #expect(await relay.methods == ["PUT"])
         #expect(try await T3PushRegistrationChannel.send(registration, invitation: phoneCode) == result)
-        #expect(await relay.methods == ["PUT"])
+        #expect(await relay.methods == ["PUT", "PUT"])
 
         let now = Int(Date.now.timeIntervalSince1970)
         await bridge.publish(.init(scope: scope, spaceID: "originating-space", title: "Release plans",
@@ -50,7 +50,7 @@ import Testing
         #expect(try await T3PushRegistrationChannel.send(registration, invitation: phoneCode).status == .retired)
         let reopened = try T3PushBridge(relay: origin, file: file, transport: { try await relay.send($0) })
         #expect(await reopened.register(invite.deviceID, expiresAt: invite.expiresAt, request: remove).status == .removed)
-        #expect(await relay.methods == ["PUT", "POST", "POST"])
+        #expect(await relay.methods == ["PUT", "PUT", "POST", "POST"])
     }
 
     @Test func deviceRetirementAndCancellationSurviveAScopeDisconnect() async throws {
@@ -98,6 +98,28 @@ import Testing
         #expect(await bridge.register(retired.deviceID, expiresAt: retired.expiresAt, request: rotated).status == .registered)
     }
 
+    @Test func revalidationDetectsRetirementAfterRelayRetries() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let relay = RelayFixture()
+        let bridge = try T3PushBridge(relay: #require(URL(string: "https://relay.example")),
+                                      file: directory.appending(path: "bridge.json"), transport: { try await relay.send($0) })
+        let scope = T3PushScope(environmentID: "my-engine", projectID: "my-project")
+        await bridge.setScope(scope)
+        let code = try await bridge.makeInvitation(host: "127.0.0.1", port: 3775)
+        let target = T3PushRegistration.Target(token: String(repeating: "12", count: 32),
+                                               bundleID: "com.sree.botto", environment: .sandbox)
+        let initial = T3PushRegistration(scope: scope, generation: 1, target: target)
+        #expect(await bridge.register(code.deviceID, expiresAt: code.expiresAt, request: initial).status == .registered)
+        await relay.queueEvents()
+        let now = Int(Date.now.timeIntervalSince1970)
+        await bridge.publish(.init(scope: scope, spaceID: "space", title: "Release plans",
+            id: "run-1", kind: .reply, createdAt: now, expiresAt: now + 3_600, cancelled: false))
+        await relay.revokeOnRevalidation()
+        #expect(await bridge.register(code.deviceID, expiresAt: code.expiresAt, request: initial).status == .retired)
+        #expect(await relay.methods == ["PUT", "POST", "PUT"])
+    }
+
     private actor RelayFixture {
         struct Event: Sendable { let id: String; let deviceID: String; let sealed: String; let wire: String }
         var methods: [String] = []
@@ -107,7 +129,11 @@ import Testing
         var cancelledRequestID: String?
         var retiredID: String?
         var failPut = false
+        var putStatus = "accepted"
+        var eventStatus = "accepted"
 
+        func queueEvents() { eventStatus = "queued" }
+        func revokeOnRevalidation() { putStatus = "revoked" }
         func setRetired(_ id: String) { retiredID = id }
         func failNextPut() { failPut = true }
 
@@ -120,14 +146,14 @@ import Testing
             }
             let data = try #require(request.httpBody)
             let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-            var result: [String: Any] = ["v": 1, "status": "accepted"]
+            var result: [String: Any] = ["v": 1, "status": request.httpMethod == "PUT" ? putStatus : "accepted"]
             if url.lastPathComponent == "events" {
                 let targets = try #require(body["targets"] as? [[String: Any]])
                 let target = try #require(targets.first)
                 let ids = try targets.map { try #require($0["device_id"] as? String) }
                 deliveredTargets.append(ids)
                 latestRequestID = body["request_id"] as? String
-                result["targets"] = ids.map { ["device_id": $0, "status": $0 == retiredID ? "invalid_target" : "accepted"] }
+                result["targets"] = ids.map { ["device_id": $0, "status": $0 == retiredID ? "invalid_target" : eventStatus] }
                 event = try .init(id: #require(body["event_id"] as? String),
                                   deviceID: #require(target["device_id"] as? String),
                                   sealed: #require(target["sealed"] as? String), wire: String(decoding: data, as: UTF8.self))
