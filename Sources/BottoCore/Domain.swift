@@ -8,8 +8,9 @@ public struct ConnectionConfiguration: Codable, Equatable, Sendable {
     public var installID: String?
     public var nativeCredential: NativeCredential?
     public var connectionHeaders: [String: String]
+    public var t3: T3Connection?
 
-    public init(id: UUID = UUID(), serverURL: URL, username: String = "", password: String = "", installID: String? = nil, nativeCredential: NativeCredential? = nil, connectionHeaders: [String: String] = [:]) {
+    public init(id: UUID = UUID(), serverURL: URL, username: String = "", password: String = "", installID: String? = nil, nativeCredential: NativeCredential? = nil, connectionHeaders: [String: String] = [:], t3: T3Connection? = nil) {
         self.id = id
         self.serverURL = serverURL
         self.username = username
@@ -17,6 +18,7 @@ public struct ConnectionConfiguration: Codable, Equatable, Sendable {
         self.installID = installID
         self.nativeCredential = nativeCredential
         self.connectionHeaders = connectionHeaders
+        self.t3 = t3
     }
 }
 
