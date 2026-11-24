@@ -17,6 +17,18 @@ import Testing
         #expect(await host.writtenFiles.isEmpty)
     }
 
+    @Test func refusesAProjectRemovedBeforeTheFirstShellSnapshot() async throws {
+        let host = T3ServiceHost(existing: true)
+        await host.omitProjectFromShell()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        await #expect(throws: T3ServiceError.differentWorkspace) {
+            try await service.connect(configuration: existingConfiguration())
+        }
+        #expect(service.currentBotWorkspaceRoot == nil)
+        #expect(await host.writtenFiles.isEmpty)
+    }
+
     @Test func retiresLiveWorkspaceOnRootChangeOrRemoval() async throws {
         for changedRoot in [true, false] {
             let host = T3ServiceHost(existing: true)
@@ -533,6 +545,44 @@ import Testing
         #expect(try await repair() == first)
     }
 
+    @Test(arguments: [true, false])
+    func keepsTheMainPointerWhenItsShellOrLookupIsUnavailable(lookupDenied: Bool) async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let (events, observer) = AsyncStream<BotServiceEvent>.makeStream()
+        service.onEvent = { observer.yield($0) }
+        _ = try await service.connect(configuration: existingConfiguration())
+        await host.setMainLookupDenied(lookupDenied)
+        try await host.replaceMainWithoutPublishing()
+        var updates = events.makeAsyncIterator()
+        while let event = await updates.next(isolation: MainActor.shared) {
+            if case .conversationDirectoryChanged = event, service.currentT3Channels.isEmpty { break }
+        }
+
+        let profile = try ExactID("bot-project")
+        let target = SessionTarget.canonical(profile: profile, expectedRoot: nil)
+        if lookupDenied {
+            await #expect(throws: T3RPCError.remote(tag: "LookupUnavailable", message: "Lookup unavailable")) {
+                try await service.openChat(target)
+            }
+        } else {
+            await #expect(throws: T3ServiceError.mainSpaceSynchronizing) { try await service.openChat(target) }
+        }
+        #expect(await host.createdThreads.isEmpty)
+        #expect(try await service.loadBotBrain().manifest.mainThreadID == "new-main")
+
+        await host.setMainLookupDenied(false)
+        try await host.publishReplacementMain()
+        while let event = await updates.next(isolation: MainActor.shared) {
+            if case .conversationDirectoryChanged = event,
+               service.currentT3Channels.contains(where: { $0.id == "new-main" }) { break }
+        }
+        let opened = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
+        #expect(opened.identity.stored.text == "new-main")
+        #expect(service.currentT3Channels.first(where: \.isMain)?.id == "new-main")
+    }
+
     @Test(arguments: ["AGENTS.md", "CLAUDE.md", "bot.json"])
     func retryConvergesPromptFilesAndManifest(afterFailedWrite path: String) async throws {
         let host = T3ServiceHost(existing: true)
@@ -678,6 +728,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private(set) var writtenFiles: [String] = []
     private var rejectedWritePath: String?
     private var deniesArchiveReads = false
+    private var deniesMainLookup = false
+    private var omitsShellProject = false
     private var dropsCommandAcknowledgement = false
     private(set) var createdThreads: [HermesJSON] = []
     private(set) var dispatchedMessages: [HermesJSON] = []
@@ -724,7 +776,25 @@ private actor T3ServiceHost: T3WebSocketTransport {
     func write(_ path: String, _ contents: String) { files[path] = contents }
     func rejectNextWrite(to path: String) { rejectedWritePath = path }
     func setArchiveReadDenied(_ denied: Bool) { deniesArchiveReads = denied }
+    func setMainLookupDenied(_ denied: Bool) { deniesMainLookup = denied }
+    func omitProjectFromShell() { omitsShellProject = true }
     func loseNextCommandAcknowledgement() { dropsCommandAcknowledgement = true }
+
+    func replaceMainWithoutPublishing() throws {
+        let stream = try #require(shellStream)
+        threads["existing-general"] = nil
+        threads["new-main"] = .object([
+            "id": .string("new-main"), "projectId": .string(projectID), "title": .string("New Main")
+        ])
+        files["bot.json"] = #"{"displayName":"Existing Bot","mainThreadID":"new-main"}"#
+        sequence += 1
+        try chunk(stream, values: [.object([
+            "kind": .string("thread.removed"), "sequence": .number(Double(sequence)),
+            "location": .string("active"), "threadId": .string("existing-general")
+        ])])
+    }
+
+    func publishReplacementMain() throws { try shellUpdate("new-main") }
 
     func changeSavedProject(rootChanged: Bool) throws {
         let stream = try #require(shellStream)
@@ -899,12 +969,26 @@ private actor T3ServiceHost: T3WebSocketTransport {
             shellStream = id
             try chunk(id, values: [
                 .object(["kind": .string("snapshot"), "snapshot": .object([
-                    "projects": .array([project]), "threads": .array(threads.values.filter { $0["archivedAt"] == .null }),
+                    "projects": .array(omitsShellProject ? [] : [project]),
+                    "threads": .array(threads.values.filter { $0["archivedAt"] == .null }),
                     "archivedThreads": .array([])
                 ])]),
                 .object(["kind": .string("synchronized")])
             ])
             return
+        case "orchestration.getThreadLinkMetadata":
+            if deniesMainLookup {
+                try reject(id, tag: "LookupUnavailable", message: "Lookup unavailable")
+                return
+            }
+            let ids = try #require(request["threadIds"].list)
+            var metadata: [String: HermesJSON] = [:]
+            for id in ids.compactMap(\.text) {
+                if let thread = threads[id] {
+                    metadata[id] = .object(["projectId": thread["projectId"], "title": thread["title"]])
+                }
+            }
+            reply = .object(metadata)
         case "orchestration.getArchivedShellSnapshot":
             if deniesArchiveReads {
                 try reject(id, tag: "ArchiveUnavailable", message: "Archive unavailable")

@@ -2,7 +2,7 @@ import Foundation
 
 public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     case missingConnection, differentEnvironment, differentWorkspace, disconnected, invalidProject, invalidResponse
-    case missingModel, missingChannel, invalidName, unsupported, unknownHistoryOffset
+    case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported, unknownHistoryOffset
     case invalidPath
     case unsupportedRoutineSchedule, protectedMainSpace
 
@@ -16,6 +16,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         case .invalidResponse: "T3 Code returned unexpected data."
         case .missingModel: "Set up a model on the T3 Code host before starting a space."
         case .missingChannel: "This space is no longer available."
+        case .mainSpaceSynchronizing: "The Main Space is still syncing. Try opening it again."
         case .invalidName: "Enter a name."
         case .unsupported: "This action requires T3 Code."
         case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
@@ -154,8 +155,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                                     config: config, project: project, workspace: root)
             session = connected
             connectingRPC = nil
-            try await bootstrap(connected)
             try await subscribeToShell(connected)
+            try await bootstrap(connected)
             try? await refreshArchive(connected)
             // A host that can't hold a main space yet (no model, a refused command) still connects.
             try? await ensureMain(connected)
@@ -744,6 +745,7 @@ private extension T3BotService {
     func check(_ session: Session) throws {
         try Task.checkCancellation()
         guard self.session === session else { throw T3ServiceError.disconnected }
+        if let failure = session.shellFailure { throw failure }
     }
 
     func requireSession(profile: ExactID? = nil) throws -> Session {
@@ -862,14 +864,15 @@ private extension T3BotService {
         try await queueManifest(session) { service in
             var manifest = try await service.readManifest(session)
             let savedID = manifest.mainThreadID
-            if let savedID {
+            if let savedID, try await service.mainExists(savedID, in: session) {
+                session.manifest = manifest
                 if session.shells[savedID] == nil { try await service.refreshArchive(session) }
-                if session.shells[savedID] != nil || session.archivedShells[savedID] != nil {
-                    session.manifest = manifest
-                    try await service.restoreMain(savedID, in: session)
-                    if session.ready { service.publishDirectory(session) }
-                    return
+                guard session.shells[savedID] != nil || session.archivedShells[savedID] != nil else {
+                    throw T3ServiceError.mainSpaceSynchronizing
                 }
+                try await service.restoreMain(savedID, in: session)
+                if session.ready { service.publishDirectory(session) }
+                return
             }
             // T3 reserves the thread identity on create. Two clients repairing the same anchor target the same thread.
             let generation = savedID.map { "replacement:" + $0 } ?? "initial"
@@ -886,6 +889,19 @@ private extension T3BotService {
             try await service.restoreMain(id, in: session)
             try await service.persistManifest(manifest, in: session)
         }
+    }
+
+    func mainExists(_ id: String, in session: Session) async throws -> Bool {
+        let response = try await session.rpc.call("orchestration.getThreadLinkMetadata", payload: .object([
+            "threadIds": .array([.string(id)])
+        ]))
+        try check(session)
+        guard let rows = response.fields else { throw T3ServiceError.invalidResponse }
+        guard let row = rows[id] else { return false }
+        guard row["projectId"].text?.utf8.elementsEqual(session.profile.text.utf8) == true else {
+            throw T3ServiceError.invalidProject
+        }
+        return true
     }
 
     /// The anchor stays live, and never keeps the "#general" earlier builds gave it.
@@ -1087,7 +1103,9 @@ private extension T3BotService {
         switch item["kind"].text {
         case "snapshot":
             let snapshot = item["snapshot"]
+            let project = snapshot["projects"].list?.first { $0["id"].text == session.profile.text }
             if item["resolvedRepositoryIdentityRoots"] == .null {
+                guard project != nil else { throw T3ServiceError.differentWorkspace }
                 guard let channels = snapshot["threads"].list, let archived = snapshot["archivedThreads"].list else {
                     throw T3ServiceError.invalidResponse
                 }
@@ -1097,7 +1115,7 @@ private extension T3BotService {
                 }
                 changed = true
             }
-            if let project = snapshot["projects"].list?.first(where: { $0["id"].text == session.profile.text }) {
+            if let project {
                 guard project["workspaceRoot"].text?.utf8.elementsEqual(session.workspace.utf8) == true else {
                     throw T3ServiceError.differentWorkspace
                 }
