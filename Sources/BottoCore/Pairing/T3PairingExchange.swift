@@ -189,7 +189,15 @@ public struct T3PairingExchange: Sendable {
     }()
 
     public static func directHTTP(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await directSession.data(for: request)
+        try await directHTTP(request, in: directSession)
+    }
+
+    static func directHTTP(_ request: URLRequest, in session: URLSession) async throws -> (Data, HTTPURLResponse) {
+        if request.url?.path.hasPrefix("/api/assets/") == true {
+            return try await BoundedHTTPReceiver.receive(request, in: session, limit: DownloadedArtifact.maximumBytes,
+                                                         limitError: .artifactTooLarge)
+        }
+        let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw T3PairingError.invalidResponse }
         return (data, response)
     }

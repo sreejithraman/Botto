@@ -42,7 +42,7 @@ public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
         case .wrongConversation: "Hermes returned a different chat identity. Reopen the bot from the list."
         case .missingChat: "This bot has no unique Bot Chat. Open its chat in Hermes Desktop, then refresh."
         case .timeout: "Hermes did not respond in time. Check the host and reconnect."
-        case .uncertain: "The connection ended before Hermes confirmed this action. It may have succeeded. Reconnect and check the chat before sending it again."
+        case .uncertain: "The connection ended before the server confirmed this action. It may have succeeded. Reconnect and check the chat before sending it again."
         case .rejected(401): "The Hermes session expired. Reconnect to sign in again."
         case .rejected(403): "The host or proxy blocked this request. Check access to the Hermes dashboard."
         case .rejected(-32601): "This Hermes host does not support the requested feature. Update Hermes and reconnect."
@@ -51,7 +51,7 @@ public enum HermesServiceError: Error, LocalizedError, Equatable, Sendable {
         case .invalidName: "Use a bot name containing letters or numbers, up to 64 characters. Reserved system names are not allowed."
         case .nameTaken: "A bot with this name already exists. Open it from the list or choose another name."
         case .unsupportedRequest: "Answer this request in Hermes Desktop. Botto cannot safely answer this request type."
-        case .invalidResponse: "Choose one of the answers offered by Hermes, or enter a nonempty answer."
+        case .invalidResponse: "Choose one of the offered answers, or enter a nonempty answer."
         case .responseTooLong: "This answer is too long. Use 16,384 UTF-8 bytes or fewer, then submit again. Some characters use more than one byte. Nothing was sent."
         case .attachmentLimit: AttachmentLimits.message
         case .invalidAttachment: "This attachment is invalid or belongs to another chat. Attach the file again."

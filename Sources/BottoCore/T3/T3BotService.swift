@@ -1,15 +1,16 @@
 import Foundation
 
 public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
-    case missingConnection, differentEnvironment, disconnected, invalidProject, invalidResponse
+    case missingConnection, differentEnvironment, differentWorkspace, disconnected, invalidProject, invalidResponse
     case missingModel, missingChannel, invalidName, unsupported, unknownHistoryOffset
-    case invalidPath, invalidRequestResponse, uncertain
+    case invalidPath
     case unsupportedRoutineSchedule, protectedMainSpace
 
     public var errorDescription: String? {
         switch self {
         case .missingConnection: "Pair Botto with a T3 Code environment first."
         case .differentEnvironment: "This address belongs to a different T3 Code environment. Pair it again."
+        case .differentWorkspace: "Botto’s saved workspace changed. Pair again to open it."
         case .disconnected: "Reconnect to T3 Code to continue."
         case .invalidProject: "T3 Code returned an invalid bot project."
         case .invalidResponse: "T3 Code returned unexpected data."
@@ -19,8 +20,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         case .unsupported: "This action requires T3 Code."
         case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
         case .invalidPath: "Choose a file inside the bot project."
-        case .invalidRequestResponse: "Enter a valid answer to the current request."
-        case .uncertain: "T3 Code did not confirm the action. Check the space before trying again."
         case .unsupportedRoutineSchedule: "Enter a cron expression with a fixed minute and hour, optional weekdays, and * for day of month and month."
         case .protectedMainSpace: "The main space stays. You can rename it instead."
         }
@@ -39,7 +38,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let issuer = ConversationIssuer<SessionIdentity>()
         let origin: URL
         let token: String
-        let configuredModel: HermesJSON
+        let workspace: String
         var configuration: ConnectionConfiguration
         var config: HermesJSON
         var project: HermesJSON
@@ -64,7 +63,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         var attachments: [UUID: StagedAttachment] = [:]
 
         init(rpc: T3RPCClient, profile: ExactID, origin: URL, token: String, configuration: ConnectionConfiguration,
-             config: HermesJSON, project: HermesJSON, configuredModel: HermesJSON) {
+             config: HermesJSON, project: HermesJSON, workspace: String) {
             self.rpc = rpc
             self.profile = profile
             self.origin = origin
@@ -72,10 +71,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             self.configuration = configuration
             self.config = config
             self.project = project
-            self.configuredModel = configuredModel
+            self.workspace = workspace
         }
-
-        var workspace: String { project["workspaceRoot"].text ?? "" }
     }
 
     @MainActor fileprivate final class Selection {
@@ -93,7 +90,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     fileprivate struct StagedAttachment {
         let attachment: ChatAttachment
         let wire: HermesJSON
-        let access: ConversationAccess
+        let identity: SessionIdentity
     }
 
     private let http: T3PairingExchange
@@ -145,7 +142,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             guard let id = project["id"].nonempty, let root = project["workspaceRoot"].nonempty else {
                 throw T3ServiceError.invalidProject
             }
-            let configuredModel = Self.modelSelection(provider: paired.providerInstanceID, model: paired.model)
             var updated = configuration
             updated.serverURL = origin
             updated.installID = descriptor.environmentId
@@ -155,7 +151,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             paired.workspaceRoot = root
             updated.t3 = paired
             let connected = Session(rpc: rpc, profile: try ExactID(id), origin: origin, token: token, configuration: updated,
-                                    config: config, project: project, configuredModel: configuredModel)
+                                    config: config, project: project, workspace: root)
             session = connected
             connectingRPC = nil
             try await bootstrap(connected)
@@ -243,7 +239,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     private static func shouldRetry(_ error: Error) -> Bool {
         switch error {
         case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403), T3PairingError.incompatibleProtocol,
-             T3ServiceError.differentEnvironment, T3ServiceError.missingConnection:
+             T3ServiceError.differentEnvironment, T3ServiceError.differentWorkspace, T3ServiceError.missingConnection:
             return false
         default:
             return true
@@ -311,6 +307,16 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         }
     }
 
+    @discardableResult public func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
+        let session = try requireSession()
+        try await editManifest(session) { manifest in
+            manifest.providerInstanceID = option?.providerInstanceID
+            manifest.model = option?.modelID
+        }
+        try check(session)
+        return session.manifest
+    }
+
     public func availableModels() async throws -> [T3ModelOption] {
         let session = try requireSession()
         let config = try await session.rpc.call("server.getConfig")
@@ -370,11 +376,14 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 
     public func listRoutines() async throws -> [T3ScheduledRoutine] {
-        let session = try requireSession()
+        try await routines(in: requireSession()).map(Self.routine)
+    }
+
+    private func routines(in session: Session) async throws -> [HermesJSON] {
         let reply = try await session.rpc.call("scheduledTasks.subscribe", firstStreamValue: true)
         try check(session)
         guard let tasks = reply["tasks"].list else { throw T3ServiceError.invalidResponse }
-        return try tasks.filter { $0["projectId"].text == session.profile.text }.map(Self.routine)
+        return tasks.filter { $0["projectId"].text == session.profile.text }
     }
 
     public func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
@@ -405,17 +414,24 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     public func setRoutineEnabled(id: String, enabled: Bool) async throws {
         let session = try requireSession()
+        guard try await routines(in: session).contains(where: { $0["id"].text == id }) else {
+            throw T3ServiceError.invalidResponse
+        }
         let reply = try await session.rpc.call("scheduledTasks.setEnabled", payload: .object([
             "id": .string(id), "enabled": .bool(enabled)
         ]))
         try check(session)
-        guard reply["task"]["id"].text == id, reply["task"]["enabled"].flag == enabled else {
+        guard reply["task"]["id"].text == id, reply["task"]["projectId"].text == session.profile.text,
+              reply["task"]["enabled"].flag == enabled else {
             throw T3ServiceError.invalidResponse
         }
     }
 
     public func deleteRoutine(id: String) async throws {
         let session = try requireSession()
+        guard try await routines(in: session).contains(where: { $0["id"].text == id }) else {
+            throw T3ServiceError.invalidResponse
+        }
         let reply = try await session.rpc.call("scheduledTasks.delete", payload: .object(["id": .string(id)]))
         try check(session)
         guard reply["id"].text == id else { throw T3ServiceError.invalidResponse }
@@ -476,7 +492,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                 identity = try T3ProjectionMapper.identity(profile: profile, threadID: expectedRoot.text)
                 try validate(identity, in: session)
             } else {
-                if currentMain(session) == nil { try? await ensureMain(session) }
+                if currentMain(session) == nil { try await ensureMain(session) }
                 try check(session)
                 if let home = try currentMain(session) ?? T3ProjectionMapper.mostRecent(directory(session).channels) {
                     identity = try T3ProjectionMapper.identity(profile: profile, threadID: home.id)
@@ -507,7 +523,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         guard session.openAttempt == attempt else { throw HermesServiceError.staleConversation }
         session.issuer.retireAttachment()
         session.selection?.task?.cancel()
-        session.attachments.removeAll()
         let selection = Selection(identity: identity)
         session.selection = selection
         do {
@@ -609,7 +624,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         var bytes = 0
         let uploaded = try attachments.map { attachment -> HermesJSON in
             guard let id = attachment.stagingID, let uploaded = session.attachments[id],
-                  uploaded.access == access, uploaded.attachment == attachment else { throw HermesServiceError.invalidAttachment }
+                  uploaded.identity == identity, uploaded.attachment == attachment else { throw HermesServiceError.invalidAttachment }
             bytes += uploaded.attachment.byteCount ?? 0
             return uploaded.wire
         }
@@ -649,7 +664,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         guard let current = selection.projection?.conversation(selection.identity).queuedMessages.first(where: { $0.id == message.id }),
               current == message, current.canEdit else { throw HermesServiceError.queuedMessageUnavailable }
         return try await dispatch("queued-run.edit", identity: selection.identity, operationID: operationID,
-                                  in: session, fields: ["runId": .string(message.id), "text": .string(text)])
+                                  in: session, fields: ["runId": .string(message.id), "text": .string(text)],
+                                  admissionID: current.submissionID)
     }
 
     public func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,
@@ -662,7 +678,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         switch request.kind {
         case .approval:
             guard case .choice(let decision) = response, request.choices.contains(where: { $0.id == decision }) else {
-                throw T3ServiceError.invalidRequestResponse
+                throw HermesServiceError.invalidResponse
             }
             fields["decision"] = .string(decision)
         case .question:
@@ -675,7 +691,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 
     public func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
-        let (session, _) = try resolve(access)
+        let (session, selection) = try resolve(access)
         let images = ["image/jpeg", "image/png", "image/webp", "image/gif"]
         let isImage = images.contains(mimeType.lowercased())
         let type = isImage ? "image" : "file"
@@ -699,7 +715,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let stagedID = UUID()
         let attachment = ChatAttachment(name: filename, path: "t3-attachment:" + id, mimeType: mimeType,
                                         byteCount: data.count, stagingID: stagedID)
-        session.attachments[stagedID] = StagedAttachment(attachment: attachment, wire: .object(wire), access: access)
+        session.attachments[stagedID] = StagedAttachment(attachment: attachment, wire: .object(wire), identity: selection.identity)
         return attachment
     }
 
@@ -762,7 +778,11 @@ private extension T3BotService {
         try checkAttempt(attempt)
         guard let projects = snapshot["projects"].list else { throw T3ServiceError.invalidProject }
         let available = projects.filter { $0["deletedAt"] == .null }
-        if let savedID = paired.projectID.nonempty, let project = available.first(where: { $0["id"].text == savedID }) {
+        if let savedID = paired.projectID.nonempty {
+            guard let project = available.first(where: { $0["id"].text?.utf8.elementsEqual(savedID.utf8) == true }),
+                  paired.workspaceRoot.nonempty.map({ root in
+                      project["workspaceRoot"].text?.utf8.elementsEqual(root.utf8) == true
+                  }) ?? true else { throw T3ServiceError.differentWorkspace }
             return project
         }
         if let root = paired.workspaceRoot.nonempty, let project = available.first(where: { $0["workspaceRoot"].text == root }) {
@@ -841,20 +861,29 @@ private extension T3BotService {
     func ensureMain(_ session: Session) async throws {
         try await queueManifest(session) { service in
             var manifest = try await service.readManifest(session)
-            if let id = manifest.mainThreadID, session.shells[id] != nil || session.archivedShells[id] != nil {
-                session.manifest = manifest
-                try await service.restoreMain(id, in: session)
-                if session.ready { service.publishDirectory(session) }
-                return
+            let savedID = manifest.mainThreadID
+            if let savedID {
+                if session.shells[savedID] == nil { try await service.refreshArchive(session) }
+                if session.shells[savedID] != nil || session.archivedShells[savedID] != nil {
+                    session.manifest = manifest
+                    try await service.restoreMain(savedID, in: session)
+                    if session.ready { service.publishDirectory(session) }
+                    return
+                }
             }
-            // Without the archive, a saved main space may only look missing. Don't make a second one.
-            guard manifest.mainThreadID == nil || session.archiveSnapshotSequence != nil,
-                  service.modelSelection(session) != .null else { return }
-            let name = manifest.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let created = try await service.createThread(title: name.isEmpty ? T3BotBootstrap.defaultManifest.displayName : name,
-                                                         operationID: UUID(), in: session, publish: false)
+            // T3 reserves the thread identity on create. Two clients repairing the same anchor target the same thread.
+            let generation = savedID.map { "replacement:" + $0 } ?? "initial"
+            let id = T3ProjectionMapper.stableUUID("botto-main:\(session.profile.text):\(generation)").uuidString
+            if session.shells[id] == nil, session.archivedShells[id] == nil {
+                guard service.modelSelection(session) != .null else { return }
+                let name = manifest.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                _ = try await service.createThread(title: name.isEmpty ? T3BotBootstrap.defaultManifest.displayName : name,
+                                                    operationID: UUID(), in: session, publish: false, threadID: id)
+            }
             manifest = try await service.readManifest(session)
-            manifest.mainThreadID = created.summary.identity.stored.text
+            guard manifest.mainThreadID == savedID || manifest.mainThreadID == id else { return }
+            manifest.mainThreadID = id
+            try await service.restoreMain(id, in: session)
             try await service.persistManifest(manifest, in: session)
         }
     }
@@ -955,7 +984,7 @@ private extension T3BotService {
     func modelSelection(_ session: Session) -> HermesJSON {
         let manifest = Self.modelSelection(provider: session.manifest.providerInstanceID, model: session.manifest.model)
         let defaults = [manifest, session.project["defaultModelSelection"],
-                        session.config["settings"]["defaultModelSelection"], session.configuredModel]
+                        session.config["settings"]["defaultModelSelection"]]
         if let selected = defaults.first(where: { $0["instanceId"].nonempty != nil && $0["model"].nonempty != nil }) {
             return selected
         }
@@ -1069,6 +1098,9 @@ private extension T3BotService {
                 changed = true
             }
             if let project = snapshot["projects"].list?.first(where: { $0["id"].text == session.profile.text }) {
+                guard project["workspaceRoot"].text?.utf8.elementsEqual(session.workspace.utf8) == true else {
+                    throw T3ServiceError.differentWorkspace
+                }
                 session.project = project
                 updateConfiguration(session)
             }
@@ -1100,11 +1132,14 @@ private extension T3BotService {
         case "project.updated":
             let project = item["project"]
             guard project["id"].text == session.profile.text else { return }
+            guard project["workspaceRoot"].text?.utf8.elementsEqual(session.workspace.utf8) == true else {
+                throw T3ServiceError.differentWorkspace
+            }
             session.project = project
             updateConfiguration(session)
             changed = true
         case "project.removed":
-            if item["projectId"].text == session.profile.text { throw T3ServiceError.invalidProject }
+            if item["projectId"].text == session.profile.text { throw T3ServiceError.differentWorkspace }
         case "snapshot-required": throw T3ServiceError.invalidResponse
         default: break
         }
@@ -1205,9 +1240,9 @@ private extension T3BotService {
 
     /// Without a title, the thread starts untitled and T3 names it from the first message.
     func createThread(title requested: String?, operationID: UUID, in session: Session,
-                      publish: Bool = true) async throws -> CreatedSession {
+                      publish: Bool = true, threadID: String? = nil) async throws -> CreatedSession {
         let title = try requested.map(Self.name) ?? T3ChannelSummary.untitledWireTitle
-        let id = T3ProjectionMapper.stableUUID("botto-channel:" + operationID.uuidString).uuidString
+        let id = threadID ?? T3ProjectionMapper.stableUUID("botto-channel:" + operationID.uuidString).uuidString
         let identity = try T3ProjectionMapper.identity(profile: session.profile, threadID: id)
         let model = modelSelection(session)
         guard model != .null else { throw T3ServiceError.missingModel }
@@ -1249,15 +1284,11 @@ private extension T3BotService {
         let result: HermesJSON
         do {
             result = try await session.rpc.call("orchestration.dispatchCommand", payload: .object(payload))
-        } catch let error as T3RPCError {
-            switch error {
-            case .remote, .defect: throw error
-            default: throw T3ServiceError.uncertain
-            }
-        } catch is CancellationError {
-            throw T3ServiceError.uncertain
+        } catch {
+            if case T3RPCError.remote = error { throw error }
+            throw HermesServiceError.uncertain
         }
-        guard let sequence = result["sequence"].integer, sequence >= 0 else { throw T3ServiceError.uncertain }
+        guard let sequence = result["sequence"].integer, sequence >= 0 else { throw HermesServiceError.uncertain }
         return MutationReceipt(operationID: operationID, source: identity, admissionID: admissionID, journal: .saved)
     }
 
@@ -1419,27 +1450,27 @@ private extension T3BotService {
         let lines: [String]
         switch response {
         case .choice(let value):
-            guard questions.count == 1 else { throw T3ServiceError.invalidRequestResponse }
+            guard questions.count == 1 else { throw HermesServiceError.invalidResponse }
             lines = [value]
         case .text(let input):
             if questions.count == 1 { lines = [input] }
             else { lines = input.components(separatedBy: .newlines) }
         }
-        guard !questions.isEmpty, lines.count == questions.count else { throw T3ServiceError.invalidRequestResponse }
+        guard !questions.isEmpty, lines.count == questions.count else { throw HermesServiceError.invalidResponse }
         var result: [String: HermesJSON] = [:]
         for (question, line) in zip(questions, lines) {
-            guard let id = question["id"].nonempty else { throw T3ServiceError.invalidRequestResponse }
+            guard let id = question["id"].nonempty else { throw HermesServiceError.invalidResponse }
             let options = question["options"].list ?? []
             let multi = question["multiSelect"].flag == true
             let answers = try (multi ? line.components(separatedBy: ",") : [line]).compactMap { value -> HermesJSON? in
                 let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 if value.isEmpty, question["required"].flag == false { return nil }
-                guard !value.isEmpty else { throw T3ServiceError.invalidRequestResponse }
+                guard !value.isEmpty else { throw HermesServiceError.invalidResponse }
                 if let choice = options.first(where: { $0["value"].text == value || $0["label"].text == value }) {
                     return .string(choice["value"].nonempty ?? value)
                 }
                 guard options.isEmpty || question["allowCustomAnswer"].flag == true else {
-                    throw T3ServiceError.invalidRequestResponse
+                    throw HermesServiceError.invalidResponse
                 }
                 return .string(value)
             }

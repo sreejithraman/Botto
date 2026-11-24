@@ -53,16 +53,8 @@ private enum HermesTransportLimits {
         session = URLSession(configuration: configuration, delegate: HermesRedirectGuard(), delegateQueue: nil)
     }
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let receiver = HermesHTTPReceiver(url: request.url, limit: HermesTransportLimits.httpBody(for: request),
+        try await BoundedHTTPReceiver.receive(request, in: session, limit: HermesTransportLimits.httpBody(for: request),
             limitError: HermesTransportLimits.isArtifact(request) ? .artifactTooLarge : .incompatible)
-        let task = session.dataTask(with: request)
-        task.delegate = receiver
-        return try await withTaskCancellationHandler {
-            try await receiver.result(starting: task)
-        } onCancel: {
-            receiver.finish(.failure(CancellationError()))
-            task.cancel()
-        }
     }
     func socket(for request: URLRequest) throws -> any HermesSocket {
         let task = session.webSocketTask(with: request)
@@ -75,7 +67,7 @@ private enum HermesTransportLimits {
 
 /// Accumulate URLSession chunks off the main actor. All mutable state is locked;
 /// cancellation may race the serial delegate callbacks, including before start.
-private final class HermesHTTPReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     typealias Response = (Data, HTTPURLResponse)
     private let url: URL?
     private let limit: Int
@@ -87,11 +79,24 @@ private final class HermesHTTPReceiver: NSObject, URLSessionDataDelegate, @unche
     private var completed = false
     private var earlyResult: Result<Response, any Error>?
 
-    init(url: URL?, limit: Int, limitError: HermesServiceError) {
+    static func receive(_ request: URLRequest, in session: URLSession, limit: Int,
+                        limitError: HermesServiceError) async throws -> Response {
+        let receiver = BoundedHTTPReceiver(url: request.url, limit: limit, limitError: limitError)
+        let task = session.dataTask(with: request)
+        task.delegate = receiver
+        return try await withTaskCancellationHandler {
+            try await receiver.result(starting: task)
+        } onCancel: {
+            receiver.finish(.failure(CancellationError()))
+            task.cancel()
+        }
+    }
+
+    private init(url: URL?, limit: Int, limitError: HermesServiceError) {
         self.url = url; self.limit = limit; self.limitError = limitError
     }
 
-    func result(starting task: URLSessionDataTask) async throws -> Response {
+    private func result(starting task: URLSessionDataTask) async throws -> Response {
         try await withCheckedThrowingContinuation { continuation in
             let early: Result<Response, any Error>? = lock.withLock {
                 if let earlyResult { self.earlyResult = nil; return earlyResult }
@@ -103,7 +108,7 @@ private final class HermesHTTPReceiver: NSObject, URLSessionDataDelegate, @unche
         }
     }
 
-    func finish(_ result: Result<Response, any Error>) {
+    private func finish(_ result: Result<Response, any Error>) {
         let waiting = lock.withLock {
             guard !completed else { return nil as CheckedContinuation<Response, any Error>? }
             completed = true

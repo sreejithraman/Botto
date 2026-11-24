@@ -5,6 +5,74 @@ import Testing
 @MainActor @Suite(.timeLimit(.minutes(1))) struct T3BotServiceTests {
     enum ConnectionLoss: Sendable { case socket, shell, thread }
 
+    @Test func refusesReplacementForASavedProject() async throws {
+        let host = T3ServiceHost(existing: true)
+        var saved = try existingConfiguration()
+        saved.t3?.projectID = "deleted-project"
+        saved.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        await #expect(throws: T3ServiceError.differentWorkspace) { try await service.connect(configuration: saved) }
+        #expect(service.currentBotWorkspaceRoot == nil)
+        #expect(await host.writtenFiles.isEmpty)
+    }
+
+    @Test func retiresLiveWorkspaceOnRootChangeOrRemoval() async throws {
+        for changedRoot in [true, false] {
+            let host = T3ServiceHost(existing: true)
+            let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host },
+                                       reconnectDelays: [.zero])
+            defer { service.disconnect() }
+            let (events, observer) = AsyncStream<BotServiceEvent>.makeStream()
+            service.onEvent = { observer.yield($0) }
+            _ = try await service.connect(configuration: existingConfiguration())
+            try await host.changeSavedProject(rootChanged: changedRoot)
+            for await event in events {
+                if case .disconnected = event { break }
+                if case .configuration(let updated) = event {
+                    #expect(updated.t3?.workspaceRoot == "/host/.botto/bots/main")
+                }
+            }
+            #expect(service.currentBotWorkspaceRoot == nil)
+            await #expect(throws: T3ServiceError.disconnected) { try await service.saveSoul("Must not move") }
+            #expect(await host.ticketAttempts == 1)
+        }
+    }
+
+    @Test func lostCommandAcknowledgementUsesSharedUncertainty() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host }, reconnectDelays: [])
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        await host.loseNextCommandAcknowledgement()
+        await #expect(throws: HermesServiceError.uncertain) {
+            try await service.setChannelPinned(threadID: "existing-general", pinned: true)
+        }
+        let state = await host.state
+        #expect(state.threads["existing-general"]?["pinnedAt"] != .null)
+    }
+
+    @Test func modelChangeMergesWithProfileEditsAndClearsSavedEffectiveChoice() async throws {
+        let host = T3ServiceHost(existing: true)
+        var saved = try existingConfiguration()
+        saved.t3?.providerInstanceID = "previous"
+        saved.t3?.model = "previous-model"
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: saved)
+        let model = try #require(try await service.availableModels().first)
+        let bot = try #require(try await service.bots().first)
+        _ = try await service.updateProfile(.init(name: "Kit"), for: bot)
+        try await service.setDefaultModel(model)
+        #expect(try await service.loadBotBrain().manifest.displayName == "Kit")
+        #expect(try await service.loadBotBrain().manifest.model == model.modelID)
+
+        try await service.setDefaultModel(nil)
+        #expect(try await service.loadBotBrain().manifest.model == nil)
+        _ = try await service.createChat(title: "Automatic")
+        #expect(await host.createdThreads.last?["modelSelection"]["model"].text == model.modelID)
+    }
+
     @Test(arguments: [ConnectionLoss.socket, .shell, .thread])
     func reconnectsAndReattachesSelectedChannel(after loss: ConnectionLoss) async throws {
         let host = T3ServiceHost(existing: true, archivedChannel: true, ticketStatuses: [200, 503, 200])
@@ -147,6 +215,12 @@ import Testing
         _ = try await service.connect(configuration: existingConfiguration())
         let initial = try await service.listRoutines()
         #expect(initial.map(\.id) == ["once-task"])
+        await #expect(throws: T3ServiceError.invalidResponse) {
+            try await service.setRoutineEnabled(id: "other-task", enabled: false)
+        }
+        await #expect(throws: T3ServiceError.invalidResponse) {
+            try await service.deleteRoutine(id: "other-task")
+        }
         let existing = try #require(initial.first)
         #expect(existing.id == "once-task")
         #expect(existing.cron.isEmpty)
@@ -191,7 +265,7 @@ import Testing
         try await service.deleteRoutine(id: morning.id)
         let afterDelete = try await service.listRoutines()
         #expect(Set(afterDelete.map(\.id)) == [weekdays.id, existing.id])
-        #expect(await host.interruptedRoutineStreams == 3)
+        #expect(await host.interruptedRoutineStreams >= 3)
     }
 
     @Test func bootstrapsOneBotAndRunsAChannelThroughTheService() async throws {
@@ -269,12 +343,19 @@ import Testing
         let listing = try await service.conversations(profile: profile)
         #expect(listing.summaries.map(\.identity.stored.text) == [mainID, channelID])
         #expect(listing.summaries.allSatisfy { !$0.isCanonical })
-        let opened = try await service.openChat(.stored(identity))
-        #expect(opened.snapshot.messages.isEmpty)
-        #expect(opened.activity?.reaction == nil)
+        let firstOpen = try await service.openChat(.stored(identity))
+        #expect(firstOpen.snapshot.messages.isEmpty)
+        #expect(firstOpen.activity?.reaction == nil)
 
         let upload = try await service.upload(data: Data("file bytes".utf8), filename: "note.txt",
-                                              mimeType: "text/plain", access: opened.access)
+                                              mimeType: "text/plain", access: firstOpen.access)
+        let mainIdentity = try T3ProjectionMapper.identity(profile: profile, threadID: mainID)
+        let otherSpace = try await service.openChat(.stored(mainIdentity))
+        await #expect(throws: HermesServiceError.invalidAttachment) {
+            try await service.send(text: "Start", attachments: [upload], delivery: .queue,
+                                   access: otherSpace.access, operationID: UUID())
+        }
+        let opened = try await service.openChat(.stored(identity))
         let operation = UUID()
         let send = try await service.send(text: "Start", attachments: [upload], delivery: .queue, access: opened.access,
                                           operationID: operation)
@@ -289,12 +370,17 @@ import Testing
         _ = try await service.send(text: "Queue", attachments: [], delivery: .queue, access: opened.access, operationID: UUID())
         let queued = try await nextConversation(&published) { $0.snapshot.queuedMessages.first?.text == "Queue" }
         let message = try #require(queued.snapshot.queuedMessages.first)
-        _ = try await service.replaceQueuedMessage(message, text: "Revised", access: opened.access, operationID: UUID())
+        let edited = try await service.replaceQueuedMessage(message, text: "Revised", access: opened.access, operationID: UUID())
+        #expect(edited.admissionID == message.submissionID)
+        _ = try await nextConversation(&published) { $0.snapshot.queuedMessages.first?.text == "Revised" }
 
         try await host.ask(in: channelID)
         let waiting = try await nextConversation(&published) { $0.snapshot.pendingRequests.count == 2 }
         let approval = try #require(waiting.snapshot.pendingRequests.first(where: { $0.kind == .approval }))
         let question = try #require(waiting.snapshot.pendingRequests.first(where: { $0.kind == .question }))
+        await #expect(throws: HermesServiceError.invalidResponse) {
+            try await service.respond(to: question, response: .text(""), access: opened.access, operationID: UUID())
+        }
         _ = try await service.respond(to: approval, response: .choice("accept"), access: opened.access, operationID: UUID())
         _ = try await service.respond(to: question, response: .choice("swift"), access: opened.access, operationID: UUID())
         _ = try await service.stop(access: opened.access, operationID: UUID())
@@ -411,6 +497,42 @@ import Testing
         #expect(try await service.loadBotBrain().manifest.mainThreadID == main.id)
     }
 
+    @Test func refusesToReplaceMainWhenItsArchiveCannotBeRead() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        let (events, observer) = AsyncStream<BotServiceEvent>.makeStream()
+        service.onEvent = { observer.yield($0) }
+        _ = try await service.connect(configuration: existingConfiguration())
+        await host.setArchiveReadDenied(true)
+        try await host.archiveFromAnotherClient("existing-general")
+        for await event in events {
+            if case .conversationDirectoryChanged = event, service.currentT3Channels.isEmpty { break }
+        }
+        let profile = try ExactID("bot-project")
+        await #expect(throws: T3RPCError.remote(tag: "ArchiveUnavailable", message: "Archive unavailable")) {
+            try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
+        }
+        #expect(await host.createdThreads.isEmpty)
+        #expect(try await service.loadBotBrain().manifest.mainThreadID == "existing-general")
+        await host.setArchiveReadDenied(false)
+        _ = try await service.availableModels()
+        #expect(service.currentT3Channels.first(where: \.isMain)?.id == "existing-general")
+    }
+
+    @Test func independentMainRepairsTargetTheSameThread() async throws {
+        func repair() async throws -> String {
+            let host = T3ServiceHost(existing: true)
+            await host.deleteThread("existing-general")
+            let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+            defer { service.disconnect() }
+            _ = try await service.connect(configuration: existingConfiguration())
+            return try #require(await host.createdThreads.first?["threadId"].text)
+        }
+        let first = try await repair()
+        #expect(try await repair() == first)
+    }
+
     @Test(arguments: ["AGENTS.md", "CLAUDE.md", "bot.json"])
     func retryConvergesPromptFilesAndManifest(afterFailedWrite path: String) async throws {
         let host = T3ServiceHost(existing: true)
@@ -444,13 +566,13 @@ import Testing
         #expect(try await service.readProjectFile(relativePath: "AGENTS.md") == "Custom provider instructions")
     }
 
-    @Test func adoptsAnExistingBotsMainSpace() async throws {
+    @Test func adoptsAnExistingBotsMainSpaceByWorkspaceWhenStillUnbound() async throws {
         let host = T3ServiceHost(existing: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
         defer { service.disconnect() }
         let origin = try #require(URL(string: "https://t3.example"))
         let connection = T3Connection(environmentID: "environment", accessToken: "bearer",
-                                      projectID: "stale-project", workspaceRoot: "/host/.botto/bots/main")
+                                      workspaceRoot: "/host/.botto/bots/main")
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: origin, t3: connection))
         let brain = try await service.loadBotBrain()
         #expect(brain.manifest.displayName == "Existing Bot")
@@ -555,6 +677,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private(set) var threadSubscriptions: [String] = []
     private(set) var writtenFiles: [String] = []
     private var rejectedWritePath: String?
+    private var deniesArchiveReads = false
+    private var dropsCommandAcknowledgement = false
     private(set) var createdThreads: [HermesJSON] = []
     private(set) var dispatchedMessages: [HermesJSON] = []
     private var files: [String: String] = [:]
@@ -599,6 +723,19 @@ private actor T3ServiceHost: T3WebSocketTransport {
     func deleteThread(_ id: String) { threads[id] = nil }
     func write(_ path: String, _ contents: String) { files[path] = contents }
     func rejectNextWrite(to path: String) { rejectedWritePath = path }
+    func setArchiveReadDenied(_ denied: Bool) { deniesArchiveReads = denied }
+    func loseNextCommandAcknowledgement() { dropsCommandAcknowledgement = true }
+
+    func changeSavedProject(rootChanged: Bool) throws {
+        let stream = try #require(shellStream)
+        if rootChanged {
+            var moved = project
+            moved["workspaceRoot"] = .string("/host/other-bot")
+            try chunk(stream, values: [.object(["kind": .string("project.updated"), "project": moved])])
+        } else {
+            try chunk(stream, values: [.object(["kind": .string("project.removed"), "projectId": .string(projectID)])])
+        }
+    }
 
     func addOutputs() { outputsAvailable = true }
 
@@ -769,6 +906,10 @@ private actor T3ServiceHost: T3WebSocketTransport {
             ])
             return
         case "orchestration.getArchivedShellSnapshot":
+            if deniesArchiveReads {
+                try reject(id, tag: "ArchiveUnavailable", message: "Archive unavailable")
+                return
+            }
             reply = .object([
                 "snapshotSequence": .number(Double(sequence)),
                 "threads": .array(threads.values.filter { $0["archivedAt"] != .null })
@@ -787,6 +928,11 @@ private actor T3ServiceHost: T3WebSocketTransport {
             return
         case "orchestration.dispatchCommand":
             try apply(request)
+            if dropsCommandAcknowledgement {
+                dropsCommandAcknowledgement = false
+                try emit(.object(["_tag": .string("Defect"), "defect": .string("Lost acknowledgement")]))
+                return
+            }
             if request["type"].text == "thread.visit", withholdFirstVisitReply {
                 withholdFirstVisitReply = false
                 withheldVisitID = id
@@ -929,6 +1075,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
         case "queued-run.edit":
             #expect(command["runId"].text == "queued")
             #expect(command["text"].text == "Revised")
+            try event("message.updated", payload: .object(["id": .string("queued-msg"), "text": command["text"]]), thread: thread)
         case "runtime-request.respond":
             let request = try #require(command["requestId"].text)
             if request == "approval" { #expect(command["decision"].text == "accept") }

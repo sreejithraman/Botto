@@ -191,6 +191,7 @@ public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
     func saveSoul(_ markdown: String) async throws
     func saveMemory(_ markdown: String) async throws
     func saveManifest(_ manifest: T3BotManifest) async throws
+    @discardableResult func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest
     /// Creates a space. A title is kept as given; without one, T3 names the space from its first message.
     func createChat(title: String?) async throws -> CreatedSession
     func renameChannel(threadID: String, title: String) async throws
