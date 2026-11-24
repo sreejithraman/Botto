@@ -260,12 +260,14 @@ struct BottoPage: View {
             if let soulAutosave = drafts.soulAutosave {
                 T3ProseEditor(title: "Personality",
                               blurb: "How Botto sounds and what it cares about. It reads this in every space.",
-                              text: $drafts.soul, autosave: soulAutosave)
+                              text: $drafts.soul, autosave: soulAutosave,
+                              reload: { try await store.readT3ProjectFile(relativePath: "SOUL.md") })
                     .onDisappear { soulAutosave.flush(drafts.soul) }
             }
         case .memory:
             if let memoryAutosave = drafts.memoryAutosave {
-                T3MemoryView(text: $drafts.memory, autosave: memoryAutosave)
+                T3MemoryView(text: $drafts.memory, autosave: memoryAutosave,
+                             reload: { try await store.readT3ProjectFile(relativePath: "MEMORY.md") })
             }
         case .routines:
             T3RoutinesList(store: store, routines: $routines, loadError: routinesError, reload: loadRoutines,
@@ -299,18 +301,18 @@ struct BottoPage: View {
                 if autosave.refresh(loaded.soulMarkdown, revision: soulRead) { drafts.soul = loaded.soulMarkdown }
             } else {
                 drafts.soul = loaded.soulMarkdown
-                drafts.soulAutosave = T3Autosave(saved: drafts.soul) { [store, workspace] value in
+                drafts.soulAutosave = T3Autosave(saved: drafts.soul) { [store, workspace] value, expected in
                     guard store.chats === workspace else { throw T3ServiceError.disconnected }
-                    try await store.saveT3Soul(value)
+                    try await store.saveT3Soul(value, replacing: expected)
                 }
             }
             if let autosave = drafts.memoryAutosave {
                 if autosave.refresh(loaded.memoryMarkdown, revision: memoryRead) { drafts.memory = loaded.memoryMarkdown }
             } else {
                 drafts.memory = loaded.memoryMarkdown
-                drafts.memoryAutosave = T3Autosave(saved: drafts.memory) { [store, workspace] value in
+                drafts.memoryAutosave = T3Autosave(saved: drafts.memory) { [store, workspace] value, expected in
                     guard store.chats === workspace else { throw T3ServiceError.disconnected }
-                    try await store.saveT3Memory(value)
+                    try await store.saveT3Memory(value, replacing: expected)
                 }
             }
             brain = loaded
@@ -420,15 +422,15 @@ enum T3BrainText {
 @MainActor @Observable final class T3Autosave {
     enum State: Equatable { case idle, saving, saved, failed(String) }
     private(set) var state: State = .idle
-    private var saved: String?
+    private var saved: String
     private var desired: String
     private var debounce: Task<Void, Never>?
     private var isWriting = false
     private var revision = UUID()
     private let delay: Duration
-    private let write: @MainActor (String) async throws -> Void
+    private let write: @MainActor (String, String) async throws -> Void
 
-    init(saved: String, delay: Duration = .milliseconds(800), write: @escaping @MainActor (String) async throws -> Void) {
+    init(saved: String, delay: Duration = .milliseconds(800), write: @escaping @MainActor (String, String) async throws -> Void) {
         self.saved = saved
         desired = saved
         self.delay = delay
@@ -436,22 +438,24 @@ enum T3BrainText {
     }
 
     func edited(_ text: String) {
-        if text != desired, case .failed = state { state = .idle }
         if text != desired { revision = UUID() }
         desired = text
         debounce?.cancel()
-        guard !isWriting, text != saved else { return }
+        debounce = nil
+        guard !isWriting, text != saved || hasFailed else { return }
         debounce = Task { [weak self, delay] in
             do { try await Task.sleep(for: delay) } catch { return }
+            self?.debounce = nil
             self?.persistLatest()
         }
     }
 
     func flush(_ text: String) {
         desired = text
+        let hasWaitingEdit = debounce != nil
         debounce?.cancel()
         debounce = nil
-        if case .failed = state { return }
+        if hasFailed, !hasWaitingEdit { return }
         persistLatest()
     }
 
@@ -462,7 +466,12 @@ enum T3BrainText {
         persistLatest()
     }
 
-    var refreshRevision: UUID? { !isWriting && desired == saved ? revision : nil }
+    private var hasFailed: Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
+    var refreshRevision: UUID? { !hasFailed && !isWriting && desired == saved ? revision : nil }
 
     func refresh(_ text: String, revision observed: UUID?) -> Bool {
         guard let observed, observed == refreshRevision else { return false }
@@ -472,22 +481,40 @@ enum T3BrainText {
         return true
     }
 
+    func reload(using read: @MainActor () async throws -> String) async -> String? {
+        let observed = revision
+        do {
+            let text = try await read()
+            guard !Task.isCancelled, observed == revision, !isWriting else { return nil }
+            debounce?.cancel()
+            debounce = nil
+            saved = text
+            desired = text
+            revision = UUID()
+            state = .idle
+            return text
+        } catch where !Task.isCancelled && observed == revision {
+            state = .failed(error.localizedDescription)
+        } catch { }
+        return nil
+    }
+
     private func persistLatest() {
-        guard !isWriting, desired != saved else { return }
+        guard !isWriting, desired != saved || hasFailed else { return }
         let text = desired
+        let expected = saved
         revision = UUID()
         isWriting = true
         state = .saving
         // Only the debounce can be cancelled. A dispatched write may already have reached the host.
         Task {
             do {
-                try await write(text)
+                try await write(text, expected)
                 saved = text
                 isWriting = false
                 state = .saved
                 persistLatest()
             } catch {
-                saved = nil
                 isWriting = false
                 state = .failed(error.localizedDescription)
             }
@@ -498,6 +525,7 @@ enum T3BrainText {
 private struct T3AutosaveStatus: View {
     let autosave: T3Autosave
     let retry: () -> Void
+    let reload: () -> Void
 
     var body: some View {
         switch autosave.state {
@@ -508,6 +536,7 @@ private struct T3AutosaveStatus: View {
             VStack(alignment: .leading, spacing: 8) {
                 InlineNotice(message: String(localized: "Not saved yet. \(message)"))
                 Button("Try again", systemImage: "arrow.clockwise", action: retry).buttonStyle(BottoPillButtonStyle())
+                Button("Reload from host", action: reload).buttonStyle(BottoPillButtonStyle())
             }
         }
     }
@@ -518,6 +547,7 @@ struct T3ProseEditor: View {
     let blurb: LocalizedStringKey
     @Binding var text: String
     let autosave: T3Autosave
+    let reload: @MainActor () async throws -> String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -528,7 +558,9 @@ struct T3ProseEditor: View {
                 .padding(.horizontal, 15)
                 .accessibilityLabel(title)
                 .accessibilityIdentifier("botto-prose-editor")
-            T3AutosaveStatus(autosave: autosave) { autosave.retry(text) }.padding(.horizontal, 20)
+            T3AutosaveStatus(autosave: autosave, retry: { autosave.retry(text) }, reload: {
+                Task { if let loaded = await autosave.reload(using: reload) { text = loaded } }
+            }).padding(.horizontal, 20)
         }
         .padding(.top, 8).padding(.bottom, 12)
         .frame(maxWidth: 680).frame(maxWidth: .infinity)
@@ -542,15 +574,16 @@ struct T3ProseEditor: View {
 struct T3MemoryView: View {
     @Binding var text: String
     let autosave: T3Autosave
+    let reload: @MainActor () async throws -> String
     @State private var editsText = false
 
     var body: some View {
         Group {
             if editsText {
                 T3ProseEditor(title: "What Botto remembers", blurb: "Durable facts and decisions Botto keeps across spaces.",
-                              text: $text, autosave: autosave)
+                              text: $text, autosave: autosave, reload: reload)
             } else {
-                T3MemoryList(text: $text, autosave: autosave)
+                T3MemoryList(text: $text, autosave: autosave, reload: reload)
             }
         }
         .toolbar {
@@ -566,6 +599,7 @@ struct T3MemoryView: View {
 private struct T3MemoryList: View {
     @Binding var text: String
     let autosave: T3Autosave
+    let reload: @MainActor () async throws -> String
 
     var body: some View {
         let items = T3BrainText.memoryItems(text)
@@ -585,7 +619,9 @@ private struct T3MemoryList: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Swipe to forget something. Botto adds to this as you talk.")
-                    T3AutosaveStatus(autosave: autosave) { autosave.retry(text) }
+                    T3AutosaveStatus(autosave: autosave, retry: { autosave.retry(text) }, reload: {
+                        Task { if let loaded = await autosave.reload(using: reload) { text = loaded } }
+                    })
                 }
             }
         }

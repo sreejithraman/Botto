@@ -526,7 +526,7 @@ import UIKit
     @Test func autosaveCoalescesTypingAndKeepsFailuresForRetry() async throws {
         var writes: [String] = []
         var failing = false
-        let autosave = T3Autosave(saved: "start", delay: .milliseconds(30)) { text in
+        let autosave = T3Autosave(saved: "start", delay: .milliseconds(30)) { text, _ in
             if failing { throw T3ServiceError.disconnected }
             writes.append(text)
         }
@@ -557,8 +557,9 @@ import UIKit
         let gate = WorkspaceGate()
         var hostText = "original"
         var writes: [String] = []
-        let autosave = T3Autosave(saved: hostText) { text in
+        let autosave = T3Autosave(saved: hostText) { text, expected in
             if text == "intermediate" { await gate.wait() }
+            #expect(expected == hostText)
             hostText = text
             writes.append(text)
         }
@@ -577,13 +578,14 @@ import UIKit
         #expect(autosave.state == .saved)
     }
 
-    @Test func staleBrainReloadDoesNotReplaceADraftEditedDuringRead() {
-        let autosave = T3Autosave(saved: "original", delay: .seconds(60)) { _ in }
+    @Test func staleBrainReloadDoesNotReplaceADraftEditedDuringRead() throws {
+        let autosave = T3Autosave(saved: "original", delay: .seconds(60)) { _, _ in }
         let workspaceDrafts = T3BrainDrafts()
         workspaceDrafts.memoryAutosave = autosave
         let observed = autosave.refreshRevision
         autosave.edited("my draft")
-        #expect(!workspaceDrafts.memoryAutosave!.refresh("older host text", revision: observed))
+        let mounted = try #require(workspaceDrafts.memoryAutosave)
+        #expect(!mounted.refresh("older host text", revision: observed))
         autosave.edited("original") // Cancels the test's debounce without dispatching a write.
     }
 
