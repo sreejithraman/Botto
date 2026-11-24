@@ -178,16 +178,17 @@ import Testing
            {"position":2,"visibility":"local","item":{"id":"answer","type":"assistant_message","text":"Current answer","runId":"current","ordinal":220}}]}
         """)
         var projection = T3ThreadProjection(snapshot: initial, sequence: 1, hasMoreHistory: true, lineage: UUID())
-        projection.apply(try event("turn-item.updated", #"{"id":"late","type":"assistant_message","text":"Older work","runId":"old","ordinal":110}"#), sequence: 2, live: true)
-        projection.apply(try event("turn-item.updated", #"{"id":"early","type":"assistant_message","text":"First reply","runId":"current","ordinal":210}"#), sequence: 3, live: true)
-        #expect(projection.conversation(source).messages.map(\.text) == ["Shared context", "Current prompt", "First reply", "Current answer"])
+        projection.apply(try event("turn-item.updated", #"{"id":"active","type":"assistant_message","text":"Unfinished work","runId":"current","ordinal":100}"#), sequence: 2, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"late","type":"assistant_message","text":"Older work","runId":"old","ordinal":110}"#), sequence: 3, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"early","type":"assistant_message","text":"First reply","runId":"current","ordinal":210}"#), sequence: 4, live: true)
+        #expect(projection.conversation(source).messages.map(\.text) == ["Shared context", "Unfinished work", "Current prompt", "First reply", "Current answer"])
 
-        projection.apply(try event("run.created", #"{"id":"queued","status":"queued","ordinal":3}"#), sequence: 4, live: true)
-        projection.apply(try event("turn-item.updated", #"{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Never delivered","runId":"queued","ordinal":300}"#), sequence: 5, live: true)
-        projection.apply(try event("run.updated", #"{"id":"queued","status":"cancelled","ordinal":3,"startedAt":null}"#), sequence: 6, live: true)
+        projection.apply(try event("run.created", #"{"id":"queued","status":"queued","ordinal":3}"#), sequence: 5, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Never delivered","runId":"queued","ordinal":300}"#), sequence: 6, live: true)
+        projection.apply(try event("run.updated", #"{"id":"queued","status":"cancelled","ordinal":3,"startedAt":null}"#), sequence: 7, live: true)
         #expect(!projection.conversation(source).messages.contains { $0.text == "Never delivered" })
 
-        projection.apply(try event("run.updated", #"{"id":"current","status":"rolled_back","ordinal":2}"#), sequence: 7, live: true)
+        projection.apply(try event("run.updated", #"{"id":"current","status":"rolled_back","ordinal":2}"#), sequence: 8, live: true)
         #expect(projection.conversation(source).messages.map(\.text) == ["Shared context"])
     }
 

@@ -191,6 +191,7 @@ struct T3ThreadProjection {
     private var runtimeRequests: [HermesJSON]
     private var turnItems: [HermesJSON]
     private var timeline: [TimelineRow]
+    private let oldestSnapshotLocalOrdinal: Int?
     private(set) var sequence: Int
     private let hasMoreHistory: Bool
     private(set) var activity: ConversationActivity
@@ -208,6 +209,7 @@ struct T3ThreadProjection {
         } else {
             timeline = turnItems.map { TimelineRow(item: $0, isLocal: true) }
         }
+        oldestSnapshotLocalOrdinal = timeline.first { $0.isLocal && $0.ordinal != nil }?.ordinal
         self.sequence = sequence
         self.hasMoreHistory = hasMoreHistory
         activity = ConversationActivity(lineage: lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil)
@@ -355,9 +357,9 @@ struct T3ThreadProjection {
             }
             timeline.remove(at: existing)
         } else if hasMoreHistory, !wasLoaded, let ordinal = row.ordinal,
-                  let oldest = timeline.first(where: { $0.isLocal && $0.ordinal != nil })?.ordinal,
+                  let oldest = oldestSnapshotLocalOrdinal,
                   ordinal < oldest {
-            // Finished rows below a bounded snapshot belong to history, not the live window.
+            // Older active rows may join the timeline without expanding the snapshot's history window.
             let run = runs.first { $0["id"] == item["runId"] }
             let status = run?["status"].text ?? ""
             guard status == "queued" || T3ProjectionMapper.activeStatuses.contains(status) else { return }
