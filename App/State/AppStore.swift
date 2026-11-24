@@ -1676,13 +1676,13 @@ import BottoCore
                 connection.updateCandidate(updated)
                 return
             }
-            guard !isDemo, let configuration, updated.id == configuration.id,
-                  updated.serverURL == configuration.serverURL else { return }
+            guard !isDemo, let configuration, updated.id == configuration.id else { return }
             retireAvatarWorkspace(ifReplacingWith: updated)
             if Self.richReplyAccount(configuration) != Self.richReplyAccount(updated) {
                 retireArtifactPresentation()
                 chats.retireConnection()
             }
+            guard updated.serverURL == configuration.serverURL else { return }
             self.configuration = updated
             do { try persistence.save(updated) }
             catch {

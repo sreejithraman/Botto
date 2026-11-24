@@ -73,7 +73,7 @@ import BottoCore
         pasteboard.items = [[UTType.png.identifier: try #require(image.pngData())]]
         editor.pasteboard = pasteboard
         editor.paste(nil)
-        let guidance = "The chat is opening. Paste again when it’s ready."
+        let guidance = "The space is opening. Paste again when it’s ready."
         try await ready("opening paste guidance is visible") { self.accessibilityNode(guidance, in: f.host.view) != nil }
         gate.release(); await opening.value
         try await ready("paste guidance clears after recovery") { self.accessibilityNode(guidance, in: f.host.view) == nil }
@@ -294,6 +294,9 @@ import BottoCore
                         onLocalModalPresentation: { _ in }, canPresentToolbar: { state.toolbarAvailable },
                         canContinueEditing: { state.editingExposed })
                 .frame(width: max(state.width, WorkspaceLayout.minimumChatWidth), height: geometry.size.height)
+                // The slot can collapse while the mounted editor keeps usable bounds.
+                .frame(width: state.width, height: geometry.size.height, alignment: .topLeading)
+                .clipped()
                 .opacity(state.readExposed ? 1 : 0)
                 .accessibilityHidden(!state.readExposed)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.observedWidth = $0 }
