@@ -3,6 +3,80 @@ import Testing
 @testable import BottoMac
 
 struct LocalT3ServerManagerTests {
+    @Test func settingsOverrideWinsOverTheBundleAndPATH() throws {
+        try withEngineFiles { resources, path, override in
+            let engine = try T3EngineExecutable.resolve(
+                override: "  \(override.path)  ", resources: resources, searchDirectories: [path.path]
+            )
+            #expect(engine.url == override)
+            #expect(engine.source == .settings)
+        }
+    }
+
+    @Test func bundledExecutableWinsOverPATHAndReadsThePin() throws {
+        try withEngineFiles { resources, path, _ in
+            let bundle = resources.appending(path: "T3Engine")
+            let pin = """
+            {
+              "version": "1.2.3",
+              "commit": "abcdef0123456789",
+              "runtime": {"name": "Node.js", "version": "26.1.0", "extra": true},
+              "upstream": {"ref": "v1.2.3"}
+            }
+            """
+            try Data(pin.utf8).write(to: bundle.appending(path: "pin.json"))
+
+            let engine = try T3EngineExecutable.resolve(
+                override: "", resources: resources, searchDirectories: [path.path]
+            )
+            #expect(engine.url == bundle.appending(path: "t3"))
+            #expect(engine.source == .bundled)
+            #expect(engine.pin?.version == "1.2.3")
+            #expect(engine.pin?.commit == "abcdef0123456789")
+            #expect(engine.pin?.runtime.version == "26.1.0")
+        }
+    }
+
+    @Test func fallsBackToPATHWhenTheBundledExecutableIsMissing() throws {
+        try withEngineFiles { resources, path, _ in
+            try FileManager.default.removeItem(at: resources.appending(path: "T3Engine/t3"))
+            let engine = try T3EngineExecutable.resolve(
+                override: "", resources: resources, searchDirectories: [path.path]
+            )
+            #expect(engine.url == path.appending(path: "t3"))
+            #expect(engine.source == .path)
+            #expect(engine.pin == nil)
+        }
+    }
+
+    @Test func invalidExplicitOverrideStopsResolution() throws {
+        try withEngineFiles { resources, path, _ in
+            #expect(throws: T3LocalError.invalidExecutable) {
+                try T3EngineExecutable.resolve(
+                    override: resources.path, resources: resources, searchDirectories: [path.path]
+                )
+            }
+        }
+    }
+
+    private func withEngineFiles(
+        _ test: (_ resources: URL, _ path: URL, _ override: URL) throws -> Void
+    ) throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appending(path: "Resources")
+        let bundle = resources.appending(path: "T3Engine")
+        let path = root.appending(path: "bin")
+        let override = root.appending(path: "custom-t3")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        for file in [bundle.appending(path: "t3"), path.appending(path: "t3"), override] {
+            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        try test(resources, path, override)
+    }
+
     @Test func parsesServeOutput() {
         var links = T3PairingOutput()
         links.consume("T3 Code server is ready.")

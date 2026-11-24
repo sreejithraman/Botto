@@ -45,6 +45,67 @@ enum T3RouteFormatter {
     }
 }
 
+struct T3EngineExecutable {
+    enum Source { case settings, bundled, path }
+
+    struct Pin: Decodable {
+        struct Runtime: Decodable {
+            let name: String
+            let version: String
+        }
+
+        let version: String
+        let commit: String
+        let runtime: Runtime
+    }
+
+    let url: URL
+    let source: Source
+    let pin: Pin?
+
+    var logMessage: String {
+        switch source {
+        case .settings: "T3 engine: Settings override at \(url.path)"
+        case .path: "T3 engine: PATH fallback at \(url.path)"
+        case .bundled:
+            if let pin {
+                "T3 engine: bundled v\(pin.version) (\(pin.commit.prefix(12)), \(pin.runtime.name) \(pin.runtime.version))"
+            } else {
+                "T3 engine: bundled at \(url.path) (pin metadata unavailable)"
+            }
+        }
+    }
+
+    static func resolve(override: String, resources: URL?, searchDirectories: [String]) throws -> Self {
+        let custom = override.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty {
+            let path = (custom as NSString).expandingTildeInPath
+            guard path.hasPrefix("/") else { throw T3LocalError.invalidExecutable }
+            let executable = URL(fileURLWithPath: path)
+            guard isExecutable(executable) else { throw T3LocalError.invalidExecutable }
+            return Self(url: executable, source: .settings, pin: nil)
+        }
+        if let directory = resources?.appending(path: "T3Engine"),
+           let executable = find("t3", in: [directory.path]) {
+            let pin = (try? Data(contentsOf: directory.appending(path: "pin.json")))
+                .flatMap { try? JSONDecoder().decode(Pin.self, from: $0) }
+            return Self(url: executable, source: .bundled, pin: pin)
+        }
+        guard let executable = find("t3", in: searchDirectories) else { throw T3LocalError.executableNotFound }
+        return Self(url: executable, source: .path, pin: nil)
+    }
+
+    static func find(_ name: String, in directories: [String]) -> URL? {
+        directories.lazy.map { URL(fileURLWithPath: $0, isDirectory: true).appending(path: name) }
+            .first(where: isExecutable)
+    }
+
+    private static func isExecutable(_ url: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: url.path) &&
+            (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+}
+
 @MainActor @Observable
 final class LocalT3ServerManager {
     enum State: Equatable {
@@ -55,7 +116,7 @@ final class LocalT3ServerManager {
     let baseDirectory: URL
     var loopbackOrigin: URL { URL(string: "http://127.0.0.1:\(port)")! }
     private(set) var state: State = .stopped
-    private(set) var logTail: [String] = []
+    var logTail: [String] { (engineLogMessage.map { [$0] } ?? []) + serverLogTail }
     private(set) var startupLinks = T3PairingOutput()
     private(set) var lanOrigin: URL?
     private(set) var tailscaleOrigin: URL?
@@ -64,6 +125,8 @@ final class LocalT3ServerManager {
     }
 
     private let defaults: UserDefaults
+    private var engineLogMessage: String?
+    private var serverLogTail: [String] = []
     private var server: T3Command?
     private var pairingCommand: T3Command?
     private var tailscaleCommand: T3Command?
@@ -79,14 +142,23 @@ final class LocalT3ServerManager {
 
     func start() {
         guard server == nil else { return }
-        logTail.removeAll()
+        engineLogMessage = nil
+        serverLogTail.removeAll()
         startupLinks = T3PairingOutput()
         state = .starting
         do {
-            let executable = try t3Executable()
+            #if arch(arm64)
+            let resources = Bundle.main.resourceURL
+            #else
+            let resources: URL? = nil
+            #endif
+            let engine = try T3EngineExecutable.resolve(
+                override: executableOverride, resources: resources, searchDirectories: Self.executableDirectories
+            )
+            engineLogMessage = engine.logMessage
             try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
-            let command = try T3Command(executable: executable, arguments: [
+            let command = try T3Command(executable: engine.url, arguments: [
                 "serve", "--port", String(port), "--lan", "--base-dir", baseDirectory.path
             ], directory: baseDirectory)
             server = command
@@ -162,7 +234,7 @@ final class LocalT3ServerManager {
         lanOrigin = (lan.first { $0.interface == "en0" } ?? lan.first).flatMap { origin(for: $0.address) }
         tailscaleOrigin = addresses.first { Self.isTailscaleIP($0.address) }.flatMap { origin(for: $0.address) }
         guard tailscaleOrigin == nil, tailscaleCommand == nil,
-              let executable = Self.findExecutable("tailscale"),
+              let executable = T3EngineExecutable.find("tailscale", in: Self.executableDirectories),
               let command = try? T3Command(executable: executable, arguments: ["ip", "-4"]) else { return }
         tailscaleCommand = command
         defer { tailscaleCommand = nil }
@@ -190,32 +262,14 @@ final class LocalT3ServerManager {
         guard !normalized.isEmpty, !normalized.hasPrefix("token:"), !normalized.hasPrefix("pairing token:"),
               !normalized.hasPrefix("pairing code:"), !normalized.contains("#token="),
               !line.contains(where: { " ▀▄█".dropFirst().contains($0) }) else { return }
-        logTail.append(String(line.prefix(1_000)))
-        if logTail.count > 100 { logTail.removeFirst() }
-    }
-
-    private func t3Executable() throws -> URL {
-        let override = executableOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !override.isEmpty {
-            let path = (override as NSString).expandingTildeInPath
-            guard path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
-                throw T3LocalError.invalidExecutable
-            }
-            return URL(fileURLWithPath: path)
-        }
-        guard let executable = Self.findExecutable("t3") else { throw T3LocalError.executableNotFound }
-        return executable
+        serverLogTail.append(String(line.prefix(1_000)))
+        if serverLogTail.count > 100 { serverLogTail.removeFirst() }
     }
 
     fileprivate static var executableDirectories: [String] {
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         return path.split(separator: ":").map(String.init).filter { $0.hasPrefix("/") } +
             ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-    }
-
-    private static func findExecutable(_ name: String) -> URL? {
-        executableDirectories.lazy.map { URL(fileURLWithPath: $0, isDirectory: true).appending(path: name) }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
     private func origin(for address: String) -> URL? { URL(string: "http://\(address):\(port)") }
@@ -244,12 +298,12 @@ final class LocalT3ServerManager {
     }
 }
 
-private enum T3LocalError: LocalizedError {
+enum T3LocalError: LocalizedError {
     case executableNotFound, invalidExecutable, serverStopped, pairingInProgress, pairingFailed
 
     var errorDescription: String? {
         switch self {
-        case .executableNotFound: "Couldn’t find t3. Install the T3 CLI or set its path in Botto Settings."
+        case .executableNotFound: "Couldn’t find the bundled T3 engine or a t3 executable on PATH. Set the T3 executable in Botto Settings."
         case .invalidExecutable: "The t3 path in Botto Settings must point to an executable file."
         case .serverStopped: "Start the local T3 server first."
         case .pairingInProgress: "A pairing link is already being generated. Try again in a moment."

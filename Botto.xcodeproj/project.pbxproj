@@ -452,10 +452,10 @@
 		BA339AE34A36908AE3DA5DFE /* NotificationChatRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationChatRoutingTests.swift; sourceTree = "<group>"; };
 		BADE8F42D4981A5D222B51A8 /* ConversationActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityTests.swift; sourceTree = "<group>"; };
 		BCB021E6E93B0FF76317AD71 /* ReplyFileInstallationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyFileInstallationTests.swift; sourceTree = "<group>"; };
-		BD25E67FACD204E50CB1BB33 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		BE39F5E20536F0860A9FDD20 /* InboxRetentionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxRetentionUITests.swift; sourceTree = "<group>"; };
 		C064E606F4623087518DE402 /* BotFaceMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotFaceMotionTests.swift; sourceTree = "<group>"; };
 		C215F7B423044756B5C96622 /* ConversationWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWorkspaceTests.swift; sourceTree = "<group>"; };
+		C25ECF566B8C5A8E2022D06E /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		C32637BF282F524B0C51B392 /* T3WorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T3WorkspaceTests.swift; sourceTree = "<group>"; };
 		C32777248979E1D6A0FEFA78 /* WorkspaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTabs.swift; sourceTree = "<group>"; };
 		C46AD168574DE076DBA42CA4 /* HapticPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticPresentation.swift; sourceTree = "<group>"; };
@@ -946,7 +946,7 @@
 		C81927C287378F51779036E1 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				BD25E67FACD204E50CB1BB33 /* BottoCore */,
+				C25ECF566B8C5A8E2022D06E /* BottoCore */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -1008,6 +1008,7 @@
 			buildPhases = (
 				E054F0717EAE7976DCB74D89 /* Sources */,
 				DE1BC0BEE66C94B60AA97025 /* Frameworks */,
+				A7EEA60DDC4CD6DCCE976691 /* Embed T3 Engine */,
 			);
 			buildRules = (
 			);
@@ -1216,6 +1217,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A7EEA60DDC4CD6DCCE976691 /* Embed T3 Engine */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed T3 Engine";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "case \" $ARCHS \" in\n  *\" arm64 \"*)\n    \"$SRCROOT/scripts/bundle-t3-engine.sh\" \\\n      --embed \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\n    ;;\nesac\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1574EE5710C4C231BC09C4AE /* Sources */ = {
@@ -1823,6 +1846,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Botto;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
@@ -1909,6 +1933,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Botto;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
@@ -2047,6 +2072,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Botto;
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
