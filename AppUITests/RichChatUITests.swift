@@ -1,16 +1,16 @@
 import XCTest
 
 final class RichChatUITests: XCTestCase {
-    @MainActor func testCachedRichReplyHasShortReadableInboxLabel() {
+    @MainActor func testCachedRichReplyHasShortReadableSpaceLabel() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--demo-offline", "--rich-inbox-demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-canvas", in: app)
-        let row = app.buttons["bot-row-canvas"]
+        WorkspaceNavigation.openDrawer(in: app)
+        let row = WorkspaceNavigation.space("canvas", in: app)
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         let label = row.label
-        XCTAssertTrue(label.contains("Before the dashboard, here is the plan"), "Unexpected inbox label: \(label)")
+        XCTAssertTrue(label.contains("Before the dashboard, here is the plan"), "Unexpected space label: \(label)")
         XCTAssertLessThanOrEqual(label.count, 220)
         XCTAssertFalse(label.contains("window.reviews"))
         XCTAssertFalse(label.contains("<!doctype"))
@@ -86,10 +86,7 @@ final class RichChatUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-canvas", in: app)
-        let canvas = app.buttons["bot-row-canvas"]
-        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
-        canvas.tap()
+        WorkspaceNavigation.openSpace("canvas", in: app)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch.waitForExistence(timeout: 5))
         return app
     }

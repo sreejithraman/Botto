@@ -1,4 +1,4 @@
-// Botto's palette is a local interpretation of the shared Hermes color choices.
+// Botto's palette is a local interpretation of the shared avatar colors.
 import SwiftUI
 import BottoCore
 

@@ -22,7 +22,7 @@ import BottoCore
         #expect(workspace.closedChats(profile: service.profile).map(\.id) == [other])
 
         let gate = WorkspaceGate(); service.openGate = gate
-        if outcome == "failure" { service.openError = HermesServiceError.disconnected }
+        if outcome == "failure" { service.openError = ConversationServiceError.disconnected }
         var authorized = true
         let routing = Task { await workspace.openNotificationChat(service.summaries[1].identity, isCurrent: { authorized }) }
         await gate.entered()

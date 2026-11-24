@@ -540,8 +540,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             workPhase: selected == id && isCurrent(rendered) ? live?.activity?.phase : nil)
     }
     private func readOnlyExplanation(_ record: ChatRecord) -> String? {
-        if record.isUnverified { return "Recovered history is read-only because Hermes hasn’t verified its original chat. Your draft and messages are preserved." }
-        if availability[record.id] == false { return "This chat is unavailable on Hermes. Its cached messages and draft are preserved for reading." }
+        if record.isUnverified { return "Recovered history is read-only because the host hasn’t verified its original space. Your draft and messages are preserved." }
+        if availability[record.id] == false { return "This chat is unavailable on the host. Its cached messages and draft are preserved for reading." }
         return nil
     }
     private func status(_ id: ChatID) -> BotStatus? {
@@ -952,10 +952,10 @@ private struct ReadObservationKey: Hashable, Sendable {
                 throw CancellationError()
             }
             guard opened.identity.profile == record.profile,
-                  Data(opened.snapshot.profileID.utf8) == record.profile.bytes else { throw HermesServiceError.wrongConversation }
+                  Data(opened.snapshot.profileID.utf8) == record.profile.bytes else { throw ConversationServiceError.wrongConversation }
             if let expected = record.binding.identity,
                expected.root != opened.identity.root && ConversationBook.proven(expected).isDisjoint(with: ConversationBook.proven(opened.identity)) {
-                throw HermesServiceError.wrongConversation
+                throw ConversationServiceError.wrongConversation
             }
             // App and workspace selection settle in this actor turn. A rejected
             // caller must not leave a committed hidden chat behind.
@@ -1185,7 +1185,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                     }
                     reconcileRequestSource(record.id)
                     if selected != record.id || live == nil {
-                        recordActivity(.unknown("This chat is unavailable on Hermes"), for: record.id)
+                        recordActivity(.unknown("This chat is unavailable on the host"), for: record.id)
                     }
                 }
                 uncertainCreation.remove(profile)
@@ -1325,7 +1325,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                   Data(opened.snapshot.storedID.utf8) == source.stored.bytes,
                   book.record(owner.chat)?.binding.identity.map({ sameSource($0, source) }) == true else {
                 retiredRecoveryAccesses.insert(opened.access)
-                throw HermesServiceError.wrongConversation
+                throw ConversationServiceError.wrongConversation
             }
             // A fresh access always retires artifacts, renders and action callbacks,
             // even for identical content. Only the selected visual lifetime survives.
@@ -1378,7 +1378,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         } catch {
             guard !retired else { return }
             errors[intent.owner.chat] = error.localizedDescription
-            if error as? HermesServiceError == .uncertain { uncertainCreation.insert(profile) }
+            if error as? ConversationServiceError == .uncertain { uncertainCreation.insert(profile) }
         }
     }
     func captureSend(_ owner: PresentationOwner, delivery: MessageDelivery = .queue) -> SendIntent? {
@@ -1412,7 +1412,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             staging[intent.owner.chat]?.removeAll { intent.stagedIDs.contains($0.id) }
             if case .needsLocalRepair = receipt.journal {
-                errors[intent.owner.chat] = "Hermes accepted this message, but its local receipt needs repair. Don’t resend it."
+                errors[intent.owner.chat] = "The host accepted this message, but its local receipt needs repair. Don’t resend it."
                 emitFeedback(.warning, owner: intent.owner, lifetime: feedbackLifetime)
             } else {
                 emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
@@ -1465,14 +1465,14 @@ private struct ReadObservationKey: Hashable, Sendable {
             guard !Task.isCancelled, self.canAct(owner), let current = self.live,
                   self.sameSource(current.identity, source),
                   current.snapshot.queuedMessages.contains(where: { $0 == message && $0.canEdit && !$0.isSteering }) else {
-                throw HermesServiceError.queuedMessageUnavailable
+                throw ConversationServiceError.queuedMessageUnavailable
             }
             self.dispatched.insert(operation)
             return try await self.service.replaceQueuedMessage(message, text: text, access: access, operationID: operation)
         }
         guard !retired, let receipt, sameSource(receipt.source, source) else { return }
         if case .needsLocalRepair = receipt.journal {
-            errors[owner.chat] = "Hermes saved this edit, but its local receipt needs repair. Don’t send it again."
+            errors[owner.chat] = "The host saved this edit, but its local receipt needs repair. Don’t send it again."
         }
         onDirty()
     }
@@ -1582,7 +1582,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
             // Core consumed this operation before its local validation. A later deliberate
             // correction needs a fresh attempt, while this old intent stays tombstoned.
-            if let rejection = error as? HermesServiceError,
+            if let rejection = error as? ConversationServiceError,
                [.invalidResponse, .responseTooLong].contains(rejection), canAct(intent.owner),
                let index = requestRows.firstIndex(where: {
                    $0.intent.operation == intent.operation && $0.intent.owner == intent.owner && $0.request.hasSameWireRevision(as: intent.request)
@@ -1739,14 +1739,14 @@ private struct ReadObservationKey: Hashable, Sendable {
     func finishArtifact(_ intent: ArtifactIntent) { finishOperation(intent.id) }
     func download(_ intent: ArtifactIntent) async throws -> DownloadedArtifact {
         try Task.checkCancellation()
-        guard canAct(intent.owner), let access = intent.owner.access else { throw HermesServiceError.staleConversation }
+        guard canAct(intent.owner), let access = intent.owner.access else { throw ConversationServiceError.staleConversation }
         let task = Task { try await service.downloadArtifact(intent.attachment, access: access) }
         let operation = UUID()
         downloads[operation] = task
         defer { downloads[operation] = nil; considerForegroundRead() }
         let artifact = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         try Task.checkCancellation()
-        guard canAct(intent.owner), !task.isCancelled else { throw HermesServiceError.staleConversation }
+        guard canAct(intent.owner), !task.isCancelled else { throw ConversationServiceError.staleConversation }
         return artifact
     }
     private func updateActivity(_ opened: OpenedConversation, id: ChatID, previous: OpenedConversation? = nil) {

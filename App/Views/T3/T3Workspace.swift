@@ -147,7 +147,7 @@ struct T3Workspace: View {
                      onLocalModalPresentation: { [renderedBotID = bot.id] covered in
                          guard store.selectedBotID == renderedBotID else { return }
                          chatCovered = covered
-                     }, toolbarVisible: true,
+                     },
                      canPresentToolbar: { chatActionsAvailable }, canContinueEditing: { chatActionsAvailable })
                 .id(bot.id)
                 .bottoNavigationChrome()

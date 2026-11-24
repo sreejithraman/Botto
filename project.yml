@@ -106,7 +106,6 @@ targets:
     platform: iOS
     sources:
       - path: AppUITests
-      - path: App/Pairing/HermesSetupPrompt.swift
     info:
       path: AppUITests/Info.plist
       properties:

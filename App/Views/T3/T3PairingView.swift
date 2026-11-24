@@ -5,7 +5,6 @@ import BottoCore
 /// Nothing is sent until the address has been reviewed.
 struct T3PairingView: View {
     let store: AppStore
-    let onUseHermes: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var input: String
@@ -21,10 +20,9 @@ struct T3PairingView: View {
     @State private var connectionTask: Task<Void, Never>?
     @State private var attemptID = UUID()
 
-    init(store: AppStore, input: String = "", onUseHermes: @escaping (String) -> Void) {
+    init(store: AppStore, input: String = "") {
         self.store = store
-        self.onUseHermes = onUseHermes
-        let saved = store.isT3Workspace ? store.configuration?.serverURL.absoluteString ?? "" : ""
+        let saved = store.configuration?.serverURL.absoluteString ?? ""
         _input = State(initialValue: input.isEmpty ? saved : input)
         _typesAddress = State(initialValue: !input.isEmpty)
     }
@@ -49,7 +47,7 @@ struct T3PairingView: View {
             }
         }
         .sheet(isPresented: $showsScanner) {
-            PairingScannerView(isT3: true) { scanned in
+            PairingScannerView { scanned in
                 showsScanner = false
                 receive(scanned)
             }
@@ -102,10 +100,6 @@ struct T3PairingView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 24)
-            Button("Use a Hermes server") { onUseHermes("") }
-                .font(.footnote).foregroundStyle(.secondary)
-                .frame(minHeight: 44)
-                .padding(.top, 8)
         }
     }
 
@@ -242,8 +236,6 @@ struct T3PairingView: View {
     }
 
     private func reviewInput() {
-        // A Hermes code has its own page and review.
-        if ConnectionBackend.named(by: input) == .hermes { return onUseHermes(input) }
         error = nil
         do { review = try T3PairingReview(input, code: code) }
         catch {

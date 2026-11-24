@@ -44,7 +44,7 @@ struct BottoPage: View {
         workspace = store.chats
     }
 
-    private var isCurrent: Bool { store.isT3Workspace && store.chats === workspace }
+    private var isCurrent: Bool { store.chats === workspace }
 
     var body: some View {
         NavigationStack {
@@ -141,7 +141,9 @@ struct BottoPage: View {
         VStack(spacing: 0) {
             row(.personality, title: "Personality", detail: T3BrainText.personalitySummary(drafts.soul), loaded: drafts.soulAutosave != nil)
             row(.memory, title: "What Botto remembers", detail: T3BrainText.memorySummary(drafts.memory), loaded: drafts.memoryAutosave != nil)
-            row(.routines, title: "Routines", detail: routineSummary, loaded: true)
+            if !store.isDemo {
+                row(.routines, title: "Routines", detail: routineSummary, loaded: true)
+            }
             row(.skills, title: "Skills", detail: skillsSummary, loaded: brain != nil, last: true)
         }
     }
@@ -1015,23 +1017,25 @@ struct T3AdvancedView: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker("Default model", selection: selection) {
-                    Text("Automatic").tag("")
-                    if let model = brain?.manifest.model,
-                       !store.t3Models.contains(where: { $0.modelID == model && $0.providerInstanceID == brain?.manifest.providerInstanceID }) {
-                        Text("\(model) (unavailable)").tag("saved:\(model)")
+            if !store.isDemo {
+                Section {
+                    Picker("Default model", selection: selection) {
+                        Text("Automatic").tag("")
+                        if let model = brain?.manifest.model,
+                           !store.t3Models.contains(where: { $0.modelID == model && $0.providerInstanceID == brain?.manifest.providerInstanceID }) {
+                            Text("\(model) (unavailable)").tag("saved:\(model)")
+                        }
+                        ForEach(store.t3Models) { option in
+                            Text("\(option.label) · \(option.providerName)").tag(option.id)
+                        }
                     }
-                    ForEach(store.t3Models) { option in
-                        Text("\(option.label) · \(option.providerName)").tag(option.id)
-                    }
+                    .disabled(saving || brain == nil)
+                    .accessibilityIdentifier("botto-default-model")
+                } footer: {
+                    Text("New spaces start with this. Switch any space’s model from its composer.")
                 }
-                .disabled(saving || brain == nil)
-                .accessibilityIdentifier("botto-default-model")
-            } footer: {
-                Text("New spaces start with this. Switch any space’s model from its composer.")
             }
-            if let root = brain?.workspaceRoot {
+            if let root = brain?.workspaceRoot, !root.isEmpty {
                 Section {
                     LabeledContent("Folder") {
                         Text(root).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)

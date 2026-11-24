@@ -312,7 +312,7 @@ private struct WorkDetailsItem: View {
         .task(id: Data(message.text.utf8)) {
             let text = message.text
             let result = await Task.detached(priority: .userInitiated) {
-                let sections = HermesDetailPayload.sections(text)
+                let sections = ToolDetailPayload.sections(text)
                 let section = sections.first { $0.format != .json && $0.text.contains(where: { !$0.isWhitespace }) }
                     ?? sections.first { $0.text.contains(where: { !$0.isWhitespace }) }
                 var content = String((section?.text ?? text).drop(while: \.isWhitespace).prefix(1024))
@@ -320,7 +320,7 @@ private struct WorkDetailsItem: View {
                    let formatted = try? AttributedString(markdown: content) {
                     content = String(formatted.characters)
                 }
-                if let failure = HermesDetailPayload.failureSummary(text) {
+                if let failure = ToolDetailPayload.failureSummary(text) {
                     content = failure + (section?.format == .json ? "" : " · " + content)
                 }
                 return content.prefix(240).split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -352,7 +352,7 @@ struct RawMessagePayload: View {
     }
 
     private nonisolated static func prepare(_ text: String) -> [PreparedSection] {
-        HermesDetailPayload.sections(text).map { section in
+        ToolDetailPayload.sections(text).map { section in
             let markdown = section.format == .markdown && section.text.utf8.count < 32_768
             return PreparedSection(title: section.title, markdown: markdown ? section.text : nil,
                                    parts: markdown ? [] : sections(section.text))

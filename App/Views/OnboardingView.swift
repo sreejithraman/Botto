@@ -36,10 +36,10 @@ struct OnboardingView: View {
             .background(BottoTheme.paper)
             .toolbar(.hidden, for: .navigationBar)
             .confirmationDialog("Forget this connection?", isPresented: $confirmsForget, titleVisibility: .visible) {
-                Button("Forget on this device", role: .destructive) { Task { await store.forgetConnectionWithPush() } }
+                Button("Forget on this device", role: .destructive) { store.forgetConnection() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and their spaces stay where they live.")
+                Text("Saved pairing details, drafts, and cached messages will be removed from this device. Botto’s memory and spaces stay on the Mac.")
             }
         }
     }

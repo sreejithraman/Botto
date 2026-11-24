@@ -194,7 +194,7 @@ import BottoCore
         ]
         #expect(await store.connect(fixture.configuration))
         #expect(store.bots.map(\.id) == ["waiting", "working", "unread", "recent", "older", "two", "ten"])
-        #expect(store.needsYou.map(\.id) == ["waiting"])
+        #expect(store.inbox.filter(\.needsAttention).map(\.id) == ["waiting"])
         #expect(store.isUnread(try #require(store.bot(withID: "unread"))))
         try expectProjectionParity(store)
 
@@ -249,7 +249,7 @@ import BottoCore
         #expect(store.link == .connecting)
         #expect(store.bots.map(\.id) == ["milo", "other"])
         #expect(store.bots.allSatisfy { $0.status == .idle })
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         let offline = try #require(store.inbox.first)
         #expect(!offline.needsAttention && offline.aggregate?.unreadCount == 1)
         #expect(store.isUnread(offline.bot))
@@ -265,7 +265,7 @@ import BottoCore
         #expect(await store.connect(fixture.configuration))
         #expect(store.bots.map(\.id) == ["", "valid"])
         #expect(store.bot(withID: "")?.status == .waiting)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         #expect(!store.isUnread(try #require(store.bot(withID: ""))))
         #expect(store.bot(withID: "missing") == nil)
         try expectProjectionParity(store)
@@ -273,7 +273,7 @@ import BottoCore
         await store.setActive(false)
         #expect(store.bot(withID: "")?.status == .waiting)
         #expect(store.bot(withID: "valid")?.status == .idle)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         try expectProjectionParity(store)
     }
 
@@ -297,94 +297,6 @@ import BottoCore
             #expect(snapshot.attentionChat == single.attentionChat)
             #expect(snapshot.hasUnknownActivity == single.hasUnknownActivity)
         }
-    }
-
-    @Test(arguments: [false, true])
-    func creationWaitsForPublicationAfterAnOlderInboxRead(oldReadFails: Bool) async throws {
-        let fixture = RefreshFixture()
-        defer { fixture.cleanUp() }
-        let store = fixture.store, service = fixture.service
-        #expect(await store.connect(fixture.configuration))
-        let existing = try #require(store.bots.first)
-        await store.testEdit("Keep this thought", for: existing.id)
-        store.togglePin(existing)
-
-        service.readError = oldReadFails ? HermesServiceError.timeout : nil
-        let oldRead = service.holdNextRead()
-        let inbox = RefreshCall { await store.refresh() }
-        try await eventually { oldRead.entered }
-        service.readError = nil
-        let freshRead = service.holdNextRead()
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
-        let invalidation = RefreshCall { await store.refresh() }
-        try await eventually { invalidation.started }
-        // Give an incorrectly early return a chance to reach the public caller.
-        try await Task.sleep(for: .milliseconds(20))
-        #expect(!creation.finished)
-        #expect(!invalidation.finished)
-        #expect(store.bots.map(\.id) == [existing.id])
-        if creation.finished, let premature = await creation.value() {
-            await store.open(premature.bot)
-            #expect(store.selectedBot?.id == premature.bot.id)
-        }
-
-        oldRead.release()
-        try await eventually { freshRead.entered }
-        #expect(!creation.finished)
-        #expect(store.isRefreshing)
-        freshRead.release()
-        try await eventually { creation.finished && inbox.finished && invalidation.finished }
-        let bot = try #require(await creation.value()).bot
-        #expect(bot.id == "orbit")
-        #expect(store.bots.contains { $0.id == bot.id })
-        #expect(store.history.bots.contains { $0.id == bot.id })
-        await store.open(bot)
-        #expect(store.selectedBot?.id == bot.id)
-        #expect(store.conversation(for: bot.id)?.profileID == bot.id)
-        #expect(store.draft(for: existing.id) == "Keep this thought")
-        #expect(store.isPinned(existing))
-        #expect(!store.isRefreshing)
-        #expect(service.createdDrafts.map(\.name) == ["Orbit"])
-        // The stale response has drained before success; no older read can erase it.
-        #expect(service.finishedReads == service.readCount)
-        store.flush()
-        #expect(try LocalHistory.load(for: fixture.configuration.id).bots.contains { $0.id == bot.id })
-    }
-
-    @Test(arguments: [false, true], [false, true])
-    func creationDoesNotReportNavigableSuccessWithoutPublishedMembership(readFails: Bool, overlapping: Bool) async throws {
-        let fixture = RefreshFixture()
-        defer { fixture.cleanUp() }
-        let store = fixture.store, service = fixture.service
-        #expect(await store.connect(fixture.configuration))
-        let oldRead = overlapping ? service.holdNextRead() : nil
-        let inbox = overlapping ? RefreshCall { await store.refresh() } : nil
-        if let oldRead { try await eventually { oldRead.entered } }
-        service.readError = readFails ? HermesServiceError.timeout : nil
-        service.omitsCreatedProfile = !readFails
-
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
-        oldRead?.release()
-        try await eventually { creation.finished && inbox?.finished != false }
-        let result = await creation.value()
-
-        #expect(result == nil)
-        #expect(!store.history.bots.contains { $0.id == "orbit" })
-        #expect(store.notice?.contains("was created") == true)
-        #expect(store.notice?.contains("Refresh the inbox") == true)
-        #expect(store.selectedBot == nil)
-        #expect(service.createdDrafts.map(\.name) == ["Orbit"])
-        #expect(!store.isRefreshing)
-
-        service.readError = nil
-        service.omitsCreatedProfile = false
-        await store.refresh()
-        let recovered = try #require(store.bots.first { $0.id == "orbit" })
-        await store.open(recovered)
-        #expect(store.selectedBot?.id == "orbit")
-        #expect(service.createdDrafts.count == 1)
     }
 
     @Test(arguments: [false, true])
@@ -416,30 +328,6 @@ import BottoCore
         #expect(service.readCount == (cancelActive ? 3 : 2))
     }
 
-    @Test func cancelingCreationReleasesItsWaitWithoutRetryingTheMutation() async throws {
-        let fixture = RefreshFixture()
-        defer { fixture.cleanUp() }
-        let store = fixture.store, service = fixture.service
-        #expect(await store.connect(fixture.configuration))
-        let heldRead = service.holdNextRead()
-        let inbox = RefreshCall { await store.refresh() }
-        try await eventually { heldRead.entered }
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
-        creation.cancel()
-
-        try await eventually { creation.finished }
-        #expect(await creation.value() == nil)
-        #expect(!inbox.finished)
-        #expect(store.notice == nil)
-        #expect(store.selectedBot == nil)
-        heldRead.release()
-        try await eventually { inbox.finished && !store.isRefreshing }
-        // The independent botsChanged invalidation still publishes the server's creation.
-        #expect(store.bots.contains { $0.id == "orbit" })
-        #expect(service.createdDrafts.map(\.name) == ["Orbit"])
-    }
-
     @Test func futureInvalidationsCoalesceWithoutDelayingEarlierPublicationWaiters() async throws {
         let fixture = RefreshFixture()
         defer { fixture.cleanUp() }
@@ -449,8 +337,8 @@ import BottoCore
         let inbox = RefreshCall { await store.refresh() }
         try await eventually { oldRead.entered }
         let createdRead = service.holdNextRead()
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
+        let queued = RefreshCall { await store.refresh() }
+        try await eventually { queued.started }
         oldRead.release()
         try await eventually { createdRead.entered && inbox.finished }
 
@@ -459,10 +347,8 @@ import BottoCore
         let callers = (0..<20).map { _ in RefreshCall { await store.refresh() } }
         try await eventually { callers.allSatisfy(\.started) }
         createdRead.release()
-        try await eventually { futureRead.entered && creation.finished }
-        let created = try #require(await creation.value()).bot
-        await store.open(created)
-        #expect(store.selectedBot?.id == "orbit")
+        try await eventually { futureRead.entered && queued.finished }
+        await queued.value()
         #expect(!store.bots.contains { $0.id == "scout" })
         #expect(callers.allSatisfy { !$0.finished })
         #expect(store.isRefreshing)
@@ -478,12 +364,10 @@ import BottoCore
         #expect(!last.finished)
         #expect(store.bots.contains { $0.id == "scout" })
         #expect(!store.bots.contains { $0.id == "pip" })
-        #expect(store.selectedBot?.id == "orbit")
         lastRead.release()
         try await eventually { last.finished && !store.isRefreshing }
         #expect(store.bots.contains { $0.id == "pip" })
         #expect(service.readCount == 5) // Connection, old, created, and two later waves.
-        #expect(service.createdDrafts.count == 1)
     }
 
     @Test(arguments: [false, true])
@@ -495,15 +379,14 @@ import BottoCore
         let oldRead = service.holdNextRead()
         let inbox = RefreshCall { await store.refresh() }
         try await eventually { oldRead.entered }
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
+        let queued = RefreshCall { await store.refresh() }
+        try await eventually { queued.started }
         let pending = RefreshCall { await store.refresh() }
         try await eventually { pending.started }
 
         if background { await store.setActive(false) }
         else { store.forgetConnection() }
-        try await eventually { inbox.finished && creation.finished && pending.finished }
-        #expect(await creation.value() == nil)
+        try await eventually { inbox.finished && queued.finished && pending.finished }
         #expect(!store.isRefreshing)
         #expect(store.link == (background ? .connecting : .unconfigured))
         await store.refresh() // A disconnected caller must also finish without a read.
@@ -514,7 +397,6 @@ import BottoCore
         #expect(store.selectedBot == nil)
         #expect(store.notice == nil)
         #expect(!store.isRefreshing)
-        #expect(service.createdDrafts.count == 1)
     }
 
     @Test(arguments: [false, true], [false, true])
@@ -524,12 +406,12 @@ import BottoCore
         defer { fixture.cleanUp(); LocalHistory.remove(for: replacement.id) }
         let store = fixture.store, service = fixture.service
         #expect(await store.connect(fixture.configuration))
-        service.readError = oldReadFails ? HermesServiceError.timeout : nil
+        service.readError = oldReadFails ? ConversationServiceError.timeout : nil
         let oldRead = service.holdNextRead()
         let inbox = RefreshCall { await store.refresh() }
         try await eventually { oldRead.entered }
-        let creation = RefreshCall { await store.create(.init(name: "Orbit")) }
-        try await eventually { service.createdDrafts.count == 1 }
+        let queued = RefreshCall { await store.refresh() }
+        try await eventually { queued.started }
 
         service.profiles = [.init(id: "clover", name: "Clover")]
         service.readError = nil
@@ -544,8 +426,7 @@ import BottoCore
             }
             return await store.connect(replacement)
         }
-        try await eventually { newRead.entered && inbox.finished && creation.finished }
-        #expect(await creation.value() == nil)
+        try await eventually { newRead.entered && inbox.finished && queued.finished }
         let notice = store.notice
         oldRead.release()
         try await eventually { service.finishedReads == 2 }
@@ -560,26 +441,8 @@ import BottoCore
         #expect(store.bots.map(\.id) == ["clover"])
         #expect(store.configuration?.id == (socketRecovery ? fixture.configuration.id : replacement.id))
         #expect(store.selectedBot == nil)
-        #expect(service.createdDrafts.count == 1)
     }
 
-    @Test func ordinaryCreationPublishesBeforeOpeningAndPrecancelledCreationDoesNotMutate() async throws {
-        let fixture = RefreshFixture()
-        defer { fixture.cleanUp() }
-        let store = fixture.store, service = fixture.service
-        #expect(await store.connect(fixture.configuration))
-        let canceled = RefreshCall { await store.create(.init(name: "Canceled")) }
-        canceled.cancel()
-        #expect(await canceled.value() == nil)
-        #expect(service.createdDrafts.isEmpty)
-        let created = try #require(await store.create(.init(name: "Orbit"))).bot
-        #expect(store.history.bots.contains { $0.id == created.id })
-        await store.open(created)
-        #expect(store.selectedBot?.name == "Orbit")
-        #expect(store.conversation(for: created.id)?.profileID == created.id)
-        #expect(service.createdDrafts.map(\.name) == ["Orbit"])
-        #expect(!store.isRefreshing)
-    }
 }
 
 @MainActor private final class RefreshFixture {
@@ -613,8 +476,8 @@ import BottoCore
         guard let messages = previewMessages[identity.profile.text] else { return nil }
         return .init(messages: messages, hasEarlierMessages: false)
     }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var profiles = [BotProfile(id: "milo", name: "Milo")]

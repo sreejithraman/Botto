@@ -7,8 +7,7 @@ final class ScheduledHandoffUITests: XCTestCase {
             let app = XCUIApplication()
             app.launchArguments = ["--demo", "--automation-demo", "-botto.appearance", appearance.lowercased()]
             app.launch()
-            XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 8))
-            app.buttons["pinned-bot-milo"].tap()
+            WorkspaceNavigation.openSpace("milo", in: app)
             let details = app.descendants(matching: .any).matching(identifier: "scheduled-details-scheduled-check").firstMatch
             XCTAssertTrue(details.waitForExistence(timeout: 5))
             XCTAssertTrue(details.label.contains("Mac service incident diagnosis"))
@@ -43,8 +42,7 @@ final class ScheduledHandoffUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--automation-demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
-        XCTAssertTrue(app.buttons["bot-row-milo"].waitForExistence(timeout: 8))
-        app.buttons["bot-row-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let details = app.descendants(matching: .any).matching(identifier: "scheduled-details-scheduled-check").firstMatch
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         for _ in 0..<8 {
@@ -86,8 +84,7 @@ final class ScheduledHandoffUITests: XCTestCase {
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 8))
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         transcript.swipeDown(); transcript.swipeDown()
@@ -121,8 +118,7 @@ final class ScheduledHandoffUITests: XCTestCase {
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 8))
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let last = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Monitoring history 23.")).firstMatch
         XCTAssertTrue(last.waitForExistence(timeout: 5))
         XCTAssertTrue(last.isHittable)
@@ -156,8 +152,7 @@ final class ScheduledHandoffUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--attribution-demo"]
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 8))
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let transcript = app.collectionViews["chat-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["[SILENT]"].exists)

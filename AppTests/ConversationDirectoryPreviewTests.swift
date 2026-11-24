@@ -6,8 +6,7 @@ import SwiftUI
 import XCTest
 @testable import Botto
 
-/// Source-shaped from hermes_state_sessions.py first-user selection and
-/// hermes_state_common.py _shape_preview; directory text is not a latest-message ID.
+/// Directory text can come from the first user message and does not identify the latest message.
 @MainActor struct ConversationDirectoryPreviewTests {
     enum Shape: CaseIterable {
         case firstUser, whitespace, ellipsis, skill
@@ -182,53 +181,6 @@ import XCTest
 }
 
 @MainActor final class InboxPreviewRenderingTests: XCTestCase {
-    func testCachedBotRowsUseReadablePreviewsAndHonestFallbacks() async throws {
-        let cases: [(String, String, [ChatMessage])] = [
-            ("Quiet helper", "Checks your inbox.", [.init(id: "quiet", role: .assistant, text: "[SILENT]")]),
-            ("Quiet bot", "", [.init(id: "quiet", role: .assistant, text: "NO_REPLY")]),
-            ("Process helper", "", [.init(id: "reply", role: .assistant, text: "The build is ready."),
-                .init(id: "process", role: .user, text: "[IMPORTANT: Background process proc_example completed normally.]", displayKind: "process_complete")]),
-            ("Ordinary helper", "", [.init(id: "reply", role: .assistant, text: "The report is ready.")]),
-            ("New helper", "", [])
-        ]
-        var stores: [(AppStore, ConnectionConfiguration)] = []
-        defer { for (store, configuration) in stores { store.forgetConnection(); LocalHistory.remove(for: configuration.id) } }
-        var entries: [AppStore.InboxEntry] = []
-        for (name, description, messages) in cases {
-            let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-            let bot = BotProfile(id: service.profile.text, name: name, description: description, preview: messages.last?.text ?? "")
-            service.rosterBot = try JSONDecoder().decode(BotProfile.self, from: JSONEncoder().encode(bot))
-            service.snapshots[identity.root]?.messages = messages
-            service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-                preview: bot.preview, messageCount: messages.count)
-            let configuration = ConnectionConfiguration(serverURL: URL(string: "https://rendered-inbox.invalid")!)
-            let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-            stores.append((store, configuration))
-            let connected = await store.connect(configuration)
-            XCTAssertTrue(connected)
-            await store.chats.refreshInboxHistory(profiles: [service.profile])
-            entries.append(try XCTUnwrap(store.inbox.first))
-        }
-        for scheme in [ColorScheme.light, .dark] {
-            let content = VStack(spacing: 0) {
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    BotRow(bot: entry.bot, image: nil, unread: entry.isUnread, aggregate: entry.aggregate)
-                }
-            }
-            .padding(20).frame(width: 390).background(BottoTheme.paper)
-            .environment(\.colorScheme, scheme)
-            let expected = ["Checks your inbox", "No recent message", "The build is ready", "The report is ready", "Start a chat"]
-            let text = try await renderedText(expected: expected, scheme: scheme) {
-                let renderer = ImageRenderer(content: content)
-                renderer.scale = 2
-                return renderer.uiImage
-            }
-            for phrase in expected {
-                XCTAssertTrue(text.contains(phrase), "Missing \(phrase) in rendered rows: \(text)")
-            }
-        }
-    }
-
     private func renderedText(expected: [String], scheme: ColorScheme, render: () -> UIImage?) async throws -> String {
         let deadline = ContinuousClock.now + .seconds(30)
         var firstImage: UIImage?, lastImage: UIImage?
@@ -475,7 +427,7 @@ import XCTest
         let count = service.previewReads.count
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(service.previewReads.count == count)
-        if outcome == "failure" { service.openError = HermesServiceError.timeout }
+        if outcome == "failure" { service.openError = ConversationServiceError.timeout }
         if outcome == "cancel" { cancellation.entered = true; opening.cancel() }
         gate.release()
         #expect(await opening.value == (outcome == "success"))
@@ -491,7 +443,7 @@ import XCTest
         book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
             messages: [.init(id: "cached", role: .assistant, text: "Keep this useful reply.")]), for: id)
         service.previewUnavailable = true
-        if fails { service.previewError = HermesServiceError.timeout }
+        if fails { service.previewError = ConversationServiceError.timeout }
         let workspace = fixture(service, book: book)
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "Keep this useful reply.")
@@ -789,7 +741,7 @@ extension InboxMessagePreviewTests {
         default: break
         }
         service.previewError = switch control {
-        case .unknownFailure: HermesServiceError.incompatible
+        case .unknownFailure: ConversationServiceError.incompatible
         case .noDisputes: ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [], exceedsRowLimit: true)
         default: ConversationHistoryPage.Failure(identity: source, unavailableMessageIDs: [disputed])
         }

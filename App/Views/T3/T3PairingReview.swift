@@ -46,21 +46,3 @@ struct T3PairingReview: Equatable {
         }
     }
 }
-
-/// Which connection a fresh install, a saved setup, or an opened link leads to.
-enum ConnectionBackend: Hashable {
-    case t3, hermes
-
-    static func initial(input: String, saved: ConnectionConfiguration?, isDemo: Bool) -> ConnectionBackend {
-        if let named = named(by: input) { return named }
-        // A saved Hermes setup keeps its own details page. Everyone else pairs with a Mac.
-        return saved != nil && saved?.t3 == nil && !isDemo ? .hermes : .t3
-    }
-
-    /// Nil when the text alone doesn't say, such as a bare address.
-    static func named(by input: String) -> ConnectionBackend? {
-        if T3PairingReview.isPairingLink(input) { return .t3 }
-        guard let scheme = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines))?.scheme?.lowercased() else { return nil }
-        return ["hermes", "botto"].contains(scheme) ? .hermes : nil
-    }
-}

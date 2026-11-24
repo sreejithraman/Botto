@@ -25,10 +25,7 @@ final class ArtifactExportUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-canvas", in: app)
-        let canvas = app.buttons["bot-row-canvas"]
-        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
-        canvas.tap()
+        WorkspaceNavigation.openSpace("canvas", in: app)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         let cards = app.buttons.matching(NSPredicate(format: "label == %@", "Open " + filename))
@@ -226,16 +223,13 @@ final class ArtifactExportUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--reduce-motion"]
         app.launch()
-        XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Artifacts"].tap()
-        let list = app.scrollViews["artifact-library"]
-        XCTAssertTrue(list.waitForExistence(timeout: 10))
-        app.buttons["library-filters"].tap()
-        outputAction("Include references", label: "Include references", in: app).tap()
-        let reference = app.buttons["library-artifact-\(filename)"]
-        for _ in 0..<5 where !reference.isHittable { list.swipeUp() }
-        XCTAssertTrue(reference.isHittable)
-        reference.tap()
+        WorkspaceNavigation.openDrawer(in: app)
+        let search = app.textFields["t3-drawer-search"]
+        search.tap()
+        search.typeText(filename)
+        let file = app.buttons["File " + filename]
+        XCTAssertTrue(file.waitForExistence(timeout: 10))
+        file.tap()
         return app
     }
 
@@ -366,8 +360,8 @@ final class ArtifactExportUITests: XCTestCase {
     @MainActor private func assertConnectionReplacement(in app: XCUIApplication) {
         // Open through the system in the existing scene, not app.open/launch.
         XCUIDevice.shared.system.open(URL(string:
-            "botto://hermes/connect?url=https%3A%2F%2Freplacement.example")!)
-        let replaced = app.navigationBars["Connect Hermes"].waitForExistence(timeout: 8)
+            "t3code://pair?url=https%3A%2F%2Freplacement.example&token=demo")!)
+        let replaced = app.navigationBars["Pair with your Mac"].waitForExistence(timeout: 8)
         capture("Connection review replaces preview and native children", app: app)
         XCTAssertTrue(replaced)
         XCTAssertFalse(app.buttons["artifact-save"].exists)
@@ -375,13 +369,6 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(filesPicker(in: app).exists)
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
         XCTAssertFalse(app.cells["Copy"].exists, "Connection replacement must retire native Share too.")
-        let review = app.buttons["Review destination"]
-        for _ in 0..<8 {
-            if review.exists && review.isHittable { break }
-            app.swipeUp()
-        }
-        XCTAssertTrue(review.exists && review.isHittable)
-        review.tap()
         let reviewed = app.staticTexts["https://replacement.example"].waitForExistence(timeout: 5)
         capture("Connection replaces artifact presentation", app: app)
         XCTAssertTrue(reviewed)

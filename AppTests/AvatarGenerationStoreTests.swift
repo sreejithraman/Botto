@@ -29,7 +29,7 @@ import BottoCore
         #expect(await barrier.entersInTime())
         store.forgetConnection()
         barrier.release()
-        await #expect(throws: HermesServiceError.disconnected) { try await pending.value }
+        await #expect(throws: ConversationServiceError.disconnected) { try await pending.value }
         #expect(store.bots.isEmpty)
     }
 
@@ -43,7 +43,7 @@ import BottoCore
         history.bots = [bot]
         try history.save(for: configuration.id)
         let service = StoreTestService()
-        service.connectError = HermesServiceError.disconnected
+        service.connectError = ConversationServiceError.disconnected
         let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
         #expect(!store.isConnected)

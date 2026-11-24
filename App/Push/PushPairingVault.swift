@@ -2,65 +2,6 @@ import Foundation
 import Security
 import BottoCore
 
-struct PushHostBinding: Codable, Hashable, Sendable {
-    let serverURL: URL
-    let installID: String
-    let username: String
-    let provider: String
-    var profileID: String
-
-    init?(_ configuration: ConnectionConfiguration, profileID: String) {
-        guard let install = configuration.installID, !install.isEmpty else { return nil }
-        serverURL = configuration.serverURL; installID = install; username = configuration.username
-        provider = configuration.nativeCredential?.provider ?? "basic"
-        self.profileID = profileID
-    }
-    func sameConnection(as other: Self) -> Bool {
-        connectionIdentity == other.connectionIdentity
-    }
-    private var connectionIdentity: [Data] { [serverURL.absoluteString, installID, username, provider].map { Data($0.utf8) } }
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.sameConnection(as: rhs) && lhs.profileID.utf8.elementsEqual(rhs.profileID.utf8)
-    }
-    func hash(into hasher: inout Hasher) { hasher.combine(connectionIdentity); hasher.combine(Data(profileID.utf8)) }
-}
-
-struct PushPairing: Codable, Equatable, Sendable {
-    var host: PushHostBinding
-    var installationID: String?
-    var deviceID: String
-    var generation: Int
-    var key: Data
-    var preferences: PushPreferences
-    var pendingEnrollment: PushEnrollmentRequest?
-    var remoteConfirmed: Bool
-    var lastEnrollment: PushEnrollmentRequest?
-    var retirement: PushRetirement? = nil
-}
-
-struct PushRetirement: Codable, Equatable, Sendable {
-    enum Reason: String, Codable, Sendable { case relay, removed }
-    var reason: Reason
-    var token: String?
-}
-
-struct PushPendingRemoval: Codable, Equatable, Sendable, Identifiable {
-    let id: UUID
-    let host: PushHostBinding
-    let deviceID: String
-}
-
-struct PushSavedState: Codable, Equatable, Sendable {
-    var pairings: [PushPairing] = []
-    var removals: [PushPendingRemoval] = []
-}
-
-@MainActor struct PushPersistence {
-    var load: () throws -> PushSavedState
-    var save: (PushSavedState) throws -> Void
-    static var keychain: Self { .init(load: PushPairingVault.load, save: PushPairingVault.save) }
-}
-
 enum PushPairingVault {
     private static func query(_ account: String) -> [String: Any] {
         var value: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -69,12 +10,6 @@ enum PushPairingVault {
            !group.isEmpty, !group.contains("$(") { value[kSecAttrAccessGroup as String] = group }
         return value
     }
-    static func load() throws -> PushSavedState {
-        try load(PushSavedState.self, account: "pairing-v1") ?? .init()
-    }
-
-    static func save(_ state: PushSavedState) throws { try save(state, account: "pairing-v1") }
-
     static func loadT3() throws -> [T3PushPairing] {
         try load([T3PushPairing].self, account: "t3-pairing-v1") ?? []
     }

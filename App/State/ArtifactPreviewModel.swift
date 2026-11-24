@@ -122,7 +122,7 @@ final class ArtifactPreviewFile: Identifiable, Sendable {
 
     var file: ArtifactPreviewFile? { state.content.file }
     var errorMessage: String? { state.content.error?.localizedDescription }
-    var requiresConnection: Bool { (state.content.error as? HermesServiceError) == .disconnected }
+    var requiresConnection: Bool { (state.content.error as? ConversationServiceError) == .disconnected }
     var isLoading: Bool { state.attempt != nil }
     var isFinished: Bool { if case .finished = state { true } else { false } }
     var output: ArtifactOutput? { if case .output(let output, _) = state { output } else { nil } }

@@ -19,14 +19,9 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private static func preview(_ envelope: PushEnvelope) -> PushPreview? {
-        if let t3 = try? PushPairingVault.loadT3(), let pairing = t3.first(where: { $0.matches(envelope) }) {
-            return pairing.preview(envelope)
-        }
-        guard let state = try? PushPairingVault.load(),
-              let pairing = state.pairings.first(where: { $0.installationID == envelope.installationID && $0.deviceID == envelope.deviceID }),
-              pairing.preferences.previews, let preview = try? envelope.decrypt(key: pairing.key),
-              preview.profileID.utf8.elementsEqual(pairing.host.profileID.utf8) else { return nil }
-        return preview
+        guard let pairings = try? PushPairingVault.loadT3(),
+              let pairing = pairings.first(where: { $0.matches(envelope) }) else { return nil }
+        return pairing.preview(envelope)
     }
 
     override func serviceExtensionTimeWillExpire() {

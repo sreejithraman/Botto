@@ -69,7 +69,7 @@ import BottoCore
         do {
             _ = try await service.replaceQueuedMessage(changedOriginal, text: "Unconfirmed edit", access: opened.access, operationID: UUID())
             XCTFail("An admission ID alone cannot replace a different original payload")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .queuedMessageUnavailable) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .queuedMessageUnavailable) }
         XCTAssertEqual(latest.queuedMessages.map(\.text), ["Original", "Already waiting"])
         let editOperation = UUID()
         let editedText = "  First line\n\nSecond line\n  Last line  \n"
@@ -90,11 +90,11 @@ import BottoCore
         do {
             _ = try await service.replaceQueuedMessage(original, text: "Replay", access: opened.access, operationID: editOperation)
             XCTFail("An operation UUID cannot admit a second edit")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         do {
             _ = try await service.replaceQueuedMessage(original, text: "Stale editor", access: opened.access, operationID: UUID())
             XCTFail("The old admission retired when it was replaced")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .queuedMessageUnavailable) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .queuedMessageUnavailable) }
         try FileManager.default.removeItem(at: directory.appendingPathComponent("reply-1.hold"))
         try await waitUntil { !latest.isWorking }
         XCTAssertEqual(latest.messages.filter { $0.role == .user }.map(\.text), ["Active", "Already waiting", editedText])
@@ -130,7 +130,7 @@ import BottoCore
         _ = try await service.replaceQueuedMessage(original, text: "Confirmed edit", access: opened.access, operationID: winningOperation)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("replace-queued-1.hold"))
         do { _ = try await heldEdit.value; XCTFail("A different edit already retired this admission") }
-        catch { XCTAssertEqual(error as? HermesServiceError, .queuedMessageUnavailable) }
+        catch { XCTAssertEqual(error as? ConversationServiceError, .queuedMessageUnavailable) }
         XCTAssertEqual(latest.queuedMessages.map(\.text), ["Confirmed edit"])
         XCTAssertEqual(latest.queuedMessages.map(\.id), [winningOperation.uuidString])
         XCTAssertEqual(latest.messages.filter { $0.role == .user }.map(\.text), ["Active", "Confirmed edit"])
@@ -161,7 +161,7 @@ import BottoCore
             do {
                 _ = try await service.replaceQueuedMessage(candidate, text: "Drop the file", access: opened.access, operationID: UUID())
                 XCTFail("An attachment admission cannot be edited as text")
-            } catch { XCTAssertEqual(error as? HermesServiceError, .queuedMessageUnavailable) }
+            } catch { XCTAssertEqual(error as? ConversationServiceError, .queuedMessageUnavailable) }
         }
         XCTAssertEqual(latest.queuedMessages, [queued])
         XCTAssertEqual(latest.messages.last?.attachments, [file])
@@ -212,7 +212,7 @@ import BottoCore
         let service = DemoBotService(gateDirectory: directory, performanceFixture: true, performanceChunkDelay: .zero)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         defer { service.disconnect() }
-        let opened = try await service.openChat(.canonical(profile: ExactID("scout"), expectedRoot: nil))
+        let opened = try await service.openChat(.stored(demoSpaceIdentity("scout")))
         var latest = opened.snapshot
         var chunksByReply: [String: [String]] = [:]
         service.onEvent = {
@@ -268,12 +268,13 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let connected = await store.connect(configuration)
         XCTAssertTrue(connected)
-        XCTAssertEqual(store.bots.count, 205, "The workload includes all 200 additional profiles.")
-        let scout = try XCTUnwrap(store.bots.first { $0.id == "scout" })
-        await store.open(scout)
-        let initial = try XCTUnwrap(store.conversation(for: "scout"))
+        XCTAssertEqual(store.t3Channels.count, 207, "The workload includes all 200 additional spaces.")
+        let scout = try XCTUnwrap(store.t3Channels.first { $0.id == "scout" })
+        let opened = await store.openT3Channel(scout)
+        XCTAssertTrue(opened)
+        let initial = try XCTUnwrap(store.conversation(for: "milo"))
         XCTAssertEqual(initial.messages.count, 400)
-        let profile = try ExactID("scout")
+        let profile = try ExactID("milo")
         let owner = try XCTUnwrap(store.chats.screen(profile: profile)?.owner)
         store.chats.editDraft("Stream the performance fixture", owner: owner)
         let send = try XCTUnwrap(store.chats.captureSend(owner))
@@ -301,11 +302,11 @@ import BottoCore
         let began = ContinuousClock.now
         let hangGuardDeadline = began + .seconds(120)
         await store.chats.send(send)
-        while store.conversation(for: "scout")?.isWorking == true, ContinuousClock.now < hangGuardDeadline {
+        while store.conversation(for: "milo")?.isWorking == true, ContinuousClock.now < hangGuardDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         let elapsed = began.duration(to: .now)
-        let final = try XCTUnwrap(store.conversation(for: "scout"))
+        let final = try XCTUnwrap(store.conversation(for: "milo"))
         let completed = final.isWorking == false
             && final.messages.last?.text.hasSuffix("Performance stream 1 complete.") == true
         let seconds: (Duration) -> Double = {
@@ -353,11 +354,14 @@ import BottoCore
                        "Later local changes cannot backfill an older read witness.")
     }
 
-    func testOrdinaryDemoHasIndependentChatsAndPreservesMain() async throws {
+    func testOrdinaryDemoHasIndependentSpacesAndPreservesMain() async throws {
         let service = try await connected()
         let profile = try ExactID("milo")
         let directory = try await service.conversations(profile: profile)
-        XCTAssertEqual(directory.summaries.map(\.title), ["Bot Chat", "Weekend plan", "Research notes"])
+        XCTAssertEqual(Set(directory.summaries.map(\.title)),
+                       ["Main Space", "Weekend research", "Writing desk", "Saturday plans",
+                        "Project update", "Weekend plan", "Research notes"])
+        XCTAssertEqual(directory.summaries.filter(\.isCanonical).map(\.title), ["Main Space"])
         let main = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
         XCTAssertEqual(main.snapshot.messages.first?.text, "Help me get a handle on tomorrow.")
         XCTAssertEqual(main.snapshot.pendingRequests.first?.id, "demo-approval")
@@ -385,7 +389,7 @@ import BottoCore
         do {
             _ = try await service.send(text: "Stale", attachments: [], access: source.access, operationID: UUID())
             XCTFail("A retired grant must never dispatch")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         try await Task.sleep(for: .milliseconds(1000))
         XCTAssertTrue(publications.isEmpty, "A’s completion must not publish into selected B")
         let b = try await service.openChat(.stored(side.identity))
@@ -398,7 +402,7 @@ import BottoCore
 
     func testArtifactsCannotCrossSiblingChatAndCanvasMainStaysOwned() async throws {
         let service = try await connected()
-        let canvas = try await service.openChat(.canonical(profile: try ExactID("canvas"), expectedRoot: nil))
+        let canvas = try await service.openChat(.stored(demoSpaceIdentity("canvas")))
         let report = ChatAttachment(name: "report.pdf", path: "/demo/canvas/report.pdf", mimeType: "application/pdf")
         let data = try await service.downloadArtifact(report, access: canvas.access)
         XCTAssertTrue(data.data.starts(with: Data("%PDF".utf8)))
@@ -407,14 +411,14 @@ import BottoCore
         do {
             _ = try await service.downloadArtifact(report, access: side.access)
             XCTFail("Main’s historical file is not a sibling’s file")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
         let file = try await service.upload(data: Data("side".utf8), filename: "notes.txt", mimeType: "text/plain", access: side.access)
         _ = try await service.send(text: "My file", attachments: [file], access: side.access, operationID: UUID())
         let main = try await service.openChat(.stored(canvas.identity))
         do {
             _ = try await service.send(text: "Borrow file", attachments: [file], access: main.access, operationID: UUID())
             XCTFail("Upload belongs to the exact source")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
     }
 
     func testRecoveryAndOtherServiceCannotReviveRetiredGrants() async throws {
@@ -428,14 +432,14 @@ import BottoCore
             do {
                 _ = try await candidate.stop(access: main.access, operationID: UUID())
                 XCTFail("A grant is issued by one live attachment only")
-            } catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+            } catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         }
         let wrongProfile = SessionIdentity(profile: try ExactID("Milo"), root: main.identity.root,
                                            stored: main.identity.stored, aliases: main.identity.aliases)
         do {
             _ = try await service.openChat(.stored(wrongProfile))
             XCTFail("Profile case is identity")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .profileUnavailable) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .profileUnavailable) }
     }
 
     func testRequestMustStillExistInExactSource() async throws {
@@ -447,13 +451,13 @@ import BottoCore
         do {
             _ = try await service.respond(to: request, response: .choice("once"), access: other.access, operationID: UUID())
             XCTFail("Matching request IDs outside their source cannot authorize a response")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         let reopened = try await service.openChat(.stored(main.identity))
         _ = try await service.respond(to: request, response: .choice("deny"), access: reopened.access, operationID: UUID())
         do {
             _ = try await service.respond(to: request, response: .choice("once"), access: reopened.access, operationID: UUID())
             XCTFail("An already answered request must retire")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
     }
 
     func testLateAdmissionReceiptStaysWithSourceAfterSelection() async throws {
@@ -495,14 +499,14 @@ import BottoCore
         let b = try await service.openChat(.stored(side.summary.identity))
         try FileManager.default.removeItem(at: hold)
         do { _ = try await oldOpen.value; XCTFail("Old attachment must retire") }
-        catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         let receipt = try await service.send(text: "Still B", attachments: [], access: b.access, operationID: UUID())
         XCTAssertEqual(receipt.source, b.identity)
     }
 
     func testStagingSurvivesNavigationAndRejectsHistoryForgeryReplayAndRecovery() async throws {
         let service = try await connected()
-        let source = try await service.openChat(.canonical(profile: try ExactID("canvas"), expectedRoot: nil))
+        let source = try await service.openChat(.stored(demoSpaceIdentity("canvas")))
         let uploaded = try await service.upload(data: Data("hello".utf8), filename: "hello.txt", mimeType: "text/plain", access: source.access)
         XCTAssertNotNil(uploaded.stagingID)
         let side = try await service.createConversation(profile: source.identity.profile, operationID: UUID())
@@ -510,24 +514,24 @@ import BottoCore
         do {
             _ = try await service.send(text: "Wrong source", attachments: [uploaded], access: b.access, operationID: UUID())
             XCTFail("A’s upload token cannot send in B")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
         let reopened = try await service.openChat(.stored(source.identity))
         var forged = uploaded
         forged.name = "forged.txt"
         do {
             _ = try await service.send(text: "Forged descriptor", attachments: [forged], access: reopened.access, operationID: UUID())
             XCTFail("The complete upload descriptor must match")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
         let historical = ChatAttachment(name: "report.pdf", path: "/demo/canvas/report.pdf", mimeType: "application/pdf")
         do {
             _ = try await service.send(text: "Historical path", attachments: [historical], access: reopened.access, operationID: UUID())
             XCTFail("A historical downloadable path is not an upload grant")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
         _ = try await service.send(text: "Preserved upload", attachments: [uploaded], access: reopened.access, operationID: UUID())
         do {
             _ = try await service.send(text: "Already admitted", attachments: [uploaded], access: reopened.access, operationID: UUID())
             XCTFail("An admitted upload token is consumed")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
         let pending = try await service.upload(data: Data("fresh".utf8), filename: "hello.txt", mimeType: "text/plain", access: reopened.access)
         XCTAssertNotEqual(pending.stagingID, uploaded.stagingID)
         service.disconnect()
@@ -536,7 +540,7 @@ import BottoCore
         do {
             _ = try await service.send(text: "Prior connection", attachments: [pending], access: recovered.access, operationID: UUID())
             XCTFail("Recovery retires upload capabilities")
-        } catch { XCTAssertEqual(error as? HermesServiceError, .invalidAttachment) }
+        } catch { XCTAssertEqual(error as? ConversationServiceError, .invalidAttachment) }
     }
 
     func testUploadAcquisitionCannotFinishInReplacementChat() async throws {
@@ -545,7 +549,7 @@ import BottoCore
         defer { try? FileManager.default.removeItem(at: directory) }
         let service: any BotService = DemoBotService(gateDirectory: directory)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
-        let source = try await service.openChat(.canonical(profile: try ExactID("canvas"), expectedRoot: nil))
+        let source = try await service.openChat(.stored(demoSpaceIdentity("canvas")))
         let side = try await service.createConversation(profile: source.identity.profile, operationID: UUID())
         let hold = directory.appendingPathComponent("upload.hold")
         try Data().write(to: hold)
@@ -554,7 +558,7 @@ import BottoCore
         let b = try await service.openChat(.stored(side.summary.identity))
         try FileManager.default.removeItem(at: hold)
         do { _ = try await upload.value; XCTFail("Acquisition retired before dispatch cannot grant a file") }
-        catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         let receipt = try await service.send(text: "Still B", attachments: [], access: b.access, operationID: UUID())
         XCTAssertEqual(receipt.source, b.identity)
     }
@@ -575,9 +579,9 @@ import BottoCore
         _ = try await service.connect(configuration: configuration)
         try FileManager.default.removeItem(at: hold)
         do { _ = try await create.value; XCTFail("Retired pre-dispatch create cannot mutate recovered session") }
-        catch { XCTAssertEqual(error as? HermesServiceError, .staleConversation) }
+        catch { XCTAssertEqual(error as? ConversationServiceError, .staleConversation) }
         let current = try await service.conversations(profile: profile)
-        XCTAssertEqual(current.summaries.count, 3)
+        XCTAssertEqual(current.summaries.count, 7)
     }
 
     func testConcurrentWorkAndStopRemainIndependentPerChat() async throws {
@@ -672,7 +676,7 @@ import BottoCore
         }
         let attempt = try XCTUnwrap(replacement)
         do { _ = try await attempt.value; XCTFail("The admission is already running") }
-        catch { XCTAssertEqual(error as? HermesServiceError, .queuedMessageUnavailable) }
+        catch { XCTAssertEqual(error as? ConversationServiceError, .queuedMessageUnavailable) }
         XCTAssertTrue(latest.queuedMessages.isEmpty)
         XCTAssertFalse(latest.messages.contains { $0.id == "submission:" + editOperation.uuidString })
         XCTAssertEqual(latest.messages.filter { $0.role == .user }.map(\.text), ["Active", "Original pending"])
@@ -695,7 +699,7 @@ import BottoCore
 
     private func waitUntil(fileID: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
         await waitWhile(fileID: fileID, line: line) { !condition() }
-        guard condition() else { throw HermesServiceError.timeout }
+        guard condition() else { throw ConversationServiceError.timeout }
     }
 
     private func waitForMarker(_ name: String, directory: URL) async throws {

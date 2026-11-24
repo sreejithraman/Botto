@@ -79,7 +79,7 @@ import BottoCore
         let background = ChatMessage(id: "background", role: .user, text: payload,
             displayKind: "async_delegation_complete", displayText: "Background review finished")
         let sender = ChatMessage(id: "gustavo", role: .user,
-            text: "Message from 🤖 Gustavo (@hermes): Please own this follow-up.", displayKind: "internal_notification")
+            text: "Message from 🤖 Gustavo (@gustavo): Please own this follow-up.", displayKind: "internal_notification")
         service.snapshots[session.root]?.messages = [background, sender]
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-attribution.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
@@ -88,7 +88,7 @@ import BottoCore
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         try await revisionWait("compact event and attributed sender render") {
             revisionElement("Show details for Background review finished", in: fixture.host.view) != nil &&
-                revisionElement("From Gustavo · @hermes", in: fixture.host.view) != nil &&
+                revisionElement("From Gustavo · @gustavo", in: fixture.host.view) != nil &&
                 revisionElement("Please own this follow-up.", in: fixture.host.view) != nil
         }
         #expect(revisionElement(payload, in: fixture.host.view) == nil)

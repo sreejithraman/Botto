@@ -270,7 +270,7 @@ import BottoCore
 
     @Test func aFailedNeighborRetriesWhenItIsSelected() async throws {
         let (store, service, presentation, close) = try await pagedReader(["a.txt", "b.txt"], opening: 0,
-                                                                          downloadError: HermesServiceError.disconnected)
+                                                                          downloadError: ConversationServiceError.disconnected)
         defer { close() }
         let selected = try #require(presentation.artifact)
         let neighbor = try #require(presentation.artifactSession(atPage: 1))
@@ -305,7 +305,7 @@ import BottoCore
     @Test(arguments: [false, true])
     func anUnloadedNeighborRenewsAccessBeforeSelection(wasLoading: Bool) async throws {
         let (store, service, presentation, close) = try await pagedReader(["a.txt", "b.txt"], opening: 0,
-                                                                          downloadError: HermesServiceError.disconnected)
+                                                                          downloadError: ConversationServiceError.disconnected)
         defer { close() }
         let selected = try #require(presentation.artifact)
         let neighbor = try #require(presentation.artifactSession(atPage: 1))
@@ -390,7 +390,7 @@ import BottoCore
         await workspace.importAttachments([file("earlier.txt")], to: try #require(workspace.captureImport(screen.owner)))
         let gate = WorkspaceGate()
         service.uploadGate = gate
-        service.uploadError = fails ? HermesServiceError.disconnected : nil
+        service.uploadError = fails ? ConversationServiceError.disconnected : nil
         let intent = try #require(workspace.captureImport(screen.owner))
         let running = Task { await workspace.importAttachments([file("first.txt"), file("never.txt")], to: intent) }
         await gate.entered()
@@ -422,7 +422,7 @@ import BottoCore
         defer { close() }
         let gate = WorkspaceGate()
         service.uploadGate = gate
-        service.uploadError = fails ? HermesServiceError.disconnected : nil
+        service.uploadError = fails ? ConversationServiceError.disconnected : nil
         let running = Task { await workspace.importAttachments([file("old.txt")],
             to: try #require(workspace.captureImport(screen.owner))) }
         await gate.entered()

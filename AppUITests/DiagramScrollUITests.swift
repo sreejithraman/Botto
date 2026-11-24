@@ -8,10 +8,7 @@ final class DiagramScrollUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-canvas", in: app)
-        let canvas = app.buttons["bot-row-canvas"]
-        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
-        canvas.tap()
+        WorkspaceNavigation.openSpace("canvas", in: app)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         Thread.sleep(forTimeInterval: 6)

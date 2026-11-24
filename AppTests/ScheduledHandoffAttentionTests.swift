@@ -14,7 +14,7 @@ import BottoCore
         let summary = SessionSummary(identity: identity, title: "Main", isCanonical: true, persistence: .durable)
         let messages: [ChatMessage] = [
             .init(id: "human", role: .user, text: "Please check the service."),
-            .init(id: "bot-dm", role: .user, text: "Message from 🤖 Gustavo (@hermes): I checked it.", displayKind: "internal_notification"),
+            .init(id: "bot-dm", role: .user, text: "Message from 🤖 Gustavo (@gustavo): I checked it.", displayKind: "internal_notification"),
             .init(id: "gateway", role: .user, text: "An internal note", displayKind: "internal_notification"),
             .init(id: "failure", role: .user, text: "The process failed", displayKind: "process_complete")
         ]

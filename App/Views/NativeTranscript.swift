@@ -887,7 +887,7 @@ private struct NativeTranscriptHostedRow: View {
     private func presentRequest(_ confirmation: RequestCardConfirmation, report: @escaping @MainActor (UUID, Bool) -> Void) {
         guard requestAlert == nil, requestConfirmation == nil, !foreground.isPresenting, presentedViewController == nil, viewIfLoaded?.window != nil else { confirmation.cancel(); return }
         let alert = UIAlertController(title: "Allow future actions?",
-            message: "This choice can let Hermes run matching actions again without asking you. Only continue if you trust the scope described in this request.",
+            message: "This choice can let your bot run matching actions again without asking you. Only continue if you trust the scope described in this request.",
             preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: confirmation.choice.label, style: .default) { [weak self, weak alert] _ in
             confirmation.confirm()

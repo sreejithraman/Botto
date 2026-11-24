@@ -90,6 +90,6 @@ import BottoCore
 
     private func waitUntil(fileID: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
         await waitWhile(fileID: fileID, line: line) { !condition() }
-        guard condition() else { throw HermesServiceError.timeout }
+        guard condition() else { throw ConversationServiceError.timeout }
     }
 }

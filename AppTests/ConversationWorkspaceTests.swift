@@ -117,7 +117,7 @@ import BottoCore
     @Test func failedLocalFallbackActivationKeepsDraftAndAllowsDeliberateRetry() async throws {
         let (workspace, service, main, _) = try await closedSelectedFixture()
         workspace.editDraft("Keep through failure", owner: main.owner)
-        service.openError = HermesServiceError.timeout
+        service.openError = ConversationServiceError.timeout
         await workspace.select(try #require(workspace.captureActivation(main.owner)))
         let failed = try #require(workspace.screen(profile: service.profile))
         #expect(failed.canEditDraft && !failed.canAct && failed.error != nil)
@@ -574,7 +574,7 @@ import BottoCore
         let screen = try #require(workspace.screen(profile: service.profile))
         workspace.beginQueuedEdit(item, owner: screen.owner)
         workspace.updateQueuedEdit("Unconfirmed edit", owner: screen.owner)
-        service.replacementError = HermesServiceError.uncertain
+        service.replacementError = ConversationServiceError.uncertain
         await workspace.saveQueuedEdit(screen.owner)
         let after = try #require(workspace.screen(profile: service.profile))
         #expect(after.queuedEdit?.text == "Unconfirmed edit" && after.queuedEdit?.isUncertain == true)
@@ -621,7 +621,7 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("Make it shorter", owner: screen.owner)
-        service.sendError = HermesServiceError.steeringUnavailable
+        service.sendError = ConversationServiceError.steeringUnavailable
         let steer = try #require(workspace.captureSend(screen.owner, delivery: .steer))
         await workspace.send(steer)
         #expect(workspace.draft(screen.owner) == "Make it shorter")
@@ -845,7 +845,7 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
         #expect(screen.canCreate)
-        service.createError = HermesServiceError.uncertain
+        service.createError = ConversationServiceError.uncertain
         let intent = try #require(workspace.captureCreation(screen.owner))
         #expect(workspace.screen(profile: service.profile)?.canCreate == false)
         await workspace.create(intent)
@@ -933,7 +933,7 @@ import BottoCore
         #expect(workspace.cards(profile: service.profile).count == 3)
         #expect(workspace.screen(profile: service.profile)?.snapshot?.messages.first?.text == "Other")
         #expect(workspace.screen(profile: service.profile)?.directoryComplete == false)
-        service.directoryError = HermesServiceError.timeout
+        service.directoryError = ConversationServiceError.timeout
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.cards(profile: service.profile).count == 3)
     }

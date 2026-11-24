@@ -1,7 +1,7 @@
 import XCTest
 
 final class ConversationPerformanceUITests: XCTestCase {
-    @MainActor func testLongInternalHistoryOverviewPerformance() throws {
+    @MainActor func testLongInternalHistorySpacesDrawerPerformance() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["BOTTO_SCROLL_UI_BENCH"] == "1")
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -9,17 +9,16 @@ final class ConversationPerformanceUITests: XCTestCase {
         app.launchArguments = ["--demo", "--performance-demo", "--mixed-history-performance-demo"]
         app.launch()
         defer { app.terminate() }
-        let scout = app.buttons["pinned-bot-scout"]
-        XCTAssertTrue(scout.waitForExistence(timeout: 10)); scout.tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
         let composer = app.textViews["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
-        let overview = app.descendants(matching: .any)["chat-picker"]
+        let overview = app.textFields["t3-drawer-search"]
         let options = XCTMeasureOptions()
         options.iterationCount = 3
         measure(metrics: [XCTClockMetric(), XCTCPUMetric(application: app)], options: options) {
-            app.buttons["chat-picker-button"].tap()
+            app.buttons["t3-open-drawer"].tap()
             XCTAssertTrue(overview.waitForExistence(timeout: 10))
-            app.buttons["chat-picker-button"].tap()
+            WorkspaceNavigation.space("scout", in: app).tap()
             XCTAssertTrue(overview.waitForNonExistence(timeout: 10))
             XCTAssertTrue(composer.isEnabled)
         }
@@ -59,8 +58,7 @@ final class ConversationPerformanceUITests: XCTestCase {
             app.launchEnvironment["BOTTO_TYPING_TRACE_OUTPUT"] = output
         }
         app.launch()
-        let scout = app.buttons["pinned-bot-scout"]
-        XCTAssertTrue(scout.waitForExistence(timeout: 10)); scout.tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         composer.tap()
@@ -80,11 +78,11 @@ final class ConversationPerformanceUITests: XCTestCase {
         if !nativePerformance { try FileManager.default.removeItem(at: hold) }
         let reply = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 30))
-        app.buttons["chat-picker-button"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].waitForExistence(timeout: 10))
+        app.buttons["t3-open-drawer"].tap()
+        XCTAssertTrue(app.textFields["t3-drawer-search"].waitForExistence(timeout: 10))
 
         if nativePerformance {
-            app.buttons["chat-picker-button"].tap()
+            WorkspaceNavigation.space("scout", in: app).tap()
             XCTAssertTrue(composer.waitForExistence(timeout: 10))
             XCTAssertTrue(composer.exists)
             XCTAssertEqual(composer.value as? String ?? "", "")

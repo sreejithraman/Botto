@@ -15,9 +15,8 @@ struct RootView: View {
         default: nil
         }
     }
-    private enum Sheet: Equatable { case connection, settings, newBot }
+    private enum Sheet: Equatable { case connection, settings }
     @State private var sheet: Sheet?
-    @State private var createdBotOpening: AppStore.BotOpening?
     @State private var deliberateSheet = false
     @State private var notificationPresentation: AppStore.NotificationPresentation?
     private var showsSheet: Binding<Bool> {
@@ -32,7 +31,6 @@ struct RootView: View {
         })
     }
     private func presentSheet(_ destination: Sheet, deliberate: Bool = true) {
-        createdBotOpening = nil
         if deliberate { store.retireHeldNotification() }
         if destination == .connection, onExitDemoPreview != nil {
             store.showsConnection = false
@@ -47,30 +45,6 @@ struct RootView: View {
         sheet = destination
     }
 
-    private func createdBot(_ creation: AppStore.BotCreationResult) {
-        guard sheet == .newBot else { return }
-        let opening = store.prepareCreatedBotOpening(creation)
-        guard sheet == .newBot, !store.showsConnection else { return }
-        createdBotOpening = opening
-        sheet = nil
-        store.notice = "Your bot was created."
-    }
-
-    private func sheetDidDismiss() {
-        guard let opening = createdBotOpening else { return }
-        createdBotOpening = nil
-        guard mayOpenCreatedBot(opening) else { return }
-        presentation.didChooseConversation()
-        Task { @MainActor in
-            guard mayOpenCreatedBot(opening) else { return }
-            await store.openBot(opening)
-        }
-    }
-
-    private func mayOpenCreatedBot(_ opening: AppStore.BotOpening) -> Bool {
-        sheet == nil && store.canOpenBot(opening)
-    }
-
     var body: some View {
         Group {
             if store.configuration == nil {
@@ -80,31 +54,21 @@ struct RootView: View {
                     OnboardingView(store: store)
                 }
             } else {
-                if store.isT3Workspace {
-                    T3Workspace(store: store, presentation: presentation,
-                                rootCovered: sheet != nil || store.showsConnection,
-                                onSettings: { presentSheet(.settings) })
-                        .id(ObjectIdentifier(store.chats))
-                } else {
-                    WorkspaceTabs(store: store, presentation: presentation,
-                                  rootCovered: sheet != nil || createdBotOpening != nil || store.showsConnection,
-                                  onSettings: { presentSheet(.settings) },
-                                  onNewBot: { presentSheet(.newBot) })
-                }
+                T3Workspace(store: store, presentation: presentation,
+                            rootCovered: sheet != nil || store.showsConnection,
+                            onSettings: { presentSheet(.settings) })
+                    .id(ObjectIdentifier(store.chats))
             }
         }
-        // Captures only what it settles: holding `self` would keep this receipt alive through its own state.
         .onAppear {
-            notificationPresentation = store.bindNotificationPresentation {
-                [presentation, sheet = $sheet, createdBotOpening = $createdBotOpening] in
-                createdBotOpening.wrappedValue = nil
+            notificationPresentation = store.bindNotificationPresentation { [presentation, sheet = $sheet] in
                 sheet.wrappedValue = nil
                 presentation.didChooseConversation()
             }
         }
         .tint(BottoTheme.action)
         .background(BottoTheme.paper.ignoresSafeArea())
-        .sheet(isPresented: showsSheet, onDismiss: sheetDidDismiss) {
+        .sheet(isPresented: showsSheet) {
             Group {
                 switch sheet {
                 case .connection:
@@ -116,8 +80,6 @@ struct RootView: View {
                         presentSheet(.connection)
                         store.showsConnection = true
                     }, onLeaveDemo: onExitDemoPreview)
-                case .newBot:
-                    NewBotView(store: store, onCreated: createdBot)
                 case nil:
                     EmptyView()
                 }
@@ -128,13 +90,12 @@ struct RootView: View {
         .preferredColorScheme(preferredAppearance)
         .onChange(of: store.showsConnection, initial: true) { _, shown in
             if shown {
-                createdBotOpening = nil
                 if sheet != .connection { presentSheet(.connection, deliberate: false) }
             }
             else if sheet == .connection { sheet = nil }
         }
         .onChange(of: store.pendingConnectionInput, initial: true) { _, value in
-            if value != nil { createdBotOpening = nil; store.showsConnection = true }
+            if value != nil { store.showsConnection = true }
         }
         .onChange(of: store.artifactGeneration) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: store.selectedBotID) { _, _ in presentation.reconcile(store: store) }

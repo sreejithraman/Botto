@@ -78,7 +78,7 @@ struct DemoBanner: View {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
                     Text("Demo workspace").fontWeight(.semibold)
-                    Text("Sample bots, safely here.").foregroundStyle(.secondary)
+                    Text("Sample spaces on this device.").foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -87,7 +87,7 @@ struct DemoBanner: View {
         .padding(.horizontal, 20).padding(.vertical, 10)
         .background(BottoTheme.surface)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Demo workspace. Sample bots only; no real actions are performed.")
+        .accessibilityLabel("Demo workspace. Sample spaces only. No actions run on a Mac.")
     }
 }
 

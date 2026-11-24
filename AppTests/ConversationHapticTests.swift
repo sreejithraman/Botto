@@ -90,7 +90,7 @@ import BottoCore
     @Test func uncertainSendWarnsWithoutClaimingAcceptanceOrDefiniteFailure() async throws {
         let f = try await fixture(), screen = try f.screen()
         f.workspace.editDraft("Keep until reconciled", owner: screen.owner)
-        f.service.sendError = HermesServiceError.uncertain
+        f.service.sendError = ConversationServiceError.uncertain
         await f.workspace.send(try #require(f.workspace.captureSend(screen.owner)))
         #expect(f.feedback.events.last?.event == .warning)
         #expect(f.workspace.draft(try f.screen().owner) == "Keep until reconciled")
@@ -235,7 +235,7 @@ import BottoCore
         haptics.streamingEnabled = streaming
         f.workspace.onHapticFeedback = { haptics.play($0.event) }
         f.workspace.editDraft("Uncertain", owner: screen.owner)
-        f.service.sendError = HermesServiceError.uncertain
+        f.service.sendError = ConversationServiceError.uncertain
         await f.workspace.send(try #require(f.workspace.captureSend(screen.owner)))
         try f.publish(phase: .replying, signal: .init(kind: .replyText))
         #expect(played == [.notification(.warning)])

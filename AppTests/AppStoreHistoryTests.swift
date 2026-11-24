@@ -51,7 +51,7 @@ import BottoCore
         await store.setActive(false)
         #expect(store.notice != nil)
         try FileManager.default.removeItem(at: cache)
-        service.connectError = HermesServiceError.disconnected
+        service.connectError = ConversationServiceError.disconnected
 
         await store.setActive(true)
 

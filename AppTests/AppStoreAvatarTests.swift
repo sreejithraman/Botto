@@ -68,8 +68,8 @@ import BottoCore
         #expect(store.avatar(for: store.bots[0]) == nil)
     }
 
-    @Test(arguments: [false, true])
-    func completedSaveRefreshesAnImageReadBetweenMetadataAndUpload(profileEditor: Bool) async throws {
+    @Test
+    func completedSaveRefreshesAnImageReadBetweenMetadataAndUpload() async throws {
         let service = AvatarService(); service.holdImages = false
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 512, height: 512))
         let image = renderer.image { context in
@@ -85,8 +85,7 @@ import BottoCore
         service.holdSave = true
         let save = Task {
             let choice = BotAvatarChoice.geometry(BotAvatarCatalog.geometry(for: .triangle))
-            if profileEditor { try await store.saveProfile(.init(), avatar: choice, to: destination) }
-            else { try await store.saveAvatar(choice, to: destination) }
+            try await store.saveAvatar(choice, to: destination)
         }
         try await avatarEventually { service.pendingSave != nil }
         service.onEvent?(.botsChanged)
@@ -144,7 +143,7 @@ import BottoCore
 
             let barrier = StoreTestBarrier()
             service.connectBarrier = barrier
-            service.connectError = fails ? HermesServiceError.disconnected : nil
+            service.connectError = fails ? ConversationServiceError.disconnected : nil
             let foreground = Task { await store.setActive(true) }
             await barrier.waitUntilEntered()
             let attempts = service.connectCount
@@ -178,7 +177,7 @@ import BottoCore
         try history.save(for: connection.id)
         let service = StoreTestService()
         service.profiles = [bot]
-        if fails { service.connectError = HermesServiceError.disconnected }
+        if fails { service.connectError = ConversationServiceError.disconnected }
         let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: connection).persistence)
 
         #expect(store.link == .connecting)
@@ -201,9 +200,9 @@ import BottoCore
     }
 
     @Test func chatSenderAvatarUsesAnExactLocalProfileBeforeDisplayName() throws {
-        let message = ChatMessage(id: "sender", role: .user, text: "Message from 🤖 Gustavo (@hermes): Hello", displayKind: "internal_notification")
+        let message = ChatMessage(id: "sender", role: .user, text: "Message from 🤖 Gustavo (@gustavo): Hello", displayKind: "internal_notification")
         let sender = try #require(message.botSender)
-        let exact = BotProfile(id: "hermes", name: "Renamed Gustavo", appearance: .init(shape: .sun, color: "#8b5cf6"))
+        let exact = BotProfile(id: "gustavo", name: "Renamed Gustavo", appearance: .init(shape: .sun, color: "#8b5cf6"))
         let sameName = BotProfile(id: "other", name: "Gustavo")
         #expect(ChatSenderAvatar.profile(for: sender, among: [sameName, exact]) == exact)
         #expect(ChatSenderAvatar.profile(for: sender, among: [sameName]) == sameName)
@@ -211,16 +210,16 @@ import BottoCore
 
     @Test func chatSenderAvatarDoesNotBorrowAmbiguousOrRemoteIdentity() throws {
         let local = try #require(ChatMessage(id: "local", role: .user,
-            text: "Message from 🤖 Gustavo (@hermes): Hello", displayKind: "internal_notification").botSender)
+            text: "Message from 🤖 Gustavo (@gustavo): Hello", displayKind: "internal_notification").botSender)
         let one = BotProfile(id: "one", name: "Gustavo"), two = BotProfile(id: "two", name: "Gustavo")
         #expect(ChatSenderAvatar.profile(for: local, among: [one, two]) == nil)
-        #expect(ChatSenderAvatar.profile(for: local, among: [.init(id: "hermes", name: "One"), .init(id: "hermes", name: "Two")]) == nil)
+        #expect(ChatSenderAvatar.profile(for: local, among: [.init(id: "gustavo", name: "One"), .init(id: "gustavo", name: "Two")]) == nil)
         let remote = try #require(ChatMessage(id: "remote", role: .user,
-            text: "Message from 🤖 Gustavo (@home/hermes): Hello", displayKind: "internal_notification").botSender)
-        #expect(ChatSenderAvatar.profile(for: remote, among: [one, .init(id: "home/hermes", name: "Gustavo")]) == nil)
+            text: "Message from 🤖 Gustavo (@home/gustavo): Hello", displayKind: "internal_notification").botSender)
+        #expect(ChatSenderAvatar.profile(for: remote, among: [one, .init(id: "home/gustavo", name: "Gustavo")]) == nil)
         let qualified = try #require(ChatMessage(id: "qualified", role: .user,
-            text: "Message from 🤖 Gustavo (@hermes@home): Hello", displayKind: "internal_notification").botSender)
-        #expect(ChatSenderAvatar.profile(for: qualified, among: [one, .init(id: "hermes", name: "Gustavo")]) == nil)
+            text: "Message from 🤖 Gustavo (@gustavo@home): Hello", displayKind: "internal_notification").botSender)
+        #expect(ChatSenderAvatar.profile(for: qualified, among: [one, .init(id: "gustavo", name: "Gustavo")]) == nil)
         #expect(ChatSenderAvatar.profile(for: local, among: [.init(id: "unknown", name: "Different")]) == nil)
     }
 
@@ -257,55 +256,6 @@ import BottoCore
         }
     }
 
-    @Test func profileSavePreservesAvatarAndReportsPartialCombinedSaveWithoutReplay() async throws {
-        let service = AvatarService(); service.holdImages = false
-        let store = AppStore(service: service, persistence: AvatarStorage().persistence)
-        let connection = ConnectionConfiguration(serverURL: URL(string: "https://profile-edit.example")!)
-        defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
-        #expect(await store.connect(connection))
-        let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        try await store.saveProfile(.init(name: "New visible name", description: "A useful introduction"), avatar: nil, to: destination)
-        #expect(service.profileSaves == 1 && service.saves == 0)
-        #expect(store.bots[0].id == destination.profile.id && store.bots[0].hasAvatar == true)
-        #expect(store.bots[0].name == "New visible name" && store.bots[0].description == "A useful introduction")
-        let current = try #require(store.avatarDestination(for: store.bots[0]))
-        service.saveError = .uncertainAvatar
-        await #expect(throws: HermesServiceError.partialProfile) {
-            try await store.saveProfile(.init(name: "Saved before the avatar failed"), avatar: .automatic, to: current)
-        }
-        #expect(service.profileSaves == 2 && service.saves == 1)
-        service.saveError = nil
-        let reloaded = try await store.reloadAvatar(current)
-        #expect(reloaded.profile.name == "Saved before the avatar failed")
-        #expect(service.profileSaves == 2 && service.saves == 1)
-    }
-
-    @Test func rendererFailureBeforeAvatarWriteAllowsRetryButSavedMetadataRequiresReload() async throws {
-        let service = AvatarService(); service.holdImages = false
-        let store = AppStore(service: service, persistence: AvatarStorage().persistence)
-        let connection = ConnectionConfiguration(serverURL: URL(string: "https://renderer-save.example")!)
-        defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
-        #expect(await store.connect(connection))
-        let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        let choice = BotAvatarChoice.geometry(BotAvatarCatalog.geometry(for: .circle))
-        service.rendererError = .invalidFrame
-        await #expect(throws: BotAvatarEngineError.invalidFrame) {
-            try await store.saveProfile(.init(), avatar: choice, to: destination)
-        }
-        #expect(service.profileSaves == 0 && service.mutations == 0)
-        #expect(store.bots[0] == destination.profile)
-        service.rendererError = nil
-        try await store.saveProfile(.init(), avatar: choice, to: destination)
-        #expect(service.mutations == 1)
-        #expect(store.bots[0].appearance?.geometry == BotAvatarCatalog.geometry(for: .circle))
-        let current = try #require(store.avatarDestination(for: store.bots[0]))
-        service.rendererError = .unavailable
-        await #expect(throws: HermesServiceError.partialProfile) {
-            try await store.saveProfile(.init(name: "Saved metadata"), avatar: choice, to: current)
-        }
-        #expect(service.profileSaves == 1 && service.mutations == 1)
-    }
-
     @Test func cachedAvatarCanOpenOfflineAndSaveOnlyAfterDeliberateOnlineAttempt() async throws {
         let service = AvatarService(); service.holdImages = false
         let storage = AvatarStorage()
@@ -317,7 +267,7 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(!store.isConnected)
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        await #expect(throws: HermesServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 0)
         #expect(await store.connect(connection))
         #expect(service.saves == 0)
@@ -379,7 +329,7 @@ import BottoCore
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         service.saveError = .uncertainAvatar
-        await #expect(throws: HermesServiceError.uncertainAvatar) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.uncertainAvatar) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1)
         service.saveError = nil
         #expect(await store.connect(connection))
@@ -401,7 +351,7 @@ import BottoCore
         else { service.profiles[0].hasAvatar = false }
         let fresh = service.profiles
         await store.refresh()
-        await #expect(throws: HermesServiceError.avatarConflict) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.avatarConflict) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1 && service.mutations == 0)
         #expect(service.profiles == fresh)
         let reloaded = try await store.reloadAvatar(destination)
@@ -418,7 +368,7 @@ import BottoCore
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         let visible = store.bots
         service.failRoster = true
-        await #expect(throws: HermesServiceError.avatarRefresh) {
+        await #expect(throws: ConversationServiceError.avatarRefresh) {
             try await store.saveAvatar(.face(.init(shape: .drop, color: "#22c55e")), to: destination)
         }
         #expect(service.saves == 1 && service.mutations == 1)
@@ -442,7 +392,7 @@ import BottoCore
         service.holdRoster = true
         let save = Task { try await store.saveAvatar(.face(.init(shape: .drop, color: "#22c55e")), to: destination) }
         try await avatarEventually { !service.pendingRosters.isEmpty }
-        await #expect(throws: HermesServiceError.avatarConflict) {
+        await #expect(throws: ConversationServiceError.avatarConflict) {
             try await store.saveAvatar(.automatic, to: destination)
         }
         #expect(service.saves == 1 && service.mutations == 1)
@@ -461,7 +411,7 @@ import BottoCore
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         let original = service.profiles
         service.targetReadError = .timeout
-        await #expect(throws: HermesServiceError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1 && service.mutations == 0)
         #expect(service.profiles == original)
         service.targetReadError = nil
@@ -488,7 +438,7 @@ import BottoCore
         service.holdTargetRead = false
         if reconnect { #expect(await store.connect(connection)) }
         service.pendingTargetRead?.resume(); service.pendingTargetRead = nil
-        await #expect(throws: HermesServiceError.disconnected) { try await save.value }
+        await #expect(throws: ConversationServiceError.disconnected) { try await save.value }
         #expect(service.saves == 1 && service.mutations == 0)
         #expect(service.profiles == original)
         #expect(destination.isCurrent(in: store))
@@ -521,13 +471,13 @@ import BottoCore
             #expect(await store.connect(connection))
         }
         #expect(!destination.isCurrent(in: store))
-        await #expect(throws: HermesServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
-        await #expect(throws: HermesServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
         #expect(service.saves == 0)
         #expect(await store.connect(original))
         #expect(!destination.isCurrent(in: store))
-        await #expect(throws: HermesServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
-        await #expect(throws: HermesServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
         #expect(service.saves == 0)
         let reopened = try #require(store.avatarDestination(for: store.bots[0]))
         try await store.saveAvatar(.automatic, to: reopened)
@@ -556,8 +506,8 @@ import BottoCore
         #expect(!destination.isCurrent(in: store))
         service.onEvent?(.configuration(original))
         #expect(!destination.isCurrent(in: store))
-        await #expect(throws: HermesServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
-        await #expect(throws: HermesServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { try await store.saveAvatar(.automatic, to: destination) }
+        await #expect(throws: ConversationServiceError.disconnected) { _ = try await store.reloadAvatar(destination) }
         #expect(service.saves == 0)
         let reopened = try #require(store.avatarDestination(for: store.bots[0]))
         try await store.saveAvatar(.automatic, to: reopened)
@@ -595,7 +545,7 @@ import BottoCore
         #expect(store.avatar(for: store.bots[0]) == nil)
         #expect(service.saves == 1 && store.notice == nil)
         await store.setActive(false)
-        await #expect(throws: HermesServiceError.disconnected) {
+        await #expect(throws: ConversationServiceError.disconnected) {
             try await store.saveAvatar(.automatic, to: destination)
         }
         #expect(service.saves == 1)
@@ -631,12 +581,12 @@ import BottoCore
         }
         let visible = store.bots
         service.pendingSave?.resume(); service.pendingSave = nil
-        await #expect(throws: HermesServiceError.disconnected) { try await save.value }
+        await #expect(throws: ConversationServiceError.disconnected) { try await save.value }
         #expect(store.bots == visible)
         #expect(service.saves == 1 && store.notice == nil)
     }
 
-    @Test func slowAvatarDoesNotBlockRosterOrCreationAndOldHostCannotPublish() async throws {
+    @Test func slowAvatarDoesNotBlockRosterAndOldHostCannotPublish() async throws {
         let service = AvatarService()
         let storage = AvatarStorage()
         let store = AppStore(service: service, persistence: storage.persistence)
@@ -647,9 +597,6 @@ import BottoCore
         #expect(store.bots.map(\.id) == ["shared"])
         try await avatarEventually { service.pending.count == 1 }
         #expect(!store.isRefreshing)
-        let created = await store.create(.init(name: "New", avatar: .face(.init(shape: .drop, color: "#22c55e"))))
-        #expect(created?.bot.id == "new")
-        #expect(store.bots.contains { $0.id == "new" })
         service.profiles = [BotProfile(id: "shared", name: "Other host", hasAvatar: false)]
         #expect(await store.connect(second))
         service.releaseImages()
@@ -746,7 +693,7 @@ import BottoCore
     #endif
 
     @Test(arguments: ["image/png", "image/jpeg", "image/webp"])
-    func hermesPetAndImageAssetsKeepAspectAndTransparency(mime: String) async throws {
+    func sharedPetAndImageAssetsKeepAspectAndTransparency(mime: String) async throws {
         let pet = mime != "image/jpeg"
         let size = pet ? CGSize(width: 96, height: 104) : CGSize(width: 256, height: 256)
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = !pet
@@ -930,13 +877,13 @@ import BottoCore
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         if acknowledged {
             service.failRosterAfterSave = true
-            await #expect(throws: HermesServiceError.avatarRefresh) { try await store.saveAvatar(.automatic, to: destination) }
+            await #expect(throws: ConversationServiceError.avatarRefresh) { try await store.saveAvatar(.automatic, to: destination) }
         } else {
             service.saveError = .avatarConflict
-            await #expect(throws: HermesServiceError.avatarConflict) { try await store.saveAvatar(.automatic, to: destination) }
+            await #expect(throws: ConversationServiceError.avatarConflict) { try await store.saveAvatar(.automatic, to: destination) }
             service.failRoster = true
-            await #expect(throws: HermesServiceError.avatarReload) { _ = try await store.reloadAvatar(destination) }
-            #expect(!HermesServiceError.avatarReload.localizedDescription.contains("was saved"))
+            await #expect(throws: ConversationServiceError.avatarReload) { _ = try await store.reloadAvatar(destination) }
+            #expect(!ConversationServiceError.avatarReload.localizedDescription.contains("was saved"))
         }
         #expect(service.saves == 1)
     }
@@ -993,8 +940,8 @@ import BottoCore
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var profiles = [BotProfile(id: "shared", name: "Shared", appearance: BotAppearance(imageKind: "photo"), hasAvatar: true, lookRevision: 1)]
@@ -1002,11 +949,11 @@ import BottoCore
     var holdRoster = false
     var failRoster = false
     var failRosterAfterSave = false
-    var connectError: HermesServiceError?
+    var connectError: ConversationServiceError?
     var profileSaves = 0
-    var saveError: HermesServiceError?
+    var saveError: ConversationServiceError?
     var rendererError: BotAvatarEngineError?
-    var targetReadError: HermesServiceError?
+    var targetReadError: ConversationServiceError?
     var holdTargetRead = false
     var pendingTargetRead: CheckedContinuation<Void, Never>?
     private var connectionGeneration = 0
@@ -1034,14 +981,14 @@ import BottoCore
     func bots() async throws -> [BotProfile] {
         let result = profiles
         if holdRoster { await withCheckedContinuation { pendingRosters.append($0) } }
-        if failRoster { throw HermesServiceError.timeout }
+        if failRoster { throw ConversationServiceError.timeout }
         return result
     }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
         reads += 1; readsByID[bot.id, default: 0] += 1
         let size = imageSize, color = imageColor
         if holdImages || heldIDs.contains(bot.id) { await withCheckedContinuation { pending.append($0) } }
-        if failImages { throw HermesServiceError.rejected(-32601) }
+        if failImages { throw ConversationServiceError.rejected(-32601) }
         if let suppliedAsset { return suppliedAsset }
         let format = UIGraphicsImageRendererFormat(); format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format)
@@ -1061,14 +1008,14 @@ import BottoCore
         // Mirror the real service's fresh target read and prewrite connection fence.
         let owner = connectionGeneration
         if holdTargetRead { await withCheckedContinuation { pendingTargetRead = $0 } }
-        guard owner == connectionGeneration, !Task.isCancelled else { throw HermesServiceError.disconnected }
+        guard owner == connectionGeneration, !Task.isCancelled else { throw ConversationServiceError.disconnected }
         if let targetReadError { throw targetReadError }
         let matches = profiles.indices.filter { profiles[$0].id == bot.id }
-        guard matches.count == 1, let index = matches.first else { throw HermesServiceError.profileUnavailable }
+        guard matches.count == 1, let index = matches.first else { throw ConversationServiceError.profileUnavailable }
         let fresh = profiles[index]
         guard (fresh.hasAvatar == true) == (bot.hasAvatar == true),
               (fresh.appearance ?? BotAppearance()) == (bot.appearance ?? BotAppearance()) else {
-            throw HermesServiceError.avatarConflict
+            throw ConversationServiceError.avatarConflict
         }
         if let saveError { throw saveError }
         mutations += 1
@@ -1093,5 +1040,5 @@ import BottoCore
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
-    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw HermesServiceError.invalidAttachment }
+    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.invalidAttachment }
 }

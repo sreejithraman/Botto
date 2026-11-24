@@ -99,7 +99,7 @@ import BottoCore
         let (workspace, service, screen) = try await fixture()
         let intent = try #require(workspace.captureCreation(screen.owner))
         let createGate = WorkspaceGate(), readGate = WorkspaceGate()
-        service.createGate = createGate; service.createError = HermesServiceError.rejected(-32601); service.openGate = readGate
+        service.createGate = createGate; service.createError = ConversationServiceError.rejected(-32601); service.openGate = readGate
         workspace.setTranscriptVisible(true, owner: screen.owner)
         #expect(service.opens.count == 1)
         let creation = Task { await workspace.create(intent) }; await createGate.entered()

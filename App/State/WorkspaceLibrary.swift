@@ -1723,7 +1723,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
     private func waitForProjection(of item: LibraryArtifact) async throws {
         while true {
             try Task.checkCancellation()
-            guard isCurrent(item) else { throw HermesServiceError.staleConversation }
+            guard isCurrent(item) else { throw ConversationServiceError.staleConversation }
             if projectionIsCurrent(item.chat.id) { return }
             let id = UUID()
             try await withTaskCancellationHandler {
@@ -2006,7 +2006,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             }
             do {
                 while true {
-                    guard offsets.insert(offset).inserted else { throw HermesServiceError.incompatible }
+                    guard offsets.insert(offset).inserted else { throw ConversationServiceError.incompatible }
                     let page: ConversationHistoryPage
                     if offset == 0, let first = probed { page = first; probed = nil }
                     else { page = try await service.conversationHistory(summary.identity, offset: offset) }
@@ -2048,7 +2048,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     messages = buffered.messages
                     complete = complete && !buffered.trimmed
                     if let next = page.nextOffset {
-                        guard next > offset, page.messages.isEmpty || !batch.isEmpty else { throw HermesServiceError.incompatible }
+                        guard next > offset, page.messages.isEmpty || !batch.isEmpty else { throw ConversationServiceError.incompatible }
                         if pages == 1 {
                             guard await publish(false) else {
                                 if Task.isCancelled { _ = await publish(false, allowingCancellation: true); return }
@@ -2176,25 +2176,25 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                   projection: LibraryChat.ID? = nil,
                   download: @escaping @MainActor () async throws -> DownloadedArtifact) async throws -> DownloadedArtifact {
         try Task.checkCancellation()
-        guard Self.hasStableIdentity(key.messageID, source: key.identity) else { throw HermesServiceError.staleConversation }
-        guard !isRetired else { throw HermesServiceError.staleConversation }
+        guard Self.hasStableIdentity(key.messageID, source: key.identity) else { throw ConversationServiceError.staleConversation }
+        guard !isRetired else { throw ConversationServiceError.staleConversation }
         if !force {
             if let value = originals[key] { return value }
             if let value = try? await cache.original(for: key) {
                 try Task.checkCancellation()
-                guard !isRetired else { throw HermesServiceError.staleConversation }
+                guard !isRetired else { throw ConversationServiceError.staleConversation }
                 originals = [key: value.artifact]
                 return value.artifact
             }
         }
-        guard online else { throw HermesServiceError.disconnected }
+        guard online else { throw ConversationServiceError.disconnected }
         try validateNetwork()
         let owner = generation
         if force {
             while let previous = flights[key] {
                 _ = try? await previous.task.value
                 try Task.checkCancellation()
-                guard accepts(owner) else { throw HermesServiceError.staleConversation }
+                guard accepts(owner) else { throw ConversationServiceError.staleConversation }
                 try validateNetwork()
             }
         }
@@ -2235,7 +2235,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                         continue
                     }
                     guard let self, accepts(owner), let flight = flights[key], flight.id == flightID,
-                          flight.consumers.values.contains(where: { $0.isCurrent() }) else { throw HermesServiceError.staleConversation }
+                          flight.consumers.values.contains(where: { $0.isCurrent() }) else { throw ConversationServiceError.staleConversation }
                     do {
                         let retained = try await cache.retainOriginal(result, for: key, admission: admission)
                         if force, retained == nil { throw ArtifactCaptureFailure.notRetained }
@@ -2247,7 +2247,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
                     }
                     try await admission.waitUntilReady()
                     guard accepts(owner), let current = flights[key], current.id == flightID,
-                          current.consumers.values.contains(where: { $0.isCurrent() }) else { throw HermesServiceError.staleConversation }
+                          current.consumers.values.contains(where: { $0.isCurrent() }) else { throw ConversationServiceError.staleConversation }
                     originals = [key: result]
                     thumbnailAvailabilityRevision = UUID()
                     return result
@@ -2260,7 +2260,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             defer { releaseOriginalWaiter(waiter, key: key, flightID: flightID) }
             let result = try await task.value
             try Task.checkCancellation()
-            guard accepts(owner) else { throw HermesServiceError.staleConversation }
+            guard accepts(owner) else { throw ConversationServiceError.staleConversation }
             try validateWaiter()
             if force {
                 let id = Data(SHA256.hash(data: key.persistenceKey))
@@ -2348,7 +2348,7 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
 
     private func capturedArtifact(_ item: LibraryArtifact, force: Bool = false) async throws -> DownloadedArtifact {
         try Task.checkCancellation()
-        guard isCurrent(item) else { throw HermesServiceError.staleConversation }
+        guard isCurrent(item) else { throw ConversationServiceError.staleConversation }
         switch item.artifact.payload {
         case .inline(let block):
             let format = block.previewFormat
@@ -2357,15 +2357,15 @@ struct LibraryArtifact: Identifiable, Equatable, Sendable {
             return DownloadedArtifact(data: Data(block.source.utf8), filename: "\(item.artifact.title).\(suffix)", mimeType: mime)
         case .file(let attachment):
             guard let key = originalKey(for: item), isCurrent(item) else {
-                throw HermesServiceError.staleConversation
+                throw ConversationServiceError.staleConversation
             }
             let result = try await original(for: key, force: force, validateNetwork: { [weak self] in
-                guard self?.isCurrent(item) == true else { throw HermesServiceError.staleConversation }
+                guard self?.isCurrent(item) == true else { throw ConversationServiceError.staleConversation }
             }, projection: item.chat.id) { [service] in
                 try await service.downloadArtifact(attachment, in: item.chat.identity)
             }
             try await waitForProjection(of: item)
-            guard isCurrent(item) else { throw HermesServiceError.staleConversation }
+            guard isCurrent(item) else { throw ConversationServiceError.staleConversation }
             return result
         }
     }

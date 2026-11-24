@@ -935,7 +935,7 @@ import BottoCore
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         #expect(library.isCurrent(item))
         library.setOnline(false)
-        #expect(try await library.original(for: durableKey) { throw HermesServiceError.disconnected }.data == service.downloadedBytes)
+        #expect(try await library.original(for: durableKey) { throw ConversationServiceError.disconnected }.data == service.downloadedBytes)
         #expect(service.downloadCount == 1)
         library.retire(); await cache.close()
         let reopened = ArtifactCache(root: root)
@@ -1141,7 +1141,7 @@ import BottoCore
         #expect(library.artifacts.isEmpty)
         #expect(!TranscriptMessageIndex(identical).matches(message))
         #expect(await WorkspaceLibrary.originalKey(identity: source, attachment: attachment, messages: [message]) == nil)
-        await #expect(throws: (any Error).self) { _ = try await library.original(for: key) { throw HermesServiceError.disconnected } }
+        await #expect(throws: (any Error).self) { _ = try await library.original(for: key) { throw ConversationServiceError.disconnected } }
         #expect(try await reopenedSession.original(for: key)?.artifact.data == Data("old bytes".utf8))
         #expect(service.downloadCount == 0)
         library.retire(); await reopenedCache.close()
@@ -1640,12 +1640,12 @@ import BottoCore
         #expect(try await reload.value.data == Data("newer response".utf8))
         #expect(events == ["old read started", "old response received", "reload read started"])
         library.setOnline(false)
-        let retained = try await library.original(for: key) { throw HermesServiceError.disconnected }
+        let retained = try await library.original(for: key) { throw ConversationServiceError.disconnected }
         #expect(retained.data == Data("newer response".utf8))
         library.retire(); await cache.close()
         let reopenedCache = ArtifactCache(root: root)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedCache.session(scope: scope))
-        #expect(try await reopened.original(for: key) { throw HermesServiceError.disconnected }.data == Data("newer response".utf8))
+        #expect(try await reopened.original(for: key) { throw ConversationServiceError.disconnected }.data == Data("newer response".utf8))
         reopened.retire(); await reopenedCache.close()
     }
 
@@ -2324,7 +2324,7 @@ import BottoCore
 
     private struct OfflineRead {
         let capturedKey: ArtifactOriginalKey, currentKey: ArtifactOriginalKey
-        let viaItem: Result<Data, HermesServiceError>, viaKey: Result<Data, HermesServiceError>
+        let viaItem: Result<Data, ConversationServiceError>, viaKey: Result<Data, ConversationServiceError>
         let capturedBytes: Data?, downloads: Int
     }
 
@@ -2358,13 +2358,13 @@ import BottoCore
         library.setOnline(false)
         let item = try #require(library.artifacts.first), currentAttachment = try #require(item.artifact.attachment)
         let currentKey = try #require(await WorkspaceLibrary.originalKey(identity: source, attachment: currentAttachment, messages: [current]))
-        func read(_ body: () async throws -> DownloadedArtifact) async -> Result<Data, HermesServiceError> {
+        func read(_ body: () async throws -> DownloadedArtifact) async -> Result<Data, ConversationServiceError> {
             do { return .success(try await body().data) }
-            catch let error as HermesServiceError { return .failure(error) }
+            catch let error as ConversationServiceError { return .failure(error) }
             catch { return .failure(.incompatible) }
         }
         let viaItem = await read { try await library.download(item) }
-        let viaKey = await read { try await library.original(for: currentKey) { throw HermesServiceError.rejected(500) } }
+        let viaKey = await read { try await library.original(for: currentKey) { throw ConversationServiceError.rejected(500) } }
         let capturedBytes = try await session.original(for: capturedKey)?.artifact.data
         let downloads = service.downloadCount
         library.retire(); await cache.close()
@@ -2505,7 +2505,7 @@ import BottoCore
 
         // Upgrading alone changes nothing for a row no read has revised, including offline.
         library.setOnline(false)
-        #expect(try await library.original(for: legacyKey) { throw HermesServiceError.disconnected }.data == service.downloadedBytes)
+        #expect(try await library.original(for: legacyKey) { throw ConversationServiceError.disconnected }.data == service.downloadedBytes)
         #expect(service.downloadCount == 1)
 
         // This legacy row holds no canonical bytes to prove it is the stored row, so it is a new producer.
@@ -2685,14 +2685,14 @@ import BottoCore
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { .init(version: "test") }
     func disconnect() {}
     func bots() async throws -> [BotProfile] { profiles }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw HermesServiceError.rejected(-32601) }
+    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw ConversationServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         .init(summaries: summaries, activity: [:], isComplete: true)
     }
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
         historyReads += 1
         if gatedOffset == offset { await gate?.wait() }
-        if failAtOffset == offset { throw HermesServiceError.disconnected }
+        if failAtOffset == offset { throw ConversationServiceError.disconnected }
         if let historyFailure { throw historyFailure }
         let page = pages[identity]?[offset] ?? .init(messages: [], nextOffset: nil, isComplete: true)
         let ids = Set(page.messages.map { Data($0.id.utf8) })
@@ -2705,18 +2705,18 @@ import BottoCore
     }
     func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
         downloadCount += 1
-        if downloadFails { throw HermesServiceError.disconnected }
+        if downloadFails { throw ConversationServiceError.disconnected }
         await downloadGate?.wait()
         return .init(data: downloadedBytes, filename: attachment.name,
             mimeType: attachment.path.hasSuffix(".png") ? "image/png" : "text/plain")
     }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
-    func openChat(_ target: SessionTarget) async throws -> OpenedConversation { throw HermesServiceError.rejected(-32601) }
-    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw HermesServiceError.rejected(-32601) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
+    func openChat(_ target: SessionTarget) async throws -> OpenedConversation { throw ConversationServiceError.rejected(-32601) }
+    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 }
 
 @MainActor private final class BudgetProjectionPause {

@@ -1,5 +1,6 @@
 import Foundation
 import BottoCore
+@testable import Botto
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
@@ -207,7 +208,7 @@ import BottoCore
     }
     private func applyReplacement(_ message: QueuedMessage, text: String, source: SessionIdentity, operation: UUID) throws {
         guard let index = snapshots[source.root]?.queuedMessages.firstIndex(where: { $0 == message && $0.canEdit }) else {
-            throw HermesServiceError.queuedMessageUnavailable
+            throw ConversationServiceError.queuedMessageUnavailable
         }
         snapshots[source.root]?.queuedMessages.remove(at: index)
         snapshots[source.root]?.queuedMessages.append(.init(id: operation.uuidString, text: text, canEdit: true,

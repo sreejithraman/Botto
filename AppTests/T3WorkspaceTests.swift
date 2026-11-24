@@ -5,7 +5,7 @@ import UIKit
 @testable import Botto
 @testable import BottoCore
 
-@MainActor @Suite(.timeLimit(.minutes(3))) struct T3WorkspaceTests {
+@MainActor @Suite(.serialized, .timeLimit(.minutes(3))) struct T3WorkspaceTests {
     @Test func mountsTheBotAndOpensTheExactStoredChannel() async throws {
         let service = T3WorkspaceService()
         let configuration = t3Configuration()
@@ -15,7 +15,6 @@ import UIKit
 
         await store.start()
 
-        #expect(store.isT3Workspace)
         #expect(store.serverName == "Studio")
         #expect(store.primaryT3Bot?.id == "bot-project")
         #expect(store.t3Channels.map(\.title) == ["#general", "Release"])
@@ -286,23 +285,28 @@ import UIKit
     }
 
     @Test func failedT3ReplacementKeepsTheSavedWorkspaceAndLiveService() async throws {
-        let original = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "original")
-        let candidate = t3Configuration()
+        let original = t3Configuration()
+        var candidate = t3Configuration()
+        candidate.t3?.environmentID = "different-studio"
+        let candidateID = candidate.id
         defer {
             LocalHistory.remove(for: original.id)
-            LocalHistory.remove(for: candidate.id)
+            LocalHistory.remove(for: candidateID)
         }
         let storage = MemoryConnectionStorage(saved: original)
-        let originalService = try WorkspaceTestService()
+        let originalService = T3WorkspaceService()
         let candidateService = T3WorkspaceService()
-        candidateService.connectError = T3ServiceError.differentEnvironment
+        candidateService.connectError = .differentEnvironment
         let store = AppStore(persistence: storage.persistence, makeService: { configuration in
-            if configuration?.t3 != nil { return candidateService }
-            return originalService
+            configuration?.id == candidateID ? candidateService : originalService
         })
         await store.start()
-        await store.testEdit("Keep this draft", for: "milo")
+        let release = try #require(store.t3Channels.first { $0.id == "release" })
+        try #require(await store.openT3Channel(release))
+        let profile = try ExactID("bot-project")
         let workspace = store.chats
+        let owner = try #require(workspace.screen(profile: profile)?.owner)
+        workspace.editDraft("Keep this draft", owner: owner)
 
         #expect(!(await store.connect(candidate)))
 
@@ -311,11 +315,9 @@ import UIKit
         #expect(storage.saved == original)
         #expect(store.chats === workspace)
         #expect(store.isConnected)
-        #expect(!store.isT3Workspace)
-        #expect(store.draft(for: "milo") == "Keep this draft")
-        await store.open(try #require(store.bot(withID: "milo")))
-        #expect(originalService.opens.last?.profile.text == "milo")
-        #expect(store.chats.screen(profile: originalService.profile)?.canAct == true)
+        #expect(workspace.draft(owner) == "Keep this draft")
+        #expect(await store.openT3Channel(release))
+        #expect(originalService.openedStoredThreads.last == "release")
     }
 
     @Test func foregroundReconnectKeepsDraftAndReattachmentWarning() async throws {
@@ -417,8 +419,8 @@ import UIKit
 
     @Test func cacheScopesDistinguishBackendsEnvironmentsAndProjectsOnTheSameAddress() {
         let t3 = t3Configuration()
-        var hermes = t3
-        hermes.t3 = nil
+        var older = t3
+        older.t3 = nil
         var otherEnvironment = t3
         otherEnvironment.t3?.environmentID = "other-environment"
         var otherProject = t3
@@ -426,8 +428,8 @@ import UIKit
         var rotatedToken = t3
         rotatedToken.t3?.accessToken = "replacement"
 
-        #expect(Set([hermes, t3, otherEnvironment, otherProject].map(AppStore.artifactScope)).count == 4)
-        #expect(Set([hermes, t3, otherEnvironment, otherProject].map(AppStore.richReplyAccount)).count == 4)
+        #expect(Set([older, t3, otherEnvironment, otherProject].map(AppStore.artifactScope)).count == 4)
+        #expect(Set([older, t3, otherEnvironment, otherProject].map(AppStore.richReplyAccount)).count == 4)
         #expect(AppStore.artifactScope(rotatedToken) == AppStore.artifactScope(t3))
         #expect(AppStore.richReplyAccount(rotatedToken) == AppStore.richReplyAccount(t3))
     }
@@ -435,12 +437,14 @@ import UIKit
     @Test func loadsTheBackendForSavedSetupWithoutAnInjectedService() {
         let t3 = t3Configuration()
         let store = AppStore(persistence: MemoryConnectionStorage(saved: t3).persistence)
-        #expect(store.t3BrainService is T3BotService)
-        var hermes = t3
-        hermes.t3 = nil
-        let prior = AppStore(persistence: MemoryConnectionStorage(saved: hermes).persistence)
-        #expect(!prior.isT3Workspace)
-        #expect(prior.t3BrainService == nil)
+        #expect(store.configuration == t3)
+        var older = t3
+        older.t3 = nil
+        let storage = MemoryConnectionStorage(saved: older)
+        let prior = AppStore(persistence: storage.persistence)
+        #expect(prior.configuration == nil)
+        #expect(prior.link == .unconfigured)
+        #expect(storage.saved == older)
     }
 
     @Test func passesOutputsThroughTheMountedService() async throws {
@@ -506,12 +510,11 @@ import UIKit
         #expect(store.selectedT3ChannelID == "release")
     }
 
-    @Test func t3PassthroughsRefuseHermesAndDisconnectedWorkspaces() async throws {
-        let hermes = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "hermes")
-        defer { LocalHistory.remove(for: hermes.id) }
-        let store = AppStore(service: try WorkspaceTestService(), persistence: MemoryConnectionStorage(saved: hermes).persistence)
+    @Test func t3PassthroughsRequireAConnectedT3Service() async throws {
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "older")
+        defer { LocalHistory.remove(for: older.id) }
+        let store = AppStore(service: try WorkspaceTestService(), persistence: MemoryConnectionStorage(saved: older).persistence)
         await store.start()
-        #expect(!store.isT3Workspace)
         await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Outputs() }
         await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Routines() }
         await #expect(throws: T3ServiceError.unsupported) {
@@ -584,6 +587,26 @@ import UIKit
         let (longBar, longTitle) = try await header(in: window)
         #expect(store.selectedT3ChannelTitle?.hasPrefix("A very long") == true)
         try checkHeader(longTitle, in: longBar)
+    }
+
+    @Test func opensTheInitialSpaceAfterPairingDismisses() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        store.showsConnection = true
+
+        try await withHosted(RootView(store: store)) { window in
+            _ = try await labels(in: window) { $0.contains("Scan the code") }
+            #expect(service.openedStoredThreads.isEmpty)
+
+            store.showsConnection = false
+            _ = try await header(in: window)
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(service.openedStoredThreads == ["release"])
+        }
     }
 
     private func header(in window: UIWindow) async throws -> (UINavigationBar, UIView) {
@@ -756,7 +779,7 @@ import UIKit
         #expect(await store.openT3Channel(release))
         gate.release()
 
-        await #expect(throws: HermesServiceError.staleConversation) { try await starting.value }
+        await #expect(throws: ConversationServiceError.staleConversation) { try await starting.value }
         #expect(store.selectedT3ChannelID == release.id)
         #expect(service.createdThreads.count == 1)
         #expect(service.sent.isEmpty)
@@ -895,23 +918,7 @@ import UIKit
 
     // MARK: First run
 
-    @Test func everyNewConnectionStartsWithPairingAMac() throws {
-        let t3 = t3Configuration()
-        var hermes = t3
-        hermes.t3 = nil
-        // A fresh install, a paired workspace and the demo all pair with a Mac.
-        #expect(ConnectionBackend.initial(input: "", saved: nil, isDemo: false) == .t3)
-        #expect(ConnectionBackend.initial(input: "", saved: t3, isDemo: false) == .t3)
-        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: true) == .t3)
-        #expect(ConnectionBackend.initial(input: "http://192.168.1.10:3774/pair#token=A", saved: hermes, isDemo: false) == .t3)
-        // Someone already on Hermes, or opening a Hermes link, still gets that page.
-        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: false) == .hermes)
-        #expect(ConnectionBackend.initial(input: "botto://hermes/connect?url=https%3A%2F%2Fhost.example", saved: nil, isDemo: false) == .hermes)
-        #expect(ConnectionBackend.named(by: "https://host.example") == nil)
-        #expect(ConnectionBackend.named(by: "hermes://connect?url=https%3A%2F%2Fhost.example") == .hermes)
-    }
-
-    @Test func freshInstallOpensOnBottoAndPairsWithoutNamingHermes() async throws {
+    @Test func freshInstallOpensOnBottoAndPairsWithAMac() async throws {
         try NativeAccessibilityRuntime.enable()
         let store = AppStore(persistence: MemoryConnectionStorage().persistence)
         await store.start()
@@ -919,12 +926,12 @@ import UIKit
         try await withHosted(RootView(store: store)) { window in
             let welcome = try await labels(in: window) { $0.contains("Pair with your Mac") }
             #expect(welcome.contains("Explore the demo"))
-            #expect(!welcome.contains { $0.localizedCaseInsensitiveContains("Hermes") || $0.contains("T3") })
+            #expect(!welcome.contains { $0.contains("T3 Code") })
         }
         try await withHosted(ConnectionView(store: store)) { window in
             let pairing = try await labels(in: window) { $0.contains("Scan the code") }
             #expect(pairing.contains("Find Botto on your Mac"))
-            #expect(!pairing.contains { $0.contains("T3 Code") || $0.localizedCaseInsensitiveContains("connect your hermes") })
+            #expect(!pairing.contains { $0.contains("T3 Code") || $0.contains("Use a server") })
         }
     }
 
@@ -967,7 +974,7 @@ import UIKit
 
             // A failed rename keeps the page, so it can simply be tried again. The choices are already safe.
             service.failsRename = true
-            await #expect(throws: HermesServiceError.uncertain) {
+            await #expect(throws: ConversationServiceError.uncertain) {
                 try await store.setUpT3Bot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
             }
             #expect(service.manifest.displayName == "Miso")
@@ -1023,7 +1030,6 @@ import UIKit
         defer { LocalHistory.remove(for: configuration.id) }
         let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
-        #expect(store.isT3Workspace)
         #expect(!store.needsT3BotSetup)
     }
 
@@ -1241,7 +1247,7 @@ import UIKit
         return try await bots()[0]
     }
     func renameChannel(threadID: String, title: String) async throws {
-        if failsRename { throw HermesServiceError.uncertain }
+        if failsRename { throw ConversationServiceError.uncertain }
         renames[threadID] = title
         currentT3Channels = currentT3Channels.map { space in
             guard space.id == threadID else { return space }

@@ -288,15 +288,14 @@ import BottoCore
         let state: ExposureState
         var body: some View {
             GeometryReader { geometry in
-                RetainedWorkspacePane(width: state.width, height: geometry.size.height,
-                    initialWidth: WorkspaceLayout.minimumChatWidth,
-                    isSemanticallyVisible: (state.presentation.artifact == nil || state.allocation.chatVisible) && !state.presentation.isBrowsingBots) {
-                    ChatView(store: store, bot: bot, presentation: state.presentation,
+                ChatView(store: store, bot: bot, presentation: state.presentation,
                         isExposed: state.readExposed, isEditingExposed: state.editingExposed,
                         importPaneVisible: state.presentation.artifact == nil || state.allocation.chatVisible, rootCovered: state.rootCovered,
                         onLocalModalPresentation: { _ in }, canPresentToolbar: { state.toolbarAvailable },
                         canContinueEditing: { state.editingExposed })
-                }
+                .frame(width: max(state.width, WorkspaceLayout.minimumChatWidth), height: geometry.size.height)
+                .opacity(state.readExposed ? 1 : 0)
+                .accessibilityHidden(!state.readExposed)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.observedWidth = $0 }
             }
             .environment(\.scenePhase, state.active ? .active : .inactive)

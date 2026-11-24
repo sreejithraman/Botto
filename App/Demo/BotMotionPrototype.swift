@@ -28,7 +28,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Disposable comparison surface. Its fixtures and demo store never connect to Hermes.
+/// Disposable comparison surface. It uses a local demo workspace.
 struct BotMotionPrototype: View {
     var onClose: (() -> Void)? = nil
     @State private var experiment = BotMotionExperiment()
@@ -132,13 +132,6 @@ struct BotMotionPrototype: View {
                                 BotAvatar(profile: bot, size: avatarSize).frame(height: 140)
                                 Text(bot.name).font(.subheadline.weight(.medium))
                             }.frame(maxWidth: .infinity)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("In your inbox · 56 pt").font(.caption).foregroundStyle(.secondary)
-                        ForEach(bots) { bot in
-                            BotRow(bot: bot, image: nil, unread: false, aggregate: nil)
-                            if bot.id != bots.last?.id { Divider().padding(.leading, 74) }
                         }
                     }
                     VStack(alignment: .leading, spacing: 12) {

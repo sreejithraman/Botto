@@ -145,7 +145,7 @@ import BottoCore
         let service = try WorkspaceTestService()
         let gate = WorkspaceGate()
         service.openGate = gate
-        service.openError = HermesServiceError.timeout
+        service.openError = ConversationServiceError.timeout
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true)
@@ -289,8 +289,8 @@ import BottoCore
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.uploads.isEmpty)
     }
 
-    @Test(arguments: [HermesServiceError.invalidResponse, .responseTooLong])
-    func definiteValidationRejectionRenewsOnlyAttemptAndKeepsRowAuthority(rejection: HermesServiceError) async throws {
+    @Test(arguments: [ConversationServiceError.invalidResponse, .responseTooLong])
+    func definiteValidationRejectionRenewsOnlyAttemptAndKeepsRowAuthority(rejection: ConversationServiceError) async throws {
         let (workspace, service, row) = try await fixture()
         let owner = try #require(workspace.screen(profile: service.profile)?.owner)
         service.responseError = rejection
@@ -310,13 +310,13 @@ import BottoCore
 
     @Test func uncertainOutcomeDoesNotRenewOrResubmitSameRow() async throws {
         let (workspace, service, row) = try await fixture()
-        service.responseError = HermesServiceError.uncertain
+        service.responseError = ConversationServiceError.uncertain
         await workspace.answer(row.intent, response: .text("answer"))
         let current = try #require(workspace.screen(profile: service.profile)?.requests.first)
         service.responseError = nil
         await workspace.answer(current.intent, response: .text("retry"))
         #expect(service.responseOperations.count == 1 && service.responses.isEmpty)
-        #expect(workspace.screen(profile: service.profile)?.error == HermesServiceError.uncertain.localizedDescription)
+        #expect(workspace.screen(profile: service.profile)?.error == ConversationServiceError.uncertain.localizedDescription)
     }
     @Test func offlineDraftingRetainsRequestRowsWithoutAuthorizingRetiredAnswers() async throws {
         let (workspace, service, original) = try await fixture()
@@ -454,7 +454,7 @@ import BottoCore
         workspace.editRequestDraft("Answer", row: original, owner: owner)
         workspace.retireConnection()
         workspace.setOnline(true)
-        service.openError = HermesServiceError.wrongConversation
+        service.openError = ConversationServiceError.wrongConversation
         await workspace.openBot(profile: service.profile)
         let failed = try #require(workspace.screen(profile: service.profile))
         let row = try #require(failed.requests.first)

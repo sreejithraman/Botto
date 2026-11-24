@@ -232,7 +232,7 @@ import BottoCore
             if failing { service.failingHistorySource = service.first }
             else {
                 service.historyPages[service.first] = [0: .init(messages: [current], nextOffset: 1, isComplete: false)]
-                service.historyFailures[service.first] = HermesServiceError.disconnected
+                service.historyFailures[service.first] = ConversationServiceError.disconnected
                 service.historyFailureOffsets[service.first] = 1
             }
             library.setOnline(true)
@@ -2158,7 +2158,7 @@ import BottoCore
         return SessionIdentity(profile: source.profile, root: source.root, stored: stored, aliases: [source.root, stored])
     }
 
-    /// Hermes moves a chat back to its previous tip when that chat's newest segment is deleted.
+    /// A segmented history can move a chat back to its previous tip when that chat's newest segment is deleted.
     @Test(arguments: [false, true])
     func aReturningTipStandsOnAFreshReadAtAnyLength(long: Bool) async throws {
         let service = LibraryTestService(), successor = try replacementTip(of: service.first)
@@ -2216,7 +2216,7 @@ import BottoCore
         library.retire()
     }
 
-    /// A Hermes snapshot restore can give a row number new text on a tip that never changed.
+    /// A snapshot restore can give a row number new text on a tip that never changed.
     @Test func explicitRefreshReplacesARowNumberThatARollbackReused() async throws {
         let service = LibraryTestService()
         service.messages[service.first] = [ChatMessage(id: "row-1250", role: .assistant, text: "Written before restore")]
@@ -2358,7 +2358,7 @@ import BottoCore
         }
         // This read names a tip the saved row doesn't, proves nothing, and its next read fails.
         service.replacementFirst = unreadMain; service.messages[unreadMain] = [fixture.peer]
-        service.historyFailures[unreadMain] = HermesServiceError.disconnected
+        service.historyFailures[unreadMain] = ConversationServiceError.disconnected
         library.accept(identity: unreadMain, snapshot: .init(id: unreadMain.root.text, storedID: unreadMain.stored.text,
             profileID: unreadMain.profile.text, messages: [fixture.peer]), title: "Main",
             evidence: .read(startedAt: .now, observedSource: nil))
@@ -3577,7 +3577,7 @@ import BottoCore
         try #require(store.library.artifacts.contains { $0.chat.identity == service.second })
         service.botsBarrier = gate
         service.rosterProfiles = response == "empty" ? [] : service.profiles
-        service.botsError = response == "failed" ? HermesServiceError.disconnected : nil
+        service.botsError = response == "failed" ? ConversationServiceError.disconnected : nil
         let connecting = Task { await store.connect(configuration) }
         defer { connecting.cancel() }
         try #require(await gate.entersInTime())
@@ -4378,7 +4378,7 @@ import BottoCore
         await network.waitUntilEntered()
         let historical = Task {
             let result = try await library.original(for: key, validateNetwork: {
-                guard try service.source(for: opened.access) == service.first else { throw HermesServiceError.staleConversation }
+                guard try service.source(for: opened.access) == service.first else { throw ConversationServiceError.staleConversation }
                 joined = true
             }) { try await service.downloadArtifact(attachment, in: service.first) }
             historicalFinished = true; return result
@@ -4735,7 +4735,7 @@ import BottoCore
         var joined = false
         let historical: Task<DownloadedArtifact, Error>? = peer ? Task {
             try await library.original(for: key, validateNetwork: {
-                guard store.isCurrentArtifactDestination(destination) else { throw HermesServiceError.staleConversation }
+                guard store.isCurrentArtifactDestination(destination) else { throw ConversationServiceError.staleConversation }
                 joined = true
             }) {
                 try await service.downloadArtifact(attachment, in: service.first)
@@ -4952,7 +4952,7 @@ import BottoCore
         var joined = false
         let peer = Task {
             try await library.original(for: key, validateNetwork: {
-                guard library.isCurrent(item) else { throw HermesServiceError.staleConversation }
+                guard library.isCurrent(item) else { throw ConversationServiceError.staleConversation }
                 joined = true
             }, download: { try await service.downloadArtifact(attachment, in: item.chat.identity) })
         }
@@ -5286,7 +5286,7 @@ import BottoCore
         let peer: Task<DownloadedArtifact, Error>? = validPeer ? Task {
             try await library.original(for: key, validateNetwork: { joined = true }, download: {
                 Issue.record("A valid peer must share the existing flight")
-                throw HermesServiceError.disconnected
+                throw ConversationServiceError.disconnected
             })
         } : nil
         if validPeer {
@@ -5415,9 +5415,9 @@ import BottoCore
         var joined = false
         let peer: Task<DownloadedArtifact, Error>? = validHistoricalPeer ? Task {
             try await store.library.original(for: key, validateNetwork: {
-                guard store.isCurrentArtifactDestination(destination) else { throw HermesServiceError.staleConversation }
+                guard store.isCurrentArtifactDestination(destination) else { throw ConversationServiceError.staleConversation }
                 joined = true
-            }, download: { throw HermesServiceError.rejected(-32601) })
+            }, download: { throw ConversationServiceError.rejected(-32601) })
         } : nil
         if validHistoricalPeer {
             await waitWhile { !joined }
@@ -5874,7 +5874,7 @@ import BottoCore
         let vault = MemoryConnectionStorage()
         var removalFails = true
         let persistence = ConnectionPersistence(load: { vault.saved }, save: { vault.saved = $0 }, remove: {
-            if removalFails { throw HermesServiceError.disconnected }
+            if removalFails { throw ConversationServiceError.disconnected }
             vault.saved = nil
         })
         let cache = ArtifactCache(root: root)
@@ -6780,11 +6780,11 @@ private actor NextLibraryProjectionPause {
         if let botsError { throw botsError }
         return rosterProfiles ?? profiles
     }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw HermesServiceError.rejected(-32601) }
+    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw ConversationServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCount += 1
         await (directoryBarriers[profile] ?? directoryBarrier)?.wait()
-        if failDirectory { throw HermesServiceError.disconnected }
+        if failDirectory { throw ConversationServiceError.disconnected }
         var summaries: [SessionSummary] = [
             .init(identity: replacementFirst ?? first, title: "Main", isCanonical: true, persistence: .durable),
             .init(identity: replacementSecond ?? second, title: summaryTitle, isCanonical: second.profile != first.profile, persistence: .durable)
@@ -6824,7 +6824,7 @@ private actor NextLibraryProjectionPause {
         }
         if let failure = historyFailures[identity], historyFailureOffsets[identity] == nil || historyFailureOffsets[identity] == offset { throw failure }
         if let page = historyPages[identity]?[offset] { return certifyingIdentity(page, identity: identity, offset: offset) }
-        if failHistory || identity == failingHistorySource { throw HermesServiceError.disconnected }
+        if failHistory || identity == failingHistorySource { throw ConversationServiceError.disconnected }
         if hiddenFirstPage, offset == 0 { return .init(messages: [], nextOffset: 100, isComplete: true, sourceIDs: [Data("hidden-head".utf8)]) }
         let rows = messages[identity] ?? []
         return certifyingIdentity(.init(messages: rows, nextOffset: nil, isComplete: true, sourceIDs: Set(rows.map { Data($0.id.utf8) })), identity: identity, offset: offset)
@@ -6864,8 +6864,8 @@ private actor NextLibraryProjectionPause {
         case .stored(let source): identity = source
         }
         if identity == gatedSource { await openingBarrier?.wait() }
-        guard selectionGeneration == owner else { throw HermesServiceError.staleConversation }
-        if identity == failingSource { throw HermesServiceError.missingChat }
+        guard selectionGeneration == owner else { throw ConversationServiceError.staleConversation }
+        if identity == failingSource { throw ConversationServiceError.missingChat }
         lastOpened = identity
         let access = try issuer.issue(identity)
         lastAccess = access
@@ -6896,14 +6896,14 @@ private actor NextLibraryProjectionPause {
         attached.map { onEvent?(.conversation(.init(identity: identity, snapshot: $0, access: lastAccess))) }
     }
     func source(for access: ConversationAccess) throws -> SessionIdentity { try issuer.resolve(access) }
-    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw HermesServiceError.rejected(-32601) }
-    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw HermesServiceError.rejected(-32601) }
+    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
+    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         let identity = try issuer.resolve(access)
         let result = try await downloadArtifact(attachment, in: identity)
-        guard try issuer.resolve(access) == identity else { throw HermesServiceError.staleConversation }
+        guard try issuer.resolve(access) == identity else { throw ConversationServiceError.staleConversation }
         return result
     }
 }

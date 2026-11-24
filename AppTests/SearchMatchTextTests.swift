@@ -29,7 +29,7 @@ import BottoCore
         let literal = "Keep **Café** literal and [notes](https://literal.example/visible-url)"
         let user = ChatMessage(id: "stored:fixture:user", role: .user, text: literal)
         let sender = ChatMessage(id: "stored:fixture:sender", role: .user,
-            text: "Message from 🤖 Gustavo (@hermes): " + literal,
+            text: "Message from 🤖 Gustavo (@gustavo): " + literal,
             displayKind: "internal_notification")
         #expect(sender.botSender != nil)
         let chat = try searchableChat([user, sender])
@@ -41,7 +41,7 @@ import BottoCore
             #expect(NativeSearchMatch.contains(query: query, in: user))
             #expect(NativeSearchMatch.contains(query: query, in: sender))
         }
-        #expect(LibrarySearchResults(query: "hermes", bots: [], chats: [chat], artifacts: []).messages.isEmpty,
+        #expect(LibrarySearchResults(query: "gustavo", bots: [], chats: [chat], artifacts: []).messages.isEmpty,
             "The sender stamp is provenance, not the displayed message body")
     }
 

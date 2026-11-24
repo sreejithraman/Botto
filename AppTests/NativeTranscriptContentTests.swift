@@ -47,10 +47,10 @@ import BottoCore
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-canvas.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
         try #require(await store.connect(configuration))
-        let canvas = try #require(store.bots.first { $0.id == "canvas" })
-        let milo = try #require(store.bots.first { $0.id == "milo" })
-        await store.open(canvas)
-        let profile = try ExactID(canvas.id)
+        let canvas = try #require(store.t3Channels.first { $0.id == "canvas" })
+        let main = try #require(store.t3Channels.first { $0.isMain })
+        try #require(await store.openT3Channel(canvas))
+        let profile = try ExactID("milo")
         let initial = try #require(store.chats.screen(profile: profile))
         await store.chats.refreshDirectory(initial.owner); store.chats.displayed(initial.owner)
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
@@ -63,10 +63,10 @@ import BottoCore
         let fileBlock = try #require(ReplyContent(message: richMessage).blocks.first { $0.filePreview?.isHTML == true })
         try await requirePaintedFile(fileBlock.id, phase: .initial, host: host, window: window)
         let first = try #require(collectionController(host))
-        await store.open(milo)
+        try #require(await store.openT3Channel(main))
         try await wait("Milo actually replaced the native Canvas subtree") { collectionController(host).map { $0 !== first } ?? false }
         let middle = try #require(collectionController(host))
-        await store.open(canvas)
+        try #require(await store.openT3Channel(canvas))
         try await wait("Canvas actual selected subtree returned") { collectionController(host).map { $0 !== middle } ?? false }
         try await wait("returned rich body is actually placed inside its current native allocation before Send") {
             guard let controller = collectionController(host),
@@ -109,6 +109,7 @@ import BottoCore
         var body: some View {
             if let bot = store.selectedBot {
                 transcriptFixture(store: store, bot: bot, presentation: presentation, native: true)
+                    .id(store.selectedT3ChannelID)
                     .frame(width: 382, height: viewport.height)
                     .environment(\.scenePhase, .active)
             }
@@ -292,66 +293,5 @@ import BottoCore
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
         await waitWhile(reason) { !condition() }
         try #require(condition(), "Timed out: \(reason)")
-    }
-}
-
-@Suite(.serialized, RichReplyRuntime()) @MainActor struct InboxPresentationTests {
-    @Test func cachedInboxCountDoesNotFlashAnExtraChatDuringDirectoryRefresh() async throws {
-        let service = try WorkspaceTestService()
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://count-badge.invalid")!)
-        var history = LocalHistory()
-        history.bots = [.init(id: service.profile.text, name: "Milo")]
-        for summary in service.summaries { history.book.merge(summary) }
-        try history.save(for: configuration.id)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
-        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive })
-        let previous = scene.windows.first { $0.isKeyWindow }
-        let host = UIHostingController(rootView: InboxView(store: store, onSettings: {}, onNewBot: {}))
-        let window = UIWindow(windowScene: scene)
-        window.rootViewController = host; window.makeKeyAndVisible()
-        defer {
-            window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
-            store.forgetConnection(); LocalHistory.remove(for: configuration.id)
-        }
-        func renderedCount() async throws -> String? {
-            host.view.layoutIfNeeded()
-            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-            }
-            return try await NativeTextRecognition.recognize(#require(image.cgImage)).first { $0.contains("chats") }
-        }
-        var cached: String?
-        try await waitWhile { cached = try await renderedCount(); return cached == nil }
-        try #require(cached != nil, "The cached bot row must actually paint its chat count")
-        #expect(!store.chats.aggregate(profile: service.profile).directoryComplete)
-        #expect(cached == "2 chats")
-        try #require(await store.connect(configuration))
-        #expect(store.chats.aggregate(profile: service.profile).directoryComplete)
-        #expect(store.chats.aggregate(profile: service.profile).count == 2)
-        await Task.yield()
-        #expect(try await renderedCount() == cached)
-        let discovered = SessionIdentity(profile: service.profile, root: try ExactID("discovered-root"),
-            stored: try ExactID("discovered-tip"), aliases: [])
-        service.summaries.append(.init(identity: discovered, title: "Discovered chat", isCanonical: false,
-                                      persistence: .durable))
-        store.chats.invalidateActivityDirectory(service.profile)
-        await store.chats.refreshActivityDirectories(for: store.bots)
-        #expect(store.chats.aggregate(profile: service.profile).count == 3)
-        await Task.yield()
-        #expect(try await renderedCount() == "3 chats")
-    }
-
-}
-
-@MainActor struct MarkdownSelectionTests {
-    @Test(arguments: [2, 3, 4, 5])
-    func headingStyleSurvivesParagraphSeparators(_ newlines: Int) throws {
-        let separator = String(repeating: "\n", count: newlines)
-        let source = "Intro" + separator + "# Heading\n\nBody"
-        let rendered = MarkdownBody(text: source, isReply: true).attributed(source)
-        let heading = try #require(rendered.range(of: "Heading"))
-        #expect(rendered[heading].font == .title3.weight(.semibold))
-        #expect(String(rendered.characters) == "Intro" + separator + "Heading\n\nBody")
     }
 }
