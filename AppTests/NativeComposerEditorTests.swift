@@ -466,10 +466,53 @@ import BottoCore
 
         let photo = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
         pasteboard.items = [[UTType.png.identifier: try #require(photo.pngData())], item]
+        let startedAt = ContinuousClock.now
         fixture.editor.paste(nil)
 
         #expect(pasted.count == 1 && pasted[0].map(\.type) == [.png])
-        #expect(await settledDraft(of: fixture, screen.owner, matching: text))
+        let settled = await settledDraft(of: fixture, screen.owner, matching: text)
+        #expect(settled)
+        if item[UTType.html.identifier] != nil {
+            try await recordHTMLPaste(fixture, owner: screen.owner, pasteboard: pasteboard,
+                                      expected: text, settled: settled, startedAt: startedAt)
+        }
+    }
+
+    private func recordHTMLPaste(_ fixture: Fixture, owner: PresentationOwner, pasteboard: UIPasteboard,
+                                 expected: String, settled: Bool, startedAt: ContinuousClock.Instant) async throws {
+        func state() -> String {
+            "\(startedAt.duration(to: .now)) editor=\(fixture.editor.text.debugDescription) draft=\(fixture.store.chats.draft(owner).debugDescription) currentOwner=\(fixture.store.chats.isCurrent(owner)) firstResponder=\(fixture.editor.isFirstResponder)"
+        }
+        let initial = state()
+        let providers = ComposerPaste(pasteboard).text
+        let providerRead = HTMLProviderRead()
+        // Read a fresh provider after observing UIKit so the probe cannot prime its paste.
+        let progress = providers.first?.loadDataRepresentation(forTypeIdentifier: UTType.html.identifier) { data, error in
+            let result = "bytes=\(data?.count.description ?? "nil") error=\(String(describing: error))"
+            Task { @MainActor in providerRead.result = result }
+        }
+        defer { progress?.cancel() }
+        var lateUpdate: String?
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline {
+            if !settled, lateUpdate == nil,
+               fixture.store.chats.draft(owner).trimmingCharacters(in: .whitespacesAndNewlines) == expected {
+                lateUpdate = state()
+            }
+            if providerRead.result != nil && (settled || lateUpdate != nil) { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        Attachment.record("""
+            text providers=\(providers.map(\.registeredTypeIdentifiers))
+            original paste settled=\(settled) \(initial)
+            independent provider read=\(providerRead.result ?? "no completion")
+            late matching draft=\(lateUpdate ?? "none observed")
+            final \(state())
+            """, named: "mixed-html-paste.txt")
+    }
+
+    @MainActor private final class HTMLProviderRead {
+        var result: String?
     }
 
     /// UIKit loads providers asynchronously and keeps an HTML block's trailing newline.

@@ -108,6 +108,7 @@ import BottoCore
 /// A provider or service may finish even after its caller is cancelled.
 @MainActor final class StoreTestBarrier {
     private var entered = false
+    var hasEntered: Bool { entered }
     private var entryWaiter: CheckedContinuation<Void, Never>?
     private var completion: CheckedContinuation<Void, Never>?
 
@@ -135,6 +136,16 @@ import BottoCore
         completion?.resume()
         completion = nil
     }
+}
+
+@MainActor func waitForLibraryFixture(timeout: Duration = .seconds(30),
+                                     _ ready: () async throws -> Bool) async throws -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while try await !ready() {
+        guard ContinuousClock.now < deadline else { return false }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    return true
 }
 
 nonisolated final class CaptureCommitGate: @unchecked Sendable {

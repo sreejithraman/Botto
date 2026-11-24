@@ -129,10 +129,15 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: files[0], botID: service.profile.text,
                                                                 producingMessage: message))
         presentation.openArtifact(destination, store: store)
-        try await waitUntil("The paired reader and native composer are ready") {
-            presentation.artifact?.file != nil &&
-                self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
+        let session = try #require(presentation.artifact)
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
+        try await waitUntil("The paired native composer is editable", timeout: .seconds(30), diagnostics: {
+            let editors = self.nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
+            return "nativeEditors=\(editors.count) editable=\(editors.map(\.isEditable)) fileReady=\(session.file != nil)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }) {
+            self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
         }
+        try #require(presentation.artifact?.file != nil)
         let editor = try #require(nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
             .first { $0.isEditable })
         let owner = try #require(store.chats.screen(profile: service.profile)?.owner)

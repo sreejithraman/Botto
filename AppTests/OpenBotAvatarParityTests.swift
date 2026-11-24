@@ -127,7 +127,7 @@ struct OpenBotAvatarParityTests {
     private let window: UIWindow
     private weak var previousKey: UIWindow?
     private var loaded = false
-    private var navigationError: Error?
+    private var webError: Error?
     private var snapshot: Result<UIImage, Error>?
 
     init(scene: UIWindowScene) {
@@ -160,16 +160,19 @@ struct OpenBotAvatarParityTests {
         previousKey?.makeKey()
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = true }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navigationError = error }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navigationError = error }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { webError = error }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { webError = error }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webError = WKError(.webContentProcessTerminated)
+    }
 
     func render(_ svg: String) async throws -> UIImage {
-        loaded = false; navigationError = nil; snapshot = nil
-        let deadline = ContinuousClock.now + .seconds(15)
+        loaded = false; webError = nil; snapshot = nil
+        let navigationDeadline = ContinuousClock.now + .seconds(45)
         web.loadHTMLString("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>html,body{margin:0;width:256px;height:256px;background:#fff}svg{display:block}</style></head><body>\(svg)</body></html>", baseURL: nil)
-        while !loaded, navigationError == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        if let navigationError { throw navigationError }
-        guard loaded else { throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Reference SVG navigation exceeded 15 seconds"]) }
+        while !loaded, webError == nil, ContinuousClock.now < navigationDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        if let webError { throw webError }
+        guard loaded else { throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Reference SVG navigation exceeded 45 seconds"]) }
         let top = try await web.evaluateJavaScript("document.querySelector('svg').getBoundingClientRect().top")
         #expect((top as? Double) == 0)
         #expect(web.scrollView.adjustedContentInset == .zero)
@@ -177,12 +180,14 @@ struct OpenBotAvatarParityTests {
         let config = WKSnapshotConfiguration()
         config.rect = CGRect(x: 0, y: 0, width: 256, height: 256)
         config.snapshotWidth = 256
+        let snapshotDeadline = ContinuousClock.now + .seconds(30)
         web.takeSnapshot(with: config) { [weak self] image, error in
             if let image { self?.snapshot = .success(image) }
             else { self?.snapshot = .failure(error ?? CocoaError(.fileReadUnknown)) }
         }
-        while snapshot == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        guard let snapshot else { throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Reference SVG snapshot exceeded 15 seconds"]) }
+        while snapshot == nil, webError == nil, ContinuousClock.now < snapshotDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        if let webError { throw webError }
+        guard let snapshot else { throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Reference SVG snapshot exceeded 30 seconds"]) }
         return try snapshot.get()
     }
 }
