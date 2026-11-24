@@ -120,6 +120,35 @@ import Testing
         #expect(store.selectedChannelID == nil)
     }
 
+    /// The first send belongs to the new-space page from the moment it starts, before its space exists.
+    @Test func aProviderBecomingReadyLeavesAFirstSendAlone() async throws {
+        let host = FirstRunHost(mainSpace: false)
+        host.found = [.init(id: "claudeAgent", driver: "claudeAgent", state: .needsSignIn)]
+        host.failsProviders = true
+        let store = try await connected(to: host)
+        store.fresh.text = "Hello"
+        let replied = AsyncStream<Void>.makeStream()
+        host.createReply = replied.stream
+        let sending = Task { await store.startSpace() }
+        try await settled { host.isCreating }
+
+        // A look that finds nothing doesn't put the guide over it, and one that finds a provider doesn't open the main space.
+        host.failsProviders = false
+        await store.loadProviders()
+        #expect(!store.providersNeedingSetup.isEmpty)
+        #expect(!store.showsProviderGuide)
+        host.found[0] = .init(id: "claudeAgent", driver: "claudeAgent", state: .ready)
+        await store.loadProviders()
+        #expect(store.channels.map(\.id) == ["main-space"])
+        #expect(store.selectedChannelID == nil)
+
+        replied.continuation.finish()
+        await sending.value
+        #expect(host.sent == ["new-space": "Hello"])
+        #expect(store.selectedChannelID == "new-space")
+        #expect(store.fresh.text.isEmpty)
+    }
+
     @Test func providerHelpNeverReplacesAConversation() async throws {
         let host = FirstRunHost(preview: "See you Tuesday")
         host.found = [.init(id: "claudeAgent", driver: "claudeAgent", state: .needsSignIn)]
@@ -178,6 +207,10 @@ import Testing
     var failsRename = false
     var failsProviders = false
     private(set) var looks = 0
+    /// Holds a new space's reply until it finishes.
+    var createReply: AsyncStream<Void>?
+    private(set) var isCreating = false
+    private(set) var sent: [String: String] = [:]
     var found: [T3ProviderStatus] = [.init(id: "claudeAgent", driver: "claudeAgent", state: .ready)]
     private(set) var renames: [String: String] = [:]
     private(set) var manifest = T3BotManifest(displayName: "Botto")
@@ -240,7 +273,16 @@ import Testing
     func saveSoul(_ markdown: String, replacing expected: String?) async throws {}
     func saveMemory(_ markdown: String, replacing expected: String?) async throws {}
     func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest { throw T3ServiceError.unsupported }
-    func createChat(title: String?) async throws -> CreatedSession { throw T3ServiceError.unsupported }
+    func createChat(title: String?) async throws -> CreatedSession {
+        guard let createReply else { throw T3ServiceError.unsupported }
+        isCreating = true
+        for await _ in createReply {}
+        currentT3Channels.append(.init(id: "new-space", title: "", isMain: false, isPinned: false, isArchived: false,
+                                       isUnread: false, status: .idle, preview: "", updatedAt: nil))
+        let thread = try ExactID("new-space")
+        let identity = SessionIdentity(profile: profile, root: thread, stored: thread, aliases: [])
+        return .init(operationID: UUID(), summary: .init(identity: identity, title: "", isCanonical: false, persistence: .durable))
+    }
     func setChannelPinned(threadID: String, pinned: Bool) async throws {}
     func archiveChannel(threadID: String, archived: Bool) async throws {}
     func readProjectFile(relativePath: String) async throws -> String { throw T3ServiceError.unsupported }
@@ -248,7 +290,11 @@ import Testing
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw T3ServiceError.unsupported }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
-              operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+              operationID: UUID) async throws -> MutationReceipt {
+        let identity = try issuer.resolve(access)
+        sent[identity.stored.text] = text
+        return .init(operationID: operationID, source: identity, admissionID: nil, journal: .saved)
+    }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,
                  operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }

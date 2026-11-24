@@ -67,8 +67,8 @@ final class MacBottoStore {
     /// Without a conversation there is nothing to keep on screen, so provider help can have the whole page.
     var hasStartedTalking: Bool { channels.contains(where: \.hasMessages) }
     /// The guide has the window's detail, so a new space has nowhere to open.
-    /// A space whose first message still waits keeps its page.
-    var showsProviderGuide: Bool { !providersNeedingSetup.isEmpty && !hasStartedTalking && fresh.createdSpace == nil }
+    /// A first send keeps its page.
+    var showsProviderGuide: Bool { !providersNeedingSetup.isEmpty && !hasStartedTalking && !fresh.ownsFirstSend }
     var canStartSpace: Bool { isConnected && !showsProviderGuide }
 
     private let service: any T3BotBrainControlling
@@ -453,7 +453,7 @@ final class MacBottoStore {
     }
 
     private func openInitialSpace() async {
-        guard selectedChannelID == nil, fresh.createdSpace == nil, let initial = T3ChatShelf.initialSpace(channels) else { return }
+        guard selectedChannelID == nil, !fresh.ownsFirstSend, let initial = T3ChatShelf.initialSpace(channels) else { return }
         await openChannel(initial.id)
     }
 
@@ -679,6 +679,8 @@ final class MacFreshDraft {
     private(set) var createdSpace: String?
     private(set) var isSubmitting = false
 
+    /// A first send runs, or its space waits for the message it didn't get.
+    var ownsFirstSend: Bool { isSubmitting || createdSpace != nil }
     var offersAutomaticModel: Bool { createdSpace == nil || model == nil }
 
     func selectModel(_ option: T3ModelOption?) {
