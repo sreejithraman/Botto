@@ -333,6 +333,11 @@ import Testing
     func saveSoul(_ markdown: String) async throws { soul = markdown }
     func saveMemory(_ markdown: String) async throws { memory = markdown }
     func saveManifest(_ manifest: T3BotManifest) async throws { self.manifest = manifest }
+    func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
+        manifest.providerInstanceID = option?.providerInstanceID
+        manifest.model = option?.modelID
+        return manifest
+    }
     func availableModels() async throws -> [T3ModelOption] {
         [.init(id: "claude-test", providerInstanceID: "claude", providerName: "Claude", modelID: "claude-test", label: "Claude Test")]
     }

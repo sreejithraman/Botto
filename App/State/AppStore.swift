@@ -625,10 +625,8 @@ import BottoCore
 
     /// The model new chats start with; nil lets the host choose.
     @discardableResult func setT3DefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
-        var manifest = try await loadT3BotBrain().manifest
-        manifest.providerInstanceID = option?.providerInstanceID
-        manifest.model = option?.modelID
-        try await saveT3Manifest(manifest)
+        let manifest = try await withT3Service { try await $0.setDefaultModel(option) }
+        _ = await refreshBots()
         return manifest
     }
 
