@@ -142,6 +142,11 @@ struct ChatSelection {
     let identity: SessionIdentity?
     let isUnverified: Bool
     let isOpening: Bool
+
+    func matches(_ target: SessionIdentity) -> Bool {
+        guard let identity else { return false }
+        return identity.profile == target.profile && identity.root == target.root && identity.stored == target.stored
+    }
 }
 
 struct ChatHapticFeedback: Equatable {

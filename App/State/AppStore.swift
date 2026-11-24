@@ -604,7 +604,7 @@ import BottoCore
         }
         let workspace = authority.workspace
         guard !Task.isCancelled, isCurrentConnection(authority),
-              let selection = workspace.selection(profile: identity.profile), selection.identity == identity,
+              let selection = workspace.selection(profile: identity.profile), selection.matches(identity),
               workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
         workspace.editDraft(text, owner: selection.owner)
