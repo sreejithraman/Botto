@@ -30,6 +30,8 @@ import Testing
     #expect(throws: PairingAddress.Failure.insecureHTTP) { try PairingAddress.parse("http://192.168.1.2:9119") }
     #expect(try PairingAddress.parse("http://192.168.1.2:9119", allowInsecureHTTP: true).absoluteString
         == "http://192.168.1.2:9119")
+    #expect(try PairingAddress.parse("http://localhost:9119", allowInsecureHTTP: true).absoluteString
+        == "http://localhost:9119")
     #expect(throws: PairingAddress.Failure.insecureHTTP) {
         try PairingAddress.parse("http://public.example", allowInsecureHTTP: true)
     }

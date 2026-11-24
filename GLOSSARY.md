@@ -12,7 +12,8 @@ The bot's project and its Spaces, instructions, memory, skills, and outputs.
 
 **Space**
 A lasting place for an ongoing part of the user's life with Botto. A Space
-has a plain name and its own conversation, draft, and work.
+has a plain name and its own conversation, draft, and work. Use **Space** for
+the place people open in the interface.
 
 **Main Space**
 The one Space that anchors the bot and coordinates its other Spaces. It

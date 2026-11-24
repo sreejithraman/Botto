@@ -119,8 +119,9 @@ Source: [ChatComposer](../../../../App/Views/ChatComposer.swift),
 [AttachmentLimits](../../../../Sources/BottoCore/AttachmentLimits.swift).
 [Verification history](../../../verification.md) records small-iPhone Files
 upload, host acknowledgment and canonical reopen, and core network round trips
-with the previous backend. Run these assertions separately on T3. Native state tests cover stale destinations and budgets.
-they do not prove all public picker cancellation/replacement paths. Actual
+with the previous backend. Run these assertions separately on T3. Native state
+tests cover stale destinations and budgets. Public picker cancellation and
+replacement also need their own checks. Actual
 Photos permissions and structured native-image history remain partly unproved.
 An old upload may already exist remotely after cancellation; require no wrong
 message association, not an unsupported promise of deleting the uploaded file.

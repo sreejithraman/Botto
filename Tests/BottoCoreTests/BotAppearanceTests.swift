@@ -39,3 +39,16 @@ func invalidFaceColorsAreRejected(color: String) {
         try BotAvatarChoice.face(.init(shape: .cloud, color: color)).validate()
     }
 }
+
+@Test func earlierSavedBotProfilesKeepTheirFallbackFace() throws {
+    let legacy = Data(#"{"id":"default","name":"Old name","emoji":"🌿","description":"","preview":"","status":"idle","isPinned":false}"#.utf8)
+    let restored = try JSONDecoder().decode(BotProfile.self, from: legacy)
+    #expect(restored.emoji == "🌿")
+    #expect(restored.appearance == nil && restored.hasAvatar == nil && restored.lookRevision == nil)
+    #expect(restored.face.shape == .squircle && restored.face.color == "#8b5cf6")
+
+    let current = BotProfile(id: "default", name: "Renamed", appearance: .init(shape: .cloud, color: "#ffffff"),
+                             hasAvatar: true, lookRevision: 7)
+    let saved = try JSONEncoder().encode(current)
+    #expect(try JSONDecoder().decode(BotProfile.self, from: saved) == current)
+}

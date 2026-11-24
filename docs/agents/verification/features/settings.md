@@ -32,11 +32,14 @@ known Mac Space history to verify the effect.
    **Forget saved setup**, with the stored pairing and its caches preserved.
    Restore access and retry. Verify the original workspace opens.
 2. `settings.storage-recovery.a2` — Inject a failed save, removal, or readback
-   during replacement or Forget. Expect failure feedback and the original
-   state until the operation succeeds. Separately force a history save failure
-   while entering Demo or backgrounding. Verify the warning and the original
-   pairing, selection, and draft. Restore storage, retry, and read the latest
-   draft through a fresh store.
+   during replacement or Forget. Verify failure feedback and preservation
+   of the mounted workspace while the operation is unconfirmed. After an
+   unsuccessful removal, check the original stored pairing. If removal
+   succeeds and readback fails, inspect saved-state presence independently
+   before retrying. Separately force a history save failure while entering
+   Demo or backgrounding. Verify the warning and the original pairing,
+   selection, and draft. Restore storage, retry, and read the latest draft
+   through a fresh store.
 3. `settings.storage-recovery.a3` — Place old run-owned cache markers beside an
    unrelated file, directory, and symlink. Commit replacement or Forget.
    Compare fresh directory listings to verify cleanup is limited to

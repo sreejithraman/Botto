@@ -19,6 +19,15 @@ struct QueuedNotificationPresentationTests {
         #expect(try JSONDecoder().decode(QueuedMessage.self, from: JSONEncoder().encode(queued)).sourceMessage == source)
     }
 
+    @Test func queuedCompletionKeepsItsNotificationKindAndPayload() throws {
+        let queued = QueuedMessage(id: "completion", text: "Completed background work",
+                                   submissionID: #"["completion","proc_a",1793268000]"#)
+        let source = try #require(queued.sourceMessage)
+        #expect(source.displayKind == "process_complete")
+        #expect(source.notificationPresentation?.title == "Background process finished")
+        #expect(source.text == queued.text)
+    }
+
     @Test func queuedBotMessageCarriesSenderWithoutExposingItsMachineStampAsUserText() throws {
         let queued = QueuedMessage(id: "bot-admission", text: "Message from 🤖 Gustavo (@hermes): Please check the service.",
                                    submissionID: "bot:delivery-123")

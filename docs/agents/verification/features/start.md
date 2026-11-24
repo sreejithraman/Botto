@@ -15,7 +15,8 @@ profile. Draft until each selected path runs on its target.
   Choose a name and face and verify the Main Space opens with the chosen
   name. Relaunch to check first run is skipped after setup has been saved.
 - `start.pair.a3` — Open BottoMac with no configured model provider.
-  Follow its setup guide, then verify the new companion and Main Space.
+  Name the bot and choose its face first. Then follow the provider guide
+  and verify the new companion and Main Space.
 - `start.address` — Repeat address review with a fresh link and an invalid
   input. Verify a canceled review leaves the current workspace available.
 - `start.qr` — Scan a fresh Mac QR on a signed physical iPhone. Compare the
