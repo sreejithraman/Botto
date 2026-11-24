@@ -246,12 +246,13 @@ struct T3FreshPage: View {
                                                           send: send, resuming: existing) { identity in
                     if store.chats === workspace { form.created = identity }
                 }
-                guard store.chats === workspace, let selection = workspace.selection(profile: started.profile),
-                      selection.matches(started), workspace.isCurrent(selection.owner) else { return }
+                guard store.chats === workspace else { return }
                 form.name = ""
                 form.message = ""
                 form.model = nil
                 form.created = nil
+                guard let selection = workspace.selection(profile: started.profile),
+                      selection.matches(started), workspace.isCurrent(selection.owner) else { return }
                 store.t3ComposerRequest = attachment.map { .init(kind: $0, owner: selection.owner) }
                 onStarted()
             } catch where store.chats === workspace {
