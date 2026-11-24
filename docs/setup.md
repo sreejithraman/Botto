@@ -3,6 +3,8 @@
 BottoMac starts a local T3 Code Orchestrator v2 host. The phone joins that host's
 workspace over an origin you review before connecting.
 
+<a id="2-choose-the-native-listener"></a>
+
 ## Run Botto on your Mac
 
 1. Install the upstream T3 CLI and configure at least one model provider. This

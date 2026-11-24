@@ -98,6 +98,8 @@ private let catJSON = #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18
     let orange = BotAvatarChoice.geometry(cat, color: .value("#f97316"))
     #expect(orange.applying(to: current).geometry == cat)
     #expect(orange.applying(to: current).color == BotAvatarColors.preset(for: "#f97316")?.shared)
+    let automatic = BotAvatarChoice.geometry(cat, color: .automatic).applying(to: current)
+    #expect(automatic.geometry == cat && automatic.color == nil)
     #expect(throws: ConversationServiceError.invalidAvatar) {
         try BotAvatarChoice.geometry(cat, color: .value("unrecognized-explicit-color")).validate()
     }

@@ -40,6 +40,14 @@ endpoint. Keep local captures associated with the source occurrence and its
 revision. See [rich replies and files](rich-content.md) and
 [scoped artifact captures](adr/0010-scoped-artifact-captures.md).
 
+## Cached activity presentation
+
+The iOS workspace distinguishes observed activity from cached observations.
+A disconnected Space can show its last known state as **Previously working**
+or **Previously waiting**. The live connection establishes current activity
+and whether a request can be answered. See the
+[cache-first activity decision](adr/0007-cache-first-activity-presentation.md).
+
 ## Live avatar activity
 
 Native views derive work cues and reactions from the active Space's projection.

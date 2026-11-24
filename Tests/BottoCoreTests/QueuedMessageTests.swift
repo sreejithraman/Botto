@@ -12,3 +12,15 @@ import Testing
     updated.queuedMessages = [QueuedMessage(id: "admission", text: "Later", canEdit: true, submissionID: "input")]
     #expect(try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(updated)) == updated)
 }
+
+@Test func legacyChatHistoryDecodesWithoutAnEarlierHistoryQualifier() throws {
+    let snapshot = Conversation(id: "runtime", storedID: "stored", profileID: "bot",
+        messages: [.init(id: "stored:row:1", role: .assistant, text: "Saved reply")], hasEarlierMessages: true)
+    let encoded = try JSONEncoder().encode(snapshot)
+    #expect(try JSONDecoder().decode(Conversation.self, from: encoded).hasEarlierMessages)
+    var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    legacy.removeValue(forKey: "hasEarlierMessages")
+    let restored = try JSONDecoder().decode(Conversation.self, from: JSONSerialization.data(withJSONObject: legacy))
+    #expect(!restored.hasEarlierMessages)
+    #expect(restored.messages.last?.text == "Saved reply")
+}

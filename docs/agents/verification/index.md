@@ -8,7 +8,7 @@ until its assertions run on the recorded target and revision. The
 
 | Feature | Recipe | Workflows |
 | --- | --- | --- |
-| Start | [Welcome and first run](features/start.md) | `start.first-run`, `start.demo`, `start.setup`, `start.address`, `start.qr`, `start.external` |
+| Start | [Welcome and first run](features/start.md) | `start.first-run`, `start.demo`, `start.pair`, `start.address`, `start.qr`, `start.external` |
 | Pairing | [Pairing and reconnection](features/auth.md) | `auth.access`, `auth.interruption`, `auth.recovery` |
 | Space navigation | [Spaces drawer](features/inbox.md) | `inbox.find`, `inbox.activity`, `inbox.pins`, `inbox.navigation` |
 | Library | [Workspace files and search](features/library.md) | `library.navigation`, `library.outputs`, `library.search`, `library.captures` |
@@ -24,7 +24,9 @@ until its assertions run on the recorded target and revision. The
 | Haptics | [Choose haptics and feel feedback](features/haptics.md) | `haptics.preferences`, `haptics.chat`, `haptics.sheets`, `haptics.playground` |
 | Notifications | [Encrypted push verification](features/notifications.md) | `notifications.setup`, `notifications.delivery`, `notifications.previews`, `notifications.routing`, `notifications.visibility`, `notifications.removal`, `notifications.recovery` |
 
-Record the workflow ID and each selected assertion, with the expected result,
+Use stable workflow and assertion IDs in the evidence. An assertion ID appends
+`.a1`, `.a2`, and so on to its workflow ID. Record
+each selected assertion with the expected result,
 observed result, and evidence. Use `passed`, `failed`, `blocked`, or
 `untested`. A workflow passes after all its required assertions pass.
 
@@ -38,12 +40,13 @@ observed result, and evidence. Use `passed`, `failed`, `blocked`, or
 - On iOS choose **Explore the demo** for sample Spaces, or use the DEBUG
   `--demo` launch option. Demo exercises the client with in-memory sample
   state. A hosted test or demo run does not establish live-host persistence.
-- For a live test, use an owned disposable T3 environment and project with a
-  configured model. Use [setup](../../setup.md) to pair. Verify the expected
-  origin and environment, then open an actual Space and observe a usable
-  live connection. Record route and redacted identity. A health response alone
-  does not prove pairing. BottoMac's local server keeps its test data separate
-  only when you point the test at a disposable environment.
+- Verify normal BottoMac first run in a dedicated macOS test account. A normal
+  launch starts its server in that account's `~/.botto/t3-server`. Use an
+  isolated account with a test provider so setup can create its own workspace.
+- For iOS-only host checks, run a separate owned T3 instance using an explicit
+  disposable data directory and project. Follow [setup](../../setup.md) to
+  review the origin and connect. Open an actual Space and record the route
+  and redacted environment identity.
 - Use a signed device build when proving secure credential storage, physical
   QR scanning, or APNs. Use the Mac's reachable address for a physical phone.
   Test LAN, Tailscale, and an HTTPS tunnel as separate routes.

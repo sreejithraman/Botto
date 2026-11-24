@@ -238,3 +238,13 @@ func textThatOnlyLooksLikePersistedImagesStaysText(text: String) {
     let shown = AttachmentPresentation.display(ChatMessage(id: "1", role: .user, text: "", timestamp: .now, attachments: [hosted, chosen, file]))
     #expect(shown.attachments.map(\.name) == ["Photo.jpg", "upload_notes.jpg", "upload_abcd1234.txt"])
 }
+
+@Test func anOlderSavedAttachmentCanOmitItsByteCount() throws {
+    let legacy = Data(#"{"name":"old.txt","path":"/host/old.txt","mimeType":"text/plain"}"#.utf8)
+    #expect(try JSONDecoder().decode(ChatAttachment.self, from: legacy).byteCount == nil)
+}
+
+@Test func reservingAHEICAttachmentAllowsForItsConvertedBytes() {
+    #expect(ConversationServiceError.attachmentLimit.localizedDescription == AttachmentLimits.message)
+    #expect(AttachmentLimits.reservationBytes(dataCount: 1, filename: "photo.heic", mimeType: "application/octet-stream") == AttachmentLimits.fileBytes)
+}

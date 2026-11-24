@@ -1,6 +1,8 @@
 # Set up and inspect the companion (`bots`)
 
-Use an owned T3 workspace and record the model and app revision. These checks
+Start the normal BottoMac entry point from the isolated test account in
+[shared setup](../index.md#shared-setup-and-readiness). Record the model and
+app revision. These checks
 are draft.
 
 - `bots.create` — Start BottoMac with a configured provider. Name the

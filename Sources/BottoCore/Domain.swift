@@ -90,19 +90,9 @@ public struct BotDraft: Equatable, Sendable {
 }
 
 public enum BotAvatarGenerationError: Error, LocalizedError, Equatable, Sendable {
-    case invalidDescription, alreadyGenerating, unsupportedHost, missingChat, invalidResult, failed, timedOut
+    case unsupportedHost
 
-    public var errorDescription: String? {
-        switch self {
-        case .invalidDescription: "Describe a character using 1–1,000 characters."
-        case .alreadyGenerating: "A character is already being created for this bot."
-        case .unsupportedHost: "This connection does not support creating characters in Botto."
-        case .missingChat: "Open the main conversation before creating a character."
-        case .invalidResult: "The host returned an invalid character. Your previous avatar is unchanged. Try a simpler description."
-        case .failed: "The host couldn’t create this character. Check its model configuration, then try again."
-        case .timedOut: "Creating the character took too long. Your previous avatar is unchanged. Try again when the host is ready."
-        }
-    }
+    public var errorDescription: String? { "This connection does not support creating characters in Botto." }
 }
 
 /// Only fields deliberately changed in the profile editor. Identity remains stable.

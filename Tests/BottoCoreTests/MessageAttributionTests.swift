@@ -71,6 +71,17 @@ struct MessageAttributionTests {
 
 }
 
+@Test(arguments: ["process_complete", "async_delegation_complete"])
+func machineryCommandLabelsStayCompactWithoutLosingDetails(_ kind: String) {
+    let command = "/Users/example/bin/diagnose --all\n" + String(repeating: "health check details\n", count: 50)
+    let title = kind == "process_complete" ? "Background Process Finished: " : "Subagent Task Complete: "
+    let message = ChatMessage(id: "process", role: .user, text: command, displayKind: kind, displayText: title + command)
+    #expect(message.notificationPresentation?.title == (kind == "process_complete" ? "Background process finished" : "Background agents finished"))
+    #expect(message.text == command)
+    #expect(message.displayText == title + command)
+    #expect(message.requiresAttention)
+}
+
 @Test func plainCommandCannotBecomeTheNotificationTitle() {
     let message = ChatMessage(id: "process", role: .user, text: "Process output",
         displayKind: "process_complete", displayText: "echo hello")
