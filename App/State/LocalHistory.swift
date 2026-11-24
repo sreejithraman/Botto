@@ -24,6 +24,7 @@ struct LocalHistory: Codable {
     var book = ConversationBook()
     var pinned: Set<ExactID> = []
     var unpinned: Set<ExactID> = []
+    var t3Channels: [T3ChannelSummary]? = nil
 
     private struct Header: Decodable { let version: Int? }
     private struct Legacy: Decodable {

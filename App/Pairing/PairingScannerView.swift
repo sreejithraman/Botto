@@ -8,6 +8,7 @@ import VisionKit
 
 /// Delivers address text once. The parent validates it, fills its review form, and dismisses.
 @MainActor struct PairingScannerView: View {
+    var isT3: Bool
     let onScan: (String) -> Void
 
     @Environment(\.openURL) private var openURL
@@ -21,7 +22,10 @@ import VisionKit
     @State private var importMessage: String?
     @State private var delivered = false
 
-    init(onScan: @escaping (String) -> Void) { self.onScan = onScan }
+    init(isT3: Bool = false, onScan: @escaping (String) -> Void) {
+        self.isT3 = isT3
+        self.onScan = onScan
+    }
 
     var body: some View {
         NavigationStack {
@@ -43,7 +47,8 @@ import VisionKit
                         }
                     }
                 } footer: {
-                    Text("Scan a Hermes server address. You’ll review it before connecting.")
+                    Text(isT3 ? "Scan a T3 pairing link. You’ll review the address before connecting."
+                              : "Scan a Hermes server address. You’ll review it before connecting.")
                 }
 
                 Section("Paste or enter a connection code") {
@@ -67,7 +72,7 @@ import VisionKit
                     if let importMessage { Text(importMessage).foregroundStyle(.secondary) }
                 }
             }
-            .navigationTitle("Connect to Hermes")
+            .navigationTitle(isT3 ? "Connect to T3 Code" : "Connect to Hermes")
             .task { await prepareCamera() }
             .task(id: selectedPhoto) { await readPhoto() }
             .onChange(of: scenePhase) { _, phase in

@@ -130,12 +130,15 @@ nonisolated struct ArtifactCacheScope: Hashable, Codable, Sendable {
     let installationID: Data?
     let username: Data
     let provider: Data?
+    var backend: [Data?]? = nil
 
     // Existing rows, blobs and recovery guards are addressed by these exact bytes.
     fileprivate var namespace: Data {
-        artifactCacheFields([Data(configurationID.uuidString.utf8), serverURL,
+        let fields = [Data(configurationID.uuidString.utf8), serverURL,
             installationID.map { Data([1]) + $0 } ?? Data([0]), username,
-            provider.map { Data([1]) + $0 } ?? Data([0])])
+            provider.map { Data([1]) + $0 } ?? Data([0])]
+        // A nil backend is the existing Hermes namespace.
+        return artifactCacheFields(fields + (backend ?? []).map { $0.map { Data([1]) + $0 } ?? Data([0]) })
     }
 }
 nonisolated enum ArtifactCacheCoverage: String, Codable, Sendable { case complete, partial }

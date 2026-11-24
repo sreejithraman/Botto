@@ -740,6 +740,18 @@ private struct ReadObservationKey: Hashable, Sendable {
     func open(_ intent: OpeningIntent) async {
         await open(intent, userInitiated: true)
     }
+
+    func openStoredChat(_ summary: SessionSummary, claim: NavigationClaim) async -> Bool {
+        guard !Task.isCancelled, ownsNavigation(claim) else { return false }
+        let request = claim.request
+        defer { if navigationRequest == request { navigationRequest = nil } }
+        onUserNavigation?()
+        guard ownsNavigation(claim) else { return false }
+        let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[summary.identity.profile]) }
+        availability[id] = true
+        await attach(id, navigation: request, storedTarget: summary.identity)
+        return !Task.isCancelled && navigationRequest == request && selected == id
+    }
     private func ownsOpening(_ intent: OpeningIntent) -> Bool {
         !Task.isCancelled && !retired && intent.scope == scope && intent.epoch == presentation &&
             navigationRequest == intent.request && book.preference(intent.profile) != nil
@@ -863,6 +875,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
                                           navigation request: UUID? = nil,
+                                          storedTarget: SessionIdentity? = nil,
                                           accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
                                           commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> SessionIdentity? {
         guard !Task.isCancelled, !retired, let record = book.record(id),
@@ -909,10 +922,14 @@ private struct ReadObservationKey: Hashable, Sendable {
         let initialMainBinding = initialMainBindings[record.profile]
         defer { if opening?.id == attempt { opening = nil } }
         let target: SessionTarget
-        switch record.binding {
-        case .provisionalMain: target = .canonical(profile: record.profile, expectedRoot: nil)
-        case .identified(let identity, let canonical, _):
-            target = canonical ? .canonical(profile: record.profile, expectedRoot: identity.root) : .stored(identity)
+        if let storedTarget {
+            target = .stored(storedTarget)
+        } else {
+            switch record.binding {
+            case .provisionalMain: target = .canonical(profile: record.profile, expectedRoot: nil)
+            case .identified(let identity, let canonical, _):
+                target = canonical ? .canonical(profile: record.profile, expectedRoot: identity.root) : .stored(identity)
+            }
         }
         do {
             let opened = book.reconciled(try await service.openChat(target), for: id)
