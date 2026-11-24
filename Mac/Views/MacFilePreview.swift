@@ -40,7 +40,11 @@ struct MacPreviewItem: Identifiable {
 
     @MainActor static func output(_ output: T3OutputFile, store: MacBottoStore) -> MacPreviewItem {
         let root = store.workspaceRoot
-        let local = root.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).appending(path: output.relativePath) }
+        let local = root.flatMap { workspace -> URL? in
+            let base = URL(fileURLWithPath: (workspace as NSString).expandingTildeInPath).resolvingSymlinksInPath()
+            let file = base.appending(path: output.relativePath).resolvingSymlinksInPath()
+            return file.path.hasPrefix(base.path + "/") ? file : nil
+        }
         return MacPreviewItem(id: "output:" + output.relativePath, name: output.name, mimeType: output.mimeType,
                               localURL: local) { try await store.downloadOutput(output) }
     }
@@ -243,13 +247,26 @@ struct MacFilePreview: View {
             MacPageThumbnail(kind: item.kind).frame(width: 70, height: 88)
             Text("No preview for this kind of file.").foregroundStyle(.secondary)
             if let file {
-                Button("Open with Default App") {
-                    NSWorkspace.shared.open(file.url, configuration: .init()) { [file] _, _ in
-                        withExtendedLifetime(file) { }
-                    }
+                if let local = item.localURL, FileManager.default.fileExists(atPath: local.path) {
+                    Button("Open with Default App") { NSWorkspace.shared.open(local) }
+                        .buttonStyle(MacPillButtonStyle())
+                } else {
+                    Button("Save and Open…") { saveAndOpen(file) }.buttonStyle(MacPillButtonStyle())
                 }
-                .buttonStyle(MacPillButtonStyle())
+                if let error { Text(error).font(.caption).foregroundStyle(MacTheme.error) }
             }
+        }
+    }
+
+    private func saveAndOpen(_ file: MacPreviewFile) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = file.url.lastPathComponent
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try file.data.write(to: destination, options: .atomic)
+            NSWorkspace.shared.open(destination)
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 

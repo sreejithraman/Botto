@@ -6,9 +6,9 @@ struct MacFreshPage: View {
     let store: MacBottoStore
     @Binding var name: String
     @Binding var draft: String
+    @Binding var files: [URL]
     /// The space was created but its first message didn't go out; keep the words with that space.
     let onUnsent: (_ spaceID: String, _ text: String) -> Void
-    @State private var files: [URL] = []
     @State private var dropTargeted = false
     @State private var composerFocusRequests = 0
 
@@ -164,12 +164,13 @@ struct MacFreshPage: View {
         let attached = files
         Task {
             let result = await store.startSpace(named: title, text: text, files: attached)
-            guard result.sent || result.spaceID != nil else { return }
+            guard result.sent else {
+                if let space = result.spaceID, store.selectedChannelID == space { onUnsent(space, text) }
+                return
+            }
             if name == title { name = "" }
             if draft == text { draft = "" }
-            files = []
-            // The new space is open now; its composer keeps words that didn't go out.
-            if !result.sent, let space = result.spaceID { onUnsent(space, text) }
+            if files == attached { files = [] }
         }
     }
 

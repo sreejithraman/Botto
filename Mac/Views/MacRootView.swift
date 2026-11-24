@@ -6,9 +6,6 @@ import SwiftUI
 struct MacRootView: View {
     let server: LocalT3ServerManager
     @Bindable var store: MacBottoStore
-    @State private var drafts: [String: String] = [:]
-    @State private var freshDraft = ""
-    @State private var freshName = ""
     @State private var renaming: T3ChannelSummary?
     @State private var previewing: MacPreviewItem?
 
@@ -50,7 +47,7 @@ struct MacRootView: View {
                 store.disconnect()
             }
         }
-        .onChange(of: store.isConnected) { _, connected in if !connected { previewing = nil } }
+        .onChange(of: server.state) { _, state in if state != .running { previewing = nil } }
         .sheet(item: $renaming) { chat in MacRenameSpaceSheet(chat: chat, store: store) }
         .sheet(item: $previewing) { item in MacFilePreview(item: item) }
     }
@@ -81,8 +78,8 @@ struct MacRootView: View {
         if let opened = store.openedConversation {
             let id = opened.identity.stored.text
             MacChatPane(store: store, opened: opened, draft: Binding(
-                get: { drafts[id, default: ""] },
-                set: { drafts[id] = $0.isEmpty ? nil : $0 }
+                get: { store.drafts[id, default: ""] },
+                set: { store.drafts[id] = $0.isEmpty ? nil : $0 }
             ), onPreview: { previewing = $0 })
             .id(id)
         } else if store.isConnecting || store.isOpeningChannel || server.state == .starting {
@@ -119,8 +116,8 @@ struct MacRootView: View {
                         Button("New Space") { store.showFreshPage() }.buttonStyle(MacPillButtonStyle(prominent: false))
                     }
                 } else {
-                    MacFreshPage(store: store, name: $freshName, draft: $freshDraft) { space, text in
-                        if drafts[space, default: ""].isEmpty { drafts[space] = text }
+                    MacFreshPage(store: store, name: $store.freshName, draft: $store.freshDraft, files: $store.freshFiles) { space, text in
+                        if store.drafts[space, default: ""].isEmpty { store.drafts[space] = text }
                     }
                 }
             }

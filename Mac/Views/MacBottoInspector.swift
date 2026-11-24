@@ -46,17 +46,16 @@ struct MacBottoInspector: View {
             async let models: Void = store.loadModels()
             _ = await (routines, outputs, models)
         }
-        .onChange(of: store.isConnected) { _, connected in if !connected { path = [] } }
     }
 
     @ViewBuilder
     private func rows(_ brain: T3BotBrainSnapshot) -> some View {
         NavigationLink(value: Page.personality) {
-            MacHairlineRow(title: "Personality", detail: MacBrainSummary.personality(brain.soulMarkdown))
+            MacHairlineRow(title: "Personality", detail: MacBrainSummary.personality(store.soulDraft?.text ?? brain.soulMarkdown))
         }
         .buttonStyle(.plain)
         NavigationLink(value: Page.memory) {
-            MacHairlineRow(title: "What Botto remembers", detail: MacBrainSummary.memoryDetail(brain.memoryMarkdown))
+            MacHairlineRow(title: "What Botto remembers", detail: MacBrainSummary.memoryDetail(store.memoryDraft?.text ?? brain.memoryMarkdown))
         }
         .buttonStyle(.plain)
         NavigationLink(value: Page.routines) {
@@ -140,16 +139,16 @@ struct MacBottoInspector: View {
         switch page {
         case .look: MacLookEditor(store: store)
         case .personality:
-            if let brain = store.brain {
+            if let draft = store.soulDraft {
                 MacProseEditor(title: "Personality",
                                blurb: "How Botto talks and what it cares about, in every space.",
-                               initial: brain.soulMarkdown, save: store.saveSoul)
+                               autosaver: draft, reload: { try await store.readSkill(relativePath: "SOUL.md") })
             }
         case .memory:
-            if let brain = store.brain {
+            if let draft = store.memoryDraft {
                 MacProseEditor(title: "What Botto remembers",
                                blurb: "Things Botto keeps in mind across spaces. Botto adds to this as you talk; edit anything here.",
-                               initial: brain.memoryMarkdown, save: store.saveMemory)
+                               autosaver: draft, reload: { try await store.readSkill(relativePath: "MEMORY.md") })
             }
         case .routines: MacRoutinesPage(store: store)
         case .skills:
@@ -218,20 +217,13 @@ private struct MacBottoHero: View {
 struct MacProseEditor: View {
     let title: String
     let blurb: String
-    @State private var text: String
-    @State private var autosaver: MacAutosaver
-
-    init(title: String, blurb: String, initial: String, save: @escaping @MainActor (String) async throws -> Void) {
-        self.title = title
-        self.blurb = blurb
-        _text = State(initialValue: initial)
-        _autosaver = State(initialValue: MacAutosaver(initial: initial, save: save))
-    }
+    let autosaver: MacAutosaver
+    let reload: @MainActor () async throws -> String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(blurb).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            TextEditor(text: $text)
+            TextEditor(text: Binding(get: { autosaver.text }, set: { autosaver.edit($0) }))
                 .font(.body)
                 .lineSpacing(4)
                 .scrollContentBackground(.hidden)
@@ -241,10 +233,15 @@ struct MacProseEditor: View {
                 .font(.caption)
                 .foregroundStyle(isFailed ? MacTheme.error : Color.secondary)
                 .contentTransition(.opacity)
+            if isFailed {
+                HStack {
+                    Button("Try Again") { Task { await autosaver.flush() } }
+                    Button("Reload from Host") { Task { await autosaver.reload(using: reload) } }
+                }
+            }
         }
         .padding(20)
         .navigationTitle(title)
-        .onChange(of: text) { _, value in autosaver.edit(value) }
         .onDisappear { Task { await autosaver.flush() } }
     }
 
@@ -255,7 +252,7 @@ struct MacProseEditor: View {
         case .idle: "Changes save as you type."
         case .pending, .saving: "Saving…"
         case .saved: "Saved"
-        case .failed(let reason): "Couldn’t save yet: \(reason) It will try again as you type."
+        case .failed(let reason): "Couldn’t save yet: \(reason)"
         }
     }
 }

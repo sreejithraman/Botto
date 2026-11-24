@@ -10,9 +10,8 @@ enum MacWindowID {
 @main
 struct MacBottoApp: App {
     @NSApplicationDelegateAdaptor private var delegate: MacBottoDelegate
-    @State private var store = MacBottoStore()
-
     var body: some Scene {
+        let store = delegate.store
         Window("Botto", id: MacWindowID.main) {
             MacRootView(server: delegate.server, store: store)
                 .frame(minWidth: 680, minHeight: 480)
@@ -31,7 +30,7 @@ struct MacBottoApp: App {
         .defaultSize(width: 720, height: 460)
 
         MenuBarExtra {
-            MacEngineMenu(server: delegate.server, showsOpenWindow: true)
+            MacEngineMenu(server: delegate.server, store: store, showsOpenWindow: true)
         } label: {
             Image(systemName: delegate.server.state == .running ? "face.smiling" : "moon.zzz")
                 .accessibilityLabel("Botto")
@@ -60,7 +59,7 @@ private struct MacBottoCommands: Commands {
                 .disabled(!store.isConnected)
         }
         CommandMenu("Engine") {
-            MacEngineMenu(server: server, showsOpenWindow: false)
+            MacEngineMenu(server: server, store: store, showsOpenWindow: false)
         }
     }
 }
@@ -68,6 +67,7 @@ private struct MacBottoCommands: Commands {
 /// The same engine items for the app menu and the menu bar extra.
 struct MacEngineMenu: View {
     let server: LocalT3ServerManager
+    let store: MacBottoStore
     let showsOpenWindow: Bool
     @Environment(\.openWindow) private var openWindow
 
@@ -78,9 +78,9 @@ struct MacEngineMenu: View {
         case .stopped, .failed:
             Button("Wake Botto") { server.start() }
         case .starting, .running:
-            Button("Put Botto to Sleep") { server.stop() }
+            Button("Put Botto to Sleep") { Task { await store.flushProse(); server.stop() } }
         }
-        Button("Restart Engine") { server.restart() }
+        Button("Restart Engine") { Task { await store.flushProse(); server.restart() } }
             .disabled(server.state == .stopped)
         Divider()
         Button("Pair Phone…") { openWindow(id: MacWindowID.pairPhone) }
@@ -110,6 +110,24 @@ struct MacEngineMenu: View {
 @MainActor
 final class MacBottoDelegate: NSObject, NSApplicationDelegate {
     let server = LocalT3ServerManager()
+    let store = MacBottoStore()
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard store.hasUnsavedProse else { return .terminateNow }
+        Task {
+            await store.flushProse()
+            guard store.hasUnsavedProse else { sender.reply(toApplicationShouldTerminate: true); return }
+            let alert = NSAlert()
+            alert.messageText = "Botto couldn’t save your changes."
+            alert.informativeText = "Keep Botto open to retry or copy the unsaved text."
+            alert.addButton(withTitle: "Keep Botto Open")
+            alert.addButton(withTitle: "Quit Without Saving")
+            sender.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
+        }
+        return .terminateLater
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         server.terminateSync()

@@ -18,6 +18,23 @@ struct MacPreviewFileTests {
     }
 }
 
+@MainActor struct MacProseConflictTests {
+    @Test func keepsTheDraftUntilAnExplicitReload() async {
+        let current = "Host updated this"
+        let autosaver = MacAutosaver(initial: "Previous host text", delay: .seconds(60)) { _, expected in
+            #expect(expected == "Previous host text")
+            throw T3ServiceError.proseChanged
+        }
+        autosaver.edit("Keep my draft")
+        await autosaver.flush()
+        #expect(autosaver.text == "Keep my draft")
+        #expect(autosaver.hasUnsavedEdits)
+        await autosaver.reload { current }
+        #expect(autosaver.text == current)
+        #expect(!autosaver.hasUnsavedEdits)
+    }
+}
+
 struct MacActivityCueTests {
     @Test func cuesReadAsQuietLowercaseLines() {
         #expect(MacAvatarActivity.thinking.cue == "thinking…")
@@ -36,7 +53,7 @@ struct MacActivityCueTests {
 @MainActor struct MacAutosaverTests {
     @Test func typingBurstSavesOnlyTheNewestText() async throws {
         var saves: [String] = []
-        let saver = MacAutosaver(initial: "start", delay: .milliseconds(20)) { saves.append($0) }
+        let saver = MacAutosaver(initial: "start", delay: .milliseconds(20)) { value, _ in saves.append(value) }
         saver.edit("s")
         saver.edit("st")
         saver.edit("still typing")
@@ -48,7 +65,7 @@ struct MacActivityCueTests {
 
     @Test func revertingBeforeTheDelaySavesNothing() async throws {
         var saves: [String] = []
-        let saver = MacAutosaver(initial: "same", delay: .milliseconds(20)) { saves.append($0) }
+        let saver = MacAutosaver(initial: "same", delay: .milliseconds(20)) { value, _ in saves.append(value) }
         saver.edit("changed")
         saver.edit("same")
         try await Task.sleep(for: .milliseconds(80))
@@ -59,7 +76,7 @@ struct MacActivityCueTests {
         struct Offline: LocalizedError { var errorDescription: String? { "Offline." } }
         final class Log { var attempts: [String] = []; var fail = true }
         let log = Log()
-        let saver = MacAutosaver(initial: "", delay: .seconds(60)) { value in
+        let saver = MacAutosaver(initial: "", delay: .seconds(60)) { value, _ in
             log.attempts.append(value)
             if log.fail { throw Offline() }
         }

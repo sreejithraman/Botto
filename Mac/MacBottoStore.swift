@@ -12,6 +12,20 @@ final class MacBottoStore {
     private(set) var selectedChannelID: String?
     private(set) var openedConversation: OpenedConversation?
     private(set) var brain: T3BotBrainSnapshot?
+    private(set) var soulDraft: MacAutosaver?
+    private(set) var memoryDraft: MacAutosaver?
+    private var proseWorkspace: ProseWorkspace?
+    var drafts: [String: String] = [:]
+    var freshDraft = ""
+    var freshName = ""
+    var freshFiles: [URL] = []
+    private var freshCreatedSpace: String?
+    private var pendingMutationNotice: String?
+
+    private struct ProseWorkspace: Equatable {
+        let profile: String
+        let root: String
+    }
     private(set) var models: [T3ModelOption] = []
     /// Files Botto saved under outputs/, loaded when something needs them.
     private(set) var outputs: [T3OutputFile]?
@@ -72,12 +86,7 @@ final class MacBottoStore {
             let saved = pairingAgain ? nil : await Task.detached { session.load() }.value
             try checkConnection(attempt)
             if let data = saved, let stored = try? JSONDecoder().decode(T3Connection.self, from: data) {
-                do {
-                    _ = try await service.connect(configuration: .init(serverURL: origin, t3: stored))
-                } catch where Self.staleSession(error) {
-                    try checkConnection(attempt)
-                    try await pairAndConnect(to: server, attempt: attempt)
-                }
+                _ = try await service.connect(configuration: .init(serverURL: origin, t3: stored))
             } else {
                 try await pairAndConnect(to: server, attempt: attempt)
             }
@@ -90,12 +99,12 @@ final class MacBottoStore {
             Task { await loadModels() }
             // Reopen the space from before a restart, else one that needs attention, else the main space.
             // The new-space page only stands in when the host can't hold a main space yet.
-            if let id = selectedChannelID, channels.contains(where: { $0.id == id }) {
-                await openChannel(id)
-            } else if channels.contains(where: { $0.isMain }), let initial = T3ChatShelf.initialSpace(channels) {
-                await openChannel(initial.id)
-            } else {
+            if !channels.contains(where: { $0.isMain }) {
                 await openChannel(nil)
+            } else if let id = selectedChannelID, channels.contains(where: { $0.id == id }) {
+                await openChannel(id)
+            } else if let initial = T3ChatShelf.initialSpace(channels) {
+                await openChannel(initial.id)
             }
         } catch {
             guard connectionID == attempt else { return }
@@ -175,6 +184,7 @@ final class MacBottoStore {
     /// Without a name, T3 names it from that message; with one, the message is optional.
     /// Returns the created space when its first message did not go out, so the caller can keep the draft there.
     func startSpace(named name: String = "", text: String, files: [URL]) async -> (spaceID: String?, sent: Bool) {
+        guard pendingMutationNotice == nil else { error = pendingMutationNotice; return (nil, false) }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isConnected, !isStartingSpace, !text.isEmpty || !files.isEmpty || !name.isEmpty else { return (nil, false) }
@@ -183,9 +193,23 @@ final class MacBottoStore {
         let model = freshModel
         isStartingSpace = true
         defer { if connectionID == connection { isStartingSpace = false } }
-        var created: String?
-        guard await perform({ created = try await service.createChat(title: name.isEmpty ? nil : name).summary.identity.stored.text }),
-              let id = created else { return (nil, false) }
+        let id: String
+        if let created = freshCreatedSpace {
+            guard channels.contains(where: { $0.id == created && !$0.isArchived }) else {
+                error = T3ServiceError.missingChannel.localizedDescription
+                return (created, false)
+            }
+            id = created
+        } else {
+            var created: String?
+            let current = await perform {
+                created = try await service.createChat(title: name.isEmpty ? nil : name).summary.identity.stored.text
+            }
+            guard let created else { return (nil, false) }
+            freshCreatedSpace = created
+            guard current else { return (created, false) }
+            id = created
+        }
         channels = service.currentT3Channels
         guard openID == navigation else { return (id, false) }
         if let model {
@@ -199,20 +223,26 @@ final class MacBottoStore {
         guard connectionID == connection, let opened = openedConversation, opened.identity.stored.text == id else {
             return (id, false)
         }
-        if text.isEmpty, files.isEmpty { return (id, true) }
-        if !files.isEmpty { await attach(files) }
-        guard connectionID == connection, openedConversation?.access == opened.access,
-              readyAttachments.count == files.count else { return (id, false) }
-        return (id, await send(text: text))
+        if text.isEmpty, files.isEmpty {
+            freshCreatedSpace = nil
+            return (id, true)
+        }
+        let batch = await attach(files)
+        guard connectionID == connection, batch.count == files.count else { return (id, false) }
+        let sent = await send(text: text, firstSend: (opened.access, batch))
+        if sent { freshCreatedSpace = nil }
+        return (id, sent)
     }
 
     @discardableResult
-    func send(text: String) async -> Bool {
+    func send(text: String, firstSend: (access: ConversationAccess, files: [ChatAttachment])? = nil) async -> Bool {
+        guard pendingMutationNotice == nil else { error = pendingMutationNotice; return false }
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = readyAttachments
-        guard !text.isEmpty || !attachments.isEmpty, !isSending, !isUploading,
+        guard !text.isEmpty || !attachments.isEmpty, !isSending, stagedAttachments.count == attachments.count,
               selectedChannel?.isArchived != true,
               let access = openedConversation?.access else { return false }
+        if let firstSend, access != firstSend.access || attachments != firstSend.files { return false }
         let connection = connectionID
         isSending = true
         defer { if connectionID == connection { isSending = false } }
@@ -228,21 +258,23 @@ final class MacBottoStore {
     }
 
     /// Reads, checks and uploads local files into the open space's staging area.
-    func attach(_ urls: [URL]) async {
-        guard let access = openedConversation?.access, selectedChannel?.isArchived != true else { return }
+    @discardableResult
+    func attach(_ urls: [URL]) async -> [ChatAttachment] {
+        guard let access = openedConversation?.access, selectedChannel?.isArchived != true else { return [] }
+        var batch: [ChatAttachment] = []
         let channel = selectedChannelID
         error = nil
         for url in urls where url.isFileURL {
             guard stagedAttachments.count < AttachmentLimits.count else {
                 error = AttachmentLimits.message
-                return
+                return batch
             }
             let name = url.lastPathComponent
             let mimeType = MacAttachmentKind.mimeType(for: url)
             let read = await Task.detached { () -> Result<Data, any Error> in
                 Result { try Data(contentsOf: url, options: .mappedIfSafe) }
             }.value
-            guard selectedChannelID == channel, openedConversation?.access == access else { return }
+            guard selectedChannelID == channel, openedConversation?.access == access else { return batch }
             let data: Data
             switch read {
             case .success(let loaded): data = loaded
@@ -261,16 +293,19 @@ final class MacBottoStore {
             do {
                 let uploaded = try await service.upload(data: data, filename: name, mimeType: mimeType, access: access)
                 guard selectedChannelID == channel, openedConversation?.access == access,
-                      let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return }
+                      let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return batch }
                 stagedAttachments[index].state = .ready(uploaded)
+                batch.append(uploaded)
             } catch {
-                guard let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return }
+                guard let index = stagedAttachments.firstIndex(where: { $0.id == item.id }) else { return batch }
                 stagedAttachments[index].state = .failed(error.localizedDescription)
             }
         }
+        return batch
     }
 
     func dismissError() {
+        pendingMutationNotice = nil
         error = nil
     }
 
@@ -344,7 +379,32 @@ final class MacBottoStore {
             let snapshot = try await service.loadBotBrain()
             try checkConnection(connection)
             brain = snapshot
+            guard let bot else { return }
+            let scope = ProseWorkspace(profile: bot.id, root: snapshot.workspaceRoot)
+            if proseWorkspace != scope {
+                proseWorkspace = scope
+                soulDraft = MacAutosaver(initial: snapshot.soulMarkdown) { [weak self] value, expected in
+                    guard let self, self.ownsProse(scope) else { throw T3ServiceError.disconnected }
+                    try await self.saveSoul(value, replacing: expected)
+                }
+                memoryDraft = MacAutosaver(initial: snapshot.memoryMarkdown) { [weak self] value, expected in
+                    guard let self, self.ownsProse(scope) else { throw T3ServiceError.disconnected }
+                    try await self.saveMemory(value, replacing: expected)
+                }
+            }
         }
+    }
+
+    private func ownsProse(_ scope: ProseWorkspace) -> Bool {
+        bot?.id == scope.profile && service.currentBotWorkspaceRoot == scope.root
+    }
+
+    var hasUnsavedProse: Bool { soulDraft?.hasUnsavedEdits == true || memoryDraft?.hasUnsavedEdits == true }
+
+    func flushProse() async {
+        async let soul: Void? = soulDraft?.flush()
+        async let memory: Void? = memoryDraft?.flush()
+        _ = await (soul, memory)
     }
 
     func loadModels() async {
@@ -366,16 +426,16 @@ final class MacBottoStore {
     }
 
     /// Debounced autosaves call these; the service applies them in order.
-    func saveSoul(_ markdown: String) async throws {
-        try await live { try await service.saveSoul(markdown) }
+    func saveSoul(_ markdown: String, replacing expected: String? = nil) async throws {
+        try await live { try await service.saveSoul(markdown, replacing: expected) }
         if let brain {
             self.brain = .init(manifest: brain.manifest, soulMarkdown: markdown, memoryMarkdown: brain.memoryMarkdown,
                                skills: brain.skills, workspaceRoot: brain.workspaceRoot)
         }
     }
 
-    func saveMemory(_ markdown: String) async throws {
-        try await live { try await service.saveMemory(markdown) }
+    func saveMemory(_ markdown: String, replacing expected: String? = nil) async throws {
+        try await live { try await service.saveMemory(markdown, replacing: expected) }
         if let brain {
             self.brain = .init(manifest: brain.manifest, soulMarkdown: brain.soulMarkdown, memoryMarkdown: markdown,
                                skills: brain.skills, workspaceRoot: brain.workspaceRoot)
@@ -394,12 +454,12 @@ final class MacBottoStore {
 
     /// Nil is "Automatic": the host's default model.
     func setDefaultModel(_ option: T3ModelOption?) async throws {
-        let refreshed = try await live { () -> (BotProfile?, T3BotBrainSnapshot) in
-            try await service.setDefaultModel(option)
-            return (try await service.bots().first, try await service.loadBotBrain())
+        let manifest = try await live { try await service.setDefaultModel(option) }
+        if let brain {
+            self.brain = .init(manifest: manifest, soulMarkdown: brain.soulMarkdown, memoryMarkdown: brain.memoryMarkdown,
+                               skills: brain.skills, workspaceRoot: brain.workspaceRoot)
         }
-        if let profile = refreshed.0 { bot = profile }
-        brain = refreshed.1
+        if let profile = try? await live({ try await service.bots().first }) { bot = profile }
     }
 
     func loadRoutines() async {
@@ -445,7 +505,10 @@ final class MacBottoStore {
             try checkConnection(connection)
             return true
         } catch {
-            if connectionID == connection, !Task.isCancelled { self.error = error.localizedDescription }
+            if connectionID == connection {
+                if case HermesServiceError.uncertain = error { pendingMutationNotice = error.localizedDescription }
+                if !Task.isCancelled { self.error = error.localizedDescription }
+            }
             return false
         }
     }
@@ -492,13 +555,6 @@ final class MacBottoStore {
         }
     }
 
-    private static func staleSession(_ error: any Error) -> Bool {
-        switch error {
-        case T3ServiceError.differentEnvironment, T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): true
-        default: false
-        }
-    }
-
     private static func invalidPairingCredential(_ error: any Error) -> Bool {
         switch error {
         case T3PairingError.httpStatus(400), T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): true
@@ -522,7 +578,7 @@ final class MacBottoStore {
         case .connected:
             isConnected = true
             isConnecting = false
-            error = nil
+            error = pendingMutationNotice
             channels = service.currentT3Channels
             let connection = connectionID
             Task {
@@ -656,7 +712,12 @@ final class MacSessionPersistence: @unchecked Sendable {
     func load() -> Data? {
         if let legacy = defaults.data(forKey: Self.legacyDefaultsKey) {
             defaults.removeObject(forKey: Self.legacyDefaultsKey)
-            save(legacy)
+            if let decoded = try? JSONDecoder().decode(T3Connection.self, from: legacy),
+               decoded.projectID?.isEmpty != false || decoded.workspaceRoot?.isEmpty != false {
+                lock.withLock { memory = legacy }
+            } else {
+                save(legacy)
+            }
         }
         if let stored = slot.read() { return stored }
         return lock.withLock { memory }
