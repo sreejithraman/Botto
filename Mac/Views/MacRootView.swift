@@ -50,7 +50,7 @@ struct MacRootView: View {
                 store.disconnect()
             }
         }
-        .onChange(of: store.isConnected) { _, connected in if !connected { store.showsInspector = false } }
+        .onChange(of: store.isConnected) { _, connected in if !connected { previewing = nil } }
         .sheet(item: $renaming) { chat in MacRenameSpaceSheet(chat: chat, store: store) }
         .sheet(item: $previewing) { item in MacFilePreview(item: item) }
     }
@@ -107,6 +107,8 @@ struct MacRootView: View {
                              title: "Can’t reach \(name)",
                              message: "The engine is running, but \(name) couldn’t connect to it.") {
                     Button("Reconnect") { Task { await store.connect(to: server) } }.buttonStyle(MacPillButtonStyle())
+                    Button("Pair Again") { Task { await store.connect(to: server, pairingAgain: true) } }
+                        .buttonStyle(MacPillButtonStyle(prominent: false))
                 }
             default:
                 if let selected = store.selectedChannel {

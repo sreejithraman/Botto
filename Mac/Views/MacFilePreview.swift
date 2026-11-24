@@ -1,5 +1,6 @@
 import AppKit
 import BottoCore
+import CoreTransferable
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -124,11 +125,48 @@ struct MacFileThumbnail: View {
     }
 }
 
+/// Keeps the temporary copy alive for the preview or a share in progress.
+final class MacPreviewFile: Transferable, Sendable {
+    let url: URL
+    let data: Data
+
+    private init(directory: URL, artifact: DownloadedArtifact) {
+        url = directory.appendingPathComponent(Self.filename(artifact.filename), isDirectory: false)
+        data = artifact.data
+    }
+
+    deinit { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .data) { file in SentTransferredFile(file.url) }
+    }
+
+    static func write(_ artifact: DownloadedArtifact) async throws -> MacPreviewFile {
+        try await Task.detached {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("botto-preview-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            let file = MacPreviewFile(directory: directory, artifact: artifact)
+            try file.data.write(to: file.url, options: .atomic)
+            return file
+        }.value
+    }
+
+    private static func filename(_ raw: String) -> String {
+        let leaf = raw.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last ?? ""
+        var clean = String(leaf.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0) && $0 != ":"
+        }).trimmingCharacters(in: .whitespacesAndNewlines)
+        while clean.utf8.count > 200 { clean.removeLast() }
+        return clean.isEmpty || clean == "." || clean == ".." ? "File" : clean
+    }
+}
+
 struct MacFilePreview: View {
     let item: MacPreviewItem
     @Environment(\.dismiss) private var dismiss
-    @State private var file: DownloadedArtifact?
-    @State private var shareURL: URL?
+    @State private var file: MacPreviewFile?
     @State private var error: String?
 
     var body: some View {
@@ -144,8 +182,8 @@ struct MacFilePreview: View {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([localURL]) }
                         .buttonStyle(MacPillButtonStyle(prominent: false))
                 }
-                if let shareURL {
-                    ShareLink(item: shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
+                if let file {
+                    ShareLink(item: file, preview: SharePreview(item.name)) { Label("Share", systemImage: "square.and.arrow.up") }
                         .buttonStyle(MacPillButtonStyle(prominent: false))
                 }
                 Button("Done") { dismiss() }
@@ -204,9 +242,13 @@ struct MacFilePreview: View {
         VStack(spacing: 12) {
             MacPageThumbnail(kind: item.kind).frame(width: 70, height: 88)
             Text("No preview for this kind of file.").foregroundStyle(.secondary)
-            if let shareURL {
-                Button("Open with Default App") { NSWorkspace.shared.open(shareURL) }
-                    .buttonStyle(MacPillButtonStyle())
+            if let file {
+                Button("Open with Default App") {
+                    NSWorkspace.shared.open(file.url, configuration: .init()) { [file] _, _ in
+                        withExtendedLifetime(file) { }
+                    }
+                }
+                .buttonStyle(MacPillButtonStyle())
             }
         }
     }
@@ -215,15 +257,10 @@ struct MacFilePreview: View {
         error = nil
         do {
             let loaded = try await item.load()
+            try Task.checkCancellation()
+            let preview = try await MacPreviewFile.write(loaded)
             guard !Task.isCancelled else { return }
-            file = loaded
-            let folder = FileManager.default.temporaryDirectory
-                .appending(path: "botto-previews", directoryHint: .isDirectory)
-                .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let url = folder.appending(path: loaded.filename.isEmpty ? item.name : loaded.filename)
-            try loaded.data.write(to: url, options: .atomic)
-            shareURL = url
+            file = preview
         } catch {
             if !Task.isCancelled, file == nil { self.error = error.localizedDescription }
         }

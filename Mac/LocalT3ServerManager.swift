@@ -101,12 +101,17 @@ final class LocalT3ServerManager {
                     guard let self, self.server === command else { return }
                     self.receiveServerLine(line)
                 }
-                guard let self, self.server === command else { return }
-                self.startupDeadline?.cancel()
-                self.server = nil
-                self.pairingCommand?.stop()
-                self.startupLinks = T3PairingOutput()
-                self.state = .failed("T3 exited with status \(command.process.terminationStatus).")
+            }
+            Task { [weak self] in
+                for await status in command.exitCodes {
+                    guard let self, self.server === command else { return }
+                    self.startupDeadline?.cancel()
+                    self.server = nil
+                    self.pairingCommand?.stop()
+                    command.stop()
+                    self.startupLinks = T3PairingOutput()
+                    self.state = .failed("T3 exited with status \(status).")
+                }
             }
         } catch {
             state = .failed(error.localizedDescription)
@@ -257,6 +262,8 @@ private enum T3LocalError: LocalizedError {
 private final class T3Command {
     let process = Process()
     let lines: AsyncStream<String>
+    let exitCodes: AsyncStream<Int32>
+    private let output: AsyncStream<String>.Continuation
 
     init(executable: URL, arguments: [String], directory: URL? = nil) throws {
         let pipe = Pipe()
@@ -273,6 +280,13 @@ private final class T3Command {
 
         let (lines, continuation) = AsyncStream.makeStream(of: String.self)
         self.lines = lines
+        output = continuation
+        let (exitCodes, reportExit) = AsyncStream.makeStream(of: Int32.self)
+        self.exitCodes = exitCodes
+        process.terminationHandler = { process in
+            reportExit.yield(process.terminationStatus)
+            reportExit.finish()
+        }
         try process.run()
         try? pipe.fileHandleForWriting.close()
         let reader = pipe.fileHandleForReading
@@ -309,6 +323,7 @@ private final class T3Command {
     }
 
     func stop() {
+        defer { output.finish() }
         guard process.isRunning else { return }
         let pid = process.processIdentifier
         let target = getpgid(pid) == pid ? -pid : pid

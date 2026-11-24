@@ -3,6 +3,21 @@ import Foundation
 import Testing
 @testable import BottoMac
 
+struct MacPreviewFileTests {
+    @Test func previewUsesAPrivateDirectoryAndCleansUpItsCopy() async throws {
+        let artifact = DownloadedArtifact(data: Data("Notes".utf8), filename: "folder/Notes.txt", mimeType: "text/plain")
+        var file: MacPreviewFile? = try await MacPreviewFile.write(artifact)
+        let url = try #require(file?.url)
+        let directory = url.deletingLastPathComponent()
+        #expect(url.lastPathComponent == "Notes.txt")
+        #expect(try Data(contentsOf: url) == artifact.data)
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        file = nil
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+    }
+}
+
 struct MacActivityCueTests {
     @Test func cuesReadAsQuietLowercaseLines() {
         #expect(MacAvatarActivity.thinking.cue == "thinking…")
