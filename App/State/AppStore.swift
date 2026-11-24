@@ -1610,7 +1610,10 @@ import BottoCore
         #endif
         guard canOpenBot(opening) else { return }
         if isT3Workspace, let space = T3ChatShelf.initialSpace(t3Channels) {
-            await openT3Channel(space, authority: opening.authority)
+            let opened = await openT3Channel(space, authority: opening.authority)
+            if !opened, !Task.isCancelled, isCurrentConnection(opening.authority), selectedT3ChannelID == nil {
+                notice = String(localized: "That space didn’t open. Select Botto to try again.")
+            }
         } else {
             await opening.authority.workspace.open(opening.intent)
         }
