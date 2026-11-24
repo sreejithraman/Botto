@@ -324,10 +324,15 @@ import UIKit
             .first { $0.activationState == .foregroundActive })
         let previous = scene.windows.first { $0.isKeyWindow }
         let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: T3Workspace(
-            store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {}))
+        let presentation = WorkspacePresentation()
+        let host = UIHostingController(rootView: T3Workspace(
+            store: store, presentation: presentation, rootCovered: true, onSettings: {}))
+        window.rootViewController = host
         window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(service.openedStoredThreads.isEmpty)
+        host.rootView = T3Workspace(store: store, presentation: presentation, rootCovered: false, onSettings: {})
 
         // Release is waiting, so it opens first instead of a blank page.
         let (bar, title) = try await header(in: window)
@@ -545,6 +550,30 @@ import UIKit
         autosave.retry("one two three")
         try await Task.sleep(for: .milliseconds(30))
         #expect(writes == ["one two", "one two three"])
+        #expect(autosave.state == .saved)
+    }
+
+    @Test func autosaveWritesTheRevertAfterAnEarlierWriteFinishes() async throws {
+        let gate = WorkspaceGate()
+        var hostText = "original"
+        var writes: [String] = []
+        let autosave = T3Autosave(saved: hostText) { text in
+            if text == "intermediate" { await gate.wait() }
+            hostText = text
+            writes.append(text)
+        }
+        autosave.flush("intermediate")
+        await gate.entered()
+        defer { gate.release() }
+        autosave.edited("original")
+        autosave.flush("original")
+        #expect(hostText == "original" && writes.isEmpty)
+        gate.release()
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while writes.count < 2, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(writes == ["intermediate", "original"])
+        #expect(hostText == "original")
         #expect(autosave.state == .saved)
     }
 

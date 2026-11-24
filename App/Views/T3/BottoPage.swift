@@ -13,15 +13,21 @@ struct BottoPage: View {
     @State private var brain: T3BotBrainSnapshot?
     @State private var soul = ""
     @State private var memory = ""
+    @State private var soulAutosave: T3Autosave?
+    @State private var memoryAutosave: T3Autosave?
     @State private var routines: [T3ScheduledRoutine]?
+    @State private var routinesError: String?
     @State private var name = ""
     @State private var nameSave: Task<Void, Never>?
+    @State private var submittedName: String?
     @State private var loadError: String?
     @State private var saveError: String?
     @State private var retry = 0
     @State private var openedOutput: T3OutputFile?
     @FocusState private var editingName: Bool
-    private let scope: UUID?
+    private let workspace: ConversationWorkspace
+
+    private struct BrainLoad: Equatable { let online: Bool; let retry: Int }
 
     init(store: AppStore, outputs: T3OutputsModel, onOpenChat: @escaping (T3ChannelSummary) -> Void,
          onSettings: (() -> Void)? = nil) {
@@ -29,10 +35,10 @@ struct BottoPage: View {
         self.outputs = outputs
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings
-        scope = store.configuration?.id
+        workspace = store.chats
     }
 
-    private var isCurrent: Bool { store.isT3Workspace && store.configuration?.id == scope }
+    private var isCurrent: Bool { store.isT3Workspace && store.chats === workspace }
 
     var body: some View {
         NavigationStack {
@@ -72,17 +78,11 @@ struct BottoPage: View {
         .presentationCornerRadius(38)
         .accessibilityIdentifier("botto-page")
         .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
-        .task(id: retry) { await load() }
-        .task(id: store.connectionGeneration) {
-            guard store.isConnected else { return }
-            if brain == nil { await load() }
-            await loadRoutines()
-            await outputs.load(store)
-        }
+        .task(id: BrainLoad(online: store.isConnected, retry: retry)) { await load() }
+        .task(id: store.isConnected) { await loadRoutines() }
         .onChange(of: store.primaryT3Bot?.name) { _, value in
-            if !editingName, let value { name = value }
+            if !editingName, submittedName == nil, let value { name = value }
         }
-        .onChange(of: store.configuration?.id) { _, id in if id != scope { dismiss() } }
         .onDisappear { commitName() }
     }
 
@@ -134,7 +134,7 @@ struct BottoPage: View {
         VStack(spacing: 0) {
             row(.personality, title: "Personality", detail: T3BrainText.personalitySummary(soul), loaded: brain != nil)
             row(.memory, title: "What Botto remembers", detail: T3BrainText.memorySummary(memory), loaded: brain != nil)
-            row(.routines, title: "Routines", detail: routineSummary, loaded: routines != nil || brain != nil)
+            row(.routines, title: "Routines", detail: routineSummary, loaded: true)
             row(.skills, title: "Skills", detail: skillsSummary, loaded: brain != nil, last: true)
         }
     }
@@ -164,6 +164,8 @@ struct BottoPage: View {
     }
 
     private var routineSummary: String {
+        if routines == nil, routinesError != nil { return String(localized: "Couldn’t load routines") }
+        if routines == nil, !store.isConnected { return String(localized: "Connect to see routines") }
         guard let routines else { return String(localized: "Loading…") }
         let active = routines.filter(\.enabled).map(\.name)
         if active.isEmpty { return routines.isEmpty ? String(localized: "None yet") : String(localized: "All paused") }
@@ -192,7 +194,11 @@ struct BottoPage: View {
                     .accessibilityIdentifier("botto-page-files")
                 }
             }
-            if files.isEmpty {
+            if let error = outputs.error, files.isEmpty {
+                InlineNotice(message: error)
+                Button("Try again", systemImage: "arrow.clockwise") { Task { await outputs.load(store) } }
+                    .buttonStyle(BottoPillButtonStyle())
+            } else if files.isEmpty {
                 Text(outputs.outputs == nil
                      ? (store.isConnected ? String(localized: "Looking for files…") : String(localized: "Files appear when the host connects."))
                      : String(localized: "Plans, notes and pictures Botto saves will collect here."))
@@ -242,15 +248,17 @@ struct BottoPage: View {
     @ViewBuilder private func destination(for destination: Destination) -> some View {
         switch destination {
         case .personality:
-            T3ProseEditor(title: "Personality",
-                          blurb: "How Botto sounds and what it cares about. It reads this in every space.",
-                          text: $soul, isCurrent: { isCurrent }, save: store.saveT3Soul)
+            if let soulAutosave {
+                T3ProseEditor(title: "Personality",
+                              blurb: "How Botto sounds and what it cares about. It reads this in every space.",
+                              text: $soul, autosave: soulAutosave)
+                    .onDisappear { soulAutosave.flush(soul) }
+            }
         case .memory:
-            T3MemoryView(text: $memory, isCurrent: { isCurrent }, save: store.saveT3Memory)
+            if let memoryAutosave { T3MemoryView(text: $memory, autosave: memoryAutosave) }
         case .routines:
-            T3RoutinesList(store: store, routines: $routines, isCurrent: { isCurrent }, onOpenChat: { channel in
-                dismiss(); onOpenChat(channel)
-            })
+            T3RoutinesList(store: store, routines: $routines, loadError: routinesError, reload: loadRoutines,
+                           isCurrent: { isCurrent }, onOpenChat: { channel in dismiss(); onOpenChat(channel) })
         case .skills:
             T3SkillsList(store: store, skills: brain?.skills ?? [], isCurrent: { isCurrent })
         case .files:
@@ -276,6 +284,14 @@ struct BottoPage: View {
             guard !Task.isCancelled, isCurrent else { return }
             soul = loaded.soulMarkdown
             memory = loaded.memoryMarkdown
+            soulAutosave = T3Autosave(saved: soul) { value in
+                guard isCurrent else { throw T3ServiceError.disconnected }
+                try await store.saveT3Soul(value)
+            }
+            memoryAutosave = T3Autosave(saved: memory) { value in
+                guard isCurrent else { throw T3ServiceError.disconnected }
+                try await store.saveT3Memory(value)
+            }
             brain = loaded
             if !editingName { name = loaded.manifest.displayName }
         } catch where !Task.isCancelled { loadError = error.localizedDescription }
@@ -284,22 +300,31 @@ struct BottoPage: View {
 
     private func loadRoutines() async {
         guard isCurrent, store.isConnected else { return }
-        guard let loaded = try? await store.listT3Routines(), isCurrent else { return }
-        routines = loaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        do {
+            let loaded = try await store.listT3Routines()
+            guard !Task.isCancelled, isCurrent else { return }
+            routines = loaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            routinesError = nil
+        } catch where !Task.isCancelled && isCurrent {
+            routinesError = error.localizedDescription
+        } catch { }
     }
 
     private func commitName() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isCurrent, let current = store.primaryT3Bot?.name else { return }
         guard !trimmed.isEmpty else { name = current; return }
-        guard trimmed != current else { return }
-        nameSave?.cancel()
+        guard trimmed != (submittedName ?? current) else { return }
+        submittedName = trimmed
+        let previous = nameSave
         saveError = nil
         nameSave = Task {
+            await previous?.value
+            guard isCurrent, submittedName == trimmed else { return }
+            defer { if submittedName == trimmed { submittedName = nil } }
             do { try await store.renameT3Bot(trimmed) }
-            catch where isCurrent {
+            catch where isCurrent && submittedName == trimmed {
                 saveError = String(localized: "Couldn’t rename Botto. \(error.localizedDescription)")
-                if !editingName { name = store.primaryT3Bot?.name ?? current }
             } catch { }
         }
     }
@@ -372,44 +397,63 @@ enum T3BrainText {
 @MainActor @Observable final class T3Autosave {
     enum State: Equatable { case idle, saving, saved, failed(String) }
     private(set) var state: State = .idle
-    private var saved: String
-    private var pending: Task<Void, Never>?
+    private var saved: String?
+    private var desired: String
+    private var debounce: Task<Void, Never>?
+    private var isWriting = false
     private let delay: Duration
     private let write: @MainActor (String) async throws -> Void
 
     init(saved: String, delay: Duration = .milliseconds(800), write: @escaping @MainActor (String) async throws -> Void) {
         self.saved = saved
+        desired = saved
         self.delay = delay
         self.write = write
     }
 
     func edited(_ text: String) {
-        pending?.cancel()
-        guard text != saved else { if case .failed = state { state = .idle }; return }
-        pending = Task { [delay] in
+        desired = text
+        debounce?.cancel()
+        guard !isWriting, text != saved else { return }
+        debounce = Task { [weak self, delay] in
             do { try await Task.sleep(for: delay) } catch { return }
-            await self.persist(text)
+            self?.persistLatest()
         }
     }
 
     func flush(_ text: String) {
-        pending?.cancel()
-        pending = nil
-        guard text != saved else { return }
-        Task { await persist(text) }
+        desired = text
+        debounce?.cancel()
+        debounce = nil
+        if case .failed = state { return }
+        persistLatest()
     }
 
-    func retry(_ text: String) { flush(text) }
+    func retry(_ text: String) {
+        desired = text
+        debounce?.cancel()
+        debounce = nil
+        persistLatest()
+    }
 
-    private func persist(_ text: String) async {
-        guard text != saved else { return }
+    private func persistLatest() {
+        guard !isWriting, desired != saved else { return }
+        let text = desired
+        isWriting = true
         state = .saving
-        do {
-            try await write(text)
-            saved = text
-            state = .saved
-        } catch {
-            state = .failed(error.localizedDescription)
+        // Only the debounce can be cancelled. A dispatched write may already have reached the host.
+        Task {
+            do {
+                try await write(text)
+                saved = text
+                isWriting = false
+                state = .saved
+                persistLatest()
+            } catch {
+                saved = nil
+                isWriting = false
+                state = .failed(error.localizedDescription)
+            }
         }
     }
 }
@@ -436,20 +480,7 @@ struct T3ProseEditor: View {
     let title: LocalizedStringKey
     let blurb: LocalizedStringKey
     @Binding var text: String
-    let isCurrent: @MainActor () -> Bool
-    @State private var autosave: T3Autosave
-
-    init(title: LocalizedStringKey, blurb: LocalizedStringKey, text: Binding<String>,
-         isCurrent: @escaping @MainActor () -> Bool, save: @escaping @MainActor (String) async throws -> Void) {
-        self.title = title
-        self.blurb = blurb
-        _text = text
-        self.isCurrent = isCurrent
-        _autosave = State(initialValue: T3Autosave(saved: text.wrappedValue) { value in
-            guard isCurrent() else { throw T3ServiceError.disconnected }
-            try await save(value)
-        })
-    }
+    let autosave: T3Autosave
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -467,24 +498,22 @@ struct T3ProseEditor: View {
         .background(BottoTheme.paper)
         .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
         .onChange(of: text) { _, value in autosave.edited(value) }
-        .onDisappear { autosave.flush(text) }
     }
 }
 
 /// Memory reads as a list of things Botto knows; each can be forgotten, or the whole note edited as text.
 struct T3MemoryView: View {
     @Binding var text: String
-    let isCurrent: @MainActor () -> Bool
-    let save: @MainActor (String) async throws -> Void
+    let autosave: T3Autosave
     @State private var editsText = false
 
     var body: some View {
         Group {
             if editsText {
                 T3ProseEditor(title: "What Botto remembers", blurb: "Durable facts and decisions Botto keeps across spaces.",
-                              text: $text, isCurrent: isCurrent, save: save)
+                              text: $text, autosave: autosave)
             } else {
-                T3MemoryList(text: $text, isCurrent: isCurrent, save: save)
+                T3MemoryList(text: $text, autosave: autosave)
             }
         }
         .toolbar {
@@ -493,23 +522,13 @@ struct T3MemoryView: View {
                     .accessibilityIdentifier("botto-memory-mode")
             }
         }
+        .onDisappear { autosave.flush(text) }
     }
 }
 
 private struct T3MemoryList: View {
     @Binding var text: String
-    let isCurrent: @MainActor () -> Bool
-    @State private var autosave: T3Autosave
-
-    init(text: Binding<String>, isCurrent: @escaping @MainActor () -> Bool,
-         save: @escaping @MainActor (String) async throws -> Void) {
-        _text = text
-        self.isCurrent = isCurrent
-        _autosave = State(initialValue: T3Autosave(saved: text.wrappedValue, delay: .milliseconds(300)) { value in
-            guard isCurrent() else { throw T3ServiceError.disconnected }
-            try await save(value)
-        })
-    }
+    let autosave: T3Autosave
 
     var body: some View {
         let items = T3BrainText.memoryItems(text)
@@ -537,7 +556,6 @@ private struct T3MemoryList: View {
         .background(BottoTheme.paper)
         .navigationTitle("What Botto remembers").navigationBarTitleDisplayMode(.inline)
         .onChange(of: text) { _, value in autosave.edited(value) }
-        .onDisappear { autosave.flush(text) }
     }
 }
 
@@ -546,6 +564,8 @@ private struct T3MemoryList: View {
 struct T3RoutinesList: View {
     let store: AppStore
     @Binding var routines: [T3ScheduledRoutine]?
+    let loadError: String?
+    let reload: @MainActor () async -> Void
     let isCurrent: @MainActor () -> Bool
     let onOpenChat: (T3ChannelSummary) -> Void
     @State private var pending: Set<String> = []
@@ -561,6 +581,11 @@ struct T3RoutinesList: View {
                         Text("No routines yet.").foregroundStyle(.secondary)
                     }
                     ForEach(routines) { routine in row(routine) }
+                } else if let loadError {
+                    InlineNotice(message: loadError)
+                    Button("Try again", systemImage: "arrow.clockwise") { Task { await reload() } }
+                } else if !store.isConnected {
+                    ConnectionStatusView(store: store)
                 } else {
                     HStack(spacing: 10) { ProgressView(); Text("Checking the schedule…").foregroundStyle(.secondary) }
                 }
@@ -592,10 +617,7 @@ struct T3RoutinesList: View {
             Button("Delete “\(routine.name)”", role: .destructive) { delete(routine) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in Text("It won’t run again. Its past messages stay in their space.") }
-        .refreshable {
-            guard let loaded = try? await store.listT3Routines(), isCurrent() else { return }
-            routines = loaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        }
+        .refreshable { await reload() }
     }
 
     private func row(_ routine: T3ScheduledRoutine) -> some View {
@@ -641,11 +663,7 @@ struct T3RoutinesList: View {
     private func setEnabled(_ routine: T3ScheduledRoutine, _ enabled: Bool) {
         perform(routine) {
             try await store.setT3RoutineEnabled(id: routine.id, enabled: enabled)
-            routines = routines?.map {
-                $0.id != routine.id ? $0 : T3ScheduledRoutine(id: $0.id, name: $0.name, prompt: $0.prompt, cron: $0.cron,
-                                                               enabled: enabled, threadID: $0.threadID,
-                                                               nextRunAt: enabled ? $0.nextRunAt : nil, lastRunAt: $0.lastRunAt)
-            }
+            await reload()
         }
     }
 

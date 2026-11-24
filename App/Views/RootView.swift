@@ -84,6 +84,7 @@ struct RootView: View {
                     T3Workspace(store: store, presentation: presentation,
                                 rootCovered: sheet != nil || store.showsConnection,
                                 onSettings: { presentSheet(.settings) })
+                        .id(ObjectIdentifier(store.chats))
                 } else {
                     WorkspaceTabs(store: store, presentation: presentation,
                                   rootCovered: sheet != nil || createdBotOpening != nil || store.showsConnection,

@@ -54,9 +54,6 @@ struct T3FreshPage: View {
         }
         .onChange(of: isExposed) { _, exposed in if !exposed { focused = nil } }
         .onChange(of: store.isConnected) { _, connected in if connected { connectionRequested = false } }
-        .onChange(of: store.configuration?.id) { _, _ in
-            name = ""; draft = ""; pendingModel = nil; error = nil; connectionRequested = false
-        }
     }
 
     // MARK: Greeting
@@ -221,29 +218,30 @@ struct T3FreshPage: View {
         start(text: draft, send: hasMessage, attachment: nil)
     }
 
-    private func startWithAttachment(_ kind: AppStore.T3ComposerRequest) {
+    private func startWithAttachment(_ kind: AppStore.T3ComposerRequest.Kind) {
         guard !starting, isExposed else { return }
         start(text: draft, send: false, attachment: kind)
     }
 
-    private func start(text: String, send: Bool, attachment: AppStore.T3ComposerRequest?) {
+    private func start(text: String, send: Bool, attachment: AppStore.T3ComposerRequest.Kind?) {
         guard store.isConnected else { connectionRequested = true; return }
         focused = nil
         starting = true
         error = nil
-        let scope = store.configuration?.id
+        let workspace = store.chats
         let model = pendingModel
         Task {
             defer { starting = false }
             do {
-                try await store.startT3Space(named: namesSpace ? name : "", with: text, model: model, send: send)
-                guard store.configuration?.id == scope else { return }
+                let started = try await store.startT3Space(named: namesSpace ? name : "", with: text, model: model, send: send)
+                guard store.chats === workspace, let selection = workspace.selection(profile: started.profile),
+                      selection.identity == started, workspace.isCurrent(selection.owner) else { return }
                 name = ""
                 draft = ""
                 pendingModel = nil
-                store.t3ComposerRequest = attachment
+                store.t3ComposerRequest = attachment.map { .init(kind: $0, owner: selection.owner) }
                 onStarted()
-            } catch where store.configuration?.id == scope {
+            } catch where store.chats === workspace {
                 self.error = error.localizedDescription
                 if !store.isConnected { connectionRequested = true }
             } catch { }

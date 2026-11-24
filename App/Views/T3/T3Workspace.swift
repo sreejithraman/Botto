@@ -14,7 +14,7 @@ struct T3Workspace: View {
     @State private var editing = ComposerEditingHandle()
     @State private var outputs = T3OutputsModel()
     @State private var drawerOpen = false
-    @State private var drawerDrag: CGFloat = 0
+    @GestureState private var drawerDrag: CGFloat = 0
     @State private var showsFresh = true
     @State private var showsBotto = false
     @State private var openedOutput: T3OutputFile?
@@ -22,12 +22,16 @@ struct T3Workspace: View {
     @State private var openingChat: String?
     @State private var openingError: String?
     @State private var launched = false
+    @State private var pendingBottoDestination: (workspace: ObjectIdentifier, destination: BottoDestination)?
+
+    private enum BottoDestination { case space(T3ChannelSummary), settings }
 
     private var artifactShown: Bool { presentation.artifact != nil }
     /// Anything above the conversation that should stop its reading, editing and toolbar actions.
     private var conversationCovered: Bool {
-        rootCovered || drawerOpen || drawerDrag != 0 || showsBotto || artifactShown || openedOutput != nil
+        drawerOpen || drawerDrag != 0 || coveredOutsideDrawer
     }
+    private var coveredOutsideDrawer: Bool { rootCovered || showsBotto || artifactShown || openedOutput != nil }
     private var chatActionsAvailable: Bool { !conversationCovered && !chatCovered && scenePhase == .active }
     private var showsChat: Bool { !showsFresh && store.selectedBot != nil && store.selectedT3ChannelID != nil }
 
@@ -59,52 +63,43 @@ struct T3Workspace: View {
                     .accessibilityHidden(progress == 0)
                     .accessibilityAddTraits(.isModal)
                     .accessibilityAction(.escape) { setDrawer(open: false) }
-                if progress == 0, !conversationCovered {
-                    // A thin edge strip clear of the top bar and the composer opens the drawer.
-                    Color.clear.frame(width: 18).contentShape(Rectangle())
-                        .gesture(openDrag(width: width))
-                        .padding(.top, 110).padding(.bottom, 140)
-                        .accessibilityHidden(true)
-                }
+                // Keep the strip mounted until the drag settles or is cancelled.
+                Color.clear.frame(width: 18).contentShape(Rectangle())
+                    .gesture(openDrag(width: width))
+                    .padding(.top, 110).padding(.bottom, 140)
+                    .allowsHitTesting(!drawerOpen && !coveredOutsideDrawer)
+                    .accessibilityHidden(true)
             }
         }
         .background(BottoTheme.paper.ignoresSafeArea())
-        .sheet(isPresented: $showsBotto) {
+        .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
             BottoPage(store: store, outputs: outputs, onOpenChat: { channel in
+                pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
                 showsBotto = false
-                Task { await afterSheet { open(channel) } }
             }, onSettings: {
+                pendingBottoDestination = (ObjectIdentifier(store.chats), .settings)
                 showsBotto = false
-                Task { await afterSheet(onSettings) }
             })
         }
         .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
         .sheet(isPresented: artifactBinding) { artifactReader }
-        .task(id: LaunchKey(channels: store.t3Channels.count, hasMain: hasMain, link: store.link, refreshing: store.isRefreshing)) {
+        .task(id: launchReady) {
             await decideLaunch()
         }
-        .task(id: store.connectionGeneration) {
-            guard store.isConnected else { return }
+        .task(id: mayPreload) {
+            guard mayPreload else { return }
             await outputs.load(store)
+        }
+        .task(id: mayPreload) {
+            guard mayPreload else { return }
             await store.loadT3ModelsIfNeeded()
         }
-        .onChange(of: store.selectedT3ChannelID) { old, new in
-            // A notification or another opener chose a space; show it rather than the new-space page.
-            if new != nil, new != old, openingChat == nil { showsFresh = false }
-        }
         .onChange(of: store.notificationNavigationRevision) { _, _ in
-            showsFresh = false
+            showConversation()
             closeDrawerImmediately()
         }
         .onChange(of: rootCovered) { _, covered in if covered { editing.cancel() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { editing.cancel() } }
-        .onChange(of: store.configuration?.id) { _, _ in
-            launched = false
-            showsFresh = true
-            showsBotto = false
-            openedOutput = nil
-            closeDrawerImmediately()
-        }
     }
 
     // MARK: Surface
@@ -124,7 +119,12 @@ struct T3Workspace: View {
                 .navigationBarTitleDisplayMode(.inline)
         } else {
             T3FreshPage(store: store, namesSpace: launched, isExposed: !conversationCovered && scenePhase == .active,
-                        onOpenChat: open, onStarted: { showsFresh = false })
+                        onOpenChat: open, onStarted: showConversation)
+                .safeAreaInset(edge: .top) {
+                    if !drawerOpen, let openingError {
+                        InlineNotice(message: openingError) { self.openingError = nil }.padding(.horizontal, 20)
+                    }
+                }
                 .bottoNavigationChrome()
                 .navigationBarTitleDisplayMode(.inline)
         }
@@ -153,34 +153,32 @@ struct T3Workspace: View {
         }
         withAnimation(drawerAnimation) {
             drawerOpen = open
-            drawerDrag = 0
         }
     }
 
     private func closeDrawerImmediately() {
         drawerOpen = false
-        drawerDrag = 0
     }
 
     private func openDrag(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
-            .onChanged { value in
+            .updating($drawerDrag) { value, drag, _ in
                 guard value.translation.width > 0, abs(value.translation.width) > abs(value.translation.height) else { return }
-                if drawerDrag == 0 { editing.cancel() }
-                drawerDrag = min(width, value.translation.width)
+                drag = min(width, value.translation.width)
             }
             .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 let open = value.predictedEndTranslation.width > width * 0.4 || value.translation.width > width * 0.5
-                if open { setDrawer(open: true) } else { withAnimation(drawerAnimation) { drawerDrag = 0 } }
+                if open { setDrawer(open: true) }
             }
     }
 
     private func closeDrag(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 16, coordinateSpace: .global)
-            .onChanged { value in
+            .updating($drawerDrag) { value, drag, _ in
                 guard drawerOpen, value.translation.width < 0,
                       abs(value.translation.width) > abs(value.translation.height) else { return }
-                drawerDrag = max(-width, value.translation.width)
+                drag = max(-width, value.translation.width)
             }
             .onEnded { value in
                 guard drawerOpen else { return }
@@ -191,70 +189,71 @@ struct T3Workspace: View {
 
     // MARK: Navigation
 
-    private struct LaunchKey: Equatable {
-        let channels: Int
-        let hasMain: Bool
-        let link: AppStore.Link
-        let refreshing: Bool
-    }
+    private var mayPreload: Bool { store.isConnected && !rootCovered }
 
-    private var hasMain: Bool { T3ChatShelf.spaces(store.t3Channels).main != nil }
+    private var launchReady: Bool {
+        guard !conversationCovered, openingChat == nil, store.primaryT3Bot != nil else { return false }
+        return T3ChatShelf.spaces(store.t3Channels).main != nil || (store.isConnected && !store.isRefreshing)
+            || (store.link == .offline && !store.t3Channels.isEmpty)
+    }
 
     /// Open a space that needs you or is busy, otherwise the main space. The new-space page only stands in
     /// while a first connection finds the main space, or when the host can't hold one yet.
     private func decideLaunch() async {
-        guard !launched else { return }
-        // Saved spaces open right away; saves from before main spaces wait for the host to name one.
-        let settled = store.isConnected && !store.isRefreshing
-        guard hasMain || settled || (store.link == .offline && !store.t3Channels.isEmpty) else { return }
-        launched = true
+        guard !launched, launchReady else { return }
         guard let initial = T3ChatShelf.initialSpace(store.t3Channels) else {
-            showsFresh = true
+            launched = true
             return
         }
-        if store.selectedT3ChannelID == initial.id, store.selectedBot != nil {
-            showsFresh = false
-        } else if await store.openT3Channel(initial) {
-            showsFresh = false
-        }
+        if await store.openT3Channel(initial), !Task.isCancelled { showConversation() }
+        else if !Task.isCancelled { reportOpenFailure() }
     }
 
     private func open(_ channel: T3ChannelSummary) {
         guard openingChat == nil else { return }
-        if store.selectedT3ChannelID == channel.id, store.selectedBot != nil {
-            showsFresh = false
-            presentation.didChooseConversation()
-            setDrawer(open: false)
-            return
-        }
-        let scope = store.configuration?.id
+        let workspace = store.chats
         openingChat = channel.id
         openingError = nil
         Task {
             let opened = await store.openT3Channel(channel)
-            guard store.configuration?.id == scope, openingChat == channel.id else { return }
+            guard openingChat == channel.id else { return }
             openingChat = nil
+            guard store.chats === workspace else { return }
             if opened {
-                showsFresh = false
-                presentation.didChooseConversation()
+                showConversation()
                 setDrawer(open: false)
             } else {
-                openingError = store.isConnected
-                    ? String(localized: "That space didn’t open. Try again.")
-                    : String(localized: "Connect to open this space.")
+                reportOpenFailure()
             }
         }
     }
 
-    /// Lets Botto's sheet finish dismissing before another presentation or the conversation takes over.
-    private func afterSheet(_ action: @MainActor () -> Void) async {
-        try? await Task.sleep(for: .milliseconds(350))
-        guard !showsBotto else { return }
-        action()
+    private func showConversation() {
+        launched = true
+        showsFresh = false
+        openingError = nil
+        presentation.didChooseConversation()
+    }
+
+    private func reportOpenFailure() {
+        openingError = store.isConnected ? String(localized: "That space didn’t open. Try again.")
+            : String(localized: "Connect to open this space.")
+    }
+
+    private func routeFromBotto() {
+        guard let pending = pendingBottoDestination else { return }
+        pendingBottoDestination = nil
+        guard pending.workspace == ObjectIdentifier(store.chats), !rootCovered else { return }
+        switch pending.destination {
+        case .space(let channel): open(channel)
+        case .settings: onSettings()
+        }
     }
 
     private func startFresh() {
         editing.cancel()
+        launched = true
+        openingError = nil
         showsFresh = true
         setDrawer(open: false)
     }

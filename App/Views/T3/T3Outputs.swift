@@ -7,24 +7,21 @@ import BottoCore
 @MainActor @Observable final class T3OutputsModel {
     private(set) var outputs: [T3OutputFile]?
     private(set) var error: String?
-    private(set) var isLoading = false
     private(set) var previews: [String: T3OutputMiniature] = [:]
     private var loadingPreviews: Set<String> = []
-    private var scope: UUID?
+    private var latestLoad: UUID?
 
     func load(_ store: AppStore) async {
-        guard store.isT3Workspace, store.isConnected, !isLoading else { return }
-        let scope = store.configuration?.id
-        if self.scope != scope { outputs = nil; error = nil; previews = [:] }
-        self.scope = scope
-        isLoading = true
-        defer { isLoading = false }
+        guard store.isT3Workspace, store.isConnected else { return }
+        let workspace = store.chats
+        let request = UUID()
+        latestLoad = request
         do {
             let loaded = try await store.listT3Outputs()
-            guard !Task.isCancelled, store.configuration?.id == scope else { return }
+            guard !Task.isCancelled, store.chats === workspace, latestLoad == request else { return }
             outputs = loaded
             error = nil
-        } catch where !Task.isCancelled && store.configuration?.id == scope {
+        } catch where !Task.isCancelled && store.chats === workspace && latestLoad == request {
             // Keep the last good list visible; only surface the failure when nothing is shown.
             if outputs == nil { self.error = error.localizedDescription }
         } catch { }
@@ -34,12 +31,13 @@ import BottoCore
         let key = output.relativePath
         guard previews[key] == nil, !loadingPreviews.contains(key), store.isConnected,
               T3OutputKind(output) != .other else { return }
-        let scope = store.configuration?.id
+        let workspace = store.chats
         loadingPreviews.insert(key)
         defer { loadingPreviews.remove(key) }
-        guard let downloaded = try? await store.downloadT3Output(output),
-              store.configuration?.id == scope else { return }
-        previews[key] = await T3OutputMiniature.make(output, data: downloaded.data)
+        guard let downloaded = try? await store.downloadT3Output(output), store.chats === workspace else { return }
+        let preview = await T3OutputMiniature.make(output, data: downloaded.data)
+        guard !Task.isCancelled, store.chats === workspace else { return }
+        previews[key] = preview
     }
 }
 
@@ -174,12 +172,12 @@ struct T3OutputPreview: View {
     @State private var file: ArtifactPreviewFile?
     @State private var error: String?
     @State private var retry = 0
-    private let scope: UUID?
+    private let workspace: ConversationWorkspace
 
     init(store: AppStore, output: T3OutputFile) {
         self.store = store
         self.output = output
-        scope = store.configuration?.id
+        workspace = store.chats
     }
 
     var body: some View {
@@ -201,7 +199,9 @@ struct T3OutputPreview: View {
                 .tint(BottoTheme.action)
         }
         .task(id: retry) { await download() }
-        .onChange(of: store.configuration?.id) { _, id in if id != scope { dismiss() } }
+        .onChange(of: ObjectIdentifier(store.chats)) { _, _ in
+            if store.chats !== workspace { dismiss() }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -268,14 +268,14 @@ struct T3OutputPreview: View {
     }
 
     private func download() async {
-        guard file == nil, store.configuration?.id == scope else { return }
+        guard file == nil, store.chats === workspace else { return }
         error = nil
         do {
             let downloaded = try await store.downloadT3Output(output)
             let written = try await ArtifactPreviewFile.write(downloaded)
-            guard !Task.isCancelled, store.configuration?.id == scope else { return }
+            guard !Task.isCancelled, store.chats === workspace else { return }
             file = written
-        } catch where !Task.isCancelled {
+        } catch where !Task.isCancelled && store.chats === workspace {
             self.error = error.localizedDescription
         } catch { }
     }

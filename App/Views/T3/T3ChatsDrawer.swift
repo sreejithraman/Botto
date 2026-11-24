@@ -147,7 +147,12 @@ struct T3ChatsDrawer: View {
     }
 
     @ViewBuilder private func results(_ results: T3ChatShelf.SearchResults) -> some View {
-        if results.isEmpty {
+        if let error = outputs.error {
+            Section {
+                InlineNotice(message: error)
+                Button("Retry files", systemImage: "arrow.clockwise") { Task { await outputs.load(store) } }
+            }
+        } else if results.isEmpty {
             Text("Nothing matches “\(query)”.").font(.subheadline).foregroundStyle(.secondary)
                 .padding(.vertical, 24).listRowSeparator(.hidden).listRowBackground(Color.clear)
         }

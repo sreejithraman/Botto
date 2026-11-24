@@ -227,6 +227,7 @@ struct ChatComposer: View {
         .controlGlass(in: RoundedRectangle(cornerRadius: 26))
         .onChange(of: store.t3ComposerRequest, initial: true) { _, _ in openRequestedPicker() }
         .onChange(of: canCompose) { _, _ in openRequestedPicker() }
+        .onChange(of: screen?.owner) { _, _ in openRequestedPicker() }
     }
 
     private var editor: some View {
@@ -281,10 +282,10 @@ struct ChatComposer: View {
         }
     }
 
-    private func presentPicker(_ kind: AppStore.T3ComposerRequest) {
-        guard canCompose, requireConnection() else { return }
+    @discardableResult private func presentPicker(_ kind: AppStore.T3ComposerRequest.Kind) -> Bool {
+        guard canCompose, requireConnection() else { return false }
         editingHandle.cancel()
-        guard let screen, let destination = workspace.captureImport(screen.owner) else { return }
+        guard let screen, let destination = workspace.captureImport(screen.owner) else { return false }
         let request = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
         switch kind {
         case .photos:
@@ -295,13 +296,15 @@ struct ChatComposer: View {
             filePicker = request
             showsFiles = true
         }
+        return true
     }
 
     /// A picker chosen on the fresh page opens once its new chat can take attachments.
     private func openRequestedPicker() {
-        guard let request = store.t3ComposerRequest, canCompose, importsAllowed, !uploading, !sending else { return }
-        store.t3ComposerRequest = nil
-        presentPicker(request)
+        guard let request = store.t3ComposerRequest else { return }
+        guard workspace.isCurrent(request.owner) else { store.t3ComposerRequest = nil; return }
+        guard screen?.owner == request.owner, store.isConnected, canCompose, importsAllowed, !uploading, !sending else { return }
+        if presentPicker(request.kind) { store.t3ComposerRequest = nil }
     }
 
     private func send(_ delivery: MessageDelivery) {
