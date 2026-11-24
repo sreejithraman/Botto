@@ -319,6 +319,8 @@ import Testing
         let service = T3WorkspaceService()
         let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
+        let release = try #require(store.t3Channels.first { $0.id == "release" })
+        #expect(await store.openT3Channel(release))
         service.openError = .missingChannel
         var created: SessionIdentity?
 
@@ -327,6 +329,7 @@ import Testing
         }
         #expect(service.createdThreads.count == 1)
         #expect(service.sent.isEmpty)
+        #expect(store.selectedT3ChannelID == release.id)
 
         service.openError = nil
         let identity = try #require(created)

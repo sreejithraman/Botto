@@ -704,18 +704,18 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let opened = await performLibraryOpening(intent, isCurrent: isCurrent, accepts: accepts, commit: commit) {
             return opened
         }
-        if ownsNavigation(intent.claim), online, recovery == connection, selected == previousSelection,
-           live == nil, let previousSelection {
-            // Recovery belongs to the whole request, including directory lookup.
-            // It must outlive cancellation without overriding a newer request.
-            await Task { @MainActor in
-                guard ownsNavigation(intent.claim), online, recovery == connection,
-                      selected == previousSelection else { return }
-                readAuthorityBlocked = true
-                await attach(previousSelection, navigation: request)
-            }.value
-        }
+        await restorePreviousAttachment(previousSelection, recovery: connection, claim: intent.claim)
         return nil
+    }
+
+    private func restorePreviousAttachment(_ previous: ChatID?, recovery connection: UUID, claim: NavigationClaim) async {
+        guard let previous, ownsNavigation(claim), online, recovery == connection, selected == previous, live == nil else { return }
+        // Restoration must survive cancellation without overriding a newer request.
+        await Task { @MainActor in
+            guard ownsNavigation(claim), online, recovery == connection, selected == previous else { return }
+            readAuthorityBlocked = true
+            await attach(previous, navigation: claim.request)
+        }.value
     }
     private func performLibraryOpening(_ intent: LibraryOpeningIntent,
                                        isCurrent: @MainActor () -> Bool,
@@ -748,14 +748,17 @@ private struct ReadObservationKey: Hashable, Sendable {
 
     func openStoredChat(_ summary: SessionSummary, claim: NavigationClaim) async -> Bool {
         guard !Task.isCancelled, ownsNavigation(claim) else { return false }
-        let request = claim.request
+        let request = claim.request, previous = selected, connection = recovery
         defer { if navigationRequest == request { navigationRequest = nil } }
         onUserNavigation?()
         guard ownsNavigation(claim) else { return false }
         let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[summary.identity.profile]) }
         availability[id] = true
-        let attached = await attach(id, navigation: request, storedTarget: summary.identity)
-        return attached != nil && !Task.isCancelled && navigationRequest == request && selected == id
+        if await attach(id, selectionCommit: .afterAttachment, navigation: request, storedTarget: summary.identity) != nil {
+            return !Task.isCancelled && navigationRequest == request && selected == id
+        }
+        await restorePreviousAttachment(previous, recovery: connection, claim: claim)
+        return false
     }
     private func ownsOpening(_ intent: OpeningIntent) -> Bool {
         !Task.isCancelled && !retired && intent.scope == scope && intent.epoch == presentation &&
