@@ -817,20 +817,7 @@ import BottoCore
             "Paragraph \(index). **Native text** keeps a readable history with [a source](https://example.com). " +
                 String(repeating: "A conversation should stay responsive while new words arrive. ", count: 5)
         }.joined(separator: "\n\n")
-        if ProcessInfo.processInfo.arguments.contains("--popin-text-performance-demo") {
-            let incoming = ProcessInfo.processInfo.arguments.contains("--popin-assistant-performance-demo")
-            let fromBelow = ProcessInfo.processInfo.arguments.contains("--popin-from-below-demo")
-            let text = String(repeating: paragraphs + "\n\n", count: 5) +
-                "Visible ending ALPHA.\n\nVisible ending BRAVO.\n\nVisible ending CHARLIE.\n\nComplete message DELTA."
-            chats[Data("scout".utf8)]?.messages = (fromBelow ? [ChatMessage(id: "popin-start", role: .assistant,
-                text: "Earlier history start.", timestamp: now)] : []) + (0..<20).map { index in
-                ChatMessage(id: "popin-prefix-\(index)", role: fromBelow ? .tool : .user,
-                            text: "Earlier message \(index).", timestamp: now)
-            } + [.init(id: "popin-target", role: incoming ? .assistant : .user, text: text, timestamp: now)] +
-                (0..<24).map { index in
-                    ChatMessage(id: "popin-tool-\(index)", role: .tool, text: "Settled tool output \(index).", timestamp: now)
-                } + [.init(id: "popin-tail", role: .assistant, text: "Latest short reply.", timestamp: now)]
-        } else if ProcessInfo.processInfo.arguments.contains("--heavy-history-performance-demo") {
+        if ProcessInfo.processInfo.arguments.contains("--heavy-history-performance-demo") {
             let text = (0..<48).map { index in
                 "Section \(index). **Measured history** with [a source](https://example.com). " +
                     String(repeating: "Keep the complete text readable while moving through older messages. ", count: 4)
