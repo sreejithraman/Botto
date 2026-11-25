@@ -128,7 +128,7 @@ final class MacBottoDelegate: MacEngineLifecycle {
                 pushBridge = bridge
                 let (activities, events) = AsyncStream<T3PushActivity>.makeStream(bufferingPolicy: .bufferingNewest(256))
                 store.observePush { events.yield($0) }
-                store.onPushScope = { scope in Task { await bridge.setScope(scope) } }
+                store.onPushScope = { bridge.setScope($0) }
                 Task { for await activity in activities { await bridge.publish(activity) } }
             } catch {
                 pushSetupFailed = true

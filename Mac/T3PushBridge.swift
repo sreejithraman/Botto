@@ -49,7 +49,9 @@ actor T3PushBridge {
     private let transport: T3PairingExchange.HTTPTransport
     private var state: State
     private var busy: Set<String> = []
-    private var scope: T3PushScope?
+    // Updated synchronously by the engine lifecycle. Relay work can suspend
+    // without delaying or reordering a change in enrollment authority.
+    private let scope = OSAllocatedUnfairLock<T3PushScope?>(initialState: nil)
     private let log = Logger(subsystem: "com.sree.botto.mac", category: "T3Push")
 
     init(relay: URL, file: URL,
@@ -72,12 +74,12 @@ actor T3PushBridge {
         }
     }
 
-    func setScope(_ scope: T3PushScope?) {
-        self.scope = scope
+    nonisolated func setScope(_ scope: T3PushScope?) {
+        self.scope.withLock { $0 = scope }
     }
 
     func makeInvitation(host: String, port: UInt16) throws -> T3PushInvitation {
-        guard let scope else { throw T3PushRegistrationError.bridgeUnavailable }
+        guard let scope = scope.withLock({ $0 }) else { throw T3PushRegistrationError.bridgeUnavailable }
         let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let expiresAt = Int(Date.now.timeIntervalSince1970) + 300
         return .init(host: host, port: port, scope: scope, deviceID: id,
@@ -118,7 +120,8 @@ actor T3PushBridge {
         }
         let confirmedEarlier = previous?.confirmed == true && previous?.registration == request
         // An existing pairing can revoke or recheck its target while the engine is asleep.
-        guard request.target == nil || confirmedEarlier || scope == request.scope else { return reply(.differentWorkspace) }
+        guard request.target == nil || confirmedEarlier || scope.withLock({ $0 }) == request.scope
+        else { return reply(.differentWorkspace) }
         busy.insert(id)
         defer { busy.remove(id) }
         do {

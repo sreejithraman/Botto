@@ -144,7 +144,7 @@ struct SettingsView: View {
                     Text(store.isDemo
                          ? (onLeaveDemo == nil ? "Return to your own Hermes connection." : "Return to the playground.")
                          : store.isT3Workspace
-                            ? "Removes saved pairing details, drafts, and cached spaces from this device. Botto’s memory and spaces stay on the host."
+                            ? "Removes saved pairing details, drafts, cached spaces, and notification pairings from this device. Botto’s memory and spaces stay on the host."
                             : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
                 }
             }

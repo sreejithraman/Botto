@@ -17,7 +17,7 @@ import Testing
         while listener.port == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         let port = try #require(listener.port)
         let scope = T3PushScope(environmentID: "my-engine", projectID: "my-project")
-        await bridge.setScope(scope)
+        bridge.setScope(scope)
         let invite = try await bridge.makeInvitation(host: "127.0.0.1", port: port)
         let phoneCode = try T3PushInvitation(code: invite.code())
         let target = T3PushRegistration.Target(token: String(repeating: "12", count: 32), bundleID: "com.sree.botto", environment: .sandbox)
@@ -45,7 +45,7 @@ import Testing
         #expect(throws: (any Error).self) { try envelope.decrypt(key: Data(repeating: 0, count: 32)) }
 
         let remove = T3PushRegistration(scope: scope, generation: 2, target: nil)
-        await bridge.setScope(nil)
+        bridge.setScope(nil)
         #expect(try await T3PushRegistrationChannel.send(remove, invitation: phoneCode).status == .removed)
         #expect(try await T3PushRegistrationChannel.send(registration, invitation: phoneCode).status == .retired)
         let reopened = try T3PushBridge(relay: origin, file: file, transport: { try await relay.send($0) })
@@ -61,7 +61,7 @@ import Testing
         let bridge = try T3PushBridge(relay: origin, file: directory.appending(path: "bridge.json"),
                                       transport: { try await relay.send($0) })
         let scope = T3PushScope(environmentID: "my-engine", projectID: "my-project")
-        await bridge.setScope(scope)
+        bridge.setScope(scope)
         let retired = try await bridge.makeInvitation(host: "127.0.0.1", port: 3775)
         let keepsReceiving = try await bridge.makeInvitation(host: "127.0.0.1", port: 3775)
         let target = T3PushRegistration.Target(token: String(repeating: "12", count: 32),
@@ -71,7 +71,7 @@ import Testing
             #expect(await bridge.register(code.deviceID, expiresAt: code.expiresAt, request: initial).status == .registered)
         }
         await relay.setRetired(retired.deviceID)
-        await bridge.setScope(nil)
+        bridge.setScope(nil)
         let now = Int(Date.now.timeIntervalSince1970)
         await bridge.publish(.init(scope: scope, spaceID: "space", title: "Release plans",
             id: "run-1", kind: .reply, createdAt: now, expiresAt: now + 3_600, cancelled: false))
@@ -82,19 +82,19 @@ import Testing
             id: "approval", kind: .approval, createdAt: now, expiresAt: now + 300, cancelled: false))
         #expect(await relay.deliveredTargets.last == [keepsReceiving.deviceID])
         let requestID = try #require(await relay.latestRequestID)
-        await bridge.setScope(scope)
+        bridge.setScope(scope)
         let rotatedTarget = T3PushRegistration.Target(token: String(repeating: "ab", count: 32),
                                                        bundleID: target.bundleID, environment: target.environment)
         let rotated = T3PushRegistration(scope: scope, generation: 2, target: rotatedTarget)
         await relay.failNextPut()
         #expect(await bridge.register(keepsReceiving.deviceID, expiresAt: keepsReceiving.expiresAt,
                                       request: rotated).status == .retry)
-        await bridge.setScope(nil)
+        bridge.setScope(nil)
         await bridge.publish(.init(scope: scope, spaceID: "space", title: "Release plans",
             id: "approval", kind: .approval, createdAt: now, expiresAt: now + 300, cancelled: true))
         #expect(await relay.cancelledRequestID == requestID)
 
-        await bridge.setScope(scope)
+        bridge.setScope(scope)
         #expect(await bridge.register(retired.deviceID, expiresAt: retired.expiresAt, request: rotated).status == .registered)
     }
 
@@ -105,7 +105,7 @@ import Testing
         let bridge = try T3PushBridge(relay: #require(URL(string: "https://relay.example")),
                                       file: directory.appending(path: "bridge.json"), transport: { try await relay.send($0) })
         let scope = T3PushScope(environmentID: "my-engine", projectID: "my-project")
-        await bridge.setScope(scope)
+        bridge.setScope(scope)
         let code = try await bridge.makeInvitation(host: "127.0.0.1", port: 3775)
         let target = T3PushRegistration.Target(token: String(repeating: "12", count: 32),
                                                bundleID: "com.sree.botto", environment: .sandbox)

@@ -1056,8 +1056,13 @@ import BottoCore
             return true
         } catch {
             guard ownsConnectionAttempt(owner) else { return false }
-            if !(error is CancellationError), !Task.isCancelled { onFailure?(error) }
+            let cancelled = error is CancellationError || Task.isCancelled
+            if !cancelled { onFailure?(error) }
             cancelConnection(owner: owner, failure: error)
+            if !cancelled, !isConnected,
+               candidate.id == configuration?.id, case .t3 = pendingPushNotification?.intent.source {
+                notice = notice ?? Self.t3PushReconnectNotice
+            }
             return false
         }
     }
@@ -1379,13 +1384,15 @@ import BottoCore
         }
     }
 
+    private static let t3PushReconnectNotice = "Reconnect to your Mac to open the notification’s Space."
+
     func resumePushNavigation() async {
         guard active, notificationRouting == nil, let intent = pendingPushNotification?.intent,
               !isDemo, let configuration else { return }
         let attempt = UUID(); notificationRouting = attempt
         let isT3 = if case .t3 = intent.source { true } else { false }
         let reconnectNotice = isT3
-            ? "Reconnect to your Mac to open the notification’s Space."
+            ? Self.t3PushReconnectNotice
             : "Reconnect to your Hermes host to open the notification's chat."
         defer {
             if notificationRouting == attempt {
@@ -1399,12 +1406,12 @@ import BottoCore
         if !isConnected {
             if isT3, pendingService != nil || connection.candidate != nil { return }
             guard await connect(configuration) else {
-                notice = reconnectNotice
+                if pendingPushNotification?.intent.id == intent.id { notice = reconnectNotice }
                 return
             }
         }
         guard await refreshBots() else {
-            notice = reconnectNotice
+            if pendingPushNotification?.intent.id == intent.id { notice = reconnectNotice }
             return
         }
         let readiness: PushNavigationIntent.Readiness
@@ -1460,11 +1467,12 @@ import BottoCore
         notificationPresentation?.present()
         notificationNavigationRevision = UUID()
     }
-    /// A root cover chosen after a tap outranks it: the tap can neither close it nor navigate beneath it.
+    /// A newer navigation choice outranks a held notification.
     func retireHeldNotification() {
-        guard pendingPushNotification != nil else { return }
+        guard let pending = pendingPushNotification else { return }
         interruptSupersededOpening()
         pendingPushNotification = nil
+        if case .t3 = pending.intent.source, notice == Self.t3PushReconnectNotice { notice = nil }
     }
 
     private var hasUnsettledOpening: Bool {

@@ -137,6 +137,54 @@ import UIKit
         #expect(!store.shouldPresentPush(envelope))
     }
 
+    @Test(arguments: [false, true])
+    func heldNotificationExplainsFailedReconnectAndYieldsToNewerNavigation(retired: Bool) async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invitation = pushInvitation(host: "192.0.2.5", scope: scope, digit: "a")
+        let installation = String(repeating: "a", count: 64)
+        let token = String(repeating: "12", count: 32)
+        var saved: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { token }),
+            send: { _, _ in .init(.registered, installationID: installation) })
+        await push.enable(code: try invitation.code(), scope: scope)
+        let envelope = PushEnvelope(installationID: installation, deviceID: invitation.deviceID, generation: 1,
+                                    eventID: String(repeating: "b", count: 64), kind: .approval,
+                                    expiresAt: invitation.expiresAt, sealed: "")
+        let alert = try envelope.encrypting(.init(title: "Release", body: "Approval requested",
+                                                  destination: scope.destination(spaceID: "release")),
+                                            key: invitation.previewKey)
+        let gate = WorkspaceGate()
+        let service = T3WorkspaceService()
+        service.connectGate = gate
+        service.connectError = .disconnected
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence,
+                             t3Push: push)
+        let revision = store.notificationNavigationRevision
+        let starting = Task { await store.start() }
+        await gate.entered()
+        defer { gate.release() }
+        await store.openPushNotification(alert)
+        #expect(store.notice == nil)
+        gate.release()
+        await starting.value
+        #expect(!store.isConnected)
+        #expect(store.notice == "Reconnect to your Mac to open the notification’s Space.")
+
+        if retired {
+            store.retireHeldNotification()
+            #expect(store.notice == nil)
+        }
+        service.connectGate = nil
+        service.connectError = nil
+        #expect(await store.connect(configuration))
+        #expect(store.notice == nil)
+        #expect(service.openedStoredThreads == (retired ? [] : ["release"]))
+        #expect((store.notificationNavigationRevision == revision) == retired)
+    }
+
     @Test func revocationCanRecoverAtANewAddressWithoutReplacingTheDevice() async throws {
         let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
         let original = pushInvitation(host: "192.0.2.5", scope: scope, digit: "a")
@@ -1025,6 +1073,7 @@ import UIKit
 @MainActor private final class T3WorkspaceService: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
+    var connectGate: WorkspaceGate?
     var resolvedPairing: T3Connection?
     var openError: T3ServiceError?
     var canonicalThread: String?
@@ -1071,6 +1120,7 @@ import UIKit
     }
 
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
+        if let connectGate { await connectGate.wait() }
         if let connectError { throw connectError }
         if let resolvedPairing {
             var connected = configuration

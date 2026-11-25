@@ -56,9 +56,11 @@ struct T3Workspace: View {
         .background(BottoTheme.paper.ignoresSafeArea())
         .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
             BottoPage(store: store, outputs: outputs, drafts: brainDrafts, onOpenChat: { channel in
+                store.retireHeldNotification()
                 pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
                 showsBotto = false
             }, onSettings: {
+                store.retireHeldNotification()
                 pendingBottoDestination = (ObjectIdentifier(store.chats), .settings)
                 showsBotto = false
             })
@@ -153,7 +155,10 @@ struct T3Workspace: View {
         } else {
             T3FreshPage(store: store, form: freshDraft, namesSpace: launched,
                         isExposed: !conversationCovered && scenePhase == .active,
-                        onOpenChat: open, onDraft: { launched = true }, onStarted: showConversation)
+                        onOpenChat: open, onDraft: {
+                            store.retireHeldNotification()
+                            launched = true
+                        }, onStarted: showConversation)
                 .safeAreaInset(edge: .top) {
                     if !drawerOpen, let openingError {
                         InlineNotice(message: openingError) { self.openingError = nil }.padding(.horizontal, 20)
@@ -188,6 +193,7 @@ struct T3Workspace: View {
     private func setDrawer(open: Bool) {
         if open {
             guard !rootCovered, !showsBotto, !chatCovered else { return }
+            store.retireHeldNotification()
             editing.cancel()
             BottoHaptics.shared.play(.surface)
         }
@@ -271,6 +277,7 @@ struct T3Workspace: View {
 
     private func open(_ channel: T3ChannelSummary) {
         guard openingChat == nil else { return }
+        store.retireHeldNotification()
         let workspace = store.chats
         store.t3ComposerRequest = nil
         openingChat = channel.id
@@ -312,6 +319,7 @@ struct T3Workspace: View {
     }
 
     private func startFresh() {
+        store.retireHeldNotification()
         editing.cancel()
         store.t3ComposerRequest = nil
         launched = true
@@ -322,12 +330,14 @@ struct T3Workspace: View {
 
     private func presentBotto() {
         guard !rootCovered else { return }
+        store.retireHeldNotification()
         editing.cancel()
         closeDrawerImmediately()
         showsBotto = true
     }
 
     private func openFile(_ output: T3OutputFile) {
+        store.retireHeldNotification()
         editing.cancel()
         openedOutput = output
     }
