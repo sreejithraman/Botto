@@ -33,8 +33,7 @@ when the originating conversation or connection changes.
 Use [shared setup](../index.md), run-owned local files and photo-library fixtures
 with known original/prepared bytes, two Spaces in a disposable workspace. Upload can
 write remotely before Send; removing a chip is not remote file deletion. Retain
-only harmless fixture names/content. **Draft; no complete recipe run here.** See
-the 4 November 2026 [verification record](../../../verification.md) for what ran.
+only harmless fixture names/content. **Draft; no complete recipe run here.**
 
 Workflow `uploads.file`:
 
@@ -117,9 +116,8 @@ Workflow `uploads.retirement`:
 Source: [ChatComposer](../../../../App/Views/ChatComposer.swift),
 [AppStore](../../../../App/State/AppStore.swift),
 [AttachmentLimits](../../../../Sources/BottoCore/AttachmentLimits.swift).
-[Verification history](../../../verification.md) records small-iPhone Files
-upload, host acknowledgment and canonical reopen, and core network round trips
-with the previous backend. Run these assertions separately on T3. Native state
+Earlier small-iPhone Files upload, host acknowledgment and reopen checks ran
+against the previous backend only. Run these assertions on T3. Native state
 tests cover stale destinations and budgets. Public picker cancellation and
 replacement also need their own checks. Actual
 Photos permissions and structured native-image history remain partly unproved.
