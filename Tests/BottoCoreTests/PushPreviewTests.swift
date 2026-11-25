@@ -46,25 +46,6 @@ struct PushPreviewTests {
         #expect(throws: (any Error).self) { try wrongDevice.decrypt(key: Data(0..<32), now: Date(timeIntervalSince1970: 2)) }
     }
 
-    @Test func enrollmentRetainsItsExistingKeysAndDefaultsWhenSaved() throws {
-        let original = PushEnrollmentRequest(deviceID: String(repeating: "b", count: 32),
-            token: String(repeating: "1", count: 64), bundleID: "com.example.botto", environment: .sandbox,
-            previewKey: Data(0..<32), preferences: .init(), expectedGeneration: 7)
-        let encoded = try JSONEncoder().encode(original)
-        var fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        #expect(fields["preview_key"] as? String == Data(0..<32).base64EncodedString())
-        #expect(fields["operation_id"] as? String == original.operationID)
-        #expect(fields["expected_generation"] as? Int == 7)
-        #expect(fields["username"] == nil && fields["password"] == nil)
-        #expect(try JSONDecoder().decode(PushEnrollmentRequest.self, from: encoded) == original)
-
-        fields.removeValue(forKey: "expected_generation")
-        let restored = try JSONDecoder().decode(PushEnrollmentRequest.self, from: JSONSerialization.data(withJSONObject: fields))
-        var expected = original
-        expected.expectedGeneration = 0
-        #expect(restored == expected)
-    }
-
     @Test func destinationEqualityPreservesRemoteUTF8Spelling() {
         let composed = PushDestination(profileID: "bot", rootID: "caf\u{00e9}", storedID: "stored")
         let decomposed = PushDestination(profileID: "bot", rootID: "cafe\u{0301}", storedID: "stored")

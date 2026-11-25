@@ -290,11 +290,6 @@ public enum MessageDelivery: Equatable, Sendable {
                  operationID: UUID) async throws -> MutationReceipt
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact
-    func pushStatus(profileID: String) async throws -> PushHostStatus
-    func enrollPushDevice(_ request: PushEnrollmentRequest, profileID: String) async throws -> PushEnrollment
-    func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult
-    func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws
-    func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult
     func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact
 }
 
@@ -302,11 +297,6 @@ public extension BotService {
     func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
         throw BotAvatarGenerationError.unsupportedHost
     }
-    func pushStatus(profileID: String) async throws -> PushHostStatus { throw PushError.unsupported }
-    func enrollPushDevice(_ request: PushEnrollmentRequest, profileID: String) async throws -> PushEnrollment { throw PushError.unsupported }
-    func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult { throw PushError.unsupported }
-    func testPushDevice(deviceID: String, destination: PushDestination, profileID: String) async throws { throw PushError.unsupported }
-    func installPushPlugin(identifier: String, ref: String, profileID: String) async throws -> PushPluginInstallResult { throw PushError.unsupported }
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
         throw ConversationServiceError.rejected(-32601)
     }
