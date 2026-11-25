@@ -238,7 +238,7 @@ import BottoCore
     }
 
     private func ready(_ reason: String = "hosted view must settle", _ condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(reason) { !condition() }
         try #require(condition(), Comment(rawValue: reason))
     }
     private func fixture() async throws -> Fixture {

@@ -625,7 +625,7 @@ import BottoCore
     return find(root, depth: 0)
 }
 @MainActor private func revisionWait(_ reason: String, until condition: () -> Bool) async throws {
-    await waitWhile { !condition() }
+    await waitWhile(reason) { !condition() }
     let passed = condition()
     if !passed {
         // Observe only after the original verdict. Do not force layout to make

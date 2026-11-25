@@ -91,13 +91,7 @@ import BottoCore
             try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
             let cache = own(ArtifactCache(root: root)), session = cache.session(scope: scope)
             let writing = Task { try await session.upsert(row) }; defer { writing.cancel() }
-            let deadline = ContinuousClock.now + readinessLimit
-            var registered = false
-            while !registered, ContinuousClock.now < deadline {
-                registered = try await session.metadataRecovery().contains(key.identity)
-                await Task.yield()
-            }
-            try #require(registered)
+            try #require(await waitWhile { try await !session.metadataRecovery().contains(key.identity) })
             try session.restrictMetadata(to: [])
             try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
             _ = await writing.result

@@ -508,7 +508,7 @@ import BottoCore
         return find(root, depth: 0)
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(reason) { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 }

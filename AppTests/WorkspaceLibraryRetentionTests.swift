@@ -8,16 +8,10 @@ import BottoCore
 
 @MainActor struct WorkspaceLibraryRetentionTests {
     private func waitForInitialLibraryArtifacts(_ library: WorkspaceLibrary) async throws {
-        let started = ContinuousClock.now, deadline = ContinuousClock.now + readinessLimit
-        var polls = 0
-        while library.artifacts.isEmpty, ContinuousClock.now < deadline {
-            polls += 1
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        guard library.artifacts.isEmpty else { return }
-        let metrics = library.indexingMetrics
-        let state = "elapsed=\(started.duration(to: .now)) polls=\(polls) artifacts=\(library.artifacts.count) chats=\(library.chats.count) loading=\(library.isLoading) accepted=\(metrics.acceptedSnapshots) batches=\(metrics.batches) parsed=\(metrics.parsedMessages) processing=\(metrics.processingDuration) warning=\(library.warning ?? "<none>")"
-        Attachment.record(state, named: "library-publication-readiness.txt")
+        await waitWhile("The initial library publication", diagnostics: {
+            let metrics = library.indexingMetrics
+            return "artifacts=\(library.artifacts.count) chats=\(library.chats.count) loading=\(library.isLoading) accepted=\(metrics.acceptedSnapshots) batches=\(metrics.batches) parsed=\(metrics.parsedMessages) processing=\(metrics.processingDuration) warning=\(library.warning ?? "<none>")"
+        }) { library.artifacts.isEmpty }
     }
 
     @Test func retirementEndsItsCacheSession() {
@@ -790,15 +784,10 @@ import BottoCore
         #expect(library.chats.first?.unavailableMessageIDs.contains(disputedID) == true)
         #expect(!library.artifacts.contains { $0.artifact.messageID == disputed.id })
         #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-        let savedDeadline = ContinuousClock.now + readinessLimit
-        var persisted = false
-        while ContinuousClock.now < savedDeadline {
-            if let saved = try await session.loadChats().first,
-               saved.messages.contains(where: { $0.id == marker.id }),
-               saved.unavailableMessageIDs?.contains(disputedID) == true {
-                persisted = true; break
-            }
-            await Task.yield()
+        let persisted = try await waitWhile {
+            let saved = try await session.loadChats().first
+            return saved?.messages.contains(where: { $0.id == marker.id }) != true
+                || saved?.unavailableMessageIDs?.contains(disputedID) != true
         }
         #expect(persisted)
         library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper",

@@ -211,7 +211,7 @@ import BottoCore
     }
 
     private func wait(_ description: String, until condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(description) { !condition() }
         try #require(condition(), "Timed out: \(description)")
     }
 }

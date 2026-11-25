@@ -67,7 +67,7 @@ import BottoCore
     }
 
     private func wait(_ label: String, timeout: Duration = readinessLimit, until condition: () -> Bool) async throws {
-        await waitWhile(limit: timeout) { !condition() }
+        await waitWhile(label, limit: timeout) { !condition() }
         try #require(condition(), "Timed out: \(label)")
     }
     private func fixture() async throws -> Fixture {

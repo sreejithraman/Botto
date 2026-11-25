@@ -349,12 +349,7 @@ import BottoCore
     }
 
     private func waitForLayout(_ fixture: Fixture, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + readinessLimit
-        repeat {
-            fixture.window.layoutIfNeeded()
-            if condition() { return }
-            await Task.yield()
-        } while ContinuousClock.now < deadline
+        await waitWhile { fixture.window.layoutIfNeeded(); return !condition() }
         try #require(condition(), "Hosted editor must settle without forcing a layout invalidation")
     }
 

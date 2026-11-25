@@ -87,11 +87,10 @@ import BottoCore
         #expect(publications.count == 1 && publication.snapshot.messages == [fresh])
         #expect(publication.evidence.readContext?.identityRead?.matches(current) == true)
         #expect(library.indexingMetrics.acceptedSnapshots == 1)
-        let deadline = ContinuousClock.now + readinessLimit
         var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current),
-              ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        try await waitWhile {
+            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            return !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current)
         }
         let restored = try #require(saved.first { $0.identity == current && $0.messages == [fresh] })
         #expect(restored.retiredStoredIDs?.contains(service.first.stored.bytes) == true)
@@ -592,11 +591,10 @@ import BottoCore
             profileID: current.profile.text, messages: page.messages), title: "Current",
             evidence: .read(startedAt: readStartedAt, observedSource: current, identityRead: proof))
         await library.restore()
-        let deadline = ContinuousClock.now + readinessLimit
         var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == current && $0.messages == [updated] }) || recovery.contains(current),
-              ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        try await waitWhile {
+            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            return !saved.contains(where: { $0.identity == current && $0.messages == [updated] }) || recovery.contains(current)
         }
         let savedCurrent = try #require(saved.first { $0.identity == current && $0.messages == [updated] })
         #expect(!recovery.contains(current))
@@ -730,10 +728,10 @@ import BottoCore
             #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/disputed.txt" })
         }
         #expect(library.artifacts.contains { $0.artifact.attachment?.path == "/peer.txt" })
-        let deadline = ContinuousClock.now + readinessLimit
         var saved = try await session.loadChats()
-        while !saved.contains(where: { $0.identity == service.second && $0.messages.contains(where: { $0.id == "peer-file" }) }), ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats()
+        try await waitWhile {
+            saved = try await session.loadChats()
+            return !saved.contains(where: { $0.identity == service.second && $0.messages.contains(where: { $0.id == "peer-file" }) })
         }
         try #require(saved.contains { $0.identity == service.second && $0.messages.contains { $0.id == "peer-file" } })
         library.retire(); await cache.close()
@@ -2539,10 +2537,10 @@ import BottoCore
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
         #expect(library.indexingMetrics.acceptedSnapshots == 2)
-        let deadline = ContinuousClock.now + readinessLimit
         var persisted = try await session.loadChats()
-        while persisted.first(where: { $0.identity == service.first })?.title != title, ContinuousClock.now < deadline {
-            await Task.yield(); persisted = try await session.loadChats()
+        try await waitWhile {
+            persisted = try await session.loadChats()
+            return persisted.first(where: { $0.identity == service.first })?.title != title
         }
         let saved = try #require(persisted.first { $0.identity == service.first })
         #expect(saved.title == title)
@@ -2690,11 +2688,10 @@ import BottoCore
         #expect(current.messages == fresh)
         #expect(LibrarySearchResults(query: "Stale seed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/old-book.txt" })
-        let deadline = ContinuousClock.now + readinessLimit
         var persisted = try await session.loadChats()
-        while persisted.first(where: { $0.identity == service.first })?.messages != fresh, ContinuousClock.now < deadline {
-            await Task.yield()
+        try await waitWhile {
             persisted = try await session.loadChats()
+            return persisted.first(where: { $0.identity == service.first })?.messages != fresh
         }
         #expect(persisted.first { $0.identity == service.first }?.messages == fresh)
         #expect(library.chats.contains { $0.identity == service.second && $0.messages.contains { $0.id == "seed-control" } })
@@ -3091,13 +3088,8 @@ import BottoCore
         warm.accept(identity: freshSource, snapshot: .init(id: freshSource.root.text, storedID: freshSource.stored.text,
             profileID: freshSource.profile.text, messages: freshMessages), title: "Fresh",
             evidence: .read(startedAt: .now, observedSource: freshSource))
-        let session = cache.session(scope: scope), deadline = ContinuousClock.now + readinessLimit
-        var saved = false
-        while !saved, ContinuousClock.now < deadline {
-            saved = try await !session.metadataRecovery().contains(freshSource)
-            await Task.yield()
-        }
-        try #require(saved)
+        let session = cache.session(scope: scope)
+        try #require(await waitWhile { try await session.metadataRecovery().contains(freshSource) })
         warm.retire(); await cache.close()
         let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
         cold.seed(book: book, bots: service.profiles); await cold.restore()
@@ -4643,13 +4635,9 @@ import BottoCore
         await #expect(throws: (any Error).self) { _ = try await download.value }
         service.historyBarrier = nil; history.release(); await refresh.value
         #expect(library.artifacts.contains { $0.artifact.title == "new.txt" })
-        let deadline = ContinuousClock.now + readinessLimit
-        var persisted = false
-        while !persisted, ContinuousClock.now < deadline {
-            persisted = try await session.loadChats().contains { $0.identity.stored == successor.stored && $0.coverage == .complete }
-            if !persisted { await Task.yield() }
-        }
-        try #require(persisted)
+        try #require(await waitWhile {
+            try await !session.loadChats().contains { $0.identity.stored == successor.stored && $0.coverage == .complete }
+        })
         library.retire(); await cache.close()
         let reopenedCache = ArtifactCache(root: root), reopenedSession = reopenedCache.session(scope: scope)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedSession)
@@ -4808,13 +4796,10 @@ import BottoCore
         let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: nil, username: Data(), provider: nil)
         let checkpoint = cache.session(scope: scope)
-        var durable = false
-        let saveDeadline = ContinuousClock.now + readinessLimit
-        while !durable, ContinuousClock.now < saveDeadline {
+        let durable = try await waitWhile {
             let rows = try await checkpoint.loadChats()
-            durable = try await !checkpoint.metadataRecovery().contains(service.first)
-                && rows.contains { $0.identity == service.first && $0.messages.contains { $0.id == kept.id } }
-            if !durable { await Task.yield() }
+            return try await checkpoint.metadataRecovery().contains(service.first)
+                || !rows.contains { $0.identity == service.first && $0.messages.contains { $0.id == kept.id } }
         }
         try #require(durable, "The ordinary cold-reuse control needs a completed metadata checkpoint; interrupted writes are covered separately")
         store.library.retire(); await cache.close()

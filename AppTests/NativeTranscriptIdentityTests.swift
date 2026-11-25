@@ -536,7 +536,7 @@ import WebKit
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(reason) { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 

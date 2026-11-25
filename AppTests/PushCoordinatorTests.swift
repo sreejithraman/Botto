@@ -305,7 +305,7 @@ import BottoCore
         }))
         await bind(coordinator, service: service)
         let resume = Task { await coordinator.resume() }
-        for _ in 0..<1_000 where waiting == nil { await Task.yield() }
+        await waitWhile { waiting == nil }
         #expect(waiting != nil)
         coordinator.retireConnection()
         let callback = waiting; waiting = nil; callback?.resume(returning: String(repeating: "2", count: 64))
@@ -353,7 +353,7 @@ import BottoCore
         let pairing = try #require(vault.state.pairings.first)
         service.holdNextEnrollment = true
         let update = Task { await coordinator.updatePreferences(.init(previews: false)) }
-        for _ in 0..<1_000 where service.held == nil { await Task.yield() }
+        await waitWhile { service.held == nil }
         #expect(service.held != nil)
         service.reportedDevices = [.init(deviceID: pairing.deviceID, generation: 2, active: false, state: .removed)]
         await coordinator.refresh()
@@ -428,7 +428,7 @@ import BottoCore
         await bind(coordinator, service: service)
         service.holdNextRemoval = true
         let resume = Task { await coordinator.resume() }
-        for _ in 0..<1_000 where service.heldRemoval == nil { await Task.yield() }
+        await waitWhile { service.heldRemoval == nil }
         #expect(service.heldRemoval != nil)
         coordinator.retireConnection()
         let callback = service.heldRemoval; service.heldRemoval = nil; callback?.resume()
@@ -453,11 +453,11 @@ import BottoCore
         await coordinator.enable()
         service.holdNextEnrollment = true
         coordinator.updateVisibility(destination: .init(profileID: "bot", rootID: "root", storedID: "stored"))
-        for _ in 0..<1_000 where service.held == nil { await Task.yield() }
+        await waitWhile { service.held == nil }
         #expect(service.held != nil)
         coordinator.deactivate()
         let held = service.held; service.held = nil; held?.resume()
-        for _ in 0..<1_000 where service.enrollments.count < 3 { await Task.yield() }
+        await waitWhile { service.enrollments.count < 3 }
         #expect(service.enrollments.count == 3)
         #expect(service.enrollments[1].0.visibleChat?.storedID == "stored")
         #expect(service.enrollments[2].0.visibleChat == nil && service.enrollments[2].0.visibleUntil == 0)

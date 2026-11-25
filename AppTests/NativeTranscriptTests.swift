@@ -366,7 +366,7 @@ import WebKit
         (view as? UITextView).map { [$0] } ?? view.subviews.flatMap(textViews)
     }
     private func wait(_ label: String, until condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(label) { !condition() }
         try #require(condition(), "Timed out: \(label)")
     }
 

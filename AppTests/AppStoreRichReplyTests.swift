@@ -695,7 +695,12 @@ import WebKit
                 }
                 observation = await observe(web, in: root, deadline: deadline, recognize: recognize)
                 guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
-                if let words = observation.words, words.localizedStandardContains(expected) { return web }
+                if let words = observation.words, words.localizedStandardContains(expected) {
+                    if start.duration(to: .now) > slowReadiness {
+                        Attachment.record("late: phase=\(phase) elapsed=\(start.duration(to: .now)) polls=\(polls) maximumPollGap=\(maximumPollGap)", named: "readiness-wait.txt")
+                    }
+                    return web
+                }
             }
             try await Task.sleep(for: .milliseconds(40))
         }

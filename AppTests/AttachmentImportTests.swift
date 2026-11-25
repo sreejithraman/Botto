@@ -45,7 +45,7 @@ import BottoCore
     }
 
     private func settled(_ reason: Comment = "a page finishes loading", _ condition: @MainActor () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(reason.rawValue) { !condition() }
         #expect(condition(), reason)
     }
 

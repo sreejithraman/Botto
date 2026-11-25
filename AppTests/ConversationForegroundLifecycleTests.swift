@@ -18,13 +18,9 @@ import BottoCore
         return (store, service, screen, configuration)
     }
     private func settled(_ workspace: ConversationWorkspace, _ service: WorkspaceTestService) async throws -> ChatScreen {
-        for _ in 0..<1000 {
-            if workspace.screen(profile: service.profile)?.isOpening == false {
-                return try #require(workspace.screen(profile: service.profile))
-            }
-            await Task.yield()
-        }
-        Issue.record("Foreground read did not settle"); return try #require(workspace.screen(profile: service.profile))
+        await waitWhile { workspace.screen(profile: service.profile)?.isOpening != false }
+        #expect(workspace.screen(profile: service.profile)?.isOpening == false, "Foreground read did not settle")
+        return try #require(workspace.screen(profile: service.profile))
     }
 
     @Test func everyReadHandoffRetiresArtifactRichRequestAndPickerActionOwners() async throws {
@@ -141,7 +137,7 @@ import BottoCore
         let after = try #require(workspace.screen(profile: service.profile))
         #expect(after.selectedViewLifetime != initial.selectedViewLifetime)
         gate.release()
-        for _ in 0..<1000 { if service.completedOpens.count >= (retirement == "selection" ? 3 : 2) { break }; await Task.yield() }
+        await waitWhile { service.completedOpens.count < (retirement == "selection" ? 3 : 2) }
         let late = try #require(service.completedOpens.last)
         workspace.receive(late); workspace.displayed(readOwner)
         let current = try #require(workspace.screen(profile: service.profile))
@@ -168,7 +164,7 @@ import BottoCore
         workspace.setTranscriptVisible(true, owner: reopened.owner); await secondGate.entered()
         let second = try #require(workspace.screen(profile: service.profile))
         firstGate.release()
-        for _ in 0..<1000 { if service.completedOpens.count == 3 { break }; await Task.yield() }
+        await waitWhile { service.completedOpens.count != 3 }
         workspace.receive(try #require(service.completedOpens.last))
         #expect(workspace.screen(profile: service.profile)?.isOpening == true)
         #expect(workspace.screen(profile: service.profile)?.epoch == second.epoch)
@@ -190,7 +186,7 @@ import BottoCore
         let explicit = try #require(workspace.screen(profile: service.profile))
         service.beforeOpenReturn = { [weak service] publication in service?.onEvent?(.conversation(publication)) }
         gate.release()
-        for _ in 0..<1000 { if service.completedOpens.count == 3 { break }; await Task.yield() }
+        await waitWhile { service.completedOpens.count != 3 }
         #expect(service.completedOpens.count == 3)
         let after = try #require(workspace.screen(profile: service.profile))
         #expect(after.owner == explicit.owner && after.canAct,

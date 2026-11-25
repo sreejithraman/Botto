@@ -141,6 +141,8 @@ import BottoCore
 /// main actor for 26 seconds, so this stops a hang rather than measuring speed. Assertions about elapsed
 /// time, an expected timeout, or something that must not happen keep their own limits.
 let readinessLimit = Duration.seconds(45)
+/// A wait longer than this passes but leaves an attachment, so lateness stays visible.
+let slowReadiness = Duration.seconds(3)
 
 /// Suspends while `pending` is true, for at most `limit`, and returns whether it became false.
 /// It yields briefly so a ready condition returns at once, then sleeps: spinning on the main actor would
@@ -157,7 +159,7 @@ let readinessLimit = Duration.seconds(45)
         maximumGap = max(maximumGap, previousPoll.duration(to: now))
         previousPoll = now; polls += 1
         if ready || now >= deadline || Task.isCancelled {
-            if !ready || elapsed > .seconds(3) {
+            if !ready || elapsed > slowReadiness {
                 Attachment.record("\(label ?? "\(fileID):\(line)")\nready=\(ready) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())",
                                   named: "readiness-wait.txt")
             }

@@ -959,7 +959,7 @@ import BottoCore
                                         diagnostics: () -> String = { "" },
                                         sourceLocation: SourceLocation = #_sourceLocation,
                                         _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + timeout
+    let started = ContinuousClock.now, deadline = started + timeout
     var polls = 0, maximumGap = Duration.zero
     var previousPoll = ContinuousClock.now
     while !condition(), ContinuousClock.now < deadline {
@@ -969,7 +969,7 @@ import BottoCore
         maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
     }
     let passed = condition()
-    if !passed {
+    if !passed || started.duration(to: .now) > slowReadiness {
         maximumGap = max(maximumGap, previousPoll.duration(to: .now))
         #if DEBUG
         let decoding = AvatarDecodeLedger.shared.failureSnapshot()
@@ -977,7 +977,7 @@ import BottoCore
         let decoding = "Decoder metadata is excluded from Release"
         #endif
         Attachment.record("\(message)\npolls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())\n\(decoding)",
-                          named: "avatar-readiness-failure.txt")
+                          named: passed ? "readiness-wait.txt" : "avatar-readiness-failure.txt")
     }
     try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }

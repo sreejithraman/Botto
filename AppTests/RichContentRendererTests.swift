@@ -801,14 +801,13 @@ struct RichContentRendererTests {
             window.testReport = e.data.testReport;
         });
         """)
-        let deadline = ContinuousClock.now + readinessLimit
-        while ContinuousClock.now < deadline {
+        var report: [String: String]?
+        try await waitWhile {
             let json = try await evaluate(web, "JSON.stringify(window.testReport)")
-            if let report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String] {
-                return report
-            }
-            try await Task.sleep(for: .milliseconds(25))
+            report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String]
+            return report == nil
         }
+        if let report { return report }
         Issue.record("The sandbox fixture did not report its observed browser behavior")
         return [:]
     }

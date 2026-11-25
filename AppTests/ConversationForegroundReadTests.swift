@@ -26,11 +26,9 @@ import BottoCore
         try #require(workspace.screen(profile: service.profile))
     }
     private func settled(_ workspace: ConversationWorkspace, _ service: WorkspaceTestService) async throws -> ChatScreen {
-        for _ in 0..<1000 {
-            if workspace.screen(profile: service.profile)?.isOpening == false { return try current(workspace, service) }
-            await Task.yield()
-        }
-        Issue.record("Workspace read did not settle"); return try current(workspace, service)
+        await waitWhile { workspace.screen(profile: service.profile)?.isOpening != false }
+        #expect(workspace.screen(profile: service.profile)?.isOpening == false, "Workspace read did not settle")
+        return try current(workspace, service)
     }
 
     @Test(arguments: [true, false])

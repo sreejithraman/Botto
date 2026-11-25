@@ -470,7 +470,7 @@ import BottoCore
         try await Task.sleep(for: .milliseconds(5))
     }
     let ready = condition()
-    if !ready {
+    if !ready || start.duration(to: .now) > slowReadiness {
         Attachment.record("reason=\(reason) elapsed=\(start.duration(to: .now)) polls=\(polls) maximumPollGap=\(maximumPollGap)\n\(diagnostics())",
                           named: "native-continuity-readiness.txt")
     }

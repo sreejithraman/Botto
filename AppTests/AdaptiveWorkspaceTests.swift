@@ -151,7 +151,10 @@ import BottoCore
         editor.selectedRange = selection
         let first = try #require(presentation.artifact)
         try #require(presentation.moveArtifact(by: 1, id: first.id, store: store))
-        try await waitUntil("The second page rendered beside the existing draft") {
+        // Unexplained: a hosted run missed this with the main actor responsive, so it keeps its own limit.
+        try await waitUntil("The second page rendered beside the existing draft", timeout: .seconds(10), diagnostics: {
+            "title=\(presentation.artifact?.title ?? "nil") file=\(presentation.artifact?.file != nil) labels=\(self.shellAccessibilityLabels(in: root.view))"
+        }) {
             presentation.artifact?.title == "second.txt" && presentation.artifact?.file != nil &&
                 self.shellAccessibilityLabels(in: root.view).contains("Attachment 2 of 2")
         }
@@ -1214,7 +1217,8 @@ import BottoCore
         let diagnostics = {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }
-        try await waitUntil("Selected file finished loading", diagnostics: diagnostics,
+        // Unexplained: a hosted run never started this download, so it keeps its own limit.
+        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics,
                             recordTiming: recordTiming) {
             session.file != nil || session.errorMessage != nil || !session.isCurrent
         }
@@ -1237,7 +1241,7 @@ import BottoCore
             maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
         }
         let settled = condition()
-        if !settled || recordTiming {
+        if !settled || recordTiming || started.duration(to: .now) > slowReadiness {
             let finished = ContinuousClock.now
             maximumGap = max(maximumGap, previousPoll.duration(to: finished))
             let timing = "settled=\(settled) elapsed=\(started.duration(to: finished)) polls=\(polls) maximumPollGap=\(maximumGap)"

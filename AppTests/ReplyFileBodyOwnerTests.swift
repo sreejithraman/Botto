@@ -132,7 +132,7 @@ import BottoCore
     }
 
     private func wait(_ label: String, timeout: Duration = readinessLimit, diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
-        await waitWhile(limit: timeout) { !condition() }
+        await waitWhile(label, limit: timeout, diagnostics: diagnostics) { !condition() }
         let ready = condition()
         if !ready { Attachment.record("phase=\(label)\n\(diagnostics())", named: "reply-body-readiness.txt") }
         try #require(ready, "Timed out: \(label)")

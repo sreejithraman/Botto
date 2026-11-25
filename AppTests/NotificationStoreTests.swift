@@ -200,7 +200,7 @@ import BottoCore
         clock.addTimeInterval(301)
         service.connectError = nil
         #expect(await store.connect(configuration))
-        for _ in 0..<1_000 where store.chats.selection(profile: service.profile)?.identity?.root != target.root { await Task.yield() }
+        await waitWhile { store.chats.selection(profile: service.profile)?.identity?.root != target.root }
         #expect(store.selectedBotID == service.profile.text)
         #expect(store.chats.selection(profile: service.profile)?.identity?.root == target.root)
         #expect(service.sends.isEmpty && service.responses.isEmpty && service.creates.isEmpty)
@@ -255,7 +255,7 @@ import BottoCore
             await gate.entered()
             service.rosterGate = nil; gate.release()
         } else { await store.refresh() }
-        for _ in 0..<1_000 where store.chats.selection(profile: service.profile)?.identity?.root != target.root { await Task.yield() }
+        await waitWhile { store.chats.selection(profile: service.profile)?.identity?.root != target.root }
         #expect(store.chats.selection(profile: service.profile)?.identity?.root == target.root)
         #expect(service.opens.count == 1)
         #expect(service.connectionAttempts == 1)
@@ -465,7 +465,7 @@ import BottoCore
             }
             if authority == "failure" {
                 await store.refresh()
-                for _ in 0..<1_000 where store.selectedBotID != otherProfile.text { await Task.yield() }
+                await waitWhile { store.selectedBotID != otherProfile.text }
                 #expect(store.selectedBotID == otherProfile.text)
                 #expect(store.chats.screen(profile: otherProfile)?.canAct == true)
             }
@@ -494,7 +494,7 @@ import BottoCore
         var libraryChat: LibraryChat?
         if older == .libraryOpening {
             await store.open(try #require(store.bot(withID: scout.profile.text)))
-            for _ in 0..<1_000 where !store.library.chats.contains(where: { $0.botID == scout.profile.text }) { await Task.yield() }
+            await waitWhile { !store.library.chats.contains(where: { $0.botID == scout.profile.text }) }
             libraryChat = store.library.chats.first { $0.botID == scout.profile.text }
         }
         await store.open(try #require(store.bot(withID: service.profile.text)))
@@ -538,7 +538,7 @@ import BottoCore
             for _ in 0..<100 { await Task.yield() }
             let reads = service.rosterCalls
             olderGate.release()
-            for _ in 0..<1_000 where service.rosterCalls == reads { await Task.yield() }
+            await waitWhile { service.rosterCalls == reads }
             #expect(service.rosterCalls == reads + 1, "The tap's own roster read is still held.")
         } else {
             await tapGate.entered()
@@ -839,7 +839,7 @@ import BottoCore
             await held.finishOlder()
             await store.openPushNotification(try notification(held.target, pairing: held.pairing))
             await fail(held, at: .roster, opening: .inFlightOutlivesTap)
-            for _ in 0..<1_000 where !offersRetry(scout, in: store) { await Task.yield() }
+            await waitWhile { !offersRetry(scout, in: store) }
             #expect(offersRetry(scout, in: store))
             clearFailures(service)
             #expect(await retryOpening(scout, in: store))
@@ -1042,7 +1042,7 @@ import BottoCore
         if authority == "failure" {
             clock.addTimeInterval(301); service.pushStatusError = nil
             await store.refresh()
-            for _ in 0..<1_000 where store.chats.selection(profile: target.profile)?.identity?.root != target.root { await Task.yield() }
+            await waitWhile { store.chats.selection(profile: target.profile)?.identity?.root != target.root }
         }
         if authority != "removed" {
             #expect(store.selectedBotID == target.profile.text)

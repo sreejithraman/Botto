@@ -50,11 +50,12 @@ import BottoCore
     }
 
     private func visibleElement(_ label: String, in window: UIWindow) async throws -> NSObject {
-        let deadline = ContinuousClock.now + readinessLimit
-        while ContinuousClock.now < deadline {
-            if let found = element(label, in: window), found.accessibilityFrame.intersects(window.frame) { return found }
-            await Task.yield()
+        var visible: NSObject?
+        await waitWhile(label) {
+            visible = element(label, in: window).flatMap { $0.accessibilityFrame.intersects(window.frame) ? $0 : nil }
+            return visible == nil
         }
+        if let visible { return visible }
         let diagnostic = UIGraphicsImageRenderer(bounds: window.bounds).image {
             _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
         }
