@@ -126,6 +126,8 @@ def exercise(harness, engine, directory, action, override=None):
                 print(f"PATH=/usr/bin:/bin; {action}; app={app.pid}; bundled engine={pid}; group={group}; protocol=2", flush=True)
                 if action == "SIGTERM":
                     app.send_signal(signal.SIGTERM)
+                elif action == "leader exit":
+                    os.kill(leader, signal.SIGTERM)
                 else:
                     quit_marker.touch()
                 status = app.wait(timeout=5)
@@ -139,7 +141,10 @@ def exercise(harness, engine, directory, action, override=None):
                       f"independent engine PID={other.pid} still responds={independent_alive}", flush=True)
                 assert stopped, f"{action} left the app-owned process group or listener"
                 assert independent_alive, f"{action} stopped the independent engine"
-                assert status == 0, f"{action} exited with status {status}"
+                if action == "leader exit":
+                    assert status == 1 and startup_failure(directory) == "T3 exited with status 0."
+                else:
+                    assert status == 0, f"{action} exited with status {status}"
             finally:
                 owned = {
                     group for pid, parent, group, _ in engine_processes(base)
@@ -177,7 +182,7 @@ def main():
             }, info)
         subprocess.run([
             "/usr/bin/swiftc", "-swift-version", "6",
-            root / "Mac/LocalT3ServerManager.swift", root / "Mac/MacBottoDelegate.swift",
+            root / "Mac/LocalT3ServerManager.swift", root / "Mac/MacEngineLifecycle.swift",
             root / "scripts/tests/fixtures/BottoMacTerminationHarness.swift", "-o", harness,
         ], check=True)
         for action in ("SIGTERM", "Quit"):
@@ -196,6 +201,7 @@ wait
 """)
         override.chmod(0o700)
         exercise(harness, engine, Path(temp) / "SIGTERM-with-child", "SIGTERM", override=override)
+        exercise(harness, engine, Path(temp) / "leader-exit", "leader exit", override=override)
 
 
 if __name__ == "__main__":

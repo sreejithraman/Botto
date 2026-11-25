@@ -1,9 +1,8 @@
 import AppKit
 
 @MainActor
-final class MacBottoDelegate: NSObject, NSApplicationDelegate {
+class MacEngineLifecycle: NSObject, NSApplicationDelegate {
     let server: LocalT3ServerManager
-    let store = MacBottoStore()
     private var terminationSignal: DispatchSourceSignal?
 
     override convenience init() {
@@ -26,23 +25,6 @@ final class MacBottoDelegate: NSObject, NSApplicationDelegate {
         signal(SIGTERM, deferSIGTERMToDispatch)
         terminationSignal = source
         source.activate()
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard store.hasUnsavedProse else { return .terminateNow }
-        Task {
-            await store.flushProse()
-            guard store.hasUnsavedProse else { sender.reply(toApplicationShouldTerminate: true); return }
-            let alert = NSAlert()
-            alert.messageText = "Botto couldn’t save your changes."
-            alert.informativeText = "Keep Botto open to retry or copy the unsaved text."
-            alert.addButton(withTitle: "Keep Botto Open")
-            alert.addButton(withTitle: "Quit Without Saving")
-            sender.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
-        }
-        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

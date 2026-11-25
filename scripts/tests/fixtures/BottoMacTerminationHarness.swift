@@ -14,7 +14,7 @@ struct BottoMacTerminationHarness {
             baseDirectory: URL(fileURLWithPath: arguments[2], isDirectory: true),
             defaults: defaults
         )
-        let delegate = MacBottoDelegate(server: server)
+        let delegate = MacEngineLifecycle(server: server)
         let failureMarker = URL(fileURLWithPath: arguments[3]).deletingLastPathComponent()
             .appending(path: "startup-failure")
         let app = NSApplication.shared

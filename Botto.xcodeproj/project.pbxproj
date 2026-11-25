@@ -134,6 +134,7 @@
 		8ED4B98DFFACFDA838C35C53 /* TranscriptScrollPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC0960053535AD532BBE39B /* TranscriptScrollPolicyTests.swift */; };
 		8F69CC8DF089DA5A3FC7C900 /* T3Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D7D530582C3BBE53ED66853 /* T3Workspace.swift */; };
 		9143091FAC055997CD2FAFD4 /* MacBottoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D64BACB44E4B7DFEE857835F /* MacBottoStore.swift */; };
+		93608EA6B91ED606EFE2BD9C /* MacEngineLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D64DEBEAACC37E33A1BF376 /* MacEngineLifecycle.swift */; };
 		93FE4925A6DF3A44967E357B /* AssistantReplyBody.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CCC961C949E3BCB290814A0 /* AssistantReplyBody.swift */; };
 		945D1754184001135916C175 /* ArtifactPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 883FD4DEEBCC502E2607DC0A /* ArtifactPreviewTests.swift */; };
 		956D70174C56FD0337F02420 /* DeveloperToolsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120E8A7E81DEC7CF5EC20111 /* DeveloperToolsUITests.swift */; };
@@ -197,7 +198,6 @@
 		D389E78EFE2D38C508D0347E /* MacFilePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8016C0078A32835B539DFED5 /* MacFilePreview.swift */; };
 		D60A8422F184BCFA333469B8 /* RichContentDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AA4287B6EB83965FA95D80E /* RichContentDocument.swift */; };
 		D6FC589D8743E32EE495461C /* ArtifactTextReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0D71DD62CCF297DB2F90A4 /* ArtifactTextReader.swift */; };
-		D6FFFDDA5BAF97E46A7E3E71 /* MacBottoDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B69543678EF62147BABCFA0 /* MacBottoDelegate.swift */; };
 		D786286881E21FFB42A24FDB /* ScheduledHandoffAttentionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48211F870ACD56FC0E0D9E /* ScheduledHandoffAttentionTests.swift */; };
 		D7A05DEBEE1BA8D6DBFB52E8 /* ArtifactCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F42DB3A669B8BEC3CAC78FEF /* ArtifactCache.swift */; };
 		DA8A868DCC123EE26401555B /* MacBottoInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F9F2025E6838252EE699AA /* MacBottoInspector.swift */; };
@@ -357,7 +357,6 @@
 		4A65277932BC3B754EEB0D0B /* NativeTranscriptIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptIdentity.swift; sourceTree = "<group>"; };
 		4A9431AB271F0631187FFEB6 /* Pele.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Pele.txt; sourceTree = "<group>"; };
 		4AC84673DA06C91B5935AF8E /* ReplyFileBodyLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyFileBodyLayoutTests.swift; sourceTree = "<group>"; };
-		4B69543678EF62147BABCFA0 /* MacBottoDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacBottoDelegate.swift; sourceTree = "<group>"; };
 		4DEB7723F080163E54A7CC91 /* MultipleChatUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultipleChatUITests.swift; sourceTree = "<group>"; };
 		4FB440252C192B8F1311D992 /* child.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = child.js; sourceTree = "<group>"; };
 		4FE3FE71E9721393CBABCA61 /* BottoTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BottoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -398,6 +397,7 @@
 		79BE6BB89908C731C7C1BB87 /* RichReplyContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichReplyContext.swift; sourceTree = "<group>"; };
 		7C791E208EABB6AF87F092FA /* BotProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotProfileView.swift; sourceTree = "<group>"; };
 		7CBCCDAC6B8672D772678DD1 /* NativeTranscriptLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptLifecycleTests.swift; sourceTree = "<group>"; };
+		7D64DEBEAACC37E33A1BF376 /* MacEngineLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEngineLifecycle.swift; sourceTree = "<group>"; };
 		7DA26201A101B7E2F44CA8B1 /* RichChatUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichChatUITests.swift; sourceTree = "<group>"; };
 		7E8B3B25FDDCCD83C19F7DE6 /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		8016C0078A32835B539DFED5 /* MacFilePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacFilePreview.swift; sourceTree = "<group>"; };
@@ -827,8 +827,8 @@
 				AB3DB80BE8FA473B1586ADFC /* LocalT3ServerManager.swift */,
 				09FD329209A2D50DD3622B11 /* MacAutosaver.swift */,
 				4030CD4A967A11E421EBE84E /* MacBottoApp.swift */,
-				4B69543678EF62147BABCFA0 /* MacBottoDelegate.swift */,
 				D64BACB44E4B7DFEE857835F /* MacBottoStore.swift */,
+				7D64DEBEAACC37E33A1BF376 /* MacEngineLifecycle.swift */,
 				08CF2412D01EC65F19DAF2B7 /* MacPresentation.swift */,
 				99AC98A9AB0CE52FAF797080 /* Views */,
 			);
@@ -1478,11 +1478,11 @@
 				88A7D7744EB2EB9B9FD3ADFB /* MacAutosaver.swift in Sources */,
 				CC1CB38391ADD251DD1EB0AB /* MacBotAvatarView.swift in Sources */,
 				2A7F7BE6AD28506F2E4A59B0 /* MacBottoApp.swift in Sources */,
-				D6FFFDDA5BAF97E46A7E3E71 /* MacBottoDelegate.swift in Sources */,
 				DA8A868DCC123EE26401555B /* MacBottoInspector.swift in Sources */,
 				9143091FAC055997CD2FAFD4 /* MacBottoStore.swift in Sources */,
 				B46213F10487EE9B94E13EE4 /* MacChatPane.swift in Sources */,
 				B38FDFA0167B9ECD254409BE /* MacChatSidebar.swift in Sources */,
+				93608EA6B91ED606EFE2BD9C /* MacEngineLifecycle.swift in Sources */,
 				D389E78EFE2D38C508D0347E /* MacFilePreview.swift in Sources */,
 				F98F882390195715627AA1D4 /* MacFreshPage.swift in Sources */,
 				7FEB2A5E622D035EF96616DC /* MacMarkdown.swift in Sources */,
