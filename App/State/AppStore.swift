@@ -1347,19 +1347,20 @@ import BottoCore
     }
 
     func admitPushNotification(_ envelope: PushEnvelope) -> Bool {
-        guard !isDemo, configuration != nil else {
-            notice = isDemo ? "Leave demo to open this notification." : "Connect to your Botto host to open this notification."
+        guard !isDemo, let configuration else {
+            notice = isDemo ? "Leave demo to open this notification." : "Connect to your Hermes host to open this notification."
             return false
         }
+        let isT3 = configuration.t3 != nil
         let intent: PushNavigationIntent?
-        if let scope = t3PushScope {
-            intent = t3Push.navigationIntent(envelope, scope: scope)
+        if isT3 {
+            intent = t3PushScope.flatMap { t3Push.navigationIntent(envelope, scope: $0) }
         } else {
             bindPushNotifications()
             intent = push.navigationIntent(envelope)
         }
         guard let intent else {
-            notice = "This notification no longer has a verified destination."
+            notice = isT3 ? Self.unverifiedT3Notification : Self.unverifiedHermesNotification
             return false
         }
         // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
@@ -1384,6 +1385,9 @@ import BottoCore
         }
     }
 
+    private static let unverifiedT3Notification = "This notification no longer has a verified destination."
+    private static let unverifiedHermesNotification =
+        "This notification no longer has a verified chat destination. Open your bot's chats to continue."
     private static let t3PushReconnectNotice = "Reconnect to your Mac to open the notification’s Space."
 
     func resumePushNavigation() async {
@@ -1435,7 +1439,7 @@ import BottoCore
               let root = try? ExactID(destination.rootID), let stored = try? ExactID(destination.storedID) else {
             interruptSupersededOpening()
             pendingPushNotification = nil
-            notice = "This notification no longer has a verified chat destination. Open your bot's chats to continue."
+            notice = isT3 ? Self.unverifiedT3Notification : Self.unverifiedHermesNotification
             return
         }
         let workspace = chats
