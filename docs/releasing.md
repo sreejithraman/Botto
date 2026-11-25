@@ -35,5 +35,5 @@ Apple build.
    relevant compatibility limits and the verification scope. An App Store or
    TestFlight build is a separate distribution process.
 
-Rebuild and recheck the candidate after any source change. An earlier manifest,
-screenshot, or test result does not cover later source.
+Rebuild and recheck the candidate after any source change. An earlier screenshot
+or test result does not cover later source.
