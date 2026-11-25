@@ -23,13 +23,9 @@ import BottoCore
         workspace.receive(.init(identity: old.identity, snapshot: snapshot, access: old.access))
     }
     private func settled(_ workspace: ConversationWorkspace, _ service: WorkspaceTestService) async throws -> ChatScreen {
-        for _ in 0..<1000 {
-            if workspace.screen(profile: service.profile)?.isOpening == false {
-                return try #require(workspace.screen(profile: service.profile))
-            }
-            await Task.yield()
-        }
-        Issue.record("Foreground read did not settle"); return try #require(workspace.screen(profile: service.profile))
+        await waitWhile { workspace.screen(profile: service.profile)?.isOpening != false }
+        #expect(workspace.screen(profile: service.profile)?.isOpening == false, "Foreground read did not settle")
+        return try #require(workspace.screen(profile: service.profile))
     }
 
     @Test func discardedImportCaptureCannotLeaveAnImmortalReadBarrier() async throws {
@@ -38,7 +34,7 @@ import BottoCore
         workspace.setTranscriptVisible(true, owner: screen.owner)
         #expect(service.opens.count == 1 && intent != nil)
         intent = nil
-        for _ in 0..<1000 { if service.opens.count > 1 { break }; await Task.yield() }
+        await waitWhile { service.opens.count <= 1 }
         #expect(service.opens.count == 2)
         _ = try await settled(workspace, service)
     }
@@ -170,7 +166,7 @@ import BottoCore
         workspace.setTranscriptVisible(true, owner: screen.owner)
         #expect(service.opens.count == 1 && keep != nil)
         keep = nil
-        for _ in 0..<1000 { if service.opens.count > 1 { break }; await Task.yield() }
+        await waitWhile { service.opens.count <= 1 }
         #expect(service.opens.count == 2)
         _ = try await settled(workspace, service)
         #expect(service.sends.isEmpty && service.stops.isEmpty && service.creates.isEmpty)

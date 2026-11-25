@@ -19,8 +19,7 @@ import BottoCore
         let cacheID: UUID
     }
     private func wait(_ label: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        await waitWhile(label) { !condition() }
         try #require(condition(), "Timed out waiting for \(label)")
     }
     private func fixture() async throws -> Fixture {

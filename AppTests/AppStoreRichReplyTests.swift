@@ -17,7 +17,7 @@ import WebKit
 
     @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
         await checkRecognitionReturnsBeforeWorker(cancelWaiter: true)
-        await checkImmediateRecognition(until: .now + .seconds(5), expected: ["current recognition"], expectStarted: true)
+        await checkImmediateRecognition(until: .now + .seconds(60), expected: ["current recognition"], expectStarted: true)
     }
 
     private func checkImmediateRecognition(until deadline: ContinuousClock.Instant, expected: [String]?, expectStarted: Bool,
@@ -80,10 +80,7 @@ import WebKit
     }
 
     private func waitForRecognitionControl(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !condition() }
         return condition()
     }
 
@@ -241,7 +238,7 @@ import WebKit
                 if activeResources {
                     let image = UIImage(cgImage: pixels)
                     var complete = false
-                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + .seconds(15),
+                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + readinessLimit,
                         isCurrent: { first.webView === original && first.state == .ready && original.window === window },
                         observe: { image, region in
                             let captured = try await RenderedTranscriptFile.observe(image, in: region)
@@ -455,8 +452,7 @@ import WebKit
             service.downloadGate = gate
             let reload = Task { await model.load(block, context: reloadContext) }
             defer { gate.release(); reload.cancel() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            await waitWhile { service.downloads.count < 2 }
             try #require(service.downloads.count == 2, "A different occurrence must request its own capture")
             #expect(model.resolved(for: block, context: reloadContext) == nil)
             gate.release(); await reload.value
@@ -665,7 +661,7 @@ import WebKit
     }
 
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
-                            phase: String = "initial document", observationBudget: Duration = .seconds(15),
+                            phase: String = "initial document", observationBudget: Duration = readinessLimit,
                             diagnostics: () -> String = { "" },
                             recognize: @escaping @MainActor (CGImage) async throws -> [String] = {
                                 try await NativeTextRecognition.recognize($0, languages: ["en-US"])
@@ -699,7 +695,12 @@ import WebKit
                 }
                 observation = await observe(web, in: root, deadline: deadline, recognize: recognize)
                 guard let observation, observation.isCurrent, ContinuousClock.now < deadline else { continue }
-                if let words = observation.words, words.localizedStandardContains(expected) { return web }
+                if let words = observation.words, words.localizedStandardContains(expected) {
+                    if start.duration(to: .now) > slowReadiness {
+                        recordReadiness("late: phase=\(phase) elapsed=\(start.duration(to: .now)) polls=\(polls) maximumPollGap=\(maximumPollGap)")
+                    }
+                    return web
+                }
             }
             try await Task.sleep(for: .milliseconds(40))
         }

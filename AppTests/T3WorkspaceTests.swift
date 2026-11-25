@@ -5,7 +5,7 @@ import UIKit
 @testable import Botto
 @testable import BottoCore
 
-@MainActor @Suite(.timeLimit(.minutes(1))) struct T3WorkspaceTests {
+@MainActor @Suite(.timeLimit(.minutes(3))) struct T3WorkspaceTests {
     @Test func mountsTheBotAndOpensTheExactStoredChannel() async throws {
         let service = T3WorkspaceService()
         let configuration = t3Configuration()
@@ -591,16 +591,15 @@ import UIKit
             if let bar = view as? UINavigationBar, !bar.isHidden { return bar }
             return view.subviews.lazy.compactMap(find).first
         }
-        let deadline = ContinuousClock.now + .seconds(15)
-        while ContinuousClock.now < deadline {
+        var found: (UINavigationBar, UIView)?
+        await waitWhile("The header reached the window") {
             window.layoutIfNeeded()
-            if let bar = find(window), let title = bar.topItem?.titleView, title.window === window, title.bounds.width > 60 {
-                try await Task.sleep(for: .milliseconds(500))
-                return (bar, title)
-            }
-            try await Task.sleep(for: .milliseconds(50))
+            if let bar = find(window), let title = bar.topItem?.titleView, title.window === window, title.bounds.width > 60 { found = (bar, title) }
+            return found == nil
         }
-        throw T3ServiceError.missingChannel
+        guard let found else { throw T3ServiceError.missingChannel }
+        try await Task.sleep(for: .milliseconds(500))
+        return found
     }
 
     private func checkHeader(_ title: UIView, in bar: UINavigationBar) throws {
@@ -846,8 +845,7 @@ import UIKit
         #expect(hostText == "original" && writes.isEmpty)
         gate.release()
 
-        let deadline = ContinuousClock.now + .seconds(2)
-        while writes.count < 2, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { writes.count < 2 }
         #expect(writes == ["intermediate", "original"])
         #expect(hostText == "original")
         #expect(autosave.state == .saved)
@@ -1012,8 +1010,7 @@ import UIKit
                 service.makeMainSpace()
                 service.onEvent?(.botsChanged)
             }
-            let deadline = ContinuousClock.now + .seconds(10)
-            while store.t3Channels.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            await waitWhile { store.t3Channels.isEmpty }
             try #require(!store.t3Channels.isEmpty, "The main space never reached the store")
             try await store.setUpT3Bot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
             _ = try await labels(in: window) { $0.contains { $0.contains("Chat in general") } }
@@ -1052,16 +1049,17 @@ import UIKit
             if count > 0, count < 4096 { children += (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
             for child in children { walk(child, into: &found, seen: &seen) }
         }
-        let deadline = ContinuousClock.now + .seconds(15)
         var found: Set<String> = []
-        while ContinuousClock.now < deadline {
+        let settled = try await waitWhile("The hosted view settled", diagnostics: { "\(found.sorted())" }) {
             window.layoutIfNeeded()
             found = []
             var seen: Set<ObjectIdentifier> = []
             walk(window, into: &found, seen: &seen)
-            if !found.isEmpty, ready(found) { return found }
+            if !found.isEmpty, ready(found) { return false }
             try await Task.sleep(for: .milliseconds(50))
+            return true
         }
+        if settled { return found }
         Issue.record("The hosted view never settled: \(found.sorted())")
         return found
     }

@@ -24,8 +24,7 @@ struct LibraryPreviewThumbnailTests {
         try await wait { !library.artifacts.isEmpty }
         let item = try #require(library.artifacts.first)
         let image = try #require(await covers.image(for: item, library: library))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try await session.loadChats().isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        try await waitWhile { try await session.loadChats().isEmpty }
         #expect(try await session.loadChats().count == 1)
         library.retire(); await cache.close()
 
@@ -156,9 +155,8 @@ struct LibraryPreviewThumbnailTests {
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
 
-    private func wait(_ ready: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    private func wait(fileID: String = #fileID, line: Int = #line, _ ready: () -> Bool) async throws {
+        await waitWhile(fileID: fileID, line: line) { !ready() }
         #expect(ready())
     }
 }

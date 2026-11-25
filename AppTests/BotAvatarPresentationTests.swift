@@ -325,10 +325,7 @@ import BottoCore
         screen = try #require(workspace.screen(profile: service.profile))
         clock.date = clock.date.addingTimeInterval(30)
         workspace.setTranscriptVisible(true, owner: screen.owner)
-        for _ in 0..<1000 {
-            if workspace.screen(profile: service.profile)?.isOpening == false { break }
-            await Task.yield()
-        }
+        await waitWhile { workspace.screen(profile: service.profile)?.isOpening != false }
         #expect(service.opens.count == 2)
         #expect(workspace.screen(profile: service.profile)?.isOpening == false)
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat) == completed)

@@ -131,9 +131,8 @@ import BottoCore
             dynamicType: .large, direction: .leftToRight, colorScheme: .light, reduceMotion: UIAccessibility.isReduceMotionEnabled)
     }
 
-    private func wait(_ label: String, timeout: Duration = .seconds(8), diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    private func wait(_ label: String, timeout: Duration = readinessLimit, diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
+        await waitWhile(label, limit: timeout, diagnostics: diagnostics) { !condition() }
         let ready = condition()
         if !ready { Attachment.record("phase=\(label)\n\(diagnostics())", named: "reply-body-readiness.txt") }
         try #require(ready, "Timed out: \(label)")

@@ -460,7 +460,7 @@ import BottoCore
     (view as? UITextView).map { [$0] } ?? view.subviews.flatMap(continuityTextViews)
 }
 @MainActor private func continuityWait(_ reason: String, diagnostics: () -> String = { "" }, until condition: () -> Bool) async throws {
-    let start = ContinuousClock.now, deadline = start + .seconds(10)
+    let start = ContinuousClock.now, deadline = start + readinessLimit
     var lastPoll = start, maximumPollGap = Duration.zero
     var polls = 0
     while !condition(), ContinuousClock.now < deadline {
@@ -470,7 +470,7 @@ import BottoCore
         try await Task.sleep(for: .milliseconds(5))
     }
     let ready = condition()
-    if !ready {
+    if !ready || start.duration(to: .now) > slowReadiness {
         Attachment.record("reason=\(reason) elapsed=\(start.duration(to: .now)) polls=\(polls) maximumPollGap=\(maximumPollGap)\n\(diagnostics())",
                           named: "native-continuity-readiness.txt")
     }
@@ -688,8 +688,7 @@ extension NativeTranscriptRequestContinuityTests {
                 if let control = button as? UIControl, control.isEnabled != enabled { return false }
                 return accessibleEnabled == enabled
             }
-            let deadline = ContinuousClock.now + .seconds(10)
-            while !matchesRenderedState(), ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !matchesRenderedState() }
             try requireSameMount()
             let button = try #require(renderedRequestButton(choice.label, in: cell),
                 "Public UIKit accessibility container must expose the actual request button at \(stage); do not substitute a production callback")

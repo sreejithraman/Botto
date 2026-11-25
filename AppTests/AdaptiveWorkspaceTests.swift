@@ -132,7 +132,7 @@ import BottoCore
         let session = try #require(presentation.artifact)
         try await waitForArtifactFile(session, store: store, presentation: presentation, service: service,
                                       window: window, recordTiming: true)
-        try await waitUntil("The paired native composer is editable", timeout: .seconds(30), diagnostics: {
+        try await waitUntil("The paired native composer is editable", diagnostics: {
             let editors = self.nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
             return "nativeEditors=\(editors.count) editable=\(editors.map(\.isEditable)) fileReady=\(session.file != nil)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }, recordTiming: true) {
@@ -151,7 +151,10 @@ import BottoCore
         editor.selectedRange = selection
         let first = try #require(presentation.artifact)
         try #require(presentation.moveArtifact(by: 1, id: first.id, store: store))
-        try await waitUntil("The second page rendered beside the existing draft") {
+        // Unexplained: a hosted run missed this with the main actor responsive, so it keeps its own limit.
+        try await waitUntil("The second page rendered beside the existing draft", timeout: .seconds(10), diagnostics: {
+            "title=\(presentation.artifact?.title ?? "nil") file=\(presentation.artifact?.file != nil) labels=\(self.shellAccessibilityLabels(in: root.view))"
+        }) {
             presentation.artifact?.title == "second.txt" && presentation.artifact?.file != nil &&
                 self.shellAccessibilityLabels(in: root.view).contains("Attachment 2 of 2")
         }
@@ -624,11 +627,11 @@ import BottoCore
         let draftOwner = try await browseTheNativeInbox(fixture, in: window)
         let tabs = try #require(window.rootViewController.flatMap(tabController))
         try activateNativeControl("Artifacts", in: window)
-        try await waitUntil("The Artifacts tab is selected", timeout: .seconds(5), diagnostics: {
+        try await waitUntil("The Artifacts tab is selected", diagnostics: {
             "selected=\(tabs.selectedIndex) \(nativeStacks(in: window))"
         }) { tabs.selectedIndex == 1 }
         await fixture.tap()
-        try await waitUntil("The tap returned to Bots", timeout: .seconds(5)) { tabs.selectedIndex == 0 }
+        try await waitUntil("The tap returned to Bots") { tabs.selectedIndex == 0 }
         try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
     }
 
@@ -676,7 +679,7 @@ import BottoCore
         let (store, service, target) = (fixture.store, fixture.service, fixture.target)
         #expect(store.notificationNavigationRevision != fixture.revision, Comment(rawValue: store.notice ?? "No notice"), sourceLocation: sourceLocation)
         let diagnostics = { "selected=\(store.selectedBotID ?? "nil") \(nativeStacks(in: window))" }
-        try await waitUntil("The tap's chat entered native detail", timeout: .seconds(5), diagnostics: diagnostics, sourceLocation: sourceLocation) {
+        try await waitUntil("The tap's chat entered native detail", diagnostics: diagnostics, sourceLocation: sourceLocation) {
             settledDetailNavigation(in: window) != nil
         }
         #expect(store.selectedBotID == target.profile.text, sourceLocation: sourceLocation)
@@ -1214,6 +1217,7 @@ import BottoCore
         let diagnostics = {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }
+        // Unexplained: a hosted run never started this download, so it keeps its own limit.
         try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics,
                             recordTiming: recordTiming) {
             session.file != nil || session.errorMessage != nil || !session.isCurrent
@@ -1221,7 +1225,7 @@ import BottoCore
         try #require(session.file != nil, Comment(rawValue: diagnostics()))
     }
 
-    private func waitUntil(_ message: String = "Condition became true", timeout: Duration = .seconds(10),
+    private func waitUntil(_ message: String = "Condition became true", timeout: Duration = readinessLimit,
                            diagnostics: () -> String = { "" },
                            recordTiming: Bool = false,
                            sourceLocation: SourceLocation = #_sourceLocation,
@@ -1237,7 +1241,7 @@ import BottoCore
             maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
         }
         let settled = condition()
-        if !settled || recordTiming {
+        if !settled || recordTiming || started.duration(to: .now) > slowReadiness {
             let finished = ContinuousClock.now
             maximumGap = max(maximumGap, previousPoll.duration(to: finished))
             let timing = "settled=\(settled) elapsed=\(started.duration(to: finished)) polls=\(polls) maximumPollGap=\(maximumGap)"

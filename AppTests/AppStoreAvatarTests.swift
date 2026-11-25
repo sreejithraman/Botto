@@ -718,10 +718,7 @@ import BottoCore
         let service = AvatarService(); service.holdImages = false
         let bot = try #require(service.profiles.first)
         avatars.refresh([bot], connectionID: UUID(), using: service)
-        let startupDeadline = ContinuousClock.now + .seconds(5)
-        while !gate.hasEntered, ContinuousClock.now < startupDeadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !gate.hasEntered }
         try #require(gate.hasEntered)
         avatars.cancel()
         gate.release()
@@ -730,10 +727,7 @@ import BottoCore
             let snapshot = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
             return (snapshot["recent"] as? [[String: Any]])?.last { $0["testOwner"] as? String == owner }
         }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try finishedAttempt() == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await waitWhile { try finishedAttempt() == nil }
         let finished = try #require(try finishedAttempt())
         #expect(finished["workerCancelledAtEntry"] as? Bool == true)
         #expect(finished["imageProduced"] as? Bool != true)
@@ -745,10 +739,7 @@ import BottoCore
         var finished = false
         let worker = Task { await gate.wait(); finished = true }
         defer { worker.cancel(); gate.release() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !finished, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !finished }
         try #require(finished)
         await worker.value
     }
@@ -964,11 +955,11 @@ import BottoCore
 #endif
 
 @MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
-                                        timeout: Duration = .seconds(10),
+                                        timeout: Duration = readinessLimit,
                                         diagnostics: () -> String = { "" },
                                         sourceLocation: SourceLocation = #_sourceLocation,
                                         _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + timeout
+    let started = ContinuousClock.now, deadline = started + timeout
     var polls = 0, maximumGap = Duration.zero
     var previousPoll = ContinuousClock.now
     while !condition(), ContinuousClock.now < deadline {
@@ -978,7 +969,7 @@ import BottoCore
         maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
     }
     let passed = condition()
-    if !passed {
+    if !passed || started.duration(to: .now) > slowReadiness {
         maximumGap = max(maximumGap, previousPoll.duration(to: .now))
         #if DEBUG
         let decoding = AvatarDecodeLedger.shared.failureSnapshot()
@@ -986,7 +977,7 @@ import BottoCore
         let decoding = "Decoder metadata is excluded from Release"
         #endif
         Attachment.record("\(message)\npolls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())\n\(decoding)",
-                          named: "avatar-readiness-failure.txt")
+                          named: passed ? "readiness-wait.txt" : "avatar-readiness-failure.txt")
     }
     try #require(passed, Comment(rawValue: message), sourceLocation: sourceLocation)
 }

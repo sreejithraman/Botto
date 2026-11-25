@@ -88,11 +88,8 @@ import BottoCore
         try FileManager.default.removeItem(at: directory.appendingPathComponent("performance-stream.hold"))
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = Date.now.addingTimeInterval(3)
-        while !condition() {
-            guard Date.now < deadline else { throw HermesServiceError.timeout }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+    private func waitUntil(fileID: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
+        await waitWhile(fileID: fileID, line: line) { !condition() }
+        guard condition() else { throw HermesServiceError.timeout }
     }
 }

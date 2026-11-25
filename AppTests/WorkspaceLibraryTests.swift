@@ -79,7 +79,7 @@ import BottoCore
         service.previewBarrier = barrier
         let reading = Task { await workspace.refreshInboxHistory(profiles: [current.profile]) }
         defer { reading.cancel(); barrier.release() }
-        try #require(await barrier.waitUntilEntered(timeout: .seconds(3)))
+        try #require(await barrier.entersInTime())
         if retryWhileReading { await library.restore(); await library.restore() }
         #expect(library.artifacts.contains { $0.chat.identity == service.second })
         service.previewBarrier = nil; barrier.release(); await reading.value
@@ -87,11 +87,10 @@ import BottoCore
         #expect(publications.count == 1 && publication.snapshot.messages == [fresh])
         #expect(publication.evidence.readContext?.identityRead?.matches(current) == true)
         #expect(library.indexingMetrics.acceptedSnapshots == 1)
-        let deadline = ContinuousClock.now + .seconds(3)
         var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current),
-              ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        try await waitWhile {
+            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            return !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current)
         }
         let restored = try #require(saved.first { $0.identity == current && $0.messages == [fresh] })
         #expect(restored.retiredStoredIDs?.contains(service.first.stored.bytes) == true)
@@ -592,11 +591,10 @@ import BottoCore
             profileID: current.profile.text, messages: page.messages), title: "Current",
             evidence: .read(startedAt: readStartedAt, observedSource: current, identityRead: proof))
         await library.restore()
-        let deadline = ContinuousClock.now + .seconds(3)
         var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == current && $0.messages == [updated] }) || recovery.contains(current),
-              ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        try await waitWhile {
+            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+            return !saved.contains(where: { $0.identity == current && $0.messages == [updated] }) || recovery.contains(current)
         }
         let savedCurrent = try #require(saved.first { $0.identity == current && $0.messages == [updated] })
         #expect(!recovery.contains(current))
@@ -730,10 +728,10 @@ import BottoCore
             #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/disputed.txt" })
         }
         #expect(library.artifacts.contains { $0.artifact.attachment?.path == "/peer.txt" })
-        let deadline = ContinuousClock.now + .seconds(3)
         var saved = try await session.loadChats()
-        while !saved.contains(where: { $0.identity == service.second && $0.messages.contains(where: { $0.id == "peer-file" }) }), ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats()
+        try await waitWhile {
+            saved = try await session.loadChats()
+            return !saved.contains(where: { $0.identity == service.second && $0.messages.contains(where: { $0.id == "peer-file" }) })
         }
         try #require(saved.contains { $0.identity == service.second && $0.messages.contains { $0.id == "peer-file" } })
         library.retire(); await cache.close()
@@ -1020,9 +1018,9 @@ import BottoCore
         return workspace
     }
 
-    private func eventually(_ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try await !condition(), ContinuousClock.now < deadline { await Task.yield() }
+    private func eventually(fileID: String = #fileID, line: Int = #line,
+                            _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
+        try await waitWhile(fileID: fileID, line: line) { try await !condition() }
         return try await condition()
     }
 
@@ -1052,8 +1050,9 @@ import BottoCore
 
     private func saved(_ fixture: RetainedDispute, in session: ArtifactCacheSession, disputedWithdrawn: Bool) async throws -> Bool {
         try await eventually {
-            let row = try await session.loadChats().first { $0.identity == fixture.subject }
-            return row != nil && (row?.unavailableMessageIDs?.contains(fixture.disputedID) == true) == disputedWithdrawn
+            let rows = try await session.loadChats(), row = rows.first { $0.identity == fixture.subject }
+            // Reopening reads every saved chat, so the peer's separate write must land too.
+            return rows.contains { $0.messages.contains { $0.id == fixture.peer.id } } && row != nil && (row?.unavailableMessageIDs?.contains(fixture.disputedID) == true) == disputedWithdrawn
         }
     }
 
@@ -1475,7 +1474,7 @@ import BottoCore
             let service = fixture.service, read = StoreTestBarrier()
             service.historyBarriers[service.first] = read
             let scanning = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
-            try #require(await read.waitUntilEntered(timeout: .seconds(5)))
+            try #require(await read.entersInTime())
             if retrying {
                 library.seed(book: workspace.persisted(), bots: service.profiles)
                 await library.restore()
@@ -1755,7 +1754,9 @@ import BottoCore
         expectRows(of: fixture, in: library, disputedWithdrawn: false)
         #expect(library.chats.first { $0.identity == service.first }?.unavailableMessageIDs == [absent])
         #expect(try await eventually {
-            try await session.loadChats().first { $0.identity == service.first }?.unavailableMessageIDs == [absent]
+            let rows = try await session.loadChats()
+            return rows.first { $0.identity == service.first }?.unavailableMessageIDs == [absent]
+                && rows.contains { $0.messages.contains { $0.id == fixture.peer.id } }
         })
         library.retire(); await cache.close()
         let reopened = try await reopen(fixture, book: workspace.persisted())
@@ -1848,7 +1849,7 @@ import BottoCore
             let response = StoreTestBarrier(); service.previewBarrier = response
             defer { response.release() }
             let reading = Task { await store.chats.refreshInboxHistory(profiles: profiles) }
-            try #require(await response.waitUntilEntered(timeout: .seconds(5)))
+            try #require(await response.entersInTime())
             service.omitSecond = true
             await store.refreshLibrary(force: true)
             try #require(!store.library.chats.contains { $0.identity.root == fixture.subject.root }, "The omitting scan finishes first")
@@ -2023,7 +2024,7 @@ import BottoCore
         service.previewBarriers[subject] = response
         service.previewFailure = failure ?? fixture.failure
         let reading = Task { await store.chats.refreshInboxHistory(profiles: [subject.profile]) }
-        try #require(await response.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await response.entersInTime())
         service.previewFailure = nil
 
         service.rosterProfiles = service.profiles.filter { $0.id != subject.profile.text }
@@ -2126,7 +2127,7 @@ import BottoCore
         service.historyPages[subject] = fixture.prooflessPages
         service.historyBarriers[subject] = page; service.historyBarrierOffsets[subject] = heldOffset
         let scanning = Task { await store.refreshLibrary(force: true) }
-        try #require(await page.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await page.entersInTime())
         try #require(library.chats.contains { $0.identity == subject }, "The scan has observed this source")
         if heldOffset == 1 {
             try #require(await eventually { searchFinds("Disputed needle", in: library) }, "Its first page is published")
@@ -2284,8 +2285,7 @@ import BottoCore
         library.setOnline(true)
         await library.refresh(evidence: .observed, bots: service.profiles, force: true)
         func shown() -> Bool { library.chats.contains { $0.messages.contains { $0.id == newest.id } } }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !shown(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await waitWhile { !shown() }
         #expect(shown(), "A fresh read reaches Library when saved data can't be trusted")
         #expect(!searchFinds("Saved only needle", in: library), "Saved data stays withheld, and a complete read replaces it")
         if failure == "overflowed ledger" {
@@ -2416,7 +2416,7 @@ import BottoCore
         let directory = StoreTestBarrier(); service.directoryBarrier = directory
         defer { directory.release() }
         let scanning = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
-        try #require(await directory.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await directory.entersInTime())
         library.seed(book: book, bots: service.profiles); await library.restore()
         service.directoryBarrier = nil; directory.release(); await scanning.value
 
@@ -2541,10 +2541,10 @@ import BottoCore
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
         #expect(library.indexingMetrics.acceptedSnapshots == 2)
-        let deadline = ContinuousClock.now + .seconds(3)
         var persisted = try await session.loadChats()
-        while persisted.first(where: { $0.identity == service.first })?.title != title, ContinuousClock.now < deadline {
-            await Task.yield(); persisted = try await session.loadChats()
+        try await waitWhile {
+            persisted = try await session.loadChats()
+            return persisted.first(where: { $0.identity == service.first })?.title != title
         }
         let saved = try #require(persisted.first { $0.identity == service.first })
         #expect(saved.title == title)
@@ -2612,18 +2612,12 @@ import BottoCore
         try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
         await library.restore()
         #expect(library.chats.first { $0.identity == service.first }?.messages == [first, latest])
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !library.artifacts.contains(where: { $0.artifact.attachment?.path == "/new-window.txt" }), ContinuousClock.now < deadline {
-            await Task.yield()
-        }
+        await waitWhile { !library.artifacts.contains(where: { $0.artifact.attachment?.path == "/new-window.txt" }) }
         #expect(library.artifacts.contains { $0.artifact.attachment?.path == "/new-window.txt" })
         #expect(!LibrarySearchResults(query: "New inbox needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(LibrarySearchResults(query: "Old book-only prefix needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-        var persisted = try await session.loadChats()
-        while persisted.first(where: { $0.identity == service.first })?.messages != [first, latest], ContinuousClock.now < deadline {
-            await Task.yield(); persisted = try await session.loadChats()
-        }
-        #expect(persisted.first { $0.identity == service.first }?.messages == [first, latest])
+        try await waitWhile { try await session.loadChats().first(where: { $0.identity == service.first })?.messages != [first, latest] }
+        #expect(try await session.loadChats().first { $0.identity == service.first }?.messages == [first, latest])
         library.retire(); await cache.close()
         let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
         await cold.restore()
@@ -2688,9 +2682,9 @@ import BottoCore
         try #require(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
         let retry = Task { await library.restore() }
         defer { retry.cancel() }
-        try #require(await loading.waitUntilEntered(timeout: .seconds(3)))
+        try #require(await loading.entersInTime())
         library.seed(book: book, bots: service.profiles)
-        try #require(await seededControl.waitUntilEntered(timeout: .seconds(3)))
+        try #require(await seededControl.entersInTime())
         loading.release(); seededControl.release()
         await retry.value
         await library.restore()
@@ -2698,11 +2692,10 @@ import BottoCore
         #expect(current.messages == fresh)
         #expect(LibrarySearchResults(query: "Stale seed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.attachment?.path == "/old-book.txt" })
-        let deadline = ContinuousClock.now + .seconds(3)
         var persisted = try await session.loadChats()
-        while persisted.first(where: { $0.identity == service.first })?.messages != fresh, ContinuousClock.now < deadline {
-            await Task.yield()
+        try await waitWhile {
             persisted = try await session.loadChats()
+            return persisted.first(where: { $0.identity == service.first })?.messages != fresh
         }
         #expect(persisted.first { $0.identity == service.first }?.messages == fresh)
         #expect(library.chats.contains { $0.identity == service.second && $0.messages.contains { $0.id == "seed-control" } })
@@ -2808,9 +2801,7 @@ import BottoCore
         if forceRetry { await library.refresh(evidence: .cached, bots: service.profiles, force: true) }
         else { await library.refreshIfNeeded(evidence: .cached, bots: service.profiles) }
         #expect(library.chats.first { $0.identity == service.first }?.messages == fresh)
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !library.artifacts.contains(where: { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/fresh.txt" }),
-              ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !library.artifacts.contains(where: { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/fresh.txt" }) }
         #expect(library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/fresh.txt" })
         #expect(!LibrarySearchResults(query: "Fresh reseed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(LibrarySearchResults(query: "Old reseed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
@@ -2882,7 +2873,7 @@ import BottoCore
         }
         let restoring = Task { await library.restore() }
         defer { restoring.cancel() }
-        try #require(await projection.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await projection.entersInTime())
         let freshMessages = [ChatMessage(id: "fresh-file", role: .assistant, text: "Fresh withdrawal needle\nMEDIA:/fresh.txt")]
         if freshRead {
             service.messages[service.second] = freshMessages
@@ -3041,8 +3032,7 @@ import BottoCore
         library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: "fresh-peer", role: .assistant, text: "Fresh peer\nMEDIA:/report.txt")]), title: "Fresh peer",
             evidence: .read(startedAt: .now, observedSource: service.first))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !resultGate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !resultGate.isEntered }
         try #require(resultGate.isEntered)
         library.observeBots([service.profiles[0]], evidence: .observed)
         library.observeBots(service.profiles, evidence: .observed)
@@ -3056,10 +3046,9 @@ import BottoCore
         }
         await pause.arm()
         library.seed(book: book, bots: service.profiles)
-        try #require(await projectionGate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await projectionGate.entersInTime())
         nextWriteGate.arm(); resultGate.release()
-        let ackDeadline = ContinuousClock.now + .seconds(5)
-        while !nextWriteGate.isEntered, ContinuousClock.now < ackDeadline { await Task.yield() }
+        await waitWhile { !nextWriteGate.isEntered }
         try #require(nextWriteGate.isEntered)
         #expect(try await session.metadataRecovery().withholdsBookSeed(service.second))
         projectionGate.release()
@@ -3103,13 +3092,8 @@ import BottoCore
         warm.accept(identity: freshSource, snapshot: .init(id: freshSource.root.text, storedID: freshSource.stored.text,
             profileID: freshSource.profile.text, messages: freshMessages), title: "Fresh",
             evidence: .read(startedAt: .now, observedSource: freshSource))
-        let session = cache.session(scope: scope), deadline = ContinuousClock.now + .seconds(5)
-        var saved = false
-        while !saved, ContinuousClock.now < deadline {
-            saved = try await !session.metadataRecovery().contains(freshSource)
-            await Task.yield()
-        }
-        try #require(saved)
+        let session = cache.session(scope: scope)
+        try #require(await waitWhile { try await session.metadataRecovery().contains(freshSource) })
         warm.retire(); await cache.close()
         let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
         cold.seed(book: book, bots: service.profiles); await cold.restore()
@@ -3411,7 +3395,7 @@ import BottoCore
         service.directoryBarriers[service.first.profile] = gate
         let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles) }
         defer { reading.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await gate.entersInTime())
         library.observeBots([service.profiles[0]], evidence: .observed)
         #expect(!library.isCurrent(removed))
         #expect(!library.chats.contains { $0.identity == service.second })
@@ -3421,8 +3405,7 @@ import BottoCore
         let joined = library.indexingMetrics.forcedRefreshesJoined
         let forced = Task { await library.refresh(evidence: .observed, bots: [service.profiles[0]], force: true) }
         defer { forced.cancel() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while library.indexingMetrics.forcedRefreshesJoined == joined, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.indexingMetrics.forcedRefreshesJoined == joined }
         try #require(library.indexingMetrics.forcedRefreshesJoined > joined)
         service.directoryBarriers = [:]
         gate.release(); await reading.value; await forced.value
@@ -3534,8 +3517,7 @@ import BottoCore
         gate.arm(); service.fileBytes = Data("Uncommitted replacement".utf8)
         let capturing = Task { try await library.download(item, force: true) }
         defer { capturing.cancel() }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         let first = (1...100).map { $0 == 7 ? old : ChatMessage(id: "main:row:\($0)", role: .assistant, text: "First page \($0)") }
         service.historyPages[service.first] = [0: .init(messages: first, nextOffset: 100, isComplete: true,
@@ -3546,8 +3528,7 @@ import BottoCore
             exceedsRowLimit: oversized)
         let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         defer { reading.cancel() }
-        deadline = .now + .seconds(5)
-        while library.isCurrent(item), ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.isCurrent(item) }
         try #require(!library.isCurrent(item))
         #expect(service.historyOffsets.contains(100))
         #expect(LibrarySearchResults(query: "Conflicted page needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
@@ -3599,7 +3580,7 @@ import BottoCore
         service.botsError = response == "failed" ? HermesServiceError.disconnected : nil
         let connecting = Task { await store.connect(configuration) }
         defer { connecting.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await gate.entersInTime())
         try #require(store.isConnected)
         let beforeObservation = store.library.revalidationRevision
         let directories = service.directoryCount, reads = service.historyOffsets.count, downloads = service.downloadCount
@@ -3610,10 +3591,7 @@ import BottoCore
         #expect(service.directoryCount == directories && service.historyOffsets.count == reads && service.downloadCount == downloads)
         // Read through a second cache while the first network roster is still held.
         let probeCache = ArtifactCache(root: root), probeSession = probeCache.session(scope: scope)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(try await probeSession.loadChats()).contains(where: { $0.identity == service.second }), ContinuousClock.now < deadline {
-            await Task.yield()
-        }
+        try await waitWhile { !(try await probeSession.loadChats()).contains(where: { $0.identity == service.second }) }
         let probe = WorkspaceLibrary(service: service, cache: probeSession)
         await probe.restore()
         let independent = try #require(probe.artifacts.first { $0.chat.identity == service.second })
@@ -3679,7 +3657,7 @@ import BottoCore
         defer { cold.retire() }
         let restoring = Task { await cold.restore() }
         defer { restoring.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await gate.entersInTime())
         cold.observeBots(removed ? [] : service.profiles, evidence: .observed)
         gate.release(); await restoring.value
         let histories = service.historyOffsets.count, downloads = service.downloadCount
@@ -3716,15 +3694,13 @@ import BottoCore
         gate.arm()
         let capturing = Task { try await library.download(item) }
         defer { capturing.cancel() }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         service.historyFailures[service.first] = ConversationHistoryPage.Failure(identity: service.first,
             unavailableMessageIDs: [Data(old.id.utf8)])
         let reading = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: force) }
         defer { reading.cancel() }
-        deadline = .now + .seconds(5)
-        while library.isCurrent(item), ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.isCurrent(item) }
         try #require(!library.isCurrent(item))
         #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         gate.release()
@@ -3825,7 +3801,7 @@ import BottoCore
         library.setOnline(true)
         let refreshing = Task { await library.refresh(evidence: .observed, bots: [service.profiles[0]], force: true) }
         defer { refreshing.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await gate.entersInTime())
         #expect(!library.chats.contains { $0.identity == service.second })
         #expect(LibrarySearchResults(query: "Removed recovery needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(try await session.metadataRecovery().contains(service.second))
@@ -3983,8 +3959,7 @@ import BottoCore
             snapshot: .init(id: "main", storedID: "main", profileID: "helper",
                 messages: [.init(id: "main-file", role: .assistant, text: "MEDIA:/old.txt", timestamp: Date(timeIntervalSince1970: 10))]),
             title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         library.accept(identity: service.second,
             snapshot: .init(id: "side", storedID: "side", profileID: "helper",
@@ -4164,8 +4139,7 @@ import BottoCore
         let next = try #require(library.artifacts.first { $0.chat.identity == service.second })
         gate.arm()
         let saving = Task { try await library.download(next) }; defer { saving.cancel() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         #expect(try await session.metadataRecovery().contains(service.first))
         library.retire(); gate.release()
@@ -4202,24 +4176,17 @@ import BottoCore
         let latest = ChatMessage(id: "latest", role: .assistant, text: "Latest revision\nMEDIA:/latest.txt")
         gate.arm()
         library.seed(book: book([first], title: "First"), bots: service.profiles)
-        let admissionDeadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < admissionDeadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         await library.restore()
         library.accept(identity: source, snapshot: .init(id: source.root.text, storedID: source.stored.text,
             profileID: source.profile.text, messages: [first, latest]), title: "Latest",
             evidence: .read(startedAt: .now, observedSource: source))
-        let projectionDeadline = ContinuousClock.now + .seconds(5)
-        while library.artifacts.first?.artifact.messageID != "latest", ContinuousClock.now < projectionDeadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { library.artifacts.first?.artifact.messageID != "latest" }
         try #require(library.chats.first?.messages == [first, latest])
         try #require(library.artifacts.first?.artifact.messageID == "latest")
         gate.release()
-        let saveDeadline = ContinuousClock.now + .seconds(5)
-        while try await session.metadataRecovery().contains(source), ContinuousClock.now < saveDeadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await waitWhile { try await session.metadataRecovery().contains(source) }
         #expect(try await !session.metadataRecovery().contains(source))
         #expect(library.statusAction != .retry)
         library.retire(); await cache.close()
@@ -4257,8 +4224,7 @@ import BottoCore
                 messages: [.init(id: "main-file", role: .assistant, text: "Main producer was revised without a file.")]), title: "Main",
             evidence: .read(startedAt: .now, observedSource: service.first))
         #expect(!library.artifacts.contains { $0.chat.identity == service.first })
-        var deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         library.accept(identity: service.second,
             snapshot: .init(id: "side", storedID: "side", profileID: "helper",
@@ -4270,8 +4236,7 @@ import BottoCore
         #expect(recovery.contains(service.first) && recovery.contains(service.second))
         #expect(!library.isCurrent(item))
         gate.release()
-        deadline = .now + .seconds(5)
-        while library.statusAction != .retry, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.statusAction != .retry }
         try #require(library.statusAction == .retry)
         library.retire(); await cache.close()
         #expect(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
@@ -4419,8 +4384,7 @@ import BottoCore
             historicalFinished = true; return result
         }
         defer { historical.cancel() }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while !joined, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !joined }
         try #require(joined)
         var handle: OpaquePointer?
         #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
@@ -4434,8 +4398,7 @@ import BottoCore
             title: "Main", evidence: .incremental(previous: opened.snapshot))
         await projection.waitUntilEntered()
         service.downloadBarrier = nil; network.release()
-        deadline = .now + .seconds(5)
-        while !historicalFinished, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !historicalFinished }
         try #require(historicalFinished)
         #expect(!galleryFinished, "Historical access must not complete a gallery reader whose provenance is pending.")
         #expect(try await historical.value.data == Data("main".utf8))
@@ -4607,7 +4570,7 @@ import BottoCore
         let library = WorkspaceLibrary(service: service, cache: session)
         library.seed(book: book, bots: service.profiles)
         if proof == "fresh" {
-            try #require(await loading.waitUntilEntered(timeout: .seconds(5)), "SQL returned the saved row")
+            try #require(await loading.entersInTime(), "SQL returned the saved row")
             try #require(library.chats.isEmpty, "The Library hasn't consumed it")
             library.accept(identity: service.first, snapshot: snapshot, title: "Main",
                 evidence: .read(startedAt: .now, observedSource: service.first))
@@ -4617,8 +4580,7 @@ import BottoCore
         await library.restore()
         let expected = proof == "retired" ? successor : service.first
         if proof == "fresh" {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !library.artifacts.contains(where: { $0.artifact.title == "old.txt" }), ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !library.artifacts.contains(where: { $0.artifact.title == "old.txt" }) }
             try #require(library.artifacts.contains { $0.artifact.title == "old.txt" })
         }
         #expect(library.chats.first?.identity.stored == expected.stored)
@@ -4658,8 +4620,7 @@ import BottoCore
         capture.arm()
         let download = Task { try await library.download(original) }
         defer { download.cancel() }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while !capture.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !capture.isEntered }
         try #require(capture.isEntered)
         let successor = SessionIdentity(profile: service.first.profile, root: service.first.root,
             stored: try ExactID("successor"), aliases: [service.first.stored])
@@ -4669,8 +4630,7 @@ import BottoCore
         let reads = service.historyOffsets.count
         let refresh = Task { await library.refresh(evidence: .observed, bots: service.profiles, force: true) }
         defer { refresh.cancel() }
-        deadline = .now + .seconds(5)
-        while service.historyOffsets.count == reads, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { service.historyOffsets.count == reads }
         try #require(service.historyOffsets.count > reads)
         #expect(library.chats.first { $0.identity.root == service.first.root }?.identity.stored == successor.stored)
         #expect(!library.isCurrent(original))
@@ -4679,13 +4639,9 @@ import BottoCore
         await #expect(throws: (any Error).self) { _ = try await download.value }
         service.historyBarrier = nil; history.release(); await refresh.value
         #expect(library.artifacts.contains { $0.artifact.title == "new.txt" })
-        deadline = .now + .seconds(5)
-        var persisted = false
-        while !persisted, ContinuousClock.now < deadline {
-            persisted = try await session.loadChats().contains { $0.identity.stored == successor.stored && $0.coverage == .complete }
-            if !persisted { await Task.yield() }
-        }
-        try #require(persisted)
+        try #require(await waitWhile {
+            try await !session.loadChats().contains { $0.identity.stored == successor.stored && $0.coverage == .complete }
+        })
         library.retire(); await cache.close()
         let reopenedCache = ArtifactCache(root: root), reopenedSession = reopenedCache.session(scope: scope)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedSession)
@@ -4716,8 +4672,7 @@ import BottoCore
         service.historyBarrier = history
         let refresh = Task { await store.refreshLibrary(force: true) }
         defer { refresh.cancel() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while service.historyOffsets.count == reads, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { service.historyOffsets.count == reads }
         try #require(service.historyOffsets.count > reads)
         let stale = Conversation(id: "main", storedID: "main", profileID: "helper",
             messages: empty ? [] : [.init(id: "old-event", role: .assistant, text: "MEDIA:/old-tip.txt")])
@@ -4775,8 +4730,7 @@ import BottoCore
         gate.arm(); service.downloadBarrier = network
         let gallery = Task { try await library.download(item) }
         defer { gallery.cancel() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while service.downloadCount == 0, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { service.downloadCount == 0 }
         try #require(service.downloadCount == 1)
         var joined = false
         let historical: Task<DownloadedArtifact, Error>? = peer ? Task {
@@ -4788,19 +4742,16 @@ import BottoCore
             }
         } : nil
         defer { historical?.cancel() }
-        var until = ContinuousClock.now + .seconds(5)
-        while peer && !joined, ContinuousClock.now < until { await Task.yield() }
+        await waitWhile { peer && !joined }
         try #require(!peer || joined)
         service.downloadBarrier = nil; network.release()
-        until = .now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < until { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         service.onEvent?(.conversation(.init(identity: service.first,
             snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [old, newer], isWorking: true),
             access: try #require(service.lastAccess))))
         if discovery == "after" {
-            until = .now + .seconds(5)
-            while !library.artifacts.contains(where: { $0.artifact.messageID == newer.id }), ContinuousClock.now < until { await Task.yield() }
+            await waitWhile { !library.artifacts.contains(where: { $0.artifact.messageID == newer.id }) }
             try #require(library.artifacts.contains { $0.artifact.messageID == newer.id })
             #expect(!library.isCurrent(item))
         } else { #expect(!library.artifacts.contains { $0.artifact.messageID == newer.id }) }
@@ -4843,20 +4794,16 @@ import BottoCore
         service.onEvent?(.conversation(.init(identity: service.first, snapshot: stale, access: try #require(service.lastAccess))))
         #expect(!store.library.isCurrent(item))
         #expect(LibrarySearchResults(query: "Stale needle", bots: [], chats: store.library.chats, artifacts: []).messages.isEmpty)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while store.library.indexingMetrics.parsedMessages <= parsed, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { store.library.indexingMetrics.parsedMessages <= parsed }
         #expect(!store.library.artifacts.contains { $0.artifact.messageID == old.id })
         let savedBook = store.history.book
         let scope = ArtifactCacheScope(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: nil, username: Data(), provider: nil)
         let checkpoint = cache.session(scope: scope)
-        var durable = false
-        let saveDeadline = ContinuousClock.now + .seconds(5)
-        while !durable, ContinuousClock.now < saveDeadline {
+        let durable = try await waitWhile {
             let rows = try await checkpoint.loadChats()
-            durable = try await !checkpoint.metadataRecovery().contains(service.first)
-                && rows.contains { $0.identity == service.first && $0.messages.contains { $0.id == kept.id } }
-            if !durable { await Task.yield() }
+            return try await checkpoint.metadataRecovery().contains(service.first)
+                || !rows.contains { $0.identity == service.first && $0.messages.contains { $0.id == kept.id } }
         }
         try #require(durable, "The ordinary cold-reuse control needs a completed metadata checkpoint; interrupted writes are covered separately")
         store.library.retire(); await cache.close()
@@ -4871,8 +4818,7 @@ import BottoCore
         #expect(!reopened.artifacts.contains { $0.artifact.messageID == old.id })
         reopened.accept(identity: service.first, snapshot: stale, title: "Main", evidence: .read(startedAt: .now, observedSource: service.first,
             identityRead: .init(identity: service.first, messageIDs: Set(stale.messages.map { Data($0.id.utf8) }))))
-        let recoveryDeadline = ContinuousClock.now + .seconds(5)
-        while !reopened.artifacts.contains(where: { $0.artifact.messageID == old.id }), ContinuousClock.now < recoveryDeadline { await Task.yield() }
+        await waitWhile { !reopened.artifacts.contains(where: { $0.artifact.messageID == old.id }) }
         #expect(reopened.artifacts.contains { $0.artifact.messageID == old.id })
         reopened.retire(); await reopenedCache.close()
     }
@@ -4897,8 +4843,7 @@ import BottoCore
         gate.arm()
         let download = Task { try await library.download(item) }
         defer { download.cancel(); gate.release() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         let peer = change == "tip" ? nil : Task { try await library.download(unaffected, force: true) }
         defer { peer?.cancel() }
@@ -4955,13 +4900,10 @@ import BottoCore
         let registrations = store.library.indexingMetrics.galleryConsumersRegistered
         let peer: Task<DownloadedArtifact, Error>? = validPeer ? Task { try await store.library.download(item) } : nil
         defer { peer?.cancel() }
-        var deadline = ContinuousClock.now + .seconds(5)
-        while validPeer && store.library.indexingMetrics.galleryConsumersRegistered == registrations,
-              ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { validPeer && store.library.indexingMetrics.galleryConsumersRegistered == registrations }
         try #require(!validPeer || store.library.indexingMetrics.galleryConsumersRegistered > registrations)
         network.release()
-        deadline = .now + .seconds(5)
-        while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !gate.isEntered }
         try #require(gate.isEntered)
         if let reader {
             presentation.closeArtifact(id: reader.id)
@@ -5015,8 +4957,7 @@ import BottoCore
             }, download: { try await service.downloadArtifact(attachment, in: item.chat.identity) })
         }
         let gallery = Task { try await library.download(item) }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !joined, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !joined }
         try #require(joined)
         await store.open(service.profiles[1])
         #expect(!store.isCurrentArtifactDestination(destination))
@@ -5076,8 +5017,7 @@ import BottoCore
         let reader = LibraryArtifactPreviewSession(item: item, library: library)
         defer { reader.finish() }
         reader.retry()
-        var deadline = ContinuousClock.now + .seconds(5)
-        while reader.file == nil, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { reader.file == nil }
         try #require(reader.file != nil)
         library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: message.id, role: .assistant, text: "Report ready", timestamp: timestampChanges ? nil : message.timestamp)]), title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
@@ -5085,8 +5025,7 @@ import BottoCore
             LibrarySearchResults(query: "Report ready", bots: [], chats: library.chats, artifacts: library.artifacts)
                 .messages.contains { $0.chat.identity == service.first && $0.message.id == message.id && $0.message.text == "Report ready" }
         }
-        deadline = ContinuousClock.now + .seconds(5)
-        while !revisedMessageIsSearchable(), ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !revisedMessageIsSearchable() }
         try #require(revisedMessageIsSearchable())
         let current = try #require(library.chats.first { $0.identity == service.first })
         #expect(current.messages.first?.text == "Report ready")
@@ -5162,9 +5101,7 @@ import BottoCore
         #expect(!library.artifacts.contains { $0.artifact.title == "deleted.txt" })
         #expect(library.artifacts.contains { $0.artifact.title == "retained.txt" })
         #expect(LibrarySearchResults(query: "deleted appendix", bots: [], chats: library.chats, artifacts: library.artifacts).messages.isEmpty)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try await fixture.loadChats().first(where: { $0.identity == service.first })?.messages.contains(where: { $0.id == old.id }) == true,
-              ContinuousClock.now < deadline { await Task.yield() }
+        try await waitWhile { try await fixture.loadChats().first(where: { $0.identity == service.first })?.messages.contains(where: { $0.id == old.id }) == true }
         try #require(try await fixture.loadChats().first { $0.identity == service.first }?.messages.contains { $0.id == old.id } == false)
         library.retire(); await cache.close()
         let reopenedCache = ArtifactCache(root: root)
@@ -5249,8 +5186,7 @@ import BottoCore
                 if id == focus.id, case .revealed = result { revealed = true }
             })
         controller.view.layoutIfNeeded()
-        let deadline = ContinuousClock.now + .seconds(12)
-        while !revealed, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !revealed }
         try #require(revealed, "The native glyph range must be visible before Search acknowledges success")
         let cell = try #require(controller.collection.cellForItem(at: IndexPath(item: 18, section: 0)) as? NativeTranscriptCell)
         let hit = try #require(cell.exposure?.firstSearchMarker(id: focus.id))
@@ -5262,9 +5198,7 @@ import BottoCore
         #expect(!controller.followsLatest)
         let originalHeight = cell.bounds.height
         growth.height = 400
-        let growthDeadline = ContinuousClock.now + .seconds(8)
-        while (cell.bounds.height < originalHeight + 300 || abs(hit.marker.convert(hit.marker.bounds, to: window).minY - rect.minY) > 1),
-              ContinuousClock.now < growthDeadline { await Task.yield() }
+        await waitWhile { cell.bounds.height < originalHeight + 300 || abs(hit.marker.convert(hit.marker.bounds, to: window).minY - rect.minY) > 1 }
         #expect(cell.bounds.height > originalHeight + 300, "The preceding native block must actually grow")
         #expect(abs(hit.marker.convert(hit.marker.bounds, to: window).minY - rect.minY) < 1,
             "A delayed rich-block measurement must preserve the revealed glyph landmark")
@@ -5282,8 +5216,7 @@ import BottoCore
             searchFocus: replacement, reportSearchFocus: { id, result in
                 if id == replacement.id, case .unavailable = result { unavailable = true }
             })
-        let editDeadline = ContinuousClock.now + .seconds(5)
-        while !unavailable, ContinuousClock.now < editDeadline { await Task.yield() }
+        await waitWhile { !unavailable }
         #expect(unavailable, "A stale render receipt cannot acknowledge a changed same-ID message")
     }
 
@@ -5357,8 +5290,7 @@ import BottoCore
             })
         } : nil
         if validPeer {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !joined, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !joined }
             try #require(joined)
         }
         older.cancel()
@@ -5488,15 +5420,13 @@ import BottoCore
             }, download: { throw HermesServiceError.rejected(-32601) })
         } : nil
         if validHistoricalPeer {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !joined, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !joined }
             #expect(joined)
         }
         let newer = ChatMessage(id: "newer", role: .assistant, text: "MEDIA:/report.txt")
         store.library.accept(identity: service.first, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [message, newer]), title: "Main", evidence: .read(startedAt: .now, observedSource: service.first))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while store.library.artifacts.first(where: { $0.chat.identity == service.first })?.artifact.messageID != "newer", ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { store.library.artifacts.first(where: { $0.chat.identity == service.first })?.artifact.messageID != "newer" }
         service.fileBytes = Data("late mutable bytes".utf8)
         gate.release()
         await #expect(throws: (any Error).self) { _ = try await gallery.value }
@@ -5526,13 +5456,11 @@ import BottoCore
         let presentation = WorkspacePresentation()
         presentation.openArtifact(destination, store: store)
         let reader = try #require(presentation.artifact)
-        var deadline = ContinuousClock.now + .seconds(5)
-        while reader.errorMessage == nil, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { reader.errorMessage == nil }
         #expect(reader.file == nil && reader.errorMessage != nil && service.downloadCount == 0)
         #expect(await store.connect(configuration))
         reader.retry()
-        deadline = .now + .seconds(5)
-        while reader.file == nil, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { reader.file == nil }
         #expect(reader.file?.data == Data("main".utf8))
         #expect(service.downloadCount == 1)
         await #expect(throws: (any Error).self) { _ = try await store.downloadArtifact(destination, force: true) }
@@ -5586,8 +5514,7 @@ import BottoCore
         let action = try #require(captured)
         action(attachment)
         let reader = try #require(presentation.artifact)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while reader.file == nil, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { reader.file == nil }
         #expect(reader.file?.data == Data("main".utf8))
         #expect(service.downloadCount == 1)
         presentation.closeArtifact(id: reader.id)
@@ -5608,17 +5535,16 @@ import BottoCore
         book.cache(.init(id: "main", storedID: "main", profileID: "helper",
             messages: [.init(id: "seed", role: .assistant, text: "MEDIA:/saved.txt")]), for: id)
         library.seed(book: book, bots: originalRoster)
-        try #require(await seedGate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await seedGate.entersInTime())
         let joined = library.indexingMetrics.refreshesJoinedRestoration
         let old = Task { await library.refresh(evidence: .observed, bots: originalRoster) }
         defer { old.cancel() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while library.indexingMetrics.refreshesJoinedRestoration == joined, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.indexingMetrics.refreshesJoinedRestoration == joined }
         try #require(library.indexingMetrics.refreshesJoinedRestoration > joined,
             "The old refresh must join the held restoration before the roster changes")
         library.observeBots(service.profiles, evidence: .observed)
         service.historyBarrier = historyGate
-        seedGate.release(); try #require(await historyGate.waitUntilEntered(timeout: .seconds(5)))
+        seedGate.release(); try #require(await historyGate.entersInTime())
         let current = Task { await library.refreshIfNeeded(evidence: .observed, bots: service.profiles) }
         defer { current.cancel() }
         service.historyBarrier = nil; historyGate.release()
@@ -5824,7 +5750,7 @@ import BottoCore
             return try await store.library.download(item)
         }
         defer { first.cancel() }
-        try #require(await barrier.waitUntilEntered(timeout: .seconds(10)))
+        try #require(await barrier.entersInTime())
         let registrations = store.library.indexingMetrics.galleryConsumersRegistered
         let second = Task {
             defer { secondFinished = true }
@@ -5835,15 +5761,11 @@ import BottoCore
             return await store.library.thumbnail(for: item) { _ in Data("thumbnail".utf8) }
         }
         defer { second.cancel(); thumbnail.cancel() }
-        var deadline = ContinuousClock.now + .seconds(10)
-        while store.library.indexingMetrics.galleryConsumersRegistered == registrations,
-              ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { store.library.indexingMetrics.galleryConsumersRegistered == registrations }
         try #require(store.library.indexingMetrics.galleryConsumersRegistered > registrations)
         first.cancel()
         barrier.release()
-        deadline = .now + .seconds(10)
-        while !(firstFinished && secondFinished && thumbnailFinished),
-              ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !(firstFinished && secondFinished && thumbnailFinished) }
         try #require(firstFinished && secondFinished && thumbnailFinished,
             "Shared readers must finish after release; downloads=\(service.downloadCount)")
         _ = try? await first.value
@@ -5911,8 +5833,7 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         #expect(await store.connect(configuration))
         await store.open(service.profiles[0])
-        let deadline = ContinuousClock.now + .seconds(5)
-        while store.library.artifacts.isEmpty && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { store.library.artifacts.isEmpty }
         #expect(store.library.artifacts.first?.artifact.title == "report.txt")
         #expect(service.historyOffsets.isEmpty)
     }
@@ -5936,8 +5857,7 @@ import BottoCore
         let presentation = WorkspacePresentation()
         presentation.openArtifact(destination, store: store)
         let reader = try #require(presentation.artifact)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while reader.file == nil && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { reader.file == nil }
         #expect(reader.file?.data == Data("main".utf8))
         #expect(reader.isCurrent)
         #expect(service.downloadCount == 1)
@@ -6003,8 +5923,7 @@ import BottoCore
                 profileID: source.profile.text, messages: older + [ChatMessage(id: "output", role: .assistant,
                     text: "MEDIA:/settled-\(source.root.text).txt")]), title: source.root.text, evidence: .read(startedAt: .now, observedSource: source))
         }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while library.artifacts.count < 2 && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { library.artifacts.count < 2 }
         #expect(Set(library.artifacts.map(\.artifact.title)) == ["settled-main.txt", "settled-side.txt"])
         let metrics = library.indexingMetrics
         #expect(metrics.acceptedSnapshots == 1_002)
@@ -6472,8 +6391,7 @@ import BottoCore
         let session = LibraryArtifactPreviewSession(item: item, library: library)
         defer { session.finish() }
         session.retry()
-        let deadline = ContinuousClock.now + .seconds(5)
-        while session.file == nil && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { session.file == nil }
         let original = try #require(session.file)
         #expect(original.data == Data("main".utf8))
         library.setOnline(false)
@@ -6507,8 +6425,7 @@ import BottoCore
             window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible()
             store.forgetConnection(); LocalHistory.remove(for: configuration.id)
         }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while service.downloadCount == 0, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { service.downloadCount == 0 }
         #expect(service.downloadCount > 0)
         try await Task.sleep(for: .seconds(1))
         print("BOTTO_SEARCH_COVERS total=60 requested=\(service.downloadCount)")

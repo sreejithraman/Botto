@@ -75,10 +75,7 @@ import UIKit
         #expect(!before.isEqual(expected), "The two contrast variants must differ for this control check")
 
         controller.traitOverrides.accessibilityContrast = .high
-        let deadline = ContinuousClock.now + .seconds(2)
-        while button.configuration?.baseBackgroundColor?.isEqual(expected) != true, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitWhile { button.configuration?.baseBackgroundColor?.isEqual(expected) != true }
         #expect(button.configuration?.baseBackgroundColor?.isEqual(expected) == true,
                 "Latest must adopt Increase Contrast without a content or layout-context publication")
     }

@@ -172,14 +172,14 @@ import BottoCore
                 });
             }
             """)
-        let deadline = ContinuousClock.now + .seconds(10)
-        while ContinuousClock.now < deadline {
-            if let json = try await web.evaluateJavaScript("JSON.stringify(window.testReport)") as? String,
-               let report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String] {
-                return report
+        var report: [String: String]?
+        try await waitWhile {
+            if let json = try await web.evaluateJavaScript("JSON.stringify(window.testReport)") as? String {
+                report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String]
             }
-            try await Task.sleep(for: .milliseconds(5))
+            return report == nil
         }
+        if let report { return report }
         Issue.record("actual opaque expanded document did not report its local state")
         return [:]
     }
@@ -602,8 +602,7 @@ import BottoCore
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await waitWhile(reason) { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
@@ -685,8 +684,7 @@ import BottoCore
     }
 
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await waitWhile(reason) { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 }

@@ -20,9 +20,7 @@ struct CustomAvatarLayoutTests {
         await failure.firstFailure()
         #expect(model.frame == source.source.restingFrame)
         model.updatePresentation(.init(activity: .working, enteredAt: .now))
-        for _ in 0..<100 where failure.requests.count < 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitWhile { failure.requests.count < 2 }
         #expect(failure.requests.count >= 2, "A transient failure must resume canonical frames in the mounted view.")
         #expect(model.frame == expected)
         let firstID = try #require(failure.requests.first?.instanceID)
@@ -229,7 +227,7 @@ struct CustomAvatarLayoutTests {
 
         let previousDate = model.date
         let clock = Task { await model.runClock(presentation: presentation, still: false) }
-        for _ in 0..<100 where model.date == previousDate { await Task.yield() }
+        await waitWhile { model.date == previousDate }
         #expect(model.date > previousDate)
         let reaction = BotCharacterFrame.resolve(elapsed: model.date.timeIntervalSince(presentation.enteredAt), activity: .finished)
         #expect(reaction.tuck < 1 && reaction.lift < 0, "The verified reaction progresses before an engine frame arrives.")
