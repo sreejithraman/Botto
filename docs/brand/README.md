@@ -19,23 +19,9 @@ the app's colors and navigation.
 - [App icon](../../App/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png)
   is an opaque 1024 × 1024 PNG. iOS supplies its outer corner mask.
 
-## Regenerate
-
-Run this command from the checkout root on macOS:
-
-```sh
-swift scripts/generate-brand.swift
-```
-
-[The generator](../../scripts/generate-brand.swift) builds BottoCore and compiles
-the app's avatar geometry with [the shared brand definition](../../App/Design/BottoBrand.swift).
-It writes both assets from the same paths. Edit the brand definition for
-composition changes, or the existing palette and color assets for color changes.
-Build files stay in the ignored `.artifacts/brand-generator` directory.
-
-The avatar geometry includes adaptations from Hermex and Bloub. Their MIT
-notices remain in [LICENSES](../../LICENSES/). The assets include no external
-fonts or symbols.
+The mark and icon are the source of truth; edit them directly. The avatar
+geometry includes adaptations from Hermex and Bloub. Their MIT notices remain
+in [LICENSES](../../LICENSES/). The assets include no external fonts or symbols.
 
 The mark keeps fixed brand colors in both appearances. App text and controls
 continue to use the adaptive color assets.
