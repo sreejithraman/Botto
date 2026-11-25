@@ -7,8 +7,8 @@ project; [project.yml](../../project.yml) owns its generated settings.
 ## Checks and acceptance
 
 - [Local checks](../local-checks.md) owns the fast core runner and optional
-  repository-local pre-push hook. Use [owned process control](../dev-process.md)
-  when a background job needs a recorded identity and safe teardown.
+  repository-local pre-push hook. [Owned process control](../dev-process.md)
+  runs a foreground command that stops its whole process group on cancellation.
 - [scripts/check.sh](../../scripts/check.sh) owns the full local check sequence:
   core tests, a MainActor-default compatibility build, serial Xcode tests, and
   independent artifact-export readback. Set `BOTTO_TEST_DESTINATION` to an

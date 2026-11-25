@@ -1,5 +1,4 @@
 import importlib.util
-import os
 from pathlib import Path
 import signal
 import subprocess
@@ -65,8 +64,7 @@ class ForegroundProcessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 143, result.stderr)
 
     def test_run_rejects_missing_commands_and_invalid_grace(self):
-        for arguments in ([], ['--grace', '-1', '--', '/bin/true'],
-                          ['--grace', 'nan', '--', '/bin/true']):
+        for arguments in ([], *(['--grace', grace, '--', '/bin/true'] for grace in ('-1', '31', 'nan', 'inf', 'invalid'))):
             with self.subTest(arguments=arguments):
                 result = subprocess.run([sys.executable, str(CLI), 'run', *arguments],
                                         capture_output=True, text=True, timeout=5)

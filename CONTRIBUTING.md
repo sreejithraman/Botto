@@ -55,7 +55,7 @@ relevant workflows and record what you observed. Use a disposable T3
 environment and workspace for live-host checks.
 
 [Local checks](docs/local-checks.md) covers optional pre-push hooks.
-[Owned process control](docs/dev-process.md) covers long-running development jobs.
+[Owned process control](docs/dev-process.md) covers cancelling foreground commands.
 
 ## Submit a change
 
