@@ -12,10 +12,6 @@ from tempfile import TemporaryDirectory
 import time
 
 
-def stop(signum, _frame):
-    raise SystemExit(128 + signum)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Run BottoCore's smoke test against an isolated T3 engine.")
     parser.add_argument("--tag", help="upstream release tag (defaults to Botto's pin)")
@@ -28,25 +24,47 @@ def main():
     stage = Path(staged.removeprefix("T3 engine staged at "))
     tag = json.loads((stage / "pin.json").read_text())["ref"].removeprefix("refs/tags/")
     engine = stage / "t3"
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    server = None
+    interrupted = None
+
+    def stop(signum, _frame):
+        nonlocal interrupted
+        if interrupted is not None:
+            return
+        # Defer a signal during spawn until the cleanup block owns the server.
+        interrupted = signum
+        if server is not None:
+            raise SystemExit(128 + signum)
+
+    for sig in signals:
         signal.signal(sig, stop)
 
     with TemporaryDirectory(prefix="botto-t3-smoke-") as directory:
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            port = listener.getsockname()[1]
-        engine_env = {"HOME": directory, "TMPDIR": directory, "PATH": os.defpath, "NO_COLOR": "1"}
-        log = Path(directory) / "server.log"
-        with log.open("w") as output:
-            server = subprocess.Popen(
-                [engine, "serve", "--host", "127.0.0.1", "--port", str(port), "--base-dir", directory],
-                cwd=directory, env=engine_env, stdin=subprocess.DEVNULL,
-                stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
-            )
         try:
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            # T3 captures PATH from a login shell. Keep provider CLIs out of that PATH.
+            engine_env = {
+                "HOME": directory, "TMPDIR": directory, "PATH": os.defpath,
+                "SHELL": "/bin/bash", "NO_COLOR": "1",
+            }
+            (Path(directory) / ".bash_profile").write_text(f"export PATH={os.defpath}\n")
+            log = Path(directory) / "server.log"
+            with log.open("w") as output:
+                server = subprocess.Popen(
+                    [engine, "serve", "--host", "127.0.0.1", "--port", str(port), "--base-dir", directory],
+                    cwd=directory, env=engine_env, stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+            if interrupted is not None:
+                raise SystemExit(128 + interrupted)
             print(f"T3 {tag}: 127.0.0.1:{port}, PID {server.pid}, data {directory}", flush=True)
             deadline = time.monotonic() + 30
             while "\nPairing URL:" not in log.read_text():
+                if (status := server.poll()) is not None:
+                    raise ValueError(f"t3 serve exited with status {status} before it was ready")
                 if time.monotonic() >= deadline:
                     raise ValueError("t3 serve did not print its startup pairing URL within 30 seconds")
                 time.sleep(0.1)
@@ -70,10 +88,16 @@ def main():
             if not any(line.startswith("T3 live smoke completed:") for line in test.stdout.splitlines()):
                 raise ValueError("T3LiveSmokeTests did not complete (skipped or not selected)")
         finally:
-            # Signal the owned group before reaping its leader, including on test failure.
-            with suppress(ProcessLookupError):
-                os.killpg(server.pid, signal.SIGKILL)
-            server.wait()
+            for sig in signals:
+                signal.signal(sig, signal.SIG_IGN)
+            if server is not None:
+                server.terminate()
+                try:
+                    server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    with suppress(ProcessLookupError, PermissionError):
+                        os.killpg(server.pid, signal.SIGKILL)
+                    server.wait()
     print("Stopped T3 and removed disposable data.")
 
 
