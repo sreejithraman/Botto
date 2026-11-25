@@ -12,10 +12,13 @@ class ProjectNormalizationTests(unittest.TestCase):
     def generated(self, identifier, checkout):
         return (
             "/* Begin PBXFileReference section */\n"
-            "\t\t0000000000000000000000AA /* First.swift */ = {isa = PBXFileReference; path = First.swift; };\n"
-            f'\t\t{identifier} /* {checkout} */ = {{isa = PBXFileReference; '
-            f'lastKnownFileType = folder; name = "{checkout}"; path = .; sourceTree = SOURCE_ROOT; }};\n'
-            "\t\tFFFFFFFFFFFFFFFFFFFFFFFF /* Last.swift */ = {isa = PBXFileReference; path = Last.swift; };\n"
+            + "".join(sorted([
+                "\t\t0000000000000000000000AA /* First.swift */ = {isa = PBXFileReference; path = First.swift; };\n",
+                "\t\t8000000000000000000000AA /* Middle.swift */ = {isa = PBXFileReference; path = Middle.swift; };\n",
+                "\t\tF000000000000000000000AA /* Late.swift */ = {isa = PBXFileReference; path = Late.swift; };\n",
+                f'\t\t{identifier} /* {checkout} */ = {{isa = PBXFileReference; '
+                f'lastKnownFileType = folder; name = "{checkout}"; path = .; sourceTree = SOURCE_ROOT; }};\n',
+            ])) +
             "/* End PBXFileReference section */\n"
             f"children = ({identifier} /* {checkout} */,);\n"
         )
@@ -28,7 +31,7 @@ class ProjectNormalizationTests(unittest.TestCase):
         self.assertNotIn("arbitrary-checkout", first)
         self.assertEqual(first.count(normalizer.STABLE_ID), 2)
         self.assertIn("name = BottoCore; path = .; sourceTree = SOURCE_ROOT;", first)
-        ids = [line.strip()[:24] for line in first.split("\n")[1:4]]
+        ids = [line.strip()[:24] for line in first.split("\n")[1:5]]
         self.assertEqual(ids, sorted(ids))
         self.assertEqual(normalizer.normalize_project(first), first)
 

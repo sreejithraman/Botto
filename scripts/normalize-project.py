@@ -22,13 +22,16 @@ def normalize_project(text):
     if reference != STABLE_ID and STABLE_ID in text:
         raise ValueError("The stable root-package ID is already in use")
     text = text.replace(matches[0].group(0), "").replace(f"{reference} /* {old_name} */", f"{STABLE_ID} /* BottoCore */")
-    head, rest = text.split(BEGIN, 1)
-    lines = rest.split(END, 1)[0].splitlines(keepends=True)
+    head, begin, rest = text.partition(BEGIN)
+    section, end, tail = rest.partition(END)
+    if not begin or not end:
+        raise ValueError("Expected one PBXFileReference section in the generated project")
+    lines = section.splitlines(keepends=True)
     # Xcode keeps each section sorted by ID.
     at = next((i for i, line in enumerate(lines) if line.strip()[:24] > STABLE_ID), len(lines))
     lines.insert(at, f"{indent}{STABLE_ID} /* BottoCore */ = {{isa = PBXFileReference; lastKnownFileType = folder; "
                      "name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };\n")
-    return head + BEGIN + "".join(lines) + END + rest.split(END, 1)[1]
+    return head + BEGIN + "".join(lines) + END + tail
 
 
 if __name__ == "__main__":
