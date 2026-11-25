@@ -181,6 +181,13 @@ struct T3PairingView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 12)
+            if store.hasOlderSavedSetup {
+                Text("Pairing removes the older setup and its saved messages from this device.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 12)
+            }
             if !review.isEncrypted { httpChoice.padding(.top, 18) }
             if let error { notice(error).padding(.top, 18) }
             Button { connect(review) } label: {

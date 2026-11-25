@@ -1155,6 +1155,19 @@ import UIKit
         }
     }
 
+    @Test(arguments: [true, false])
+    func addressReviewWarnsOnlyWhenAnOlderSetupExists(olderSetup: Bool) async throws {
+        try NativeAccessibilityRuntime.enable()
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        let storage = MemoryConnectionStorage(saved: olderSetup ? older : nil)
+        let store = AppStore(persistence: storage.persistence)
+
+        try await withHosted(ConnectionView(store: store, input: "https://mac.example/pair#token=fixture-only")) { window in
+            let review = try await labels(in: window) { $0.contains("Is this your Mac?") && $0.contains("Connect") }
+            #expect(review.contains("Pairing removes the older setup and its saved messages from this device.") == olderSetup)
+        }
+    }
+
     @Test func pairingStopsAtTheAddressAndAsksBeforeUnencryptedLinks() throws {
         for (link, origin) in [("http://192.168.1.10:3774/pair#token=Ab%2B", "http://192.168.1.10:3774"),
                                ("http://100.64.1.2:3774/pair#token=A", "http://100.64.1.2:3774"),
