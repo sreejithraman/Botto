@@ -145,9 +145,11 @@ import UIKit
             try NativeAccessibilityRuntime.enable()
             store.showsConnection = true
             try await withHosted(RootView(store: store)) { window in
-                _ = try await labels(in: window) { $0.contains("Find Botto on your Mac") }
+                _ = try await labels(in: window, cover: ("connection-cover-opening", store)) {
+                    $0.contains("Find Botto on your Mac")
+                }
                 try await verifyTap()
-                _ = try await labels(in: window) {
+                _ = try await labels(in: window, cover: ("release-after-notification-tap", store)) {
                     !$0.contains("Find Botto on your Mac") && $0.contains { $0.contains("Chat in release") }
                 }
                 #expect(window.rootViewController?.presentedViewController == nil)
@@ -1278,7 +1280,8 @@ import UIKit
     }
 
     /// Everything the hosted view reads out, once it satisfies `ready`.
-    private func labels(in window: UIWindow, until ready: (Set<String>) -> Bool) async throws -> Set<String> {
+    private func labels(in window: UIWindow, cover: (wait: String, store: AppStore)? = nil,
+                        until ready: (Set<String>) -> Bool) async throws -> Set<String> {
         func walk(_ object: NSObject, into found: inout Set<String>, seen: inout Set<ObjectIdentifier>) {
             guard seen.insert(ObjectIdentifier(object)).inserted else { return }
             if let label = object.accessibilityLabel, !label.isEmpty { found.insert(label) }
@@ -1289,17 +1292,34 @@ import UIKit
             for child in children { walk(child, into: &found, seen: &seen) }
         }
         var found: Set<String> = []
-        let settled = try await waitWhile("The hosted view settled", diagnostics: { "\(found.sorted())" }) {
+        var readyOnLastPoll = false
+        let settled = try await waitWhile(cover?.wait ?? "The hosted view settled", diagnostics: {
+            guard let cover, !readyOnLastPoll, !Task.isCancelled else { return "\(found.sorted())" }
+            let presented = window.rootViewController?.presentedViewController
+            let presentedType = presented.map { String(reflecting: type(of: $0)) } ?? "nil"
+            let choice = Mirror(reflecting: cover.store).children.first { $0.label == "connectionChoice" }?.value as? UUID
+            let scene = window.windowScene
+            let keyWindow = scene?.windows.first(where: \.isKeyWindow)
+            let key = keyWindow == nil ? "none" : (keyWindow === window ? "fixture" : "other")
+            return """
+                presentedViewController=\(presentedType)
+                showsConnection=\(cover.store.showsConnection) connectionChoice=\(choice?.uuidString ?? "unavailable")
+                sceneActivation=\(scene.map { String(describing: $0.activationState) } ?? "nil") keyWindow=\(key)
+                labels=\(found.sorted())
+                """
+        }) {
             window.layoutIfNeeded()
             found = []
             var seen: Set<ObjectIdentifier> = []
             walk(window, into: &found, seen: &seen)
-            if !found.isEmpty, ready(found) { return false }
+            readyOnLastPoll = !found.isEmpty && ready(found)
+            if readyOnLastPoll { return false }
             try await Task.sleep(for: .milliseconds(50))
             return true
         }
         if settled { return found }
-        Issue.record("The hosted view never settled: \(found.sorted())")
+        let wait = cover.map { "\($0.wait): " } ?? ""
+        Issue.record("\(wait)The hosted view never settled: \(found.sorted())")
         return found
     }
 
