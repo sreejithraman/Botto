@@ -7,6 +7,7 @@ options:
   bundleIdPrefix: com.sree
   deploymentTarget:
     iOS: "18.0"
+    macOS: "15.0"
   createIntermediateGroups: true
   postGenCommand: python3 scripts/normalize-project.py
   xcodeVersion: "27.0"
@@ -117,7 +118,41 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).uitests"
         GENERATE_INFOPLIST_FILE: NO
+  BottoMac:
+    type: application
+    platform: macOS
+    sources: [Mac]
+    dependencies:
+      - package: BottoCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Botto
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Botto uses the local network to connect to its T3 server and pair phones.
+        ENABLE_APP_SANDBOX: NO
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  BottoMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [MacTests]
+    dependencies:
+      - target: BottoMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac.tests"
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
+  BottoMac:
+    build:
+      targets:
+        BottoMac: all
+        BottoMacTests: [test]
+    test:
+      targets: [BottoMacTests]
   Botto:
     build:
       targets:
