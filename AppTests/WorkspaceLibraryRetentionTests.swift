@@ -113,7 +113,8 @@ import BottoCore
         #expect(LibrarySearchResults(query: "Deleted appendix needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
         cold.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [resolved]),
             title: "Main", evidence: service.coherentRead(source, messages: [resolved]))
-        _ = try await waitForLibraryFixture { cold.artifacts.contains { $0.artifact.title == "approved.txt" } }
+        let resolvedDeadline = ContinuousClock.now + .seconds(5)
+        while cold.artifacts.isEmpty, ContinuousClock.now < resolvedDeadline { await Task.yield() }
         #expect(cold.artifacts.contains { $0.artifact.title == "approved.txt" })
         let finalDeadline = ContinuousClock.now + .seconds(5)
         while try await coldSession.loadChats().first?.messages.first?.text != resolved.text,

@@ -130,11 +130,12 @@ import BottoCore
                                                                 producingMessage: message))
         presentation.openArtifact(destination, store: store)
         let session = try #require(presentation.artifact)
-        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service, window: window)
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service,
+                                      window: window, recordTiming: true)
         try await waitUntil("The paired native composer is editable", timeout: .seconds(30), diagnostics: {
             let editors = self.nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
             return "nativeEditors=\(editors.count) editable=\(editors.map(\.isEditable)) fileReady=\(session.file != nil)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
-        }) {
+        }, recordTiming: true) {
             self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
         }
         try #require(presentation.artifact?.file != nil)
@@ -1209,11 +1210,12 @@ import BottoCore
 
     private func waitForArtifactFile(_ session: ArtifactPreviewSession, store: AppStore,
                                      presentation: WorkspacePresentation, service: WorkspaceTestService,
-                                     window: UIWindow) async throws {
+                                     window: UIWindow, recordTiming: Bool = false) async throws {
         let diagnostics = {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }
-        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics) {
+        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics,
+                            recordTiming: recordTiming) {
             session.file != nil || session.errorMessage != nil || !session.isCurrent
         }
         try #require(session.file != nil, Comment(rawValue: diagnostics()))
