@@ -88,6 +88,7 @@ import BottoCore
         fileprivate static func account(for configuration: ConnectionConfiguration) -> [Data] {
             [configuration.serverURL.absoluteString, configuration.username,
              configuration.nativeCredential?.provider ?? "basic"].map { Data($0.utf8) }
+                + AppStore.backendAccount(configuration).compactMap { $0 }
         }
     }
 
@@ -194,11 +195,12 @@ import BottoCore
     private var connection = ConnectionLifecycle() {
         didSet { library.setOnline(connection.link == .online) }
     }
-    var link: Link { connection.link }
+    var link: Link { pendingService != nil && connection.link != .online ? .connecting : connection.link }
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
     var serverInfo: ServerInfo? { connection.serverInfo }
     private var cachedBots: [BotProfile] = [] { didSet { library.observeBots(cachedBots, evidence: .cached) } }
+    private(set) var t3Channels: [T3ChannelSummary] = []
     private var pinned: Set<ExactID> = []
     private var unpinned: Set<ExactID> = []
     private(set) var chats: ConversationWorkspace
@@ -232,7 +234,8 @@ import BottoCore
     private(set) var cacheLoadFailed = false
     @ObservationIgnored private var protectedCaches: Set<UUID> = []
     var history: LocalHistory {
-        .init(bots: cachedBots, book: chats.persisted(), pinned: pinned, unpinned: unpinned)
+        .init(bots: cachedBots, book: chats.persisted(), pinned: pinned, unpinned: unpinned,
+              t3Channels: configuration?.t3 == nil ? nil : t3Channels)
     }
     private(set) var isDemo = false
     var isRefreshing: Bool { botRefresh != nil }
@@ -311,7 +314,20 @@ import BottoCore
     }
 
     @ObservationIgnored private var service: any BotService
-    @ObservationIgnored private let liveService: any BotService
+    @ObservationIgnored private var liveService: any BotService
+    @ObservationIgnored private let injectedService: (any BotService)?
+    @ObservationIgnored private let makeService: (ConnectionConfiguration?) -> any BotService
+    private final class PendingService {
+        let id = UUID()
+        let service: any BotService
+        var configuration: ConnectionConfiguration
+
+        init(service: any BotService, configuration: ConnectionConfiguration) {
+            self.service = service
+            self.configuration = configuration
+        }
+    }
+    private var pendingService: PendingService?
     @ObservationIgnored private var demoConnectionID: UUID?
     @ObservationIgnored private let artifactCache: ArtifactCache
     private var mountedArtifactScope: ArtifactCacheScope?
@@ -340,9 +356,14 @@ import BottoCore
          cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init,
          waitForBotInvalidationInterval: @escaping @MainActor () async throws -> Void = {
              try await Task.sleep(for: .seconds(5))
+         }, makeService: @escaping @MainActor (ConnectionConfiguration?) -> any BotService = {
+             if $0?.t3 != nil { return T3BotService() }
+             return HermesBotService()
          }) {
-        let liveService = service ?? HermesBotService()
+        let liveService = service ?? makeService(nil)
         self.artifactCache = artifactCache ?? (persistence == nil ? .shared : ArtifactCache(root: nil))
+        self.injectedService = service
+        self.makeService = makeService
         self.liveService = liveService
         self.service = liveService
         self.library = WorkspaceLibrary(service: liveService)
@@ -370,6 +391,8 @@ import BottoCore
             return false
         }
         savedSetupLoadFailed = false
+        liveService = injectedService ?? makeService(configuration)
+        service = liveService
         artifactCache.prune(reachableConfigurationIDs: Set(configuration.map { [$0.id] } ?? []))
         connection.restore(hasSavedSetup: configuration != nil)
         var loaded = LocalHistory()
@@ -386,14 +409,23 @@ import BottoCore
         return true
     }
 
-    private static func artifactScope(_ configuration: ConnectionConfiguration) -> ArtifactCacheScope {
+    private nonisolated static func backendAccount(_ configuration: ConnectionConfiguration) -> [Data?] {
+        guard let t3 = configuration.t3 else { return [Data("hermes".utf8)] }
+        return [Data("t3".utf8), Data(t3.environmentID.utf8), t3.projectID.map { Data($0.utf8) }]
+    }
+
+    static func artifactScope(_ configuration: ConnectionConfiguration) -> ArtifactCacheScope {
         .init(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
             installationID: configuration.installID.map { Data($0.utf8) }, username: Data(configuration.username.utf8),
-            provider: configuration.nativeCredential.map { Data($0.provider.utf8) })
+            provider: configuration.nativeCredential.map { Data($0.provider.utf8) },
+            backend: configuration.t3.map { _ in backendAccount(configuration) })
     }
 
     private func mount(_ history: LocalHistory, configuration: ConnectionConfiguration?) {
         historySaveFailure = nil
+        t3Models = []
+        t3ModelsGeneration = nil
+        t3ComposerRequest = nil
         chats.retireWorkspace()
         library.retire()
         mountedArtifactScope = isDemo ? nil : configuration.map(Self.artifactScope)
@@ -403,6 +435,7 @@ import BottoCore
         library.setOnline(isConnected)
         Task { [library] in await library.restore() }
         cachedBots = history.bots; pinned = history.pinned; unpinned = history.unpinned
+        t3Channels = configuration?.t3 == nil ? [] : history.t3Channels ?? []
         let scope = WorkspaceScope(cacheID: configuration?.id ?? UUID(),
             exactAccount: configuration.map(Self.richReplyAccount) ?? [], incarnation: UUID())
         chats = ConversationWorkspace(scope: scope, book: history.book, service: service,
@@ -471,7 +504,227 @@ import BottoCore
     var isConnected: Bool { link == .online }
     /// View-owned operations must also belong to the current connection lifetime.
     var connectionGeneration: UUID { generation }
-    var serverName: String { isDemo ? "Demo workspace" : configuration?.serverURL.host ?? "Your Hermes" }
+    var serverName: String {
+        if isDemo { return "Demo workspace" }
+        if let t3 = configuration?.t3 { return t3.label ?? configuration?.serverURL.host ?? "Your server" }
+        return configuration?.serverURL.host ?? "Your Hermes"
+    }
+
+    var isT3Workspace: Bool { !isDemo && (configuration?.t3 != nil || service is any T3BotBrainControlling) }
+    var t3BrainService: (any T3BotBrainControlling)? {
+        guard isT3Workspace else { return nil }
+        return service as? any T3BotBrainControlling
+    }
+    var primaryT3Bot: BotProfile? { isT3Workspace ? cachedBots.first : nil }
+
+    var selectedT3ChannelTitle: String? {
+        guard isT3Workspace, let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
+        return t3Channels.first { Data($0.id.utf8) == identity.stored.bytes }?.displayTitle
+            ?? chatScreen(for: selectedBotID)?.title
+    }
+
+    /// The space on screen, as the spaces list knows it.
+    var selectedT3Channel: T3ChannelSummary? {
+        guard let id = selectedT3ChannelID else { return nil }
+        return t3Channels.first { $0.id == id }
+    }
+
+    /// Models the host offers, kept for the composer's model chip once loaded in this connection.
+    private(set) var t3Models: [T3ModelOption] = []
+    @ObservationIgnored private var t3ModelsGeneration: UUID?
+
+    func loadT3ModelsIfNeeded() async {
+        guard isT3Workspace, isConnected, t3ModelsGeneration != generation else { return }
+        let owner = generation
+        guard let models = try? await availableT3Models(), generation == owner else { return }
+        t3Models = models
+        t3ModelsGeneration = owner
+    }
+
+    /// A display name for a space's model; falls back to the host's model ID.
+    func t3ModelLabel(provider: String?, model: String?) -> String? {
+        guard let model else { return nil }
+        return t3Models.first { $0.modelID == model && (provider == nil || $0.providerInstanceID == provider) }?.label ?? model
+    }
+
+    /// One-shot request from the new-space page for the next space's composer to open an attachment picker.
+    enum T3ComposerRequest: Equatable { case photos, files }
+    var t3ComposerRequest: T3ComposerRequest?
+
+    @discardableResult func openT3Channel(_ channel: T3ChannelSummary) async -> Bool {
+        await openT3Channel(channel, authority: nil)
+    }
+
+    private func openT3Channel(_ channel: T3ChannelSummary, authority savedAuthority: BotNavigationAuthority?) async -> Bool {
+        guard !Task.isCancelled, let bot = primaryT3Bot, let profile = try? ExactID(bot.id), let thread = try? ExactID(channel.id),
+              let current = t3Channels.first(where: { Data($0.id.utf8) == thread.bytes }),
+              let authority = savedAuthority ?? captureBotAuthority(),
+              ownsBotNavigation(authority),
+              selectBotID(bot.id, presentation: .preserveNavigation(authority.claim), while: {
+                  ownsBotNavigation(authority)
+              }), ownsBotNavigation(authority) else { return false }
+        let identity = SessionIdentity(profile: profile, root: thread, stored: thread, aliases: [])
+        let summary = SessionSummary(identity: identity, title: current.displayTitle, isCanonical: false, persistence: .durable,
+                                     preview: current.preview.isEmpty ? nil : current.preview, updatedAt: current.updatedAt)
+        return await authority.workspace.openStoredChat(summary, claim: authority.claim)
+    }
+
+    /// A space without a title is named by T3 from its first message.
+    func createT3Space(title: String? = nil) async throws -> CreatedSession {
+        try await withT3Service { try await $0.createChat(title: title) }
+    }
+
+    /// The new-space page: a space the user named, or one T3 names from the first message, opened and then sent.
+    /// Report the creation before opening so the user can find an interrupted start in Spaces.
+    /// Once open, a failed send keeps the text in that Space's own draft.
+    @discardableResult func startT3Space(named name: String = "", with text: String, model: T3ModelOption? = nil,
+                                         send: Bool = true,
+                                         onCreated: @MainActor (SessionIdentity) -> Void = { _ in }) async throws -> SessionIdentity {
+        try Task.checkCancellation()
+        guard isConnected, let authority = captureBotAuthority() else { throw T3ServiceError.disconnected }
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let identity = try await createT3Space(title: title.isEmpty ? nil : title).summary.identity
+        onCreated(identity)
+        let threadID = identity.stored.text
+        guard ownsBotNavigation(authority) else { throw HermesServiceError.staleConversation }
+        guard primaryT3Bot.map({ Data($0.id.utf8) }) == identity.profile.bytes,
+              let channel = t3Channels.first(where: { Data($0.id.utf8) == identity.stored.bytes }) else {
+            throw T3ServiceError.missingChannel
+        }
+        if let model {
+            try await setT3ChannelModel(threadID: threadID, providerInstanceID: model.providerInstanceID, model: model.modelID)
+        }
+        guard await openT3Channel(channel, authority: authority) else {
+            throw T3ServiceError.missingChannel
+        }
+        let workspace = authority.workspace
+        guard !Task.isCancelled, isCurrentConnection(authority),
+              let selection = workspace.selection(profile: identity.profile), selection.matches(identity),
+              workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
+        workspace.editDraft(text, owner: selection.owner)
+        if send, let intent = workspace.captureSend(selection.owner) { await workspace.send(intent) }
+        return identity
+    }
+
+    func renameT3Channel(threadID: String, title: String) async throws {
+        try await withT3Service { try await $0.renameChannel(threadID: threadID, title: title) }
+    }
+
+    func setT3ChannelPinned(threadID: String, pinned: Bool) async throws {
+        try await withT3Service { try await $0.setChannelPinned(threadID: threadID, pinned: pinned) }
+    }
+
+    func archiveT3Channel(threadID: String, archived: Bool) async throws {
+        try await withT3Service { try await $0.archiveChannel(threadID: threadID, archived: archived) }
+    }
+
+    func loadT3BotBrain() async throws -> T3BotBrainSnapshot {
+        try await withT3Service { try await $0.loadBotBrain() }
+    }
+
+    func saveT3Soul(_ markdown: String, replacing expected: String) async throws {
+        try await withT3Service { try await $0.saveSoul(markdown, replacing: expected) }
+    }
+
+    func saveT3Memory(_ markdown: String, replacing expected: String) async throws {
+        try await withT3Service { try await $0.saveMemory(markdown, replacing: expected) }
+    }
+
+    func saveT3Manifest(_ manifest: T3BotManifest) async throws {
+        try await withT3Service { try await $0.saveManifest(manifest) }
+        _ = await refreshBots()
+    }
+
+    /// Renames Botto on the host; the service reads the saved profile first, so other edits survive.
+    func renameT3Bot(_ name: String) async throws {
+        guard let bot = primaryT3Bot else { throw T3ServiceError.disconnected }
+        _ = try await withT3Service { try await $0.updateProfile(BotProfileEdit(name: name), for: bot) }
+        _ = await refreshBots()
+    }
+
+    /// The model new chats start with; nil lets the host choose.
+    @discardableResult func setT3DefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
+        let manifest = try await withT3Service { try await $0.setDefaultModel(option) }
+        _ = await refreshBots()
+        return manifest
+    }
+
+    func availableT3Models() async throws -> [T3ModelOption] {
+        try await withT3Service { try await $0.availableModels() }
+    }
+
+    func readT3ProjectFile(relativePath: String) async throws -> String {
+        try await withT3Service { try await $0.readProjectFile(relativePath: relativePath) }
+    }
+
+    /// The stored thread of the channel shown in the selected T3 chat.
+    var selectedT3ChannelID: String? {
+        guard isT3Workspace, let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
+        return t3Channels.first { Data($0.id.utf8) == identity.stored.bytes }?.id
+    }
+
+    func listT3Outputs() async throws -> [T3OutputFile] {
+        try await withT3Service { try await $0.listOutputs() }
+    }
+
+    func downloadT3Output(_ output: T3OutputFile) async throws -> DownloadedArtifact {
+        try await withT3Service { try await $0.downloadOutput(output) }
+    }
+
+    func listT3Routines() async throws -> [T3ScheduledRoutine] {
+        try await withT3Service { try await $0.listRoutines() }
+    }
+
+    func createT3Routine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
+        try await withT3Service { try await $0.createRoutine(name: name, prompt: prompt, cron: cron, threadID: threadID) }
+    }
+
+    func setT3RoutineEnabled(id: String, enabled: Bool) async throws {
+        try await withT3Service { try await $0.setRoutineEnabled(id: id, enabled: enabled) }
+    }
+
+    func deleteT3Routine(id: String) async throws {
+        try await withT3Service { try await $0.deleteRoutine(id: id) }
+    }
+
+    func setT3ChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
+        try await withT3Service {
+            try await $0.setChannelModel(threadID: threadID, providerInstanceID: providerInstanceID, model: model)
+        }
+    }
+
+    func markT3ChannelVisited(threadID: String) async throws {
+        try await withT3Service { try await $0.markChannelVisited(threadID: threadID) }
+    }
+
+    private func withT3Service<Value>(_ action: @MainActor (any T3BotBrainControlling) async throws -> Value) async throws -> Value {
+        guard let service = t3BrainService else { throw T3ServiceError.unsupported }
+        guard active, isConnected, !showsConnection else { throw T3ServiceError.disconnected }
+        let owner = generation, recovery = attachmentRecoveryGeneration
+        try Task.checkCancellation()
+        let result = try await action(service)
+        try Task.checkCancellation()
+        guard active, isConnected, generation == owner, attachmentRecoveryGeneration == recovery, !showsConnection else {
+            throw T3ServiceError.disconnected
+        }
+        publishT3Channels()
+        return result
+    }
+
+    private func publishT3Channels() {
+        guard isConnected, let service = t3BrainService else { return }
+        let priorPreviews = Dictionary(uniqueKeysWithValues: t3Channels.compactMap { channel -> (String, String)? in
+            channel.preview.isEmpty ? nil : (channel.id, channel.preview)
+        })
+        let channels = service.currentT3Channels.map { channel -> T3ChannelSummary in
+            guard channel.preview.isEmpty, let cached = priorPreviews[channel.id] else { return channel }
+            return channel.replacingPreview(cached)
+        }
+        guard channels != t3Channels else { return }
+        t3Channels = channels
+        scheduleSave()
+    }
 
     func avatar(for bot: BotProfile) -> UIImage? { avatars.image(for: bot) }
     func isLoadingAvatar(for bot: BotProfile) -> Bool { avatars.isLoading(bot) }
@@ -637,52 +890,72 @@ import BottoCore
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
         let candidate = rotatedConfigurations[candidate.id].flatMap {
-            $0.serverURL == candidate.serverURL ? $0 : nil
+            $0.serverURL == candidate.serverURL && Self.backendAccount($0) == Self.backendAccount(candidate) ? $0 : nil
         } ?? candidate
-        if candidate.id != configuration?.id || configuration.map(Self.richReplyAccount) != Self.richReplyAccount(candidate) {
-            pendingPushNotification = nil
-            retireArtifactPresentation()
-        }
-        let owner = connection.begin(candidate)
-        avatars.reset()
-        push.retireConnection()
-        service.disconnect()
-        chats.retireConnection()
-        cacheTask?.cancel()
-        retireRefresh()
-        service.onEvent = { [weak self] event in
-            guard let self else { return }
-            // Token rotation may finish while a socket is being replaced. Keep the saved
-            // credential current even when ordinary screen events belong to an old owner.
-            if case .configuration = event { self.receive(event); return }
-            guard self.generation == owner else { return }
-            self.receive(event)
+        discardPendingService()
+        let staged: PendingService?
+        let owner: UUID
+        let connectingService: any BotService
+        // A reconnect to the saved workspace keeps its drafts and staged-file warnings.
+        // Unresolved T3 pairing needs a staged service until it establishes its workspace.
+        let boundWorkspace = candidate.t3.map {
+            !$0.environmentID.isEmpty && $0.projectID?.isEmpty == false && $0.workspaceRoot?.isEmpty == false
+        } ?? true
+        let reconnectsSaved = candidate == configuration && boundWorkspace
+        if injectedService == nil, !isDemo, !reconnectsSaved {
+            let attempt = PendingService(service: makeService(candidate), configuration: candidate)
+            pendingService = attempt
+            staged = attempt
+            owner = attempt.id
+            connectingService = attempt.service
+            connectingService.onEvent = { [weak self, weak attempt] event in
+                guard let attempt, self?.pendingService === attempt else { return }
+                if case .configuration(let updated) = event, updated.id == candidate.id {
+                    attempt.configuration = updated
+                    if updated.t3 == nil, updated.id != self?.configuration?.id {
+                        self?.rotatedConfigurations[updated.id] = updated
+                    }
+                }
+            }
+        } else {
+            staged = nil
+            owner = connection.begin(candidate)
+            connectingService = service
+            prepareServiceTransition(to: candidate)
+            bindServiceEvents(owner: owner)
         }
         do {
             if !isDemo { try persistSavedRotation() }
             let info = try await withTaskCancellationHandler {
-                try await service.connect(configuration: candidate)
+                try await connectingService.connect(configuration: candidate)
             } onCancel: {
                 Task { @MainActor [weak self] in self?.cancelConnection(owner: owner) }
             }
-            guard generation == owner else { return false }
+            guard ownsConnectionAttempt(owner) else { return false }
             if Task.isCancelled { cancelConnection(owner: owner); return false }
-            var saved = connection.candidate ?? candidate
+            var saved = staged?.configuration ?? connection.candidate ?? candidate
             saved.installID = info.installID ?? saved.installID
             let previousID = configuration?.id
-            let preservesHistory = configuration?.id != saved.id && canPreserveHistory(for: saved, confirmedBy: info)
+            let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
+            let changedCache = previousID != saved.id || changedBackendAccount
+            let preservesHistory = changedCache && canPreserveHistory(for: saved, confirmedBy: info)
             let replacementHistory: LocalHistory
             if preservesHistory {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = history.readOnly
+            } else if previousID == saved.id, changedBackendAccount {
+                guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
+                replacementHistory = .init()
             } else if previousID == saved.id { replacementHistory = history.readOnly }
             else { replacementHistory = try LocalHistory.load(for: saved.id) }
             if !isDemo {
                 // A failed vault read cannot authorize overwriting setup or pruning caches.
                 _ = try persistence.load()
                 var replacement: LocalHistory.CacheReplacement?
-                if previousID != saved.id {
-                    if let previousID, !protectedCaches.contains(previousID) { try history.save(for: previousID) }
+                if changedCache {
+                    if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) {
+                        try history.save(for: previousID)
+                    }
                     replacement = try replacementHistory.prepareReplacement(for: saved.id)
                 }
                 do { try persistence.save(saved) }
@@ -693,13 +966,25 @@ import BottoCore
                 }
             }
             if rotatedConfigurations[saved.id] != nil { rotatedConfigurations[saved.id] = saved }
-            let changedCache = configuration?.id != saved.id
+            let connectedOwner: UUID
+            if let staged {
+                pendingService = nil
+                connectedOwner = connection.begin(saved)
+                prepareServiceTransition(to: saved)
+                service.onEvent = nil
+                liveService = staged.service
+                service = liveService
+                bindServiceEvents(owner: connectedOwner)
+            } else {
+                connectedOwner = owner
+            }
             let sameWorkspace = !changedCache && mountedArtifactScope == (isDemo ? nil : Self.artifactScope(saved))
-            if !sameWorkspace { mount(replacementHistory, configuration: saved) }
+            if staged != nil || !sameWorkspace { mount(replacementHistory, configuration: saved) }
             if changedCache { selectedBotID = nil; cacheLoadFailed = false }
             retireAvatarWorkspace(ifReplacingWith: saved)
             configuration = saved
-            guard connection.complete(owner, info: info) else { return false }
+            guard connection.complete(connectedOwner, info: info) else { return false }
+            publishT3Channels()
             chats.setOnline(true)
             reconcileArtifactPresentation()
             if !isDemo {
@@ -711,12 +996,12 @@ import BottoCore
                 (try? ExactID(bot.id)).flatMap { workspace.captureOpening(profile: $0) }
             }
             await refresh()
-            guard generation == owner else { return false }
+            guard generation == connectedOwner else { return false }
             bindPushNotifications()
             Task { [weak self] in
-                guard let self, self.generation == owner else { return }
+                guard let self, self.generation == connectedOwner else { return }
                 await self.push.refresh()
-                guard self.generation == owner else { return }
+                guard self.generation == connectedOwner else { return }
                 await self.push.resume()
             }
             onConnected?()
@@ -727,30 +1012,79 @@ import BottoCore
             }
             return true
         } catch {
-            guard generation == owner else { return false }
+            guard ownsConnectionAttempt(owner) else { return false }
             if !(error is CancellationError), !Task.isCancelled { onFailure?(error) }
             cancelConnection(owner: owner, failure: error)
             return false
         }
     }
 
+    private func prepareServiceTransition(to candidate: ConnectionConfiguration) {
+        if candidate.id != configuration?.id || configuration.map(Self.richReplyAccount) != Self.richReplyAccount(candidate) {
+            pendingPushNotification = nil
+            retireArtifactPresentation()
+        }
+        avatars.reset()
+        push.retireConnection()
+        service.disconnect()
+        chats.retireConnection()
+        cacheTask?.cancel()
+        retireRefresh()
+    }
+
+    private func bindServiceEvents(owner: UUID) {
+        service.onEvent = { [weak self] event in
+            guard let self else { return }
+            // A retired Hermes refresh can still consume its saved token.
+            if case .configuration(let updated) = event, updated.t3 == nil {
+                self.receive(event)
+            } else if self.generation == owner {
+                self.receive(event)
+            }
+        }
+    }
+
+    private func ownsConnectionAttempt(_ owner: UUID) -> Bool {
+        pendingService?.id == owner || connection.ownsAttempt(owner)
+    }
+
+    private func discardPendingService() {
+        guard let pending = pendingService else { return }
+        pendingService = nil
+        pending.service.onEvent = nil
+        pending.service.disconnect()
+    }
+
     private func canPreserveHistory(for candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
         guard !isDemo, let previous = configuration,
+              Self.backendAccount(previous) == Self.backendAccount(candidate),
               let installID = info.installID, !installID.isEmpty, previous.installID == installID,
-              !previous.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              previous.username == candidate.username,
               let oldOrigin = try? PairingAddress.parse(previous.serverURL.absoluteString, allowInsecureHTTP: true),
               let newOrigin = try? PairingAddress.parse(candidate.serverURL.absoluteString, allowInsecureHTTP: true),
               oldOrigin.scheme == newOrigin.scheme, oldOrigin.host == newOrigin.host,
               (oldOrigin.port ?? (oldOrigin.scheme == "https" ? 443 : 80))
                 == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)) else { return false }
+        if let paired = previous.t3, let verified = candidate.t3 {
+            guard paired.environmentID == installID, verified.environmentID == installID,
+                  let project = paired.projectID, !project.isEmpty,
+                  let oldRoot = paired.workspaceRoot, !oldRoot.isEmpty, let newRoot = verified.workspaceRoot else { return false }
+            return oldRoot.utf8.elementsEqual(newRoot.utf8)
+        }
         // Both password login and native basic verify this account through /api/auth/me.
+        guard !previous.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              previous.username == candidate.username else { return false }
         let provider = previous.nativeCredential?.provider ?? "basic"
         return !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && provider == (candidate.nativeCredential?.provider ?? "basic")
     }
 
     private func cancelConnection(owner: UUID, failure: (any Error)? = nil) {
+        if pendingService?.id == owner {
+            discardPendingService()
+            if connection.isSuspended { connection.restore(hasSavedSetup: configuration != nil) }
+            if let failure { connection.savedSetupFailed(failure) }
+            return
+        }
         guard connection.cancel(owner, hasSavedSetup: configuration != nil, failure: failure) else { return }
         service.disconnect()
         chats.retireConnection(); retireRefresh()
@@ -898,6 +1232,7 @@ import BottoCore
                 library.observeBots(profiles, evidence: .observed)
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
+                publishT3Channels()
                 bindPushNotifications()
                 if let id = configuration?.id { avatars.refresh(profiles, connectionID: id, using: service) }
                 await chats.refreshActivityDirectories(for: profiles)
@@ -1269,7 +1604,14 @@ import BottoCore
         interruptOpeningForUITest(opening)
         #endif
         guard canOpenBot(opening) else { return }
-        await opening.authority.workspace.open(opening.intent)
+        if isT3Workspace, let space = T3ChatShelf.initialSpace(t3Channels) {
+            let opened = await openT3Channel(space, authority: opening.authority)
+            if !opened, !Task.isCancelled, isCurrentConnection(opening.authority), selectedT3ChannelID == nil {
+                notice = String(localized: "That space didn’t open. Select Botto to try again.")
+            }
+        } else {
+            await opening.authority.workspace.open(opening.intent)
+        }
         settleInterruptedOpening()
     }
     #if DEBUG
@@ -1321,6 +1663,7 @@ import BottoCore
         }
         #endif
         if !value {
+            discardPendingService()
             push.deactivate()
             flush()
             service.disconnect()
@@ -1330,7 +1673,9 @@ import BottoCore
         } else {
             // Local persistence can recover after unlocking even if the network cannot.
             flush()
-            if started, !isConnected, connection.candidate == nil, let configuration { await connect(configuration) }
+            if started, !isConnected, pendingService == nil, connection.candidate == nil, let configuration {
+                await connect(configuration)
+            }
         }
     }
 
@@ -1352,22 +1697,25 @@ import BottoCore
             catch { self?.notice = "Saved setup was removed, but artifact cleanup couldn’t finish. Botto will retry when it opens again." }
         }
         retireAvatarWorkspace(ifReplacingWith: nil)
+        discardPendingService()
         connection.forget(); retireRefresh()
         service.onEvent = nil; service.disconnect()
         cacheTask?.cancel()
         avatars.reset()
+        liveService = injectedService ?? makeService(nil)
+        service = liveService
         configuration = nil; mount(.init(), configuration: nil); selectedBotID = nil
         rotatedConfigurations = [:]
         isDemo = false; savedSetupLoadFailed = false
         if let oldID, !protectedCaches.contains(oldID) { LocalHistory.remove(for: oldID) }
         cleanHistory(keeping: nil)
         demoConnectionID = nil
-        service = liveService
         bindPushNotifications()
     }
 
     func enterDemo() async {
         guard flush() else { return }
+        discardPendingService()
         push.deactivate()
         retireAvatarWorkspace(ifReplacingWith: nil)
         service.disconnect(); service = DemoBotService()
@@ -1393,18 +1741,22 @@ import BottoCore
         switch event {
         case .conversation(let chat):
             chats.receive(chat); richReplies?.reconcileCanonicalConversation()
+            publishT3Channels()
         case .activity(let profile, let observations):
             chats.applyActivity(profile: profile, observations: observations)
         case .activityBatch(let updates):
             chats.applyActivity(updates)
         case .conversationDirectoryChanged(let profile):
+            publishT3Channels()
             library.invalidateRevalidation()
             chats.invalidateActivityDirectory(profile)
             Task { await refresh() }
         case .botsChanged:
+            publishT3Channels()
             library.invalidateRevalidation()
             refreshFromBotInvalidation()
         case .configuration(let updated):
+            if let configuration, updated.id == configuration.id, updated.t3 == nil, configuration.t3 != nil { return }
             rotatedConfigurations[updated.id] = updated
             connection.updateCandidate(updated)
             if updated.id == configuration?.id {
@@ -1488,9 +1840,10 @@ extension AppStore {
         fileprivate let runtime: Data
         fileprivate let stored: Data
     }
-    private static func richReplyAccount(_ configuration: ConnectionConfiguration) -> [Data?] {
+    static func richReplyAccount(_ configuration: ConnectionConfiguration) -> [Data?] {
         [configuration.serverURL.absoluteString, configuration.installID, configuration.username,
          configuration.nativeCredential?.provider ?? "basic"].map { $0.map { Data($0.utf8) } }
+            + backendAccount(configuration)
     }
     private func richReplyDestination(for botID: String) -> RichReplyDestination? {
         guard active, link != .connecting, !showsConnection,

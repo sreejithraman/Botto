@@ -142,6 +142,11 @@ struct ChatSelection {
     let identity: SessionIdentity?
     let isUnverified: Bool
     let isOpening: Bool
+
+    func matches(_ target: SessionIdentity) -> Bool {
+        guard let identity else { return false }
+        return identity.profile == target.profile && identity.root == target.root && identity.stored == target.stored
+    }
 }
 
 struct ChatHapticFeedback: Equatable {
@@ -699,18 +704,18 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let opened = await performLibraryOpening(intent, isCurrent: isCurrent, accepts: accepts, commit: commit) {
             return opened
         }
-        if ownsNavigation(intent.claim), online, recovery == connection, selected == previousSelection,
-           live == nil, let previousSelection {
-            // Recovery belongs to the whole request, including directory lookup.
-            // It must outlive cancellation without overriding a newer request.
-            await Task { @MainActor in
-                guard ownsNavigation(intent.claim), online, recovery == connection,
-                      selected == previousSelection else { return }
-                readAuthorityBlocked = true
-                await attach(previousSelection, navigation: request)
-            }.value
-        }
+        await restorePreviousAttachment(previousSelection, recovery: connection, claim: intent.claim)
         return nil
+    }
+
+    private func restorePreviousAttachment(_ previous: ChatID?, recovery connection: UUID, claim: NavigationClaim) async {
+        guard let previous, ownsNavigation(claim), online, recovery == connection, selected == previous, live == nil else { return }
+        // Restoration must survive cancellation without overriding a newer request.
+        await Task { @MainActor in
+            guard ownsNavigation(claim), online, recovery == connection, selected == previous else { return }
+            readAuthorityBlocked = true
+            await attach(previous, navigation: claim.request)
+        }.value
     }
     private func performLibraryOpening(_ intent: LibraryOpeningIntent,
                                        isCurrent: @MainActor () -> Bool,
@@ -739,6 +744,21 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     func open(_ intent: OpeningIntent) async {
         await open(intent, userInitiated: true)
+    }
+
+    func openStoredChat(_ summary: SessionSummary, claim: NavigationClaim) async -> Bool {
+        guard !Task.isCancelled, ownsNavigation(claim) else { return false }
+        let request = claim.request, previous = selected, connection = recovery
+        defer { if navigationRequest == request { navigationRequest = nil } }
+        onUserNavigation?()
+        guard ownsNavigation(claim) else { return false }
+        let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[summary.identity.profile]) }
+        availability[id] = true
+        if await attach(id, selectionCommit: .afterAttachment, navigation: request, storedTarget: summary.identity) != nil {
+            return !Task.isCancelled && navigationRequest == request && selected == id
+        }
+        await restorePreviousAttachment(previous, recovery: connection, claim: claim)
+        return false
     }
     private func ownsOpening(_ intent: OpeningIntent) -> Bool {
         !Task.isCancelled && !retired && intent.scope == scope && intent.epoch == presentation &&
@@ -863,6 +883,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
                                           navigation request: UUID? = nil,
+                                          storedTarget: SessionIdentity? = nil,
                                           accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
                                           commit: @MainActor (SessionIdentity) -> Bool = { _ in true }) async -> SessionIdentity? {
         guard !Task.isCancelled, !retired, let record = book.record(id),
@@ -909,10 +930,14 @@ private struct ReadObservationKey: Hashable, Sendable {
         let initialMainBinding = initialMainBindings[record.profile]
         defer { if opening?.id == attempt { opening = nil } }
         let target: SessionTarget
-        switch record.binding {
-        case .provisionalMain: target = .canonical(profile: record.profile, expectedRoot: nil)
-        case .identified(let identity, let canonical, _):
-            target = canonical ? .canonical(profile: record.profile, expectedRoot: identity.root) : .stored(identity)
+        if let storedTarget {
+            target = .stored(storedTarget)
+        } else {
+            switch record.binding {
+            case .provisionalMain: target = .canonical(profile: record.profile, expectedRoot: nil)
+            case .identified(let identity, let canonical, _):
+                target = canonical ? .canonical(profile: record.profile, expectedRoot: identity.root) : .stored(identity)
+            }
         }
         do {
             let opened = book.reconciled(try await service.openChat(target), for: id)
@@ -1146,6 +1171,8 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             if directory.isComplete {
                 for record in book.ordered(profile) where !available.contains(record.id) {
+                    // A provisional T3 Main can still be resolved by a canonical open.
+                    if service is any T3BotBrainControlling, case .provisionalMain = record.binding { continue }
                     availability[record.id] = false
                     if selected == record.id, let current = live {
                         retiredRecoveryAccesses.insert(current.access)

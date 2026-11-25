@@ -18,8 +18,8 @@
     <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
     <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
     <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-    <key>NSCameraUsageDescription</key><string>Scan your Hermes connection QR code. Botto only uses the camera while you’re scanning.</string>
-    <key>NSLocalNetworkUsageDescription</key><string>Connect directly to your Hermes host on your local network.</string>
+    <key>NSCameraUsageDescription</key><string>Scan your connection QR code. Botto only uses the camera while you’re scanning.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Connect directly to your host on your local network.</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>CFBundleURLTypes</key><array>
         <dict><key>CFBundleURLName</key><string>com.sree.botto.connect</string><key>CFBundleURLSchemes</key><array><string>botto</string></array></dict>

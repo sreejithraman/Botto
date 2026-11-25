@@ -2,11 +2,17 @@ import SwiftUI
 import BottoCore
 
 struct ConnectionView: View {
+    private enum Backend: Hashable { case hermes, t3 }
+
     @Bindable var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var address: String
+    @State private var backend: Backend
     @State private var reviewedURL: URL?
+    @State private var reviewedCredential: String?
+    @State private var pairedConfiguration: ConnectionConfiguration?
+    @State private var pairingCode = ""
     @State private var setupRevision = 0
     @State private var username = ""
     @State private var password = ""
@@ -22,6 +28,7 @@ struct ConnectionView: View {
     init(store: AppStore, input: String = "") {
         self.store = store
         _address = State(initialValue: input.isEmpty ? store.configuration?.serverURL.absoluteString ?? "" : input)
+        _backend = State(initialValue: Self.backend(for: input, fallback: store.isT3Workspace ? .t3 : .hermes))
     }
     var body: some View {
         NavigationStack {
@@ -36,31 +43,16 @@ struct ConnectionView: View {
                                 Text(destination.absoluteString).font(.headline).textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                             }.padding(.vertical, 6)
-                            Button("Change address") { reviewedURL = nil; error = nil }
+                            Button("Change address") { clearReview() }
                                 .disabled(isSubmitting)
                         } header: {
                             Text("Reviewed server")
                         } footer: {
-                            Text("Only continue if you recognize this server. Your sign-in will be sent to this address.")
+                            Text(backend == .t3
+                                 ? "Only continue if you recognize this server. Your pairing code will be sent to this address."
+                                 : "Only continue if you recognize this server. Your sign-in will be sent to this address.")
                         }
-                        Section {
-                            TextField("Username", text: $username)
-                                .textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                            SecureField("Password", text: $password).textContentType(.password).privacySensitive()
-                        } header: {
-                            Text("Sign in to Hermes")
-                        } footer: {
-                            Text("Use your Hermes server account.")
-                        }
-                        Section {
-                            DisclosureGroup("Advanced connection") {
-                                TextField("Cloudflare Access client ID", text: $clientID)
-                                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                                SecureField("Cloudflare Access client secret", text: $clientSecret).privacySensitive()
-                                Text("Only needed when your server uses a Cloudflare Access service token.")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }
-                        }
+                        if backend == .hermes { hermesCredentials }
                         if let error { errorSection(error) }
                         Section {
                             Button {
@@ -73,31 +65,52 @@ struct ConnectionView: View {
                             .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
-                            Button {
-                                connect(destination, inBrowser: true)
-                            } label: {
-                                Text("Continue in browser")
-                                    .multilineTextAlignment(.center)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, minHeight: 44)
+                            if backend == .hermes {
+                                Button {
+                                    connect(destination, inBrowser: true)
+                                } label: {
+                                    Text("Continue in browser")
+                                        .multilineTextAlignment(.center)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, minHeight: 44)
+                                }
+                                .buttonStyle(.plain).foregroundStyle(BottoTheme.action)
+                                .disabled(isSubmitting)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
                             }
-                            .buttonStyle(.plain).foregroundStyle(BottoTheme.action)
-                            .disabled(isSubmitting)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
                         }
                         if isSubmitting {
-                            Section { Text("Signing in to \(destination.host ?? "your server")…").foregroundStyle(.secondary) }
+                            Section {
+                                let host = destination.host ?? "your server"
+                                Text(backend == .t3 ? "Pairing with \(host)…" : "Signing in to \(host)…")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     } else {
                         Section {
-                            TextField("https://hermes.example.com", text: $address, axis: .vertical)
+                            Picker("Backend", selection: Binding(get: { backend }, set: {
+                                backend = $0
+                                clearReview()
+                            })) {
+                                Text("Hermes").tag(Backend.hermes)
+                                Text("T3 Code").tag(Backend.t3)
+                            }.pickerStyle(.segmented)
+                        }
+                        Section {
+                            TextField(backend == .t3 ? "T3 pairing link or server URL" : "https://hermes.example.com",
+                                      text: $address, axis: .vertical)
                                 .keyboardType(.URL).textContentType(.URL)
                                 .textInputAutocapitalization(.never).autocorrectionDisabled()
-                                .accessibilityLabel("Hermes server address or connection code")
+                                .privacySensitive(backend == .t3)
+                                .accessibilityLabel(backend == .t3 ? "T3 pairing link or server URL" : "Hermes server address or connection code")
+                            if backend == .t3, !Self.isT3Link(address) {
+                                SecureField("Pairing code", text: $pairingCode)
+                                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                            }
                             HStack {
                                 PasteButton(payloadType: String.self) { values in
-                                    if let value = values.first { address = value; error = nil }
+                                    if let value = values.first { receiveInput(value) }
                                 }
                                 .labelStyle(.titleAndIcon)
                                 .buttonBorderShape(.capsule)
@@ -113,7 +126,7 @@ struct ConnectionView: View {
                         } header: {
                             Text("Server address or connection code")
                         } footer: {
-                            Text("You’ll review the address before signing in.")
+                            Text(backend == .t3 ? "You’ll review the address before pairing." : "You’ll review the address before signing in.")
                         }
                         .id("connection-address")
                         if let error { errorSection(error) }
@@ -127,14 +140,21 @@ struct ConnectionView: View {
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                         }
-                        HermesSetupSection().id(setupRevision)
+                        if backend == .hermes { HermesSetupSection().id(setupRevision) }
                         Section {
                             DisclosureGroup("Trusted local network") {
                                 Toggle("Allow an HTTP connection", isOn: $allowHTTP)
-                                Text("HTTP sends sign-in details and messages without encryption. Enable only for a server on a network you trust.")
+                                    Text(backend == .t3
+                                         ? "HTTP sends pairing details and messages without encryption. Enable only for a trusted LAN or Tailscale address."
+                                         : "HTTP sends sign-in details and messages without encryption. Enable only for a server on a network you trust.")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             .listRowBackground(Color.clear)
+                        }
+                    }
+                    if backend == .t3 {
+                        Section {} footer: {
+                            Text("Direct pairing over LAN, Tailscale, or your own tunnel. No T3 account required.")
                         }
                     }
                 }
@@ -142,15 +162,16 @@ struct ConnectionView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .scrollContentBackground(.hidden).background(BottoTheme.paper, ignoresSafeAreaEdges: [])
                 .bottoNavigationChrome()
-                .navigationTitle("Connect Hermes").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle(backend == .t3 ? "Connect T3 Code" : "Connect Hermes").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { cancelAttempt(); dismiss() }
                     }
                 }
                 .sheet(isPresented: $showsScanner) {
-                    PairingScannerView { scanned in
-                        address = scanned; reviewedURL = nil; error = nil; showsScanner = false
+                    PairingScannerView(isT3: backend == .t3) { scanned in
+                        receiveInput(scanned)
+                        showsScanner = false
                         reviewAddress()
                     }
                 }
@@ -162,12 +183,39 @@ struct ConnectionView: View {
             cancelAttempt()
             showsScanner = false
             setupRevision += 1
-            address = input; reviewedURL = nil; error = nil
+            receiveInput(input)
             store.pendingConnectionInput = nil
         }
         .onAppear { store.pendingConnectionInput = nil }
         .onDisappear { cancelAttempt() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, backend == .t3 { cancelAttempt() }
+        }
+        .onChange(of: address) { _, value in
+            backend = Self.backend(for: value, fallback: backend)
+        }
         .tint(BottoTheme.action)
+    }
+
+    @ViewBuilder private var hermesCredentials: some View {
+        Section {
+            TextField("Username", text: $username)
+                .textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
+            SecureField("Password", text: $password).textContentType(.password).privacySensitive()
+        } header: {
+            Text("Sign in to Hermes")
+        } footer: {
+            Text("Use your Hermes server account.")
+        }
+        Section {
+            DisclosureGroup("Advanced connection") {
+                TextField("Cloudflare Access client ID", text: $clientID)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("Cloudflare Access client secret", text: $clientSecret).privacySensitive()
+                Text("Only needed when your server uses a Cloudflare Access service token.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
     }
     private func primaryLabel(_ title: String) -> some View {
         Text(title)
@@ -183,9 +231,40 @@ struct ConnectionView: View {
     }
     private func reviewAddress() {
         do {
-            reviewedURL = try PairingAddress.parse(address, allowInsecureHTTP: allowHTTP)
+            if backend == .t3 {
+                let input = try T3PairingExchange.parse(address, credential: Self.isT3Link(address) ? nil : pairingCode)
+                reviewedURL = try PairingAddress.parse(input.origin.absoluteString, allowInsecureHTTP: allowHTTP)
+                reviewedCredential = input.credential
+            } else {
+                reviewedURL = try PairingAddress.parse(address, allowInsecureHTTP: allowHTTP)
+            }
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+
+    private static func isT3Link(_ input: String) -> Bool {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return URLComponents(string: text)?.scheme?.lowercased() == "t3code" || (try? T3PairingExchange.parse(text)) != nil
+    }
+
+    private static func backend(for input: String, fallback: Backend) -> Backend {
+        if isT3Link(input) { return .t3 }
+        let scheme = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines))?.scheme?.lowercased()
+        if let scheme, ["hermes", "botto"].contains(scheme) { return .hermes }
+        return fallback
+    }
+
+    private func clearReview() {
+        reviewedURL = nil
+        reviewedCredential = nil
+        pairedConfiguration = nil
+        error = nil
+    }
+
+    private func receiveInput(_ input: String) {
+        clearReview()
+        backend = Self.backend(for: input, fallback: backend)
+        address = input
     }
     private var headers: [String: String] {
         var result: [String: String] = [:]
@@ -201,19 +280,33 @@ struct ConnectionView: View {
         let submittedHeaders = headers
         let submittedUsername = username
         let submittedPassword = password
+        let credential = reviewedCredential
+        let submittedBackend = backend
+        let existingPairing = pairedConfiguration
         connectionTask = Task { @MainActor in
             defer {
                 if attemptID == owner { isSubmitting = false; connectionTask = nil }
             }
             do {
                 let candidate: ConnectionConfiguration
-                if inBrowser {
+                if submittedBackend == .t3 {
+                    guard let credential else { throw T3PairingError.missingCredential }
+                    if let existingPairing { candidate = existingPairing }
+                    else {
+                        candidate = try await T3PairingExchange().exchangePairingCredential(
+                            origin: destination, credential: credential, clientLabel: "Botto"
+                        ).configuration
+                        try Task.checkCancellation()
+                        guard attemptID == owner else { return }
+                        pairedConfiguration = candidate
+                    }
+                } else if inBrowser {
                     candidate = try await BrowserSignIn.authenticate(serverURL: destination, connectionHeaders: submittedHeaders)
                 } else {
                     candidate = ConnectionConfiguration(serverURL: destination, username: submittedUsername, password: submittedPassword, connectionHeaders: submittedHeaders)
                 }
                 try Task.checkCancellation()
-                guard attemptID == owner else { return }
+                guard attemptID == owner, submittedBackend != .t3 || scenePhase == .active else { return }
                 if store.isDemo { store.leaveDemo() }
                 var failure: (any Error)?
                 let connected = await store.connect(candidate, onConnected: {
