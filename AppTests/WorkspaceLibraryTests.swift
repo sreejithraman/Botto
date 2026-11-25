@@ -20,8 +20,12 @@ import BottoCore
 
     @Test(arguments: [false, true])
     func unchangedOversizedHintCannotFenceAPostLossRead(retryWhileReading: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkUnchangedOversizedHint(retryWhileReading: retryWhileReading, fixture: fixture)
+        }
+    }
+
+    private func checkUnchangedOversizedHint(retryWhileReading: Bool, fixture: LibraryCacheFixture) async throws {
         let service = LibraryTestService(secondBot: true)
         let current = SessionIdentity(profile: service.first.profile, root: service.first.root,
             stored: try ExactID("current-tip"), aliases: [service.first.root, try ExactID("current-tip")])
@@ -35,33 +39,28 @@ import BottoCore
         service.replacementFirst = current
         service.previewEnabled = true
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
+        let warmSession = fixture.openCache().session(scope: scope)
         let warm = WorkspaceLibrary(service: service, cache: warmSession)
+        defer { warm.retire() }
         await warm.restore(); warm.setOnline(true)
         let startedAt = ContinuousClock.now
         let page = try await service.conversationHistory(service.second, offset: 0)
         warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
             profileID: service.second.profile.text, messages: page.messages), title: "Peer",
             evidence: .read(startedAt: startedAt, observedSource: service.second, identityRead: page.identityRead))
-        let captureDeadline = ContinuousClock.now + .seconds(3)
-        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline { await Task.yield() }
-        #expect(try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second })).data == Data("side".utf8))
-        let warmDeadline = ContinuousClock.now + .seconds(3)
-        var saved = try await warmSession.loadChats(), recovery = try await warmSession.metadataRecovery()
-        while !saved.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || recovery.contains(service.second),
-              ContinuousClock.now < warmDeadline {
-            await Task.yield(); saved = try await warmSession.loadChats(); recovery = try await warmSession.metadataRecovery()
-        }
-        try #require(saved.contains { $0.identity == service.second && $0.messages == [peer] })
-        try #require(!recovery.contains(service.second))
-        warm.retire(); await warmCache.close()
-        let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
-        try await fixture.upsert(.init(identity: service.first, botName: "Helper", title: "Guarded old tip",
+        let captured = try await projectedPeer(peer, source: service.second, in: warm)
+        #expect(try await warm.download(captured).data == Data("side".utf8))
+        let (warmRows, warmRecovery) = try await savedLibraryMessages([peer], source: service.second, in: warmSession)
+        try #require(warmRows.contains { $0.identity == service.second && $0.messages == [peer] })
+        try #require(!warmRecovery.contains(service.second))
+        warm.retire(); await fixture.closeCache()
+        let savedSession = fixture.openCache().session(scope: scope)
+        try await savedSession.upsert(.init(identity: service.first, botName: "Helper", title: "Guarded old tip",
             messages: disputed, updatedAt: Date(timeIntervalSince1970: 1), coverage: .partial,
             summary: nil, headFingerprint: nil, unavailableMessageIDs: Set(disputed.map { Data($0.id.utf8) })))
-        try fixture.invalidateMetadata([(service.first.profile, service.first.root)])
-        await fixtureCache.close()
-        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        try savedSession.invalidateMetadata([(service.first.profile, service.first.root)])
+        await fixture.closeCache()
+        let session = fixture.openCache().session(scope: scope)
         let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 3, chatCount: 3), cache: session)
         defer { library.retire() }
         await library.restore()
@@ -72,7 +71,7 @@ import BottoCore
         book.cache(.init(id: current.root.text, storedID: current.stored.text, profileID: current.profile.text, messages: []), for: chat)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: book, service: service, onDirty: {})
-        defer { workspace.retireWorkspace() }
+        defer { if !library.isRetired { workspace.retireWorkspace() } }
         var publications: [ChatTranscriptPublication] = []
         workspace.onAcceptedTranscript = { publications.append($0); library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
@@ -89,7 +88,7 @@ import BottoCore
         #expect(publication.evidence.readContext?.identityRead?.matches(current) == true)
         #expect(library.indexingMetrics.acceptedSnapshots == 1)
         let deadline = ContinuousClock.now + .seconds(3)
-        saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
         while !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current),
               ContinuousClock.now < deadline {
             await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
@@ -103,8 +102,10 @@ import BottoCore
         let downloads = service.downloadCount
         #expect(try await library.download(offlinePeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
-        library.retire(); await cache.close()
-        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        workspace.retireWorkspace()
+        library.retire(); await fixture.closeCache()
+        let cold = WorkspaceLibrary(service: service, cache: fixture.openCache().session(scope: scope))
+        defer { cold.retire() }
         var oldBook = ConversationBook()
         let oldChat = oldBook.merge(.init(identity: service.first, title: "Old", isCanonical: true, persistence: .durable))
         oldBook.cache(.init(id: service.first.root.text, storedID: service.first.stored.text,
@@ -115,7 +116,6 @@ import BottoCore
         let coldPeer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
         #expect(try await cold.download(coldPeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
-        cold.retire(); await coldCache.close()
     }
 
     enum HeldScopeInterruption: CaseIterable, Sendable {
