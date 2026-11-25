@@ -17,11 +17,12 @@ a build you may roll back.
 
 ## Adopt a new release
 
-Run these two commands from the repo root, substituting the upstream release tag
+Run these commands from the repo root, substituting the upstream release tag
 you want to try.
 
 ```sh
 scripts/bundle-t3-engine.sh --pin vX.Y.Z
+scripts/check-t3-live.py
 xcodebuild test -project Botto.xcodeproj -scheme BottoMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -31,6 +32,14 @@ and published archive checksum, and stages the verified release before updating
 after testing. For transport changes, also run `swift test --filter T3` and
 `swift test --no-parallel`. The upgrade uses the upstream release as published
 and leaves any local T3 checkout untouched.
+
+To try a specific release or nightly before updating the pin, run
+`scripts/check-t3-live.py --tag vX.Y.Z` with the full upstream tag. The live check
+requires an Apple Silicon Mac, Python 3.9+, and the Swift toolchain. It starts
+T3 on a free loopback port with disposable data, pairs BottoCore, and checks bot
+bootstrap and brain file read/write. It fails if the live test does not complete.
+It reports any skipped model-backed channel operations when the disposable engine
+has no models. Provider sign-in and model turns are outside this check.
 
 Running `scripts/bundle-t3-engine.sh` with no arguments stages the current pin.
 The BottoMac build calls the same script with `--embed`. First builds need network
