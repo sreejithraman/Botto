@@ -23,13 +23,6 @@ struct MacRootView: View {
             }
         }
         .tint(MacTheme.action)
-        .task(id: server.state) {
-            if server.state == .running {
-                await store.connect(to: server)
-            } else {
-                store.disconnect()
-            }
-        }
         .onChange(of: server.state) { _, state in if state != .running { previewing = nil } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Coming back from Terminal or a download page is when a provider has usually just been set up.

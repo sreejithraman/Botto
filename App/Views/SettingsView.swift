@@ -62,12 +62,26 @@ struct SettingsView: View {
                 if !store.isDemo {
                     Section {
                         NavigationLink {
-                            PushSettingsView(coordinator: store.push,
-                                testDestination: store.notificationTestDestination)
+                            if store.isT3Workspace {
+                                T3PushSettingsView(store: store)
+                            } else {
+                                PushSettingsView(coordinator: store.push,
+                                    testDestination: store.notificationTestDestination)
+                            }
                         } label: {
                             Label("Notifications", systemImage: "bell.badge")
                         }
                         .accessibilityIdentifier("settings.notifications")
+                        if store.t3Push.hasOtherPairings(than: store.t3PushScope) {
+                            Button("Turn Off Notifications from Other Macs", role: .destructive) {
+                                let current = store.t3PushScope
+                                Task {
+                                    await store.t3Push.disablePairings { $0 != current }
+                                    store.notice = store.t3Push.notice
+                                }
+                            }
+                            .disabled(store.t3Push.isBusy)
+                        }
                     }
                 }
                 #if DEBUG || BOTTO_INTERNAL_TOOLS
@@ -130,7 +144,7 @@ struct SettingsView: View {
                     Text(store.isDemo
                          ? (onLeaveDemo == nil ? "Return to your own Hermes connection." : "Return to the playground.")
                          : store.isT3Workspace
-                            ? "Removes saved pairing details, drafts, and cached spaces from this device. Botto’s memory and spaces stay on the host."
+                            ? "Removes saved pairing details, drafts, cached spaces, and notification pairings from this device. Botto’s memory and spaces stay on the host."
                             : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
                 }
             }
@@ -158,7 +172,7 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(store.isT3Workspace
-                     ? "Saved pairing details, drafts, and cached messages will be removed locally. Botto’s memory and spaces stay on the host."
+                     ? "Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the host."
                      : "Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
             }
         }.tint(BottoTheme.action)

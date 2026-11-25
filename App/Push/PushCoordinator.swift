@@ -8,10 +8,26 @@ struct PushNavigationIntent: Equatable, Sendable {
     enum Readiness { case current, retired, unavailable }
     let id = UUID()
     var recoveryRevision = UUID()
-    let host: PushHostBinding
+    enum Source: Equatable, Sendable { case hermes(PushHostBinding), t3(T3PushScope) }
+    let source: Source
     let installationID: String
     let deviceID: String
     let destination: PushDestination
+
+    init(host: PushHostBinding, installationID: String, deviceID: String, destination: PushDestination) {
+        self.init(source: .hermes(host), installationID: installationID, deviceID: deviceID, destination: destination)
+    }
+
+    init(t3: T3PushScope, installationID: String, deviceID: String, destination: PushDestination) {
+        self.init(source: .t3(t3), installationID: installationID, deviceID: deviceID, destination: destination)
+    }
+
+    private init(source: Source, installationID: String, deviceID: String, destination: PushDestination) {
+        self.source = source
+        self.installationID = installationID
+        self.deviceID = deviceID
+        self.destination = destination
+    }
 }
 
 @MainActor @Observable final class PushCoordinator {
@@ -428,22 +444,23 @@ struct PushNavigationIntent: Equatable, Sendable {
                      deviceID: pairing.deviceID, destination: destination)
     }
     func authorizesNavigation(_ intent: PushNavigationIntent) -> Bool {
-        guard !isDemo, !storageUnavailable, let host, host.sameConnection(as: intent.host) else { return false }
+        guard case .hermes(let original) = intent.source, !isDemo, !storageUnavailable,
+              let host, host.sameConnection(as: original) else { return false }
         return saved.pairings.contains {
-            $0.host == intent.host && $0.deviceID == intent.deviceID &&
+            $0.host == original && $0.deviceID == intent.deviceID &&
             $0.installationID == intent.installationID && $0.retirement == nil
         }
     }
     func navigationReadiness(_ intent: PushNavigationIntent) async -> PushNavigationIntent.Readiness {
-        guard authorizesNavigation(intent), let service else { return .retired }
+        guard case .hermes(let host) = intent.source, authorizesNavigation(intent), let service else { return .retired }
         let lifetime = epoch
-        let observed = saved.pairings.first { $0.host == intent.host && $0.deviceID == intent.deviceID }
+        let observed = saved.pairings.first { $0.host == host && $0.deviceID == intent.deviceID }
         do {
-            let status = try await service.pushStatus(profileID: intent.host.profileID)
+            let status = try await service.pushStatus(profileID: host.profileID)
             guard epoch == lifetime else { return .unavailable }
             guard authorizesNavigation(intent) else { return .retired }
             guard status.v == 1, status.supported, status.installationID == intent.installationID else { return .unavailable }
-            try reconcileStatus(status, host: intent.host, observedPairing: observed)
+            try reconcileStatus(status, host: host, observedPairing: observed)
             return authorizesNavigation(intent) ? .current : .retired
         } catch { return .unavailable }
     }

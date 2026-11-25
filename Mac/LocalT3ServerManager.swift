@@ -115,7 +115,10 @@ final class LocalT3ServerManager {
     let port: Int
     let baseDirectory: URL
     var loopbackOrigin: URL { URL(string: "http://127.0.0.1:\(port)")! }
-    private(set) var state: State = .stopped
+    @ObservationIgnored var onStateChange: ((State) -> Void)?
+    private(set) var state: State = .stopped {
+        didSet { if state != oldValue { onStateChange?(state) } }
+    }
     var logTail: [String] { (engineLogMessage.map { [$0] } ?? []) + serverLogTail }
     private(set) var startupLinks = T3PairingOutput()
     private(set) var lanOrigin: URL?

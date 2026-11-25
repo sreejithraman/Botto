@@ -46,6 +46,245 @@ import UIKit
         #expect(restored.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
     }
 
+    @Test(arguments: [false, true])
+    func notificationTapOpensOnlyTheAuthenticatedSpace(cold: Bool) async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invite = T3PushInvitation(host: "127.0.0.1", port: 3775, scope: scope,
+                                      deviceID: String(repeating: "a", count: 32),
+                                      expiresAt: Int(Date.now.timeIntervalSince1970) + 300,
+                                      secret: Data(repeating: 2, count: 32))
+        let installation = String(repeating: "a", count: 64)
+        let target = T3PushRegistration.Target(token: String(repeating: "12", count: 32),
+                                               bundleID: "com.sree.botto", environment: .sandbox)
+        var saved: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { target.token }),
+            send: { request, code in
+                #expect(code == invite)
+                #expect(request.scope == scope)
+                #expect(request.target?.token == target.token)
+                return .init(request.target == nil ? .removed : .registered, installationID: installation)
+            })
+        await push.enable(code: try invite.code(), scope: scope)
+        #expect(saved.first?.confirmed == true)
+
+        let storage = MemoryConnectionStorage(saved: configuration)
+        if cold {
+            let previous = AppStore(service: T3WorkspaceService(), persistence: storage.persistence)
+            await previous.start()
+            #expect(previous.flush())
+        }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: storage.persistence, t3Push: push)
+        if !cold {
+            await store.start()
+            let general = try #require(store.t3Channels.first)
+            #expect(await store.openT3Channel(general))
+        }
+        let initialOpens = cold ? [] : ["general"]
+        let revision = store.notificationNavigationRevision
+        let expiry = Int(Date.now.timeIntervalSince1970) + 300
+        let base = PushEnvelope(installationID: installation, deviceID: invite.deviceID, generation: 1,
+                                eventID: String(repeating: "b", count: 64), kind: .question, expiresAt: expiry, sealed: "")
+        let missing = try base.encrypting(.init(title: "", body: "", destination: scope.destination(spaceID: "deleted-space")),
+                                          key: invite.previewKey)
+        if cold {
+            #expect(store.t3Channels.contains { $0.isMain })
+            let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive })
+            let previous = scene.windows.first { $0.isKeyWindow }
+            let window = UIWindow(windowScene: scene)
+            window.rootViewController = UIHostingController(rootView: T3Workspace(
+                store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {}))
+            window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+            window.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(service.openedStoredThreads.isEmpty)
+            #expect(store.admitPushNotification(missing))
+            await store.start()
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(store.selectedT3ChannelID == nil)
+        } else {
+            await store.openPushNotification(missing)
+        }
+        #expect(service.openedStoredThreads == initialOpens)
+        #expect(store.t3NotificationOwnsLaunch)
+        #expect(store.notice == "This notification’s Space is no longer available.")
+
+        let destination = scope.destination(spaceID: "release")
+        let envelope = try base.encrypting(.init(title: "Release", body: "Question for you", destination: destination),
+                                           key: invite.previewKey)
+        var tampered = envelope
+        tampered.eventID = String(repeating: "c", count: 64)
+        await store.openPushNotification(tampered)
+        #expect(store.notificationNavigationRevision == revision)
+
+        let profile = try ExactID("bot-project")
+        if let screen = store.chats.screen(profile: profile) {
+            store.chats.setTranscriptVisible(true, owner: screen.owner)
+        }
+        #expect(store.shouldPresentPush(envelope))
+        await store.openPushNotification(envelope)
+        #expect(service.openedStoredThreads == initialOpens + ["release"])
+        #expect(store.selectedT3ChannelID == "release")
+        #expect(store.notificationNavigationRevision != revision)
+        #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
+        let screen = try #require(store.chats.screen(profile: profile))
+        store.chats.setTranscriptVisible(true, owner: screen.owner)
+        #expect(!store.shouldPresentPush(envelope))
+    }
+
+    @Test(arguments: [false, true])
+    func heldNotificationExplainsFailedReconnectAndYieldsToNewerNavigation(retired: Bool) async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invitation = pushInvitation(host: "192.0.2.5", scope: scope, digit: "a")
+        let installation = String(repeating: "a", count: 64)
+        let token = String(repeating: "12", count: 32)
+        var saved: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { token }),
+            send: { _, _ in .init(.registered, installationID: installation) })
+        await push.enable(code: try invitation.code(), scope: scope)
+        let envelope = PushEnvelope(installationID: installation, deviceID: invitation.deviceID, generation: 1,
+                                    eventID: String(repeating: "b", count: 64), kind: .approval,
+                                    expiresAt: invitation.expiresAt, sealed: "")
+        let alert = try envelope.encrypting(.init(title: "Release", body: "Approval requested",
+                                                  destination: scope.destination(spaceID: "release")),
+                                            key: invitation.previewKey)
+        let gate = WorkspaceGate()
+        let service = T3WorkspaceService()
+        service.connectGate = gate
+        service.connectError = .disconnected
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence,
+                             t3Push: push)
+        let revision = store.notificationNavigationRevision
+        let starting = Task { await store.start() }
+        await gate.entered()
+        defer { gate.release() }
+        await store.openPushNotification(alert)
+        #expect(store.notice == nil)
+        gate.release()
+        await starting.value
+        #expect(!store.isConnected)
+        #expect(store.notice == "Reconnect to your Mac to open the notification’s Space.")
+
+        if retired {
+            store.retireHeldNotification()
+            #expect(store.notice == nil)
+        }
+        service.connectGate = nil
+        service.connectError = nil
+        #expect(await store.connect(configuration))
+        #expect(store.notice == nil)
+        #expect(service.openedStoredThreads == (retired ? [] : ["release"]))
+        #expect((store.notificationNavigationRevision == revision) == retired)
+    }
+
+    @Test func revocationCanRecoverAtANewAddressWithoutReplacingTheDevice() async throws {
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let original = pushInvitation(host: "192.0.2.5", scope: scope, digit: "a")
+        let fresh = pushInvitation(host: "192.0.2.9", scope: scope, digit: "b")
+        let installation = String(repeating: "a", count: 64)
+        var saved: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, invitation in
+                #expect(invitation.deviceID == original.deviceID && invitation.secret == original.secret)
+                if request.target != nil { return .init(.registered, installationID: installation) }
+                #expect(request.generation == 2)
+                guard invitation.host == fresh.host else { throw T3PushRegistrationError.bridgeUnavailable }
+                return .init(.removed, installationID: installation)
+            })
+        await push.enable(code: try original.code(), scope: scope)
+        #expect(await push.disable(scope: scope))
+        #expect(push.pairing(scope) == nil && push.hasPendingRemoval(scope))
+
+        await push.updateMacAddress(code: try fresh.code(), scope: scope)
+        #expect(saved.isEmpty)
+    }
+
+    @Test func pendingRemovalDoesNotBlockFreshEnrollmentAndTokenRotation() async throws {
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let first = pushInvitation(host: "192.0.2.5", scope: scope, digit: "a")
+        let next = pushInvitation(host: "192.0.2.9", scope: scope, digit: "b")
+        let installation = String(repeating: "a", count: 64)
+        var saved: [T3PushPairing] = []
+        var retireActive = false
+        var canRemoveAtNewHost = false
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, invitation in
+                if request.target == nil {
+                    guard canRemoveAtNewHost, invitation.host == next.host else {
+                        throw T3PushRegistrationError.bridgeUnavailable
+                    }
+                    #expect(invitation.deviceID == first.deviceID)
+                    return .init(.removed, installationID: installation)
+                }
+                return .init(retireActive ? .retired : .registered, installationID: installation)
+            })
+        await push.enable(code: try first.code(), scope: scope)
+        #expect(await push.disable(scope: scope))
+        await push.enable(code: try next.code(), scope: scope)
+        #expect(push.pairing(scope)?.invitation.deviceID == next.deviceID)
+        #expect(push.hasPendingRemoval(scope))
+        canRemoveAtNewHost = true
+        await push.updateMacAddress(code: try next.code(), scope: scope)
+        #expect(!push.hasPendingRemoval(scope))
+        #expect(push.pairing(scope)?.invitation.deviceID == next.deviceID)
+
+        let token = String(repeating: "ab", count: 32)
+        await push.didRegister(token: token, scope: scope)
+        #expect(push.pairing(scope)?.registration.generation == 2)
+        #expect(push.pairing(scope)?.registration.target?.token == token)
+        retireActive = true
+        await push.didRegister(token: token, scope: scope)
+        #expect(push.pairing(scope) == nil)
+        #expect(push.notice == T3PushRegistrationError.targetRetired.localizedDescription)
+    }
+
+    @Test func forgettingT3RemovesLocalNotificationAccessForEverySavedMac() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let current = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let previous = T3PushScope(environmentID: "old-mac", projectID: "old-project")
+        var saved: [T3PushPairing] = []
+        var macsReachable = false
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, _ in
+                let installation = String(repeating: "a", count: 64)
+                if request.target == nil {
+                    guard macsReachable else { throw T3PushRegistrationError.bridgeUnavailable }
+                    return .init(.removed, installationID: installation)
+                }
+                return .init(.registered, installationID: installation)
+            })
+        await push.enable(code: try pushInvitation(host: "192.0.2.5", scope: current, digit: "a").code(), scope: current)
+        await push.enable(code: try pushInvitation(host: "192.0.2.9", scope: previous, digit: "b").code(), scope: previous)
+        let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence,
+                             t3Push: push)
+        #expect(push.hasOtherPairings(than: current))
+        await store.forgetConnectionWithPush()
+        #expect(store.configuration == nil)
+        #expect(saved.count == 2 && saved.allSatisfy { $0.registration.target == nil })
+        #expect(push.notice != nil)
+        macsReachable = true
+        await push.resume(scope: nil)
+        #expect(saved.isEmpty)
+        #expect(push.notice == nil)
+    }
+
+    private func pushInvitation(host: String, scope: T3PushScope, digit: String) -> T3PushInvitation {
+        .init(host: host, port: 3775, scope: scope, deviceID: String(repeating: digit, count: 32),
+              expiresAt: Int(Date.now.timeIntervalSince1970) + 300, secret: Data(repeating: 3, count: 32))
+    }
+
     @Test func failedT3ReplacementKeepsTheSavedWorkspaceAndLiveService() async throws {
         let original = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "original")
         let candidate = t3Configuration()
@@ -834,6 +1073,7 @@ import UIKit
 @MainActor private final class T3WorkspaceService: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
+    var connectGate: WorkspaceGate?
     var resolvedPairing: T3Connection?
     var openError: T3ServiceError?
     var canonicalThread: String?
@@ -880,6 +1120,7 @@ import UIKit
     }
 
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
+        if let connectGate { await connectGate.wait() }
         if let connectError { throw connectError }
         if let resolvedPairing {
             var connected = configuration

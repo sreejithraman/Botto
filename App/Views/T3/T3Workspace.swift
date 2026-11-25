@@ -56,16 +56,18 @@ struct T3Workspace: View {
         .background(BottoTheme.paper.ignoresSafeArea())
         .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
             BottoPage(store: store, outputs: outputs, drafts: brainDrafts, onOpenChat: { channel in
+                store.retireHeldNotification()
                 pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
                 showsBotto = false
             }, onSettings: {
+                store.retireHeldNotification()
                 pendingBottoDestination = (ObjectIdentifier(store.chats), .settings)
                 showsBotto = false
             })
         }
         .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
         .sheet(isPresented: artifactBinding) { artifactReader }
-        .task(id: launchReady) {
+        .task(id: launchMode) {
             await decideLaunch()
         }
         .task(id: mayPreload) {
@@ -77,6 +79,10 @@ struct T3Workspace: View {
             await store.loadT3ModelsIfNeeded()
         }
         .onChange(of: store.notificationNavigationRevision) { _, _ in
+            pendingBottoDestination = nil
+            showsBotto = false
+            openedOutput = nil
+            openingChat = nil
             showConversation()
             closeDrawerImmediately()
         }
@@ -149,10 +155,19 @@ struct T3Workspace: View {
         } else {
             T3FreshPage(store: store, form: freshDraft, namesSpace: launched,
                         isExposed: !conversationCovered && scenePhase == .active,
-                        onOpenChat: open, onDraft: { launched = true }, onStarted: showConversation)
+                        onOpenChat: open, onDraft: {
+                            store.retireHeldNotification()
+                            launched = true
+                        }, onStarted: showConversation)
                 .safeAreaInset(edge: .top) {
                     if !drawerOpen, let openingError {
                         InlineNotice(message: openingError) { self.openingError = nil }.padding(.horizontal, 20)
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if let notice = store.notice {
+                        InlineNotice(message: notice) { store.notice = nil }
+                            .padding(.horizontal, 16)
                     }
                 }
                 .bottoNavigationChrome()
@@ -178,6 +193,7 @@ struct T3Workspace: View {
     private func setDrawer(open: Bool) {
         if open {
             guard !rootCovered, !showsBotto, !chatCovered else { return }
+            store.retireHeldNotification()
             editing.cancel()
             BottoHaptics.shared.play(.surface)
         }
@@ -229,10 +245,26 @@ struct T3Workspace: View {
             || (store.link == .offline && !store.t3Channels.isEmpty)
     }
 
+    private enum LaunchMode { case waiting, automatic, notification }
+
+    private var launchMode: LaunchMode {
+        guard store.hasStarted else { return .waiting }
+        if store.t3NotificationOwnsLaunch { return .notification }
+        return launchReady ? .automatic : .waiting
+    }
+
     /// Open a space that needs you or is busy, otherwise the main space. The new-space page only stands in
     /// while a first connection finds the main space, or when the host can't hold one yet.
     private func decideLaunch() async {
-        guard !launched, launchReady else { return }
+        guard !launched else { return }
+        switch launchMode {
+        case .waiting: return
+        case .notification:
+            launched = true
+            if store.selectedT3ChannelID != nil { showConversation() }
+            return
+        case .automatic: break
+        }
         guard let initial = T3ChatShelf.initialSpace(store.t3Channels) else {
             launched = true
             return
@@ -245,6 +277,7 @@ struct T3Workspace: View {
 
     private func open(_ channel: T3ChannelSummary) {
         guard openingChat == nil else { return }
+        store.retireHeldNotification()
         let workspace = store.chats
         store.t3ComposerRequest = nil
         openingChat = channel.id
@@ -286,6 +319,7 @@ struct T3Workspace: View {
     }
 
     private func startFresh() {
+        store.retireHeldNotification()
         editing.cancel()
         store.t3ComposerRequest = nil
         launched = true
@@ -296,12 +330,14 @@ struct T3Workspace: View {
 
     private func presentBotto() {
         guard !rootCovered else { return }
+        store.retireHeldNotification()
         editing.cancel()
         closeDrawerImmediately()
         showsBotto = true
     }
 
     private func openFile(_ output: T3OutputFile) {
+        store.retireHeldNotification()
         editing.cancel()
         openedOutput = output
     }

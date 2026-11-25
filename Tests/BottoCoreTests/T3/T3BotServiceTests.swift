@@ -195,6 +195,42 @@ import Testing
         return .init(serverURL: origin, t3: connection)
     }
 
+    @Test func observesPushActivityInABottoSpaceWithoutOpeningItsChat() async throws {
+        let host = T3ServiceHost(existing: true, archivedChannel: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        let (activities, observed) = AsyncStream<T3PushActivity>.makeStream()
+        service.onPushActivity = { observed.yield($0) }
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await host.threadSubscriptions.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(await host.threadSubscriptions == ["existing-general"])
+        try await host.completeForPush("existing-general", id: "blocked-run", holding: true)
+        try await host.completeForPush("existing-general")
+        let activity = try #require(await firstActivity(activities))
+        #expect(activity.scope == T3PushScope(environmentID: "environment", projectID: "bot-project"))
+        #expect(activity.spaceID == "existing-general")
+        #expect(activity.id == "fixture-routine-run")
+        #expect(activity.kind == .reply)
+    }
+
+    private func firstActivity(_ activities: AsyncStream<T3PushActivity>) async -> T3PushActivity? {
+        await withTaskGroup(of: T3PushActivity?.self) { group in
+            group.addTask {
+                var iterator = activities.makeAsyncIterator()
+                return await iterator.next()
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                return nil
+            }
+            let first = await group.next()
+            group.cancelAll()
+            return first ?? nil
+        }
+    }
+
     @Test func openingAndExplicitlyVisitingDispatchReadWatermarks() async throws {
         let host = T3ServiceHost(existing: true, withholdFirstVisitReply: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
@@ -1392,6 +1428,16 @@ private actor T3ServiceHost: T3WebSocketTransport {
     func receive() async throws -> Data { try await socket.receive() }
     func close() async { await socket.close() }
     func dropSocket() { socket.incoming.finish(throwing: T3RPCError.transport) }
+
+    func completeForPush(_ thread: String, id: String = "fixture-routine-run", holding: Bool = false) throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        threads[thread]?["status"] = .string("completed")
+        threads[thread]?["latestRunId"] = .string(id)
+        threads[thread]?["latestRunCompletedAt"] = .string(formatter.string(from: .now))
+        threads[thread]?["pendingBackgroundTasks"] = holding ? .array([.object(["kind": .string("subagent")])]) : .array([])
+        try shellUpdate(thread)
+    }
 
     func endShellStream() throws { try endStream(#require(shellStream)) }
 

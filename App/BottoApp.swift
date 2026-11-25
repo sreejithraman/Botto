@@ -59,13 +59,18 @@ private struct BottoWorkspace: View {
             #endif
             .task { [store] in
                 PushNotificationBridge.onToken = { [weak store] token in
-                    Task { await store?.push.didRegister(token: token) }
+                    Task { [weak store] in
+                        guard let store else { return }
+                        await store.push.didRegister(token: token)
+                        await store.t3Push.didRegister(token: token, scope: store.t3PushScope)
+                    }
                 }
                 PushNotificationBridge.shouldPresent = { [weak store] envelope in
-                    store?.push.shouldPresent(envelope) ?? false
+                    store?.shouldPresentPush(envelope) ?? false
                 }
                 PushNotificationBridge.onTap = { [weak store] envelope in
-                    Task { await store?.openPushNotification(envelope) }
+                    guard let store, store.admitPushNotification(envelope) else { return }
+                    Task { await store.resumePushNavigation() }
                 }
                 await store.start()
             }

@@ -69,6 +69,7 @@ struct T3FreshPage: View {
             }
         }
         .onChange(of: form.message) { _, value in if !value.isEmpty { onDraft() } }
+        .onChange(of: form.name) { _, value in if !value.isEmpty { onDraft() } }
         .onChange(of: isExposed) { _, exposed in if !exposed { focused = nil } }
         .onChange(of: store.isConnected) { _, connected in if connected { connectionRequested = false } }
     }
