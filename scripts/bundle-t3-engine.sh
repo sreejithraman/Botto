@@ -10,12 +10,12 @@ read_key() { /usr/bin/plutil -extract "$1" raw -o - "$2"; }
 download() { /usr/bin/curl --fail --silent --show-error --location --retry 2 "$1" -o "$2"; }
 sha256() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
 
+usage() { die "Usage: $0 [--pin vVERSION | --stage vVERSION | --embed RESOURCES_DIRECTORY]"; }
 case "${1:-}" in
-    "")       [[ $# == 0 ]] || die "Usage: $0 [--pin vVERSION | --embed RESOURCES_DIRECTORY]" ;;
-    --pin)    [[ $# == 2 && $2 =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] ||
-                  die "Usage: $0 --pin vVERSION" ;;
-    --embed)  [[ $# == 2 && -n $2 ]] || die "Usage: $0 --embed RESOURCES_DIRECTORY" ;;
-    *)        die "Usage: $0 [--pin vVERSION | --embed RESOURCES_DIRECTORY]" ;;
+    "")              [[ $# == 0 ]] || usage ;;
+    --pin|--stage)   [[ $# == 2 && $2 =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || usage ;;
+    --embed)         [[ $# == 2 && -n $2 ]] || usage ;;
+    *)               usage ;;
 esac
 
 mkdir -p "$cache"
@@ -34,7 +34,7 @@ repository="$(read_key repository "$input")"
     die "Expected a GitHub repository URL in $pin"
 raw="https://raw.githubusercontent.com/${repository#https://github.com/}"
 
-if [[ "${1:-}" == --pin ]]; then
+if [[ "${1:-}" == --pin || "${1:-}" == --stage ]]; then
     tag="$2"
     version="${tag#v}"
     ref="refs/tags/$tag"

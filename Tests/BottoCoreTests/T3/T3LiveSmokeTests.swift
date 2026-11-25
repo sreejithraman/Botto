@@ -3,11 +3,10 @@ import Testing
 @testable import BottoCore
 
 @MainActor @Suite(.timeLimit(.minutes(1))) struct T3LiveSmokeTests {
-    @Test func pairsBootstrapsAndRunsChannelsAgainstLiveT3Server() async throws {
-        guard let pairingInput = ProcessInfo.processInfo.environment["BOTTO_TEST_T3_PAIRING_URL"],
-              !pairingInput.isEmpty else {
-            return
-        }
+    @Test(.enabled("Requires BOTTO_TEST_T3_PAIRING_URL") {
+        ProcessInfo.processInfo.environment["BOTTO_TEST_T3_PAIRING_URL"]?.isEmpty == false
+    }) func pairsBootstrapsAndRunsChannelsAgainstLiveT3Server() async throws {
+        let pairingInput = try #require(ProcessInfo.processInfo.environment["BOTTO_TEST_T3_PAIRING_URL"])
         let parsed = try T3PairingExchange.parse(pairingInput)
         let exchange = T3PairingExchange()
         var paired = try await exchange.exchangePairingCredential(
@@ -51,6 +50,9 @@ import Testing
             try await service.renameChannel(threadID: threadID, title: "smoke-renamed")
             try await service.setChannelPinned(threadID: threadID, pinned: true)
             try await service.archiveChannel(threadID: threadID, archived: true)
+        } else {
+            print("Not exercised: model-backed channel operations (no models available).")
         }
+        print("T3 live smoke completed: pairing, connection, bot bootstrap, and brain file read/write.")
     }
 }
