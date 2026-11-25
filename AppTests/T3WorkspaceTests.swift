@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftUI
 import Testing
 import UIKit
@@ -118,8 +119,14 @@ import UIKit
                                            key: invite.previewKey)
         var tampered = envelope
         tampered.eventID = String(repeating: "c", count: 64)
+        store.showsConnection = true
+        var presented = false
+        let presentation = store.bindNotificationPresentation { presented = true }
+        defer { withExtendedLifetime(presentation) {} }
         await store.openPushNotification(tampered)
         #expect(store.notificationNavigationRevision == revision)
+        #expect(store.showsConnection)
+        #expect(!presented)
 
         let profile = try ExactID("bot-project")
         if let screen = store.chats.screen(profile: profile) {
@@ -129,11 +136,36 @@ import UIKit
         await store.openPushNotification(envelope)
         #expect(service.openedStoredThreads == initialOpens + ["release"])
         #expect(store.selectedT3ChannelID == "release")
+        #expect(!store.showsConnection)
+        #expect(presented)
         #expect(store.notificationNavigationRevision != revision)
         #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
         let screen = try #require(store.chats.screen(profile: profile))
         store.chats.setTranscriptVisible(true, owner: screen.owner)
         #expect(!store.shouldPresentPush(envelope))
+    }
+
+    @Test func retiresOnlyTheOriginalNotificationKeyAfterUnlock() throws {
+        var accounts: Set<String> = ["pairing-v1", "t3-pairing-v1"]
+        var locked = true
+        func delete(_ query: [String: Any]) -> OSStatus {
+            #expect(query[kSecClass as String] as? String == kSecClassGenericPassword as String)
+            #expect(query[kSecAttrService as String] as? String == "com.sree.botto.push")
+            guard let account = query[kSecAttrAccount as String] as? String else {
+                Issue.record("Keychain deletion needs an exact account")
+                return errSecParam
+            }
+            #expect(account == "pairing-v1")
+            if locked { return errSecInteractionNotAllowed }
+            return accounts.remove(account) == nil ? errSecItemNotFound : errSecSuccess
+        }
+
+        #expect(throws: PushError.unavailableStorage) { try PushPairingVault.retireLegacyPairing(delete: delete) }
+        #expect(accounts == ["pairing-v1", "t3-pairing-v1"])
+        locked = false
+        try PushPairingVault.retireLegacyPairing(delete: delete)
+        try PushPairingVault.retireLegacyPairing(delete: delete)
+        #expect(accounts == ["t3-pairing-v1"])
     }
 
     @Test(arguments: [false, true])

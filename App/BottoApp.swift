@@ -58,6 +58,7 @@ private struct BottoWorkspace: View {
             .environment(\.scenePhase, ProcessInfo.processInfo.arguments.contains("--inactive-root-scene") ? .inactive : scenePhase)
             #endif
             .task { [store] in
+                try? PushPairingVault.retireLegacyPairing()
                 PushNotificationBridge.onToken = { [weak store] token in
                     Task { [weak store] in
                         guard let store else { return }
@@ -75,7 +76,11 @@ private struct BottoWorkspace: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { Task { await store.setActive(false) } }
-                else if phase == .active { Task { await store.setActive(true) } }
+                else if phase == .active {
+                    // A locked Keychain may have prevented deletion at launch.
+                    try? PushPairingVault.retireLegacyPairing()
+                    Task { await store.setActive(true) }
+                }
             }
             .onOpenURL { url in
                 guard T3PairingReview.isPairingLink(url.absoluteString) else { return }

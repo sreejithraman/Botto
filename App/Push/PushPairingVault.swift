@@ -16,6 +16,14 @@ enum PushPairingVault {
 
     static func saveT3(_ pairings: [T3PushPairing]) throws { try save(pairings, account: "t3-pairing-v1") }
 
+    /// Retire the original enrollment without reading it or altering the T3 account.
+    static func retireLegacyPairing(
+        delete: ([String: Any]) -> OSStatus = { SecItemDelete($0 as CFDictionary) }
+    ) throws {
+        let status = delete(query("pairing-v1"))
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw PushError.unavailableStorage }
+    }
+
     private static func load<Value: Decodable>(_ type: Value.Type, account: String) throws -> Value? {
         var request = query(account)
         request[kSecReturnData as String] = true
