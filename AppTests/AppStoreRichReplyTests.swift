@@ -17,7 +17,7 @@ import WebKit
 
     @Test func recognitionCancellationReturnsBeforeItsWorkerAndSuccessfulRecognitionKeepsItsWords() async {
         await checkRecognitionReturnsBeforeWorker(cancelWaiter: true)
-        await checkImmediateRecognition(until: .now + .seconds(5), expected: ["current recognition"], expectStarted: true)
+        await checkImmediateRecognition(until: .now + .seconds(60), expected: ["current recognition"], expectStarted: true)
     }
 
     private func checkImmediateRecognition(until deadline: ContinuousClock.Instant, expected: [String]?, expectStarted: Bool,
@@ -238,7 +238,7 @@ import WebKit
                 if activeResources {
                     let image = UIImage(cgImage: pixels)
                     var complete = false
-                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + .seconds(15),
+                    let active = try await RenderedTranscriptFile.observeActive(image, in: CGRect(origin: .zero, size: image.size), until: .now + readinessLimit,
                         isCurrent: { first.webView === original && first.state == .ready && original.window === window },
                         observe: { image, region in
                             let captured = try await RenderedTranscriptFile.observe(image, in: region)

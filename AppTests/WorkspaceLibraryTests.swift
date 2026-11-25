@@ -1021,6 +1021,7 @@ import BottoCore
     private func eventually(fileID: String = #fileID, line: Int = #line,
                             _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
         try await waitWhile(fileID: fileID, line: line) { try await !condition() }
+        return try await condition()
     }
 
     /// The Library half of `AppStore.refreshLibraryIfNeeded`, which every ordinary tab entry runs.
@@ -1049,8 +1050,9 @@ import BottoCore
 
     private func saved(_ fixture: RetainedDispute, in session: ArtifactCacheSession, disputedWithdrawn: Bool) async throws -> Bool {
         try await eventually {
-            let row = try await session.loadChats().first { $0.identity == fixture.subject }
-            return row != nil && (row?.unavailableMessageIDs?.contains(fixture.disputedID) == true) == disputedWithdrawn
+            let rows = try await session.loadChats(), row = rows.first { $0.identity == fixture.subject }
+            // Reopening reads every saved chat, so the peer's separate write must land too.
+            return rows.contains { $0.messages.contains { $0.id == fixture.peer.id } } && row != nil && (row?.unavailableMessageIDs?.contains(fixture.disputedID) == true) == disputedWithdrawn
         }
     }
 
@@ -1752,7 +1754,9 @@ import BottoCore
         expectRows(of: fixture, in: library, disputedWithdrawn: false)
         #expect(library.chats.first { $0.identity == service.first }?.unavailableMessageIDs == [absent])
         #expect(try await eventually {
-            try await session.loadChats().first { $0.identity == service.first }?.unavailableMessageIDs == [absent]
+            let rows = try await session.loadChats()
+            return rows.first { $0.identity == service.first }?.unavailableMessageIDs == [absent]
+                && rows.contains { $0.messages.contains { $0.id == fixture.peer.id } }
         })
         library.retire(); await cache.close()
         let reopened = try await reopen(fixture, book: workspace.persisted())

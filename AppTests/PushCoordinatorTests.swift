@@ -453,7 +453,8 @@ import BottoCore
         await coordinator.enable()
         service.holdNextEnrollment = true
         coordinator.updateVisibility(destination: .init(profileID: "bot", rootID: "root", storedID: "stored"))
-        await waitWhile { service.held == nil }
+        // Below the 30 s visibility lease, whose own refresh would otherwise stand in for this immediate one.
+        await waitWhile(limit: .seconds(20)) { service.held == nil }
         #expect(service.held != nil)
         coordinator.deactivate()
         let held = service.held; service.held = nil; held?.resume()
