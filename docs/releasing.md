@@ -26,30 +26,6 @@ Apple build.
 6. Update the changelog with the version, actual release date, behavior changes,
    and known limitations. State experimental push prerequisites explicitly.
 
-## Initial repository import
-
-For a source-only import into a new repository, export the reviewed tree into
-an unused directory:
-
-```sh
-python3 scripts/prepare-source-release.py --output ../Botto
-```
-
-The exporter includes tracked and nonignored source files, applies
-`.gitattributes` export exclusions, and writes a SHA-256 manifest beside the new
-directory. It refuses an existing destination, signing material, local state
-directories, symbolic links, and unexpected root files. Git history, remotes,
-ignored artifacts, and development records are excluded.
-
-The exporter is not a secret scanner. Inspect its full manifest, run a privacy
-scan, and check the final images before importing. Historical captured fixture
-names and original copyright notices may retain upstream names.
-
-Initialize the exported directory on `main`, make the initial source commit,
-and repeat the clean-clone checks. Create the `Botto` repository with Issues,
-private vulnerability reporting, and read-only Actions token permissions by
-default. Push only the reviewed source commit.
-
 ## Publish
 
 1. Confirm that hosted CI passes on the exact commit to be tagged. Local results
