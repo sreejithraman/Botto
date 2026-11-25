@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -18,14 +17,14 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     bundle = [root / "scripts/bundle-t3-engine.sh"]
-    if args.tag:
+    if args.tag is not None:
         bundle += ["--stage", args.tag]
     staged = subprocess.check_output(bundle, text=True).strip()
     stage = Path(staged.removeprefix("T3 engine staged at "))
     tag = json.loads((stage / "pin.json").read_text())["ref"].removeprefix("refs/tags/")
     engine = stage / "t3"
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-    server = None
+    supervisor = None
     interrupted = None
 
     def stop(signum, _frame):
@@ -34,7 +33,7 @@ def main():
             return
         # Defer a signal during spawn until the cleanup block owns the server.
         interrupted = signum
-        if server is not None:
+        if supervisor is not None:
             raise SystemExit(128 + signum)
 
     for sig in signals:
@@ -53,17 +52,18 @@ def main():
             (Path(directory) / ".bash_profile").write_text(f"export PATH={os.defpath}\n")
             log = Path(directory) / "server.log"
             with log.open("w") as output:
-                server = subprocess.Popen(
-                    [engine, "serve", "--host", "127.0.0.1", "--port", str(port), "--base-dir", directory],
+                supervisor = subprocess.Popen(
+                    [sys.executable, root / "scripts/dev-process.py", "run", "--grace", "5", "--",
+                     engine, "serve", "--host", "127.0.0.1", "--port", str(port), "--base-dir", directory],
                     cwd=directory, env=engine_env, stdin=subprocess.DEVNULL,
                     stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
                 )
             if interrupted is not None:
                 raise SystemExit(128 + interrupted)
-            print(f"T3 {tag}: 127.0.0.1:{port}, PID {server.pid}, data {directory}", flush=True)
+            print(f"T3 {tag}: 127.0.0.1:{port}, supervisor PID {supervisor.pid}, data {directory}", flush=True)
             deadline = time.monotonic() + 30
             while "\nPairing URL:" not in log.read_text():
-                if (status := server.poll()) is not None:
+                if (status := supervisor.poll()) is not None:
                     raise ValueError(f"t3 serve exited with status {status} before it was ready")
                 if time.monotonic() >= deadline:
                     raise ValueError("t3 serve did not print its startup pairing URL within 30 seconds")
@@ -90,14 +90,9 @@ def main():
         finally:
             for sig in signals:
                 signal.signal(sig, signal.SIG_IGN)
-            if server is not None:
-                server.terminate()
-                try:
-                    server.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    with suppress(ProcessLookupError, PermissionError):
-                        os.killpg(server.pid, signal.SIGKILL)
-                    server.wait()
+            if supervisor is not None:
+                supervisor.terminate()
+                supervisor.wait()
     print("Stopped T3 and removed disposable data.")
 
 
