@@ -48,7 +48,7 @@ struct T3PushObserver {
         self.since = since
     }
 
-    mutating func shellActivity(in shell: HermesJSON, now: Date = .now) -> T3PushActivity? {
+    mutating func shellActivity(in shell: JSONValue, now: Date = .now) -> T3PushActivity? {
         if !Self.isListed(shell) { return childRequest(in: shell, now: now) }
         guard shell["settledOverride"].text != "settled",
               (shell["activityRunStatus"].text ?? shell["status"].text) == "completed",
@@ -65,10 +65,10 @@ struct T3PushObserver {
                         date: T3ProjectionMapper.date(shell["latestRunCompletedAt"]), cancelled: false, now: now)
     }
 
-    mutating func requests(_ item: HermesJSON, in shell: HermesJSON, now: Date = .now) -> [T3PushActivity] {
+    mutating func requests(_ item: JSONValue, in shell: JSONValue, now: Date = .now) -> [T3PushActivity] {
         guard let spaceID = shell["id"].nonempty else { return [] }
         let listed = Self.isListed(shell)
-        let records: [HermesJSON]
+        let records: [JSONValue]
         switch item["kind"].text {
         case "snapshot":
             let projection = item["projection"]
@@ -102,13 +102,13 @@ struct T3PushObserver {
         }
     }
 
-    private static func isListed(_ shell: HermesJSON) -> Bool {
+    private static func isListed(_ shell: JSONValue) -> Bool {
         let lineage = shell["lineage"]
         return lineage["relationshipToParent"].text != "subagent" &&
             lineage["sideChat"].flag != true && lineage["workflowStep"].flag != true
     }
 
-    private mutating func childRequest(in shell: HermesJSON, now: Date) -> T3PushActivity? {
+    private mutating func childRequest(in shell: JSONValue, now: Date) -> T3PushActivity? {
         let request = shell["pendingRuntimeRequest"]
         guard shell["lineage"]["relationshipToParent"].text == "subagent", shell["creationSource"].text != "provider",
               shell["activityRunStatus"] != .null, let requestKind = request["kind"].text,
@@ -117,7 +117,7 @@ struct T3PushObserver {
                         cancelled: false, now: now)
     }
 
-    private mutating func activity(in shell: HermesJSON, id: String?, kind: PushEventKind, date: Date?,
+    private mutating func activity(in shell: JSONValue, id: String?, kind: PushEventKind, date: Date?,
                                    cancelled: Bool, now: Date) -> T3PushActivity? {
         let nowSeconds = Int(now.timeIntervalSince1970)
         if seen.count > 256 { seen = seen.filter { $0.value > nowSeconds } }

@@ -1,6 +1,6 @@
 # Contributing to Botto
 
-Botto focuses on a simple native experience for existing Hermes bots. Discuss
+Botto is a native Mac and iOS companion for T3 Code workspaces. Discuss
 larger features before implementing them, and keep each change focused on a
 clear user need.
 
@@ -8,11 +8,10 @@ clear user need.
 
 Use macOS with Xcode 27.1 or later and an installed iOS Simulator runtime. Open
 `Botto.xcodeproj`, select the **Botto** scheme, and run on an iPhone or iPad
-Simulator. **Explore the demo** works without a Hermes server. See
-[build and signing](docs/setup.md#build-and-signing) for app/extension
-provisioning and [connection setup](docs/setup.md#2-choose-the-native-listener)
-for real-host requirements. Signed Keychain sign-in and unsigned test runs have
-different requirements; an unsigned Simulator test pass does not prove login.
+Simulator. **Explore the demo** runs offline. For a live workspace, run
+**BottoMac** and pair iOS with its T3 host. See [connection setup](docs/setup.md)
+for the Mac, pairing, and app and extension provisioning. Use a signed device
+build to verify Keychain credential storage.
 
 The checked-in project is ready to use. Use Python 3.11
 or later for repository scripts. If you change `project.yml`, install
@@ -52,9 +51,8 @@ BOTTO_TEST_DESTINATION='platform=iOS Simulator,id=YOUR_OWNED_UUID' ./scripts/che
 It runs UI tests serially and independently checks exported file bytes. It does
 not prove physical-device behavior, signed Keychain login, or every acceptance
 recipe. Use the [verification map](docs/agents/verification/index.md) to choose
-relevant workflows and record what you observed. Live-host checks use the
-isolated [authority](docs/dev-host.md) or [sidecar](docs/dev-host-sidecar.md)
-runtimes, never a production Hermes home.
+relevant workflows and record what you observed. Use a disposable T3
+environment and workspace for live-host checks.
 
 [Local checks](docs/local-checks.md) covers optional pre-push hooks.
 [Owned process control](docs/dev-process.md) covers long-running development jobs.
@@ -71,7 +69,7 @@ runtimes, never a production Hermes home.
   and copied code in [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 Report ordinary bugs with reproduction steps, expected and observed behavior,
-app and Hermes versions, and sanitized logs when useful. Follow
+Botto and T3 versions, and sanitized logs when useful. Follow
 [Security](SECURITY.md) for sensitive reports.
 
 ## License

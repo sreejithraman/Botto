@@ -3,16 +3,13 @@
 BottoMac starts a local T3 Code Orchestrator v2 host. The phone joins that host's
 workspace over an origin you review before connecting.
 
-<a id="2-choose-the-native-listener"></a>
-
 ## Run Botto on your Mac
 
-1. Install the upstream T3 CLI and configure at least one model provider. This
-   checkout finds `t3` in standard executable locations, or uses the executable
-   path set in Botto Settings.
-2. In Xcode, open `Botto.xcodeproj` and run **BottoMac**. Finish first-run setup
-   by naming the bot and choosing its drawn face. The Main Space initially takes
-   the bot's name.
+1. In Xcode, open `Botto.xcodeproj` and run **BottoMac**. On Apple Silicon,
+   **Wake Botto** starts its bundled T3 engine. Intel builds use an installed
+   T3 CLI from Settings or PATH. See [engine bundling](t3-engine-bundling.md).
+2. Name the bot and choose its drawn face. Follow the model provider setup guide
+   if shown. The Main Space initially takes the bot's name.
 3. Choose **Pair Phone…** from the Engine menu or the Botto inspector’s
    Advanced section. Pick **LAN**
    for the same trusted network, **Tailscale** for devices on your tailnet, or

@@ -13,7 +13,11 @@ profile. Draft until each selected path runs on its target.
   shown before connecting. Enable HTTP explicitly for a trusted local route.
 - `start.pair.a2` — Pair an owned workspace that needs first-run setup.
   Choose a name and face and verify the Main Space opens with the chosen
-  name. Relaunch to check first run is skipped after setup has been saved.
+  name. Relaunch and open the other app to check first run is skipped. Repeat
+  with first run open on both devices after the Main Space exists. Finishing on
+  one device should close first run on the other and publish the name and face,
+  including when accepting the offered name. Check **Settings** from the iPhone
+  first-run screen.
 - `start.pair.a3` — Open BottoMac with no configured model provider.
   Name the bot and choose its face first. Then follow the provider guide
   and verify the new companion and Main Space.

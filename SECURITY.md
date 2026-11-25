@@ -13,7 +13,7 @@ Sanitize logs and attachments before sharing them.
 
 Reports about connection authentication, credential storage, chat isolation,
 untrusted previews, downloads, and approval handling are welcome. Include the
-Hermes version when a report crosses the client/server boundary.
+T3 engine version when a report crosses the client/server boundary.
 
 During 0.x development, security fixes target `main` and the latest release.
 Include the affected app version or commit in your report.

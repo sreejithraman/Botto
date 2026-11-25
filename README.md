@@ -14,10 +14,10 @@ answer approvals and questions, and preview the files Botto makes.
 
 ## Try it
 
-1. Open `Botto.xcodeproj` in Xcode and run **BottoMac** on your Mac. This
-   checkout uses an installed T3 CLI. Botto Settings accepts a custom executable
-   path.
-2. Set up a model provider in T3, then name your bot and choose its face in Botto.
+1. Open `Botto.xcodeproj` in Xcode and run **BottoMac**. On Apple Silicon,
+   **Wake Botto** starts the bundled T3 engine. See [engine setup](docs/t3-engine-bundling.md)
+   for Intel Macs and custom executable paths.
+2. Name your bot and choose its face, then follow the provider setup guide if shown.
 3. On the Mac, open **Pair Phone…**. On iPhone or iPad, choose **Pair with your
    Mac** and scan the code or paste the link. Pairing uses a short-lived local
    credential and requires no T3 Cloud account.
@@ -27,6 +27,9 @@ answer approvals and questions, and preview the files Botto makes.
 Botto supports macOS 15, iOS 18, and iPadOS 18 or later. See
 [setup and signing](docs/setup.md) for prerequisites and connection recovery,
 and [rich replies and files](docs/rich-content.md) for supported previews.
+
+Optional [encrypted Space notifications](docs/push-notifications.md) use
+an owner-operated relay and Apple signing.
 
 ## Development
 
