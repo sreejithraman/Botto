@@ -170,11 +170,10 @@ python3 scripts/tests/test_local_checks.py
 python3 scripts/tests/test_full_checks.py
 ```
 
-The standard-library suite creates disposable Git repos and linked worktrees,
-uses a harmless `swift` stub, and performs real pushes to local bare remotes.
-It covers command order and working directory, failing-step propagation,
-push rejection and success, hook/config preservation, repeat installation,
-and isolation from unrelated repositories and global config. It removes its
-temporary repos on completion and does not install hooks in this checkout.
+The standard-library suite creates disposable Git repos, uses a harmless
+`swift` stub, and performs real pushes to a local bare remote. It covers command
+order and working directory, failing-step propagation, and push rejection and
+success with the hook enabled. It removes its temporary repos on completion and
+does not enable hooks in this checkout.
 The full-runner suite also uses Xcode and export-readback stubs to check
 diagnostic selection and failure-status preservation without a Simulator.
