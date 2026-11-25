@@ -108,8 +108,7 @@ struct MacEngineMenu: View {
 }
 
 @MainActor
-final class MacBottoDelegate: NSObject, NSApplicationDelegate {
-    let server = LocalT3ServerManager()
+final class MacBottoDelegate: MacEngineLifecycle {
     let store = MacBottoStore()
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -127,10 +126,6 @@ final class MacBottoDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
         }
         return .terminateLater
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        server.terminateSync()
     }
 }
 

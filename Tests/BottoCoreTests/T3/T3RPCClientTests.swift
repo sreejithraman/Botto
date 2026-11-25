@@ -118,6 +118,20 @@ actor T3TestSocket: T3WebSocketTransport {
         await client.close()
     }
 
+    @Test func additiveServerFramesAndFieldsKeepTheConnectionUsable() async throws {
+        let socket = T3TestSocket()
+        let client = T3RPCClient(transport: socket)
+        var sent = socket.sent.makeAsyncIterator()
+        let result = Task { try await client.call("server.getConfig") }
+        let id = try #require(await sent.next()?["id"].text)
+        socket.push(#"{"_tag":"ServerNotice","message":"A new optional notification"}"#)
+        socket.push("""
+        {"_tag":"Exit","requestId":"\(id)","extra":true,"exit":{"_tag":"Success","value":{"cwd":"/home/host"}}}
+        """)
+        #expect(try await result.value["cwd"].text == "/home/host")
+        await client.close()
+    }
+
     @Test func heartbeatTimesOutWithoutPongAndBearerFallbackUsesAHeader() async throws {
         let origin = try #require(URL(string: "http://host.example:9000"))
         let request = try T3RPCClient.socketRequest(origin: origin, ticket: nil, accessToken: "token")

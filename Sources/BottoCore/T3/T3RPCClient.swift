@@ -221,7 +221,7 @@ actor T3RPCClient {
 
     private func receive(_ data: Data) async throws {
         guard let frame = try? JSONDecoder().decode(HermesJSON.self, from: data),
-              let tag = frame["_tag"].text else { throw T3RPCError.invalidFrame }
+              let tag = frame["_tag"].text, !tag.isEmpty else { throw T3RPCError.invalidFrame }
         switch tag {
         case "Ping": try await send(.object(["_tag": .string("Pong")]))
         case "Pong": awaitingPong = false
@@ -252,7 +252,7 @@ actor T3RPCClient {
             case "Failure": request.continuation.finish(throwing: Self.remoteError(exit["cause"]))
             default: request.continuation.finish(throwing: T3RPCError.invalidFrame)
             }
-        default: throw T3RPCError.invalidFrame
+        default: return // Additive server notifications do not invalidate outstanding requests.
         }
     }
 

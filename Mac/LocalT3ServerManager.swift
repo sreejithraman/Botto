@@ -45,6 +45,67 @@ enum T3RouteFormatter {
     }
 }
 
+struct T3EngineExecutable {
+    enum Source { case settings, bundled, path }
+
+    struct Pin: Decodable {
+        struct Runtime: Decodable {
+            let name: String
+            let version: String
+        }
+
+        let version: String
+        let commit: String
+        let runtime: Runtime
+    }
+
+    let url: URL
+    let source: Source
+    let pin: Pin?
+
+    var logMessage: String {
+        switch source {
+        case .settings: "T3 engine: Settings override at \(url.path)"
+        case .path: "T3 engine: PATH fallback at \(url.path)"
+        case .bundled:
+            if let pin {
+                "T3 engine: bundled v\(pin.version) (\(pin.commit.prefix(12)), \(pin.runtime.name) \(pin.runtime.version))"
+            } else {
+                "T3 engine: bundled at \(url.path) (pin metadata unavailable)"
+            }
+        }
+    }
+
+    static func resolve(override: String, resources: URL?, searchDirectories: [String]) throws -> Self {
+        let custom = override.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty {
+            let path = (custom as NSString).expandingTildeInPath
+            guard path.hasPrefix("/") else { throw T3LocalError.invalidExecutable }
+            let executable = URL(fileURLWithPath: path)
+            guard isExecutable(executable) else { throw T3LocalError.invalidExecutable }
+            return Self(url: executable, source: .settings, pin: nil)
+        }
+        if let directory = resources?.appending(path: "T3Engine"),
+           let executable = find("t3", in: [directory.path]) {
+            let pin = (try? Data(contentsOf: directory.appending(path: "pin.json")))
+                .flatMap { try? JSONDecoder().decode(Pin.self, from: $0) }
+            return Self(url: executable, source: .bundled, pin: pin)
+        }
+        guard let executable = find("t3", in: searchDirectories) else { throw T3LocalError.executableNotFound }
+        return Self(url: executable, source: .path, pin: nil)
+    }
+
+    static func find(_ name: String, in directories: [String]) -> URL? {
+        directories.lazy.map { URL(fileURLWithPath: $0, isDirectory: true).appending(path: name) }
+            .first(where: isExecutable)
+    }
+
+    private static func isExecutable(_ url: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: url.path) &&
+            (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+}
+
 @MainActor @Observable
 final class LocalT3ServerManager {
     enum State: Equatable {
@@ -55,7 +116,7 @@ final class LocalT3ServerManager {
     let baseDirectory: URL
     var loopbackOrigin: URL { URL(string: "http://127.0.0.1:\(port)")! }
     private(set) var state: State = .stopped
-    private(set) var logTail: [String] = []
+    var logTail: [String] { (engineLogMessage.map { [$0] } ?? []) + serverLogTail }
     private(set) var startupLinks = T3PairingOutput()
     private(set) var lanOrigin: URL?
     private(set) var tailscaleOrigin: URL?
@@ -64,6 +125,8 @@ final class LocalT3ServerManager {
     }
 
     private let defaults: UserDefaults
+    private var engineLogMessage: String?
+    private var serverLogTail: [String] = []
     private var server: T3Command?
     private var pairingCommand: T3Command?
     private var tailscaleCommand: T3Command?
@@ -79,14 +142,23 @@ final class LocalT3ServerManager {
 
     func start() {
         guard server == nil else { return }
-        logTail.removeAll()
+        engineLogMessage = nil
+        serverLogTail.removeAll()
         startupLinks = T3PairingOutput()
         state = .starting
         do {
-            let executable = try t3Executable()
+            #if arch(arm64)
+            let resources = Bundle.main.resourceURL
+            #else
+            let resources: URL? = nil
+            #endif
+            let engine = try T3EngineExecutable.resolve(
+                override: executableOverride, resources: resources, searchDirectories: Self.executableDirectories
+            )
+            engineLogMessage = engine.logMessage
             try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
-            let command = try T3Command(executable: executable, arguments: [
+            let command = try T3Command(executable: engine.url, arguments: [
                 "serve", "--port", String(port), "--lan", "--base-dir", baseDirectory.path
             ], directory: baseDirectory)
             server = command
@@ -140,7 +212,7 @@ final class LocalT3ServerManager {
     func mintPairingLink() async throws -> String {
         guard state == .running, let server else { throw T3LocalError.serverStopped }
         guard pairingCommand == nil else { throw T3LocalError.pairingInProgress }
-        let command = try T3Command(executable: server.process.executableURL!, arguments: [
+        let command = try T3Command(executable: server.executable, arguments: [
             "pair", "--base-dir", baseDirectory.path
         ], directory: baseDirectory)
         pairingCommand = command
@@ -149,7 +221,7 @@ final class LocalT3ServerManager {
         let finished = await command.collect(timeout: .seconds(12)) { links.consume($0) }
         try Task.checkCancellation()
         guard self.server === server, state == .running else { throw T3LocalError.serverStopped }
-        guard finished, command.process.terminationStatus == 0,
+        guard finished, command.terminationStatus == 0,
               let url = links.pairingURL, T3RouteFormatter.pairingURL(from: url, routeOrigin: loopbackOrigin) != nil else {
             throw T3LocalError.pairingFailed
         }
@@ -162,7 +234,7 @@ final class LocalT3ServerManager {
         lanOrigin = (lan.first { $0.interface == "en0" } ?? lan.first).flatMap { origin(for: $0.address) }
         tailscaleOrigin = addresses.first { Self.isTailscaleIP($0.address) }.flatMap { origin(for: $0.address) }
         guard tailscaleOrigin == nil, tailscaleCommand == nil,
-              let executable = Self.findExecutable("tailscale"),
+              let executable = T3EngineExecutable.find("tailscale", in: Self.executableDirectories),
               let command = try? T3Command(executable: executable, arguments: ["ip", "-4"]) else { return }
         tailscaleCommand = command
         defer { tailscaleCommand = nil }
@@ -170,7 +242,7 @@ final class LocalT3ServerManager {
         let finished = await command.collect(timeout: .seconds(4)) { line in
             if Self.isTailscaleIP(line) { tailnetAddress = line }
         }
-        if finished, !Task.isCancelled, command.process.terminationStatus == 0 {
+        if finished, !Task.isCancelled, command.terminationStatus == 0 {
             tailscaleOrigin = tailnetAddress.flatMap { origin(for: $0) }
         }
     }
@@ -190,32 +262,14 @@ final class LocalT3ServerManager {
         guard !normalized.isEmpty, !normalized.hasPrefix("token:"), !normalized.hasPrefix("pairing token:"),
               !normalized.hasPrefix("pairing code:"), !normalized.contains("#token="),
               !line.contains(where: { " ▀▄█".dropFirst().contains($0) }) else { return }
-        logTail.append(String(line.prefix(1_000)))
-        if logTail.count > 100 { logTail.removeFirst() }
-    }
-
-    private func t3Executable() throws -> URL {
-        let override = executableOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !override.isEmpty {
-            let path = (override as NSString).expandingTildeInPath
-            guard path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else {
-                throw T3LocalError.invalidExecutable
-            }
-            return URL(fileURLWithPath: path)
-        }
-        guard let executable = Self.findExecutable("t3") else { throw T3LocalError.executableNotFound }
-        return executable
+        serverLogTail.append(String(line.prefix(1_000)))
+        if serverLogTail.count > 100 { serverLogTail.removeFirst() }
     }
 
     fileprivate static var executableDirectories: [String] {
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         return path.split(separator: ":").map(String.init).filter { $0.hasPrefix("/") } +
             ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-    }
-
-    private static func findExecutable(_ name: String) -> URL? {
-        executableDirectories.lazy.map { URL(fileURLWithPath: $0, isDirectory: true).appending(path: name) }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
     private func origin(for address: String) -> URL? { URL(string: "http://\(address):\(port)") }
@@ -244,12 +298,12 @@ final class LocalT3ServerManager {
     }
 }
 
-private enum T3LocalError: LocalizedError {
+enum T3LocalError: LocalizedError {
     case executableNotFound, invalidExecutable, serverStopped, pairingInProgress, pairingFailed
 
     var errorDescription: String? {
         switch self {
-        case .executableNotFound: "Couldn’t find t3. Install the T3 CLI or set its path in Botto Settings."
+        case .executableNotFound: "Couldn’t find the bundled T3 engine or a t3 executable on PATH. Set the T3 executable in Botto Settings."
         case .invalidExecutable: "The t3 path in Botto Settings must point to an executable file."
         case .serverStopped: "Start the local T3 server first."
         case .pairingInProgress: "A pairing link is already being generated. Try again in a moment."
@@ -260,37 +314,29 @@ private enum T3LocalError: LocalizedError {
 
 @MainActor
 private final class T3Command {
-    let process = Process()
+    let executable: URL
     let lines: AsyncStream<String>
     let exitCodes: AsyncStream<Int32>
+    private(set) var terminationStatus: Int32?
     private let output: AsyncStream<String>.Continuation
+    private let reportExit: AsyncStream<Int32>.Continuation
+    private let pid: pid_t
 
     init(executable: URL, arguments: [String], directory: URL? = nil) throws {
+        self.executable = executable
         let pipe = Pipe()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = LocalT3ServerManager.executableDirectories.joined(separator: ":")
         environment["NO_COLOR"] = "1"
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = pipe
-        process.standardError = pipe
 
         let (lines, continuation) = AsyncStream.makeStream(of: String.self)
         self.lines = lines
         output = continuation
-        let (exitCodes, reportExit) = AsyncStream.makeStream(of: Int32.self)
-        self.exitCodes = exitCodes
-        process.terminationHandler = { process in
-            reportExit.yield(process.terminationStatus)
-            reportExit.finish()
-        }
-        try process.run()
+        (exitCodes, reportExit) = AsyncStream.makeStream(of: Int32.self)
+        pid = try Self.spawn(executable, arguments: arguments, directory: directory, environment: environment, pipe: pipe)
         try? pipe.fileHandleForWriting.close()
         let reader = pipe.fileHandleForReading
-        DispatchQueue.global(qos: .utility).async { [process] in
+        DispatchQueue.global(qos: .utility).async {
             var pending = Data()
             while true {
                 let chunk = reader.availableData
@@ -302,8 +348,13 @@ private final class T3Command {
                 }
             }
             if !pending.isEmpty { continuation.yield(String(decoding: pending, as: UTF8.self)) }
-            process.waitUntilExit()
             continuation.finish()
+        }
+        DispatchQueue.global(qos: .utility).async { [self, pid] in
+            // Observe the leader even when a descendant keeps the output pipe open.
+            var info = siginfo_t()
+            while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1, errno == EINTR {}
+            Task { @MainActor in reapGroup() }
         }
     }
 
@@ -316,22 +367,82 @@ private final class T3Command {
         defer { deadline.cancel() }
         return await withTaskCancellationHandler {
             for await line in lines { consume(line) }
-            return !process.isRunning
+            var codes = exitCodes.makeAsyncIterator()
+            return await codes.next() != nil
         } onCancel: {
             Task { @MainActor in self.stop() }
         }
     }
 
     func stop() {
-        defer { output.finish() }
-        guard process.isRunning else { return }
-        let pid = process.processIdentifier
-        let target = getpgid(pid) == pid ? -pid : pid
-        kill(target, SIGTERM)
+        reapGroup()
+        output.finish()
+    }
+
+    private func reapGroup() {
+        guard terminationStatus == nil else { return }
+        // Keep the leader unreaped so its group ID cannot be reused during escalation.
+        let group = -pid
+        kill(group, SIGTERM)
         let deadline = ContinuousClock.now + .seconds(1)
-        while process.isRunning, ContinuousClock.now < deadline { usleep(20_000) }
-        if process.isRunning { kill(target, SIGKILL) }
-        process.waitUntilExit()
+        while kill(group, 0) == 0, ContinuousClock.now < deadline { usleep(20_000) }
+        kill(group, SIGKILL)
+
+        var status: Int32 = 0
+        var waited: pid_t
+        repeat { waited = waitpid(pid, &status, 0) } while waited == -1 && errno == EINTR
+        let terminatingSignal = status & 0x7f
+        let code = terminatingSignal == 0 ? (status >> 8) & 0xff : terminatingSignal
+        terminationStatus = waited == pid ? code : -1
+        reportExit.yield(waited == pid ? code : -1)
+        reportExit.finish()
+    }
+
+    private static func spawn(_ executable: URL, arguments: [String], directory: URL?,
+                              environment: [String: String], pipe: Pipe) throws -> pid_t {
+        var attributes: posix_spawnattr_t?
+        try check(posix_spawnattr_init(&attributes))
+        defer { posix_spawnattr_destroy(&attributes) }
+        try check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)))
+        try check(posix_spawnattr_setpgroup(&attributes, 0))
+
+        var actions: posix_spawn_file_actions_t?
+        try check(posix_spawn_file_actions_init(&actions))
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        if let directory {
+            if #available(macOS 26, *) {
+                try check(posix_spawn_file_actions_addchdir(&actions, directory.path))
+            } else {
+                try check(posix_spawn_file_actions_addchdir_np(&actions, directory.path))
+            }
+        }
+        let writer = pipe.fileHandleForWriting.fileDescriptor
+        try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
+        try check(posix_spawn_file_actions_adddup2(&actions, writer, STDOUT_FILENO))
+        try check(posix_spawn_file_actions_adddup2(&actions, writer, STDERR_FILENO))
+
+        var pid: pid_t = 0
+        try withCStringArray([executable.path] + arguments) { argv in
+            try withCStringArray(environment.map { "\($0.key)=\($0.value)" }) { envp in
+                try check(posix_spawn(&pid, executable.path, &actions, &attributes, argv, envp))
+            }
+        }
+        return pid
+    }
+
+    private static func withCStringArray(_ strings: [String],
+                                        _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) throws -> Void) throws {
+        var pointers = strings.map { strdup($0) }
+        defer { pointers.forEach { free($0) } }
+        guard !pointers.contains(nil) else { throw POSIXError(.ENOMEM) }
+        pointers.append(nil)
+        try pointers.withUnsafeMutableBufferPointer { try body($0.baseAddress!) }
+    }
+
+    private static func check(_ code: Int32) throws {
+        if code != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
     }
 }
 

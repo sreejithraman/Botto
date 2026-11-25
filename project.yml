@@ -124,6 +124,16 @@ targets:
     sources: [Mac]
     dependencies:
       - package: BottoCore
+    postBuildScripts:
+      - name: Embed T3 Engine
+        basedOnDependencyAnalysis: false
+        script: |
+          case " $ARCHS " in
+            *" arm64 "*)
+              "$SRCROOT/scripts/bundle-t3-engine.sh" \
+                --embed "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+              ;;
+          esac
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac"
@@ -131,6 +141,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Botto
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Botto uses the local network to connect to its T3 server and pair phones.
         ENABLE_APP_SANDBOX: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         MARKETING_VERSION: "0.1.0"
