@@ -1059,13 +1059,21 @@ import BottoCore
 
     @Test(arguments: [false, true])
     func disputedInboxReadWithdrawsRetainedRowsUntilACoherentRead(reopenWithBook: Bool) async throws {
-        let fixture = RetainedDispute(), service = fixture.service
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let fixture = RetainedDispute()
+        try await LibraryCacheFixture.run(root: fixture.root) { cache in
+            try await checkDisputedInboxRead(reopenWithBook: reopenWithBook, fixture: fixture, cache: cache)
+        }
+    }
+
+    private func checkDisputedInboxRead(reopenWithBook: Bool, fixture: RetainedDispute,
+                                         cache: LibraryCacheFixture) async throws {
+        let service = fixture.service
         fixture.prepare()
         let book = savedBook(service)
         let chat = try #require(book.records.first { $0.binding.identity == service.first }?.id)
-        let cache = ArtifactCache(root: fixture.root), session = cache.session(scope: fixture.scope)
+        let session = cache.openCache().session(scope: fixture.scope)
         let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
         library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
         let item = try #require(artifact(fixture.disputed.id, in: library))
         _ = try await library.download(item)
@@ -1075,7 +1083,7 @@ import BottoCore
         try #require(searchFinds("Disputed needle", in: library))
 
         let workspace = dispute(on: fixture, library: library, book: book)
-        defer { workspace.retireWorkspace() }
+        defer { if !library.isRetired { workspace.retireWorkspace() } }
         service.previewFailure = fixture.failure
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
         #expect(service.previewReadCount > 0)
@@ -1092,16 +1100,17 @@ import BottoCore
         _ = try await library.download(try #require(artifact(fixture.peer.id, in: library)))
         #expect(service.downloadCount == downloads)
 
-        let saved = try await eventually {
+        let saved = try await waitForLibraryFixture("The inbox dispute reached saved Library metadata") {
             try await session.loadChats().first { $0.identity == service.first }?.unavailableMessageIDs?.contains(fixture.disputedID) == true
         }
         #expect(saved, "The dispute must reach durable Library metadata")
-        library.retire(); await cache.close()
+        let retainedBook = workspace.persisted()
+        workspace.retireWorkspace()
+        library.retire(); await cache.closeCache()
 
-        let coldCache = ArtifactCache(root: fixture.root)
-        let cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: fixture.scope))
+        let cold = WorkspaceLibrary(service: service, cache: cache.openCache().session(scope: fixture.scope))
         defer { cold.retire() }
-        let reopened = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
+        let reopened = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(retainedBook))
         if reopenWithBook { cold.seed(book: reopened, bots: service.profiles) }
         await cold.restore()
         #expect(!searchFinds("Disputed needle", in: cold))
@@ -1124,11 +1133,12 @@ import BottoCore
         service.previewHasEarlierMessages = false
         await reopenedWorkspace.refreshInboxHistory(profiles: [service.first.profile])
         #expect(reopenedWorkspace.persisted().record(chat)?.transcript?.unavailableMessageIDs?.contains(fixture.disputedID) != true)
-        #expect(await eventually { artifact(fixture.disputed.id, in: cold) != nil }, "A coherent exhaustive read recovers the row")
+        #expect(try await waitForLibraryFixture("The coherent inbox read recovered the disputed artifact", diagnostics: {
+            "chats=\(cold.chats.count) projectionBatches=\(cold.indexingMetrics.batches)"
+        }) { artifact(fixture.disputed.id, in: cold) != nil }, "A coherent exhaustive read recovers the row")
         #expect(searchFinds("Disputed needle", in: cold))
         _ = try await cold.download(try #require(artifact(fixture.disputed.id, in: cold)))
         #expect(service.downloadCount == downloads, "Recovery reuses the original captured for the same revision")
-        await coldCache.close()
     }
 
     @Test func disputedInboxReadBeforeRestorationKeepsSavedRowsQuarantined() async throws {
@@ -6763,36 +6773,6 @@ import BottoCore
         let downloads = service.downloadCount
         await #expect(throws: (any Error).self) { _ = try await oldLibrary.download(oldArtifact) }
         #expect(service.downloadCount == downloads)
-    }
-}
-
-/// Owns one database handle at a time across the warm and cold phases of a test.
-@MainActor private final class LibraryCacheFixture {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    private var cache: ArtifactCache?
-
-    func openCache() -> ArtifactCache {
-        precondition(cache == nil)
-        let cache = ArtifactCache(root: root)
-        self.cache = cache
-        return cache
-    }
-
-    func closeCache() async {
-        await cache?.close()
-        cache = nil
-    }
-
-    static func run(_ test: (LibraryCacheFixture) async throws -> Void) async throws {
-        let fixture = LibraryCacheFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        do {
-            try await test(fixture)
-        } catch {
-            await fixture.closeCache()
-            throw error
-        }
-        await fixture.closeCache()
     }
 }
 

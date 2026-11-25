@@ -1,5 +1,6 @@
 import Foundation
 import Dispatch
+import Testing
 import BottoCore
 @testable import Botto
 
@@ -138,14 +139,61 @@ import BottoCore
     }
 }
 
-@MainActor func waitForLibraryFixture(timeout: Duration = .seconds(30),
+@MainActor func waitForLibraryFixture(_ label: String? = nil, timeout: Duration = .seconds(30),
+                                     diagnostics: () -> String = { "" },
                                      _ ready: () async throws -> Bool) async throws -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while try await !ready() {
-        guard ContinuousClock.now < deadline else { return false }
+    let started = ContinuousClock.now, deadline = started + timeout
+    var previousPoll = started, maximumGap = Duration.zero, polls = 0
+    while true {
+        let settled = try await ready()
+        let now = ContinuousClock.now
+        maximumGap = max(maximumGap, previousPoll.duration(to: now))
+        polls += 1
+        if settled || now >= deadline {
+            let elapsed = started.duration(to: now)
+            if let label, !settled || elapsed > .seconds(5) {
+                Attachment.record("\(label)\nsettled=\(settled) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())",
+                                  named: "library-fixture-wait.txt")
+            }
+            return settled
+        }
+        previousPoll = now
         try await Task.sleep(for: .milliseconds(20))
     }
-    return true
+}
+
+/// Owns one database handle at a time across the warm and cold phases of a test.
+@MainActor final class LibraryCacheFixture {
+    let root: URL
+    private var cache: ArtifactCache?
+
+    private init(root: URL?) {
+        self.root = root ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    }
+
+    func openCache(afterChatLoad: (@Sendable () async throws -> Void)? = nil) -> ArtifactCache {
+        precondition(cache == nil)
+        let cache = ArtifactCache(root: root, afterChatLoad: afterChatLoad)
+        self.cache = cache
+        return cache
+    }
+
+    func closeCache() async {
+        await cache?.close()
+        cache = nil
+    }
+
+    static func run(root: URL? = nil, _ test: (LibraryCacheFixture) async throws -> Void) async throws {
+        let fixture = LibraryCacheFixture(root: root)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        do {
+            try await test(fixture)
+        } catch {
+            await fixture.closeCache()
+            throw error
+        }
+        await fixture.closeCache()
+    }
 }
 
 nonisolated final class CaptureCommitGate: @unchecked Sendable {

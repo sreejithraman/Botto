@@ -1000,7 +1000,9 @@ import UIKit
         let service = T3WorkspaceService(fresh: true, mainSpace: early)
         // Real answers are slow enough for launch to see each half-loaded step.
         service.latency = .milliseconds(150)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence,
+            waitForBotInvalidationInterval: { try await Task.sleep(for: .milliseconds(10)) })
+        defer { store.forgetConnection() }
 
         try await withHosted(T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})) { window in
             await store.start()

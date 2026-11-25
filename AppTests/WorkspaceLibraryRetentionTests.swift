@@ -63,21 +63,26 @@ import BottoCore
 
     @Test(arguments: ["failed-page", "incomplete-page", "repeat-refresh"], [false, true])
     func repeatedPartialPagesCannotResolveRevisionConflicts(sequence: String, working: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkRepeatedPartialPages(sequence: sequence, working: working, fixture: fixture)
+        }
+    }
+
+    private func checkRepeatedPartialPages(sequence: String, working: Bool, fixture: LibraryCacheFixture) async throws {
         let service = RetainedLibraryService(), source = service.source("main")
         let current = service.message("reply", text: "Current reply without the deleted file", at: 20)
         let stale = service.message("reply", text: "Deleted appendix needle\nMEDIA:/deleted.txt", at: 20)
         let resolved = service.message("reply", text: "Approved current reply\nMEDIA:/approved.txt", at: 20)
         let rowID = Data(current.id.utf8), absentDispute = Data("absent-dispute".utf8)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warm = warmCache.session(scope: scope)
+        let warm = fixture.openCache().session(scope: scope)
         try await warm.upsert(.init(identity: source, botName: "Helper", title: "Main", messages: [current],
             updatedAt: current.timestamp, coverage: .partial, summary: nil, headFingerprint: nil,
             unavailableMessageIDs: [absentDispute]))
-        await warmCache.close()
-        let control = SavedIndexReadControl(), cache = ArtifactCache(root: root, afterChatLoad: { try await control.load() })
+        await fixture.closeCache()
+        let control = SavedIndexReadControl(), cache = fixture.openCache(afterChatLoad: { try await control.load() })
         let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
         library.setOnline(true); library.observeBots(service.profiles, evidence: .observed); await library.restore()
         library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [current], isWorking: working), title: "Main", evidence: .read(startedAt: .now, observedSource: source))
@@ -94,16 +99,17 @@ import BottoCore
         #expect(library.chats.first?.messages.contains { $0.id == stale.id } == false)
         #expect(LibrarySearchResults(query: "Deleted appendix needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(library.artifacts.isEmpty)
-        let savedDeadline = ContinuousClock.now + .seconds(5)
-        while try await session.loadChats().first?.unverifiedMessageIDs?.contains(rowID) != true,
-              ContinuousClock.now < savedDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The partial-page conflict reached saved metadata") {
+            try await session.loadChats().first?.unverifiedMessageIDs?.contains(rowID) == true
+        }
         let saved = try #require(try await session.loadChats().first)
         #expect(saved.unverifiedMessageIDs?.contains(rowID) == true)
         #expect(!saved.messages.contains { $0.id == stale.id })
         #expect(saved.unavailableMessageIDs?.contains(absentDispute) == true)
-        library.retire(); await cache.close()
-        let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+        library.retire(); await fixture.closeCache()
+        let coldSession = fixture.openCache().session(scope: scope)
         let cold = WorkspaceLibrary(service: service, cache: coldSession)
+        defer { cold.retire() }
         await cold.restore(); cold.setOnline(true)
         service.failAtOffset = nil
         service.pages[source] = [0: .init(messages: [stale], nextOffset: nil, isComplete: false)]
@@ -113,23 +119,24 @@ import BottoCore
         #expect(LibrarySearchResults(query: "Deleted appendix needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
         cold.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [resolved]),
             title: "Main", evidence: service.coherentRead(source, messages: [resolved]))
-        let resolvedDeadline = ContinuousClock.now + .seconds(5)
-        while cold.artifacts.isEmpty, ContinuousClock.now < resolvedDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The coherent cold read projected an artifact", diagnostics: {
+            "chats=\(cold.chats.count) projectionBatches=\(cold.indexingMetrics.batches)"
+        }) { !cold.artifacts.isEmpty }
         #expect(cold.artifacts.contains { $0.artifact.title == "approved.txt" })
-        let finalDeadline = ContinuousClock.now + .seconds(5)
-        while try await coldSession.loadChats().first?.messages.first?.text != resolved.text,
-              ContinuousClock.now < finalDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The coherent cold read persisted the resolved row") {
+            try await coldSession.loadChats().first?.messages.first?.text == resolved.text
+        }
         let final = try #require(try await coldSession.loadChats().first)
         #expect(final.messages.first?.text == resolved.text)
         #expect(final.unverifiedMessageIDs?.contains(rowID) != true)
         #expect(final.unavailableMessageIDs?.contains(absentDispute) == true)
-        cold.retire(); await coldCache.close()
-        let reopenedCache = ArtifactCache(root: root), reopened = WorkspaceLibrary(service: service, cache: reopenedCache.session(scope: scope))
+        cold.retire(); await fixture.closeCache()
+        let reopened = WorkspaceLibrary(service: service, cache: fixture.openCache().session(scope: scope))
+        defer { reopened.retire() }
         await reopened.restore()
         #expect(reopened.artifacts.contains { $0.artifact.title == "approved.txt" })
         #expect(reopened.chats.first?.unavailableMessageIDs.contains(absentDispute) == true)
         #expect(LibrarySearchResults(query: "Deleted appendix needle", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty)
-        reopened.retire(); await reopenedCache.close()
     }
 
     @Test(arguments: ["rejected", "hidden", "oversized"], [false, true])
@@ -192,48 +199,56 @@ import BottoCore
 
     @Test(arguments: [false, true], [false, true])
     func hintFirstRecoveryKeepsRevisionUncertaintySeparate(disputed: Bool, hasEarlier: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkHintFirstRecovery(disputed: disputed, hasEarlier: hasEarlier, fixture: fixture)
+        }
+    }
+
+    private func checkHintFirstRecovery(disputed: Bool, hasEarlier: Bool, fixture: LibraryCacheFixture) async throws {
         let service = RetainedLibraryService(), source = service.source("main")
         let original = service.message("row", text: "Version A\nMEDIA:/same.txt", at: 20)
         let edited = service.message("row", text: "Version B\nMEDIA:/same.txt", at: 20)
         let rowID = Data(original.id.utf8)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warm = warmCache.session(scope: scope)
+        let warm = fixture.openCache().session(scope: scope)
         try await warm.upsert(.init(identity: source, botName: "Helper", title: "Main", messages: [original],
             updatedAt: original.timestamp, coverage: .partial, summary: nil, headFingerprint: nil,
             unavailableMessageIDs: disputed ? [rowID] : nil))
         try warm.invalidateMetadata([(profile: source.profile, root: source.root, revision: UUID())])
-        await warmCache.close()
-        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        await fixture.closeCache()
+        let session = fixture.openCache().session(scope: scope)
         let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
         library.observeBots(service.profiles, evidence: .observed); await library.restore()
         #expect(library.artifacts.isEmpty)
         library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
             messages: [edited], hasEarlierMessages: hasEarlier), title: "Main", evidence: .read(startedAt: .now, observedSource: source))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while library.indexingMetrics.processingDuration == .zero, ContinuousClock.now < deadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The accepted revision finished processing", diagnostics: {
+            "artifacts=\(library.artifacts.count) projectionBatches=\(library.indexingMetrics.batches)"
+        }) { library.indexingMetrics.processingDuration != .zero }
         #expect(library.artifacts.contains { $0.artifact.messageID == edited.id } == !disputed)
         #expect(LibrarySearchResults(query: "Version B", bots: [], chats: library.chats, artifacts: []).messages.isEmpty == disputed)
         #expect(library.chats.first?.unavailableMessageIDs.contains(rowID) == disputed)
-        let savedDeadline = ContinuousClock.now + .seconds(5)
-        while try await session.metadataRecovery().contains(source), ContinuousClock.now < savedDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("Recovery cleared the saved metadata guard") {
+            try await !session.metadataRecovery().contains(source)
+        }
         #expect(try await !session.metadataRecovery().contains(source))
         let saved = try #require(try await session.loadChats().first)
         #expect(saved.messages.contains { $0.text == edited.text } == !disputed)
         #expect((saved.unavailableMessageIDs?.contains(rowID) == true) == disputed)
-        library.retire(); await cache.close()
-        let reopenedCache = ArtifactCache(root: root), reopenedSession = reopenedCache.session(scope: scope)
+        library.retire(); await fixture.closeCache()
+        let reopenedSession = fixture.openCache().session(scope: scope)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedSession)
+        defer { reopened.retire() }
         await reopened.restore()
         #expect(reopened.artifacts.contains { $0.artifact.messageID == edited.id } == !disputed)
         #expect(LibrarySearchResults(query: "Version B", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty == disputed)
         reopened.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper", messages: [edited]),
             title: "Main", evidence: service.coherentRead(source, messages: [edited]))
-        let resolved = ContinuousClock.now + .seconds(5)
-        while !reopened.artifacts.contains(where: { $0.artifact.messageID == edited.id }), ContinuousClock.now < resolved { await Task.yield() }
+        _ = try await waitForLibraryFixture("The coherent reopened read projected the edited artifact") {
+            reopened.artifacts.contains { $0.artifact.messageID == edited.id }
+        }
         #expect(reopened.artifacts.contains { $0.artifact.messageID == edited.id })
-        reopened.retire(); await reopenedCache.close()
     }
 
     @Test func liveAppendKeepsPreviouslyVerifiedRowsVisible() async throws {
@@ -626,30 +641,38 @@ import BottoCore
 
     @Test(arguments: [true, false])
     func partialStartupReadsCannotOverrideSavedDisputes(incremental: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkPartialStartupReads(incremental: incremental, fixture: fixture)
+        }
+    }
+
+    private func checkPartialStartupReads(incremental: Bool, fixture: LibraryCacheFixture) async throws {
         let service = RetainedLibraryService(), source = service.source("main")
         let disputed = service.message("duplicate", text: "Disputed needle\nMEDIA:/disputed.txt", at: 20)
         let safe = service.message("safe", text: "Old safe revision\nMEDIA:/safe.txt", at: 30)
         let disputedID = Data(disputed.id.utf8)
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil,
             username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
+        let warmSession = fixture.openCache().session(scope: scope)
         try await warmSession.upsert(.init(identity: source, botName: "Helper", title: "Main",
             messages: [safe], updatedAt: safe.timestamp, coverage: .partial, summary: nil, headFingerprint: nil,
             unavailableMessageIDs: [disputedID]))
-        await warmCache.close()
+        await fixture.closeCache()
         var book = ConversationBook()
         let id = book.merge(service.summary(source, at: 30))
         book.cache(Conversation(id: "main", storedID: "main", profileID: "helper", messages: [disputed, safe]), for: id)
-        let gate = StoreTestBarrier(), pause = FirstProjectionPause()
+        let gate = BudgetProjectionPause()
+        gate.arm()
         defer { gate.release() }
-        let cache = ArtifactCache(root: root, afterChatLoad: { if await pause.take() { await gate.wait() } })
+        let cache = fixture.openCache(afterChatLoad: { await gate.waitIfArmed() })
         let session = cache.session(scope: scope), library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
         library.seed(book: book, bots: service.profiles)
         let restoring = Task { await library.restore() }
         defer { restoring.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(try await waitForLibraryFixture("The saved-history hook entered before the partial read", diagnostics: {
+            "libraryLoading=\(library.isLoading)"
+        }) { gate.wasTaken })
         let edited = service.message("safe", text: "Fresh safe revision\nMEDIA:/safe.txt", at: 30)
         var partial = Conversation(id: "main", storedID: "main", profileID: "helper",
             messages: [disputed, edited], hasEarlierMessages: true)
@@ -666,19 +689,20 @@ import BottoCore
         gate.release(); await restoring.value
         let expected = partial.messages[1].text
         let query = String(expected.prefix { $0 != "\n" })
-        let deadline = ContinuousClock.now + .seconds(5)
-        while LibrarySearchResults(query: query, bots: [], chats: library.chats, artifacts: []).messages.isEmpty,
-              ContinuousClock.now < deadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The safe revision reached Search") {
+            !LibrarySearchResults(query: query, bots: [], chats: library.chats, artifacts: []).messages.isEmpty
+        }
         #expect(!LibrarySearchResults(query: query, bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(!library.artifacts.contains { $0.artifact.messageID == disputed.id })
         #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-        let savedDeadline = ContinuousClock.now + .seconds(5)
-        while try await session.loadChats().first?.messages.first(where: { $0.id == "safe" })?.text != expected,
-              ContinuousClock.now < savedDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The safe revision reached saved metadata") {
+            try await session.loadChats().first?.messages.first(where: { $0.id == "safe" })?.text == expected
+        }
         #expect(try await session.loadChats().first?.unavailableMessageIDs?.contains(disputedID) == true)
-        library.retire(); await cache.close()
-        let reopenedCache = ArtifactCache(root: root), reopenedSession = reopenedCache.session(scope: scope)
+        library.retire(); await fixture.closeCache()
+        let reopenedSession = fixture.openCache().session(scope: scope)
         let reopened = WorkspaceLibrary(service: service, cache: reopenedSession)
+        defer { reopened.retire() }
         await reopened.restore()
         #expect(!reopened.artifacts.contains { $0.artifact.messageID == disputed.id })
         #expect(LibrarySearchResults(query: "Disputed needle", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty)
@@ -686,9 +710,9 @@ import BottoCore
         partial.hasEarlierMessages = false
         reopened.accept(identity: source, snapshot: partial, title: "Main",
             evidence: service.coherentRead(source, messages: partial.messages))
-        let resolvedDeadline = ContinuousClock.now + .seconds(5)
-        while !reopened.artifacts.contains(where: { $0.artifact.messageID == disputed.id }),
-              ContinuousClock.now < resolvedDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture("The coherent read projected the formerly disputed row") {
+            reopened.artifacts.contains { $0.artifact.messageID == disputed.id }
+        }
         #expect(reopened.artifacts.contains { $0.artifact.messageID == disputed.id })
         #expect(!LibrarySearchResults(query: "Disputed needle", bots: [], chats: reopened.chats, artifacts: []).messages.isEmpty)
         let persistedResolution = ContinuousClock.now + .seconds(5)
@@ -696,7 +720,6 @@ import BottoCore
               ContinuousClock.now < persistedResolution { await Task.yield() }
         #expect(try await reopenedSession.loadChats().first?.unavailableMessageIDs?.contains(disputedID) != true)
         #expect(try await reopenedSession.loadChats().first?.messages.contains(where: { $0.id == disputed.id }) == true)
-        reopened.retire(); await reopenedCache.close()
     }
 
     @Test(arguments: [true, false])
