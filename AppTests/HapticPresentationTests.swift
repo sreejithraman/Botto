@@ -84,8 +84,8 @@ import Testing
         }
     }
 
-    private func ready(_ condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+    private func ready(fileID: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
+        await waitWhile(fileID: fileID, line: line) { !condition() }
         try #require(condition())
     }
 }

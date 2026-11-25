@@ -161,8 +161,7 @@ import BottoCore
         var dismissals = 0
         controller.update(isPresented: true, content: Text("Overview"), onDismiss: { dismissals += 1 })
         controller.update(isPresented: false, content: Text("Overview"), onDismiss: { dismissals += 1 })
-        let deadline = ContinuousClock.now + .seconds(1)
-        while dismissals == 0, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { dismissals == 0 }
         #expect(dismissals == 1)
         #expect(controller.presentedViewController == nil)
         controller.tearDown()

@@ -1018,9 +1018,9 @@ import BottoCore
         return workspace
     }
 
-    private func eventually(_ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
-        try await waitWhile { try await !condition() }
-        return try await condition()
+    private func eventually(fileID: String = #fileID, line: Int = #line,
+                            _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
+        try await waitWhile(fileID: fileID, line: line) { try await !condition() }
     }
 
     /// The Library half of `AppStore.refreshLibraryIfNeeded`, which every ordinary tab entry runs.

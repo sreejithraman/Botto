@@ -53,7 +53,7 @@ import Testing
     }
 
     private func ready(sourceLocation: SourceLocation = #_sourceLocation, _ condition: () -> Bool) async throws {
-        await waitWhile { !condition() }
+        await waitWhile(fileID: sourceLocation.fileID, line: sourceLocation.line) { !condition() }
         try #require(condition(), "Native coverage fixture settled", sourceLocation: sourceLocation)
     }
     private func fixture() async throws -> Fixture {

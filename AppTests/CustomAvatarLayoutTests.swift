@@ -227,7 +227,7 @@ struct CustomAvatarLayoutTests {
 
         let previousDate = model.date
         let clock = Task { await model.runClock(presentation: presentation, still: false) }
-        for _ in 0..<100 where model.date == previousDate { await Task.yield() }
+        await waitWhile { model.date == previousDate }
         #expect(model.date > previousDate)
         let reaction = BotCharacterFrame.resolve(elapsed: model.date.timeIntervalSince(presentation.enteredAt), activity: .finished)
         #expect(reaction.tuck < 1 && reaction.lift < 0, "The verified reaction progresses before an engine frame arrives.")

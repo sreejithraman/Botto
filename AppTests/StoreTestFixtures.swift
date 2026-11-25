@@ -1,6 +1,7 @@
 import Foundation
 import Dispatch
 import Testing
+import XCTest
 import BottoCore
 @testable import Botto
 
@@ -127,8 +128,8 @@ import BottoCore
         await withCheckedContinuation { entryWaiter = $0 }
     }
 
-    func entersInTime() async -> Bool {
-        await waitWhile { !entered }
+    func entersInTime(fileID: String = #fileID, line: Int = #line) async -> Bool {
+        await waitWhile(fileID: fileID, line: line) { !entered }
     }
 
     func release() {
@@ -143,6 +144,16 @@ import BottoCore
 let readinessLimit = Duration.seconds(45)
 /// A wait longer than this passes but leaves an attachment, so lateness stays visible.
 let slowReadiness = Duration.seconds(3)
+
+@MainActor func recordReadiness(_ text: String) {
+    guard Test.current == nil else { return Attachment.record(text, named: "readiness-wait.txt") }
+    // Swift Testing drops attachments recorded inside an XCTest case.
+    XCTContext.runActivity(named: "readiness-wait") { activity in
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "readiness-wait.txt"; attachment.lifetime = .keepAlways
+        activity.add(attachment)
+    }
+}
 
 /// Suspends while `pending` is true, for at most `limit`, and returns whether it became false.
 /// It yields briefly so a ready condition returns at once, then sleeps: spinning on the main actor would
@@ -160,8 +171,7 @@ let slowReadiness = Duration.seconds(3)
         previousPoll = now; polls += 1
         if ready || now >= deadline || Task.isCancelled {
             if !ready || elapsed > slowReadiness {
-                Attachment.record("\(label ?? "\(fileID):\(line)")\nready=\(ready) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())",
-                                  named: "readiness-wait.txt")
+                recordReadiness("\(label ?? "") \(fileID):\(line)\nready=\(ready) cancelled=\(Task.isCancelled) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())")
             }
             return ready
         }

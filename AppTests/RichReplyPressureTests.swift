@@ -229,8 +229,8 @@ struct RichReplyPressureTests {
         RichContentRenderer()
     }
 
-    private func wait(_ predicate: () -> Bool) async throws {
-        await waitWhile { !predicate() }
+    private func wait(fileID: String = #fileID, line: Int = #line, _ predicate: () -> Bool) async throws {
+        await waitWhile(fileID: fileID, line: line) { !predicate() }
         try #require(predicate())
     }
 

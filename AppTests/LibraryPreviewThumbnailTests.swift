@@ -155,8 +155,8 @@ struct LibraryPreviewThumbnailTests {
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
 
-    private func wait(_ ready: () -> Bool) async throws {
-        await waitWhile { !ready() }
+    private func wait(fileID: String = #fileID, line: Int = #line, _ ready: () -> Bool) async throws {
+        await waitWhile(fileID: fileID, line: line) { !ready() }
         #expect(ready())
     }
 }

@@ -722,6 +722,6 @@ import BottoCore
 
 @MainActor private func eventually(_ condition: () -> Bool,
                                     sourceLocation: SourceLocation = #_sourceLocation) async throws {
-    await waitWhile { !condition() }
+    await waitWhile(fileID: sourceLocation.fileID, line: sourceLocation.line) { !condition() }
     try #require(condition(), sourceLocation: sourceLocation)
 }
