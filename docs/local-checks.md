@@ -152,52 +152,16 @@ cases disabled.
 
 ## Opt in to checks before push
 
-Cloning or checking out these files does not enable hooks. To enable the
-version-controlled [.githooks/pre-push](../.githooks/pre-push), explicitly run:
+Hooks are off by default. To run [.githooks/pre-push](../.githooks/pre-push)
+(the core checks) before each push from this repository and its linked
+worktrees:
 
 ```sh
-python3 scripts/install-hooks.py
+git config --local core.hooksPath .githooks
 ```
 
-The installer only sets repository-local `core.hooksPath=.githooks`. It writes
-no hook files and changes no global config. Repeat runs leave the installed
-config unchanged. Git's [repository config is shared by linked worktrees](https://git-scm.com/docs/git-worktree#_configuration_file),
-so this opt-in applies to the main checkout and its linked worktrees. Each
-checkout must contain the hook and runner. Existing worktree-specific config
-keeps its normal precedence; the installer does not enable or change the
-`extensions.worktreeConfig` setting.
-
-Git resolves a [relative hooks path](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
-from the hook's working directory. For `pre-push` in a non-bare repository,
-that is the [current worktree root](https://git-scm.com/docs/githooks#_description).
-Each worktree therefore uses its own `.githooks/pre-push`, runner, sources and
-build directories. A failed core step rejects the push. The hook checks the
-current working tree, including local edits; it does not check out each commit
-being pushed. Local hooks remain opt-in and can be bypassed by Git.
-
-The installer refuses to proceed if any existing `core.hooksPath` value differs
-from `.githooks`, including inherited global or current worktree values. It
-also refuses executable non-sample files in the shared default hooks directory,
-including an existing `.git/hooks/pre-push`, so enabling this path cannot
-silently bypass those hooks. Disabled hook files and `.sample` files remain
-untouched. The project hook and runner must already be executable.
-
-If installation is refused, keep the existing setup and run
-`./scripts/check-core.sh` directly. Inspect path settings with:
-
-```sh
-git config --show-origin --show-scope --get-all core.hooksPath
-```
-
-To remove this repository opt-in, first confirm the local value is `.githooks`,
-then remove only that value:
-
-```sh
-git config --local --unset core.hooksPath '^[.]githooks$'
-```
-
-This restores the previously inherited/default path and applies to linked
-worktrees too. It leaves all hook files and global config intact.
+Undo it with `git config --local --unset core.hooksPath`. If you already use
+another hooks path, keep it and run `./scripts/check-core.sh` yourself.
 
 ## Test the tooling without Swift or Xcode
 
@@ -206,11 +170,10 @@ python3 scripts/tests/test_local_checks.py
 python3 scripts/tests/test_full_checks.py
 ```
 
-The standard-library suite creates disposable Git repos and linked worktrees,
-uses a harmless `swift` stub, and performs real pushes to local bare remotes.
-It covers command order and working directory, failing-step propagation,
-push rejection and success, hook/config preservation, repeat installation,
-and isolation from unrelated repositories and global config. It removes its
-temporary repos on completion and does not install hooks in this checkout.
+The standard-library suite creates disposable Git repos, uses a harmless
+`swift` stub, and performs real pushes to a local bare remote. It covers command
+order and working directory, failing-step propagation, and push rejection and
+success with the hook enabled. It removes its temporary repos on completion and
+does not enable hooks in this checkout.
 The full-runner suite also uses Xcode and export-readback stubs to check
 diagnostic selection and failure-status preservation without a Simulator.
