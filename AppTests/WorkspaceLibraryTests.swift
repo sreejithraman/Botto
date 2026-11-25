@@ -20,8 +20,12 @@ import BottoCore
 
     @Test(arguments: [false, true])
     func unchangedOversizedHintCannotFenceAPostLossRead(retryWhileReading: Bool) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkUnchangedOversizedHint(retryWhileReading: retryWhileReading, fixture: fixture)
+        }
+    }
+
+    private func checkUnchangedOversizedHint(retryWhileReading: Bool, fixture: LibraryCacheFixture) async throws {
         let service = LibraryTestService(secondBot: true)
         let current = SessionIdentity(profile: service.first.profile, root: service.first.root,
             stored: try ExactID("current-tip"), aliases: [service.first.root, try ExactID("current-tip")])
@@ -35,33 +39,28 @@ import BottoCore
         service.replacementFirst = current
         service.previewEnabled = true
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
+        let warmSession = fixture.openCache().session(scope: scope)
         let warm = WorkspaceLibrary(service: service, cache: warmSession)
+        defer { warm.retire() }
         await warm.restore(); warm.setOnline(true)
         let startedAt = ContinuousClock.now
         let page = try await service.conversationHistory(service.second, offset: 0)
         warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
             profileID: service.second.profile.text, messages: page.messages), title: "Peer",
             evidence: .read(startedAt: startedAt, observedSource: service.second, identityRead: page.identityRead))
-        let captureDeadline = ContinuousClock.now + .seconds(3)
-        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline { await Task.yield() }
-        #expect(try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second })).data == Data("side".utf8))
-        let warmDeadline = ContinuousClock.now + .seconds(3)
-        var saved = try await warmSession.loadChats(), recovery = try await warmSession.metadataRecovery()
-        while !saved.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || recovery.contains(service.second),
-              ContinuousClock.now < warmDeadline {
-            await Task.yield(); saved = try await warmSession.loadChats(); recovery = try await warmSession.metadataRecovery()
-        }
-        try #require(saved.contains { $0.identity == service.second && $0.messages == [peer] })
-        try #require(!recovery.contains(service.second))
-        warm.retire(); await warmCache.close()
-        let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
-        try await fixture.upsert(.init(identity: service.first, botName: "Helper", title: "Guarded old tip",
+        let captured = try await projectedPeer(peer, source: service.second, in: warm)
+        #expect(try await warm.download(captured).data == Data("side".utf8))
+        let (warmRows, warmRecovery) = try await savedLibraryMessages([peer], source: service.second, in: warmSession)
+        try #require(warmRows.contains { $0.identity == service.second && $0.messages == [peer] })
+        try #require(!warmRecovery.contains(service.second))
+        warm.retire(); await fixture.closeCache()
+        let savedSession = fixture.openCache().session(scope: scope)
+        try await savedSession.upsert(.init(identity: service.first, botName: "Helper", title: "Guarded old tip",
             messages: disputed, updatedAt: Date(timeIntervalSince1970: 1), coverage: .partial,
             summary: nil, headFingerprint: nil, unavailableMessageIDs: Set(disputed.map { Data($0.id.utf8) })))
-        try fixture.invalidateMetadata([(service.first.profile, service.first.root)])
-        await fixtureCache.close()
-        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        try savedSession.invalidateMetadata([(service.first.profile, service.first.root)])
+        await fixture.closeCache()
+        let session = fixture.openCache().session(scope: scope)
         let library = WorkspaceLibrary(service: service, limits: .init(messageCount: 3, chatCount: 3), cache: session)
         defer { library.retire() }
         await library.restore()
@@ -72,7 +71,7 @@ import BottoCore
         book.cache(.init(id: current.root.text, storedID: current.stored.text, profileID: current.profile.text, messages: []), for: chat)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: book, service: service, onDirty: {})
-        defer { workspace.retireWorkspace() }
+        defer { if !library.isRetired { workspace.retireWorkspace() } }
         var publications: [ChatTranscriptPublication] = []
         workspace.onAcceptedTranscript = { publications.append($0); library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
@@ -89,7 +88,7 @@ import BottoCore
         #expect(publication.evidence.readContext?.identityRead?.matches(current) == true)
         #expect(library.indexingMetrics.acceptedSnapshots == 1)
         let deadline = ContinuousClock.now + .seconds(3)
-        saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
+        var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
         while !saved.contains(where: { $0.identity == current && $0.messages == [fresh] }) || recovery.contains(current),
               ContinuousClock.now < deadline {
             await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
@@ -103,8 +102,10 @@ import BottoCore
         let downloads = service.downloadCount
         #expect(try await library.download(offlinePeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
-        library.retire(); await cache.close()
-        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, cache: coldCache.session(scope: scope))
+        workspace.retireWorkspace()
+        library.retire(); await fixture.closeCache()
+        let cold = WorkspaceLibrary(service: service, cache: fixture.openCache().session(scope: scope))
+        defer { cold.retire() }
         var oldBook = ConversationBook()
         let oldChat = oldBook.merge(.init(identity: service.first, title: "Old", isCanonical: true, persistence: .durable))
         oldBook.cache(.init(id: service.first.root.text, storedID: service.first.stored.text,
@@ -115,7 +116,6 @@ import BottoCore
         let coldPeer = try #require(cold.artifacts.first { $0.chat.identity == service.second })
         #expect(try await cold.download(coldPeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
-        cold.retire(); await coldCache.close()
     }
 
     enum HeldScopeInterruption: CaseIterable, Sendable {
@@ -139,8 +139,15 @@ import BottoCore
 
     private func checkDiscardedScopeRecovery(trustedRead: Bool, interruption: HeldScopeInterruption, savedRowExists: Bool,
                                              holdsFollowingProjection: Bool = false) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkDiscardedScopeRecovery(trustedRead: trustedRead, interruption: interruption,
+                savedRowExists: savedRowExists, holdsFollowingProjection: holdsFollowingProjection, fixture: fixture)
+        }
+    }
+
+    private func checkDiscardedScopeRecovery(trustedRead: Bool, interruption: HeldScopeInterruption, savedRowExists: Bool,
+                                             holdsFollowingProjection: Bool, fixture: LibraryCacheFixture) async throws {
+        let root = fixture.root
         let service = LibraryTestService(secondBot: true)
         service.previewEnabled = true; service.previewHasEarlierMessages = true
         let current = ChatMessage(id: "main-file", role: .assistant, text: "Safe current producer", timestamp: Date(timeIntervalSince1970: 1))
@@ -148,39 +155,18 @@ import BottoCore
             timestamp: Date(timeIntervalSince1970: 5_000))
         service.messages[service.first] = [current]; service.messages[service.second] = [peer]
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
-        let warm = WorkspaceLibrary(service: service, cache: warmSession)
-        warm.observeBots(service.profiles, evidence: .cached)
-        await warm.restore(); warm.setOnline(true)
-        let peerStartedAt = ContinuousClock.now
-        let peerPage = try await service.conversationHistory(service.second, offset: 0)
-        warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
-            profileID: service.second.profile.text, messages: peerPage.messages), title: "Peer",
-            evidence: .read(startedAt: peerStartedAt, observedSource: service.second, identityRead: try #require(peerPage.identityRead)))
-        let captureDeadline = ContinuousClock.now + .seconds(3)
-        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline { await Task.yield() }
-        #expect(try await warm.download(try #require(warm.artifacts.first { $0.chat.identity == service.second })).data == Data("side".utf8))
-        let warmDeadline = ContinuousClock.now + .seconds(3)
-        var warmRows = try await warmSession.loadChats(), warmRecovery = try await warmSession.metadataRecovery()
-        while !warmRows.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || warmRecovery.contains(service.second),
-              ContinuousClock.now < warmDeadline {
-            await Task.yield(); warmRows = try await warmSession.loadChats(); warmRecovery = try await warmSession.metadataRecovery()
-        }
-        try #require(warmRows.contains { $0.identity == service.second && $0.messages == [peer] })
-        try #require(!warmRecovery.contains(service.second))
-        try #require(!warmRows.contains { $0.identity == service.first })
-        warm.retire(); await warmCache.close()
+        try await savePeer(peer, service: service, scope: scope, fixture: fixture)
         if savedRowExists {
-            let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
-            try await fixture.upsert(.init(identity: service.first, botName: "Helper", title: "Saved",
+            let savedSession = fixture.openCache().session(scope: scope)
+            try await savedSession.upsert(.init(identity: service.first, botName: "Helper", title: "Saved",
                 messages: [.init(id: current.id, role: .assistant, text: "Saved older revision\nMEDIA:/saved-older.txt", timestamp: current.timestamp)],
                 updatedAt: current.timestamp, coverage: .complete, summary: nil, headFingerprint: nil))
-            try #require(await fixture.loadChats().contains { $0.identity == service.first })
-            await fixtureCache.close()
+            try #require(await savedSession.loadChats().contains { $0.identity == service.first })
+            await fixture.closeCache()
         }
         let ledger = root.appendingPathComponent("metadata-recovery.plist"), unreadable = Data("temporarily unreadable recovery".utf8)
         try unreadable.write(to: ledger)
-        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let session = fixture.openCache().session(scope: scope)
         let projection = StoreTestBarrier(), pause = NextLibraryProjectionPause()
         if holdsFollowingProjection { await pause.arm() }
         defer { projection.release() }
@@ -197,13 +183,14 @@ import BottoCore
             evidence: .read(startedAt: peerReadStartedAt, observedSource: service.second, identityRead: verifiedPeer.identityRead))
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: savedBook(service), service: service, onDirty: {})
-        defer { workspace.retireWorkspace() }
+        defer { if !library.isRetired { workspace.retireWorkspace() } }
         var publications: [ChatTranscriptPublication] = []
         workspace.onAcceptedTranscript = { publications.append($0); library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
         let delayedGate = StoreTestBarrier()
         defer { delayedGate.release() }
         var delayedRead: Task<Void, Never>?
+        defer { delayedRead?.cancel() }
         if interruption == .delayedRead {
             service.previewHasEarlierMessages = false
             service.messages[service.first] = [current, .init(id: "delayed-old-only", role: .assistant,
@@ -262,11 +249,10 @@ import BottoCore
         if interruption == .failedScan || interruption == .partialScan {
             await scanHeldScope(failing: interruption == .failedScan)
         }
-        let persistenceDeadline = ContinuousClock.now + .seconds(3)
-        while library.isLoading, ContinuousClock.now < persistenceDeadline { await Task.yield() }
+        _ = try await waitForLibraryFixture { !library.isLoading }
         #expect(try await session.loadChats().contains { $0.identity == service.first } == false)
         #expect(try await session.metadataRecoveryHints().contains { $0.identity == service.first } == savedRowExists)
-        let restoredPeer = try #require(library.artifacts.first { $0.chat.identity == service.second })
+        let restoredPeer = try await projectedPeer(peer, source: service.second, in: library)
         var downloads = service.downloadCount
         #expect(try await library.download(restoredPeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
@@ -305,45 +291,37 @@ import BottoCore
                 await library.refresh(evidence: .observed, bots: service.profiles, force: true)
                 library.setOnline(false)
             }
-            let provenDeadline = ContinuousClock.now + .seconds(3)
-            var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-            while !saved.contains(where: { $0.identity == service.first && $0.messages == [proven] }) || recovery.contains(service.first),
-                  ContinuousClock.now < provenDeadline {
-                await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-            }
+            let (saved, recovery) = try await savedLibraryMessages([proven], source: service.first, in: session)
             try #require(saved.contains { $0.identity == service.first && $0.messages == [proven] })
             #expect(!recovery.contains(service.first))
             let following = ChatMessage(id: current.id, role: .assistant, text: "Following partial window needle\nMEDIA:/following.txt",
                 timestamp: Date(timeIntervalSince1970: 10_002))
             service.messages[service.first] = [following]
             await workspace.refreshInboxHistory(profiles: [service.first.profile])
-            let followingDeadline = ContinuousClock.now + .seconds(3)
-            saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-            while !saved.contains(where: { $0.identity == service.first && $0.messages == [following] }) || recovery.contains(service.first),
-                  ContinuousClock.now < followingDeadline {
-                await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-            }
+            let (followingRows, followingRecovery) = try await savedLibraryMessages([following], source: service.first, in: session)
             #expect(service.previewReadCount == 2)
             // Saving does not wait for projection, which alone feeds Search and artifacts.
             func followingIsProjected() -> Bool {
                 library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/following.txt" }
             }
             if holdsFollowingProjection {
-                try #require(await projection.waitUntilEntered(timeout: .seconds(5)))
+                try #require(try await waitForLibraryFixture { projection.hasEntered })
                 #expect(!followingIsProjected())
                 #expect(LibrarySearchResults(query: "Following partial window needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
                 projection.release()
             }
-            #expect(await eventually { followingIsProjected() })
+            #expect(try await waitForLibraryFixture { followingIsProjected() })
             #expect(!LibrarySearchResults(query: "Following partial window needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
-            #expect(saved.contains { $0.identity == service.first && $0.messages == [following] })
-            #expect(!recovery.contains(service.first))
+            #expect(followingRows.contains { $0.identity == service.first && $0.messages == [following] })
+            #expect(!followingRecovery.contains(service.first))
             #expect(library.artifacts.contains { $0.chat.identity == service.second })
         }
-        library.retire(); await cache.close()
+        workspace.retireWorkspace()
+        library.retire(); await fixture.closeCache()
         if !trustedRead && interruption != .none && interruption != .delayedRead {
-            let coldCache = ArtifactCache(root: root), coldSession = coldCache.session(scope: scope)
+            let coldSession = fixture.openCache().session(scope: scope)
             let cold = WorkspaceLibrary(service: service, cache: coldSession)
+            defer { cold.retire() }
             cold.seed(book: oldBook, bots: service.profiles); await cold.restore()
             #expect(LibrarySearchResults(query: "Superseded private needle", bots: [], chats: cold.chats, artifacts: []).messages.isEmpty)
             #expect(!cold.artifacts.contains { $0.artifact.attachment?.path == "/old-only-private.txt" })
@@ -352,16 +330,74 @@ import BottoCore
             downloads = service.downloadCount
             #expect(try await cold.download(coldPeer).data == Data("side".utf8))
             #expect(service.downloadCount == downloads)
-            cold.retire(); await coldCache.close()
         }
+    }
+
+    private func savePeer(_ peer: ChatMessage, service: LibraryTestService, scope: ArtifactCacheScope,
+                          fixture: LibraryCacheFixture) async throws {
+        let session = fixture.openCache().session(scope: scope)
+        let library = WorkspaceLibrary(service: service, cache: session)
+        defer { library.retire() }
+        library.observeBots(service.profiles, evidence: .cached)
+        await library.restore(); library.setOnline(true)
+        let source = service.second
+        let startedAt = ContinuousClock.now
+        let page = try await service.conversationHistory(source, offset: 0)
+        library.accept(identity: source, snapshot: .init(id: source.root.text, storedID: source.stored.text,
+            profileID: source.profile.text, messages: page.messages), title: "Peer",
+            evidence: .read(startedAt: startedAt, observedSource: source, identityRead: try #require(page.identityRead)))
+        let captured = try await projectedPeer(peer, source: source, in: library)
+        #expect(try await library.download(captured).data == Data("side".utf8))
+        let (rows, recovery) = try await savedLibraryMessages([peer], source: source, in: session)
+        try #require(rows.contains { $0.identity == source && $0.messages == [peer] })
+        try #require(!recovery.contains(source))
+        try #require(!rows.contains { $0.identity == service.first })
+        library.retire(); await fixture.closeCache()
+    }
+
+    private func projectedPeer(_ peer: ChatMessage, source: SessionIdentity, in library: WorkspaceLibrary,
+                               sourceLocation: SourceLocation = #_sourceLocation) async throws -> LibraryArtifact {
+        var projected: LibraryArtifact?
+        _ = try await waitForLibraryFixture {
+            projected = library.artifacts.first {
+                $0.chat.identity == source && $0.chat.messages == [peer] && $0.artifact.attachment?.path == "/peer.txt"
+            }
+            return projected != nil
+        }
+        func diagnostics() -> Comment {
+            let peerMessages = library.chats.first { $0.identity == source }?.messages
+            let metrics = library.indexingMetrics
+            return Comment(rawValue: """
+                Peer projection did not publish /peer.txt.
+                peerPresent=\(peerMessages != nil) expectedMessages=\(peerMessages == [peer]) loading=\(library.isLoading)
+                accepted=\(metrics.acceptedSnapshots) batches=\(metrics.batches) parsed=\(metrics.parsedMessages)
+                """)
+        }
+        return try #require(projected, diagnostics(), sourceLocation: sourceLocation)
+    }
+
+    private func savedLibraryMessages(_ messages: [ChatMessage], source: SessionIdentity,
+                                      in session: ArtifactCacheSession) async throws -> ([CachedArtifactChat], ArtifactMetadataRecovery) {
+        var rows: [CachedArtifactChat] = []
+        var recovery = ArtifactMetadataRecovery()
+        _ = try await waitForLibraryFixture {
+            rows = try await session.loadChats()
+            recovery = try await session.metadataRecovery()
+            return rows.contains { $0.identity == source && $0.messages == messages } && !recovery.contains(source)
+        }
+        return (rows, recovery)
     }
 
     enum IndependentWindowSavedSource: CaseIterable, Sendable { case absent, sameTip, differentTip }
 
     @Test(arguments: IndependentWindowSavedSource.allCases)
     func anIndependentInboxWindowReconcilesWhileAnOversizedHintWaits(savedSource: IndependentWindowSavedSource) async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
+        try await LibraryCacheFixture.run { fixture in
+            try await checkIndependentInboxWindow(savedSource: savedSource, fixture: fixture)
+        }
+    }
+
+    private func checkIndependentInboxWindow(savedSource: IndependentWindowSavedSource, fixture: LibraryCacheFixture) async throws {
         let service = LibraryTestService(secondBot: true)
         service.previewEnabled = true; service.previewHasEarlierMessages = true
         var current = ChatMessage(id: "main-file", role: .assistant, text: "Independent current needle\nMEDIA:/independent.txt",
@@ -374,33 +410,9 @@ import BottoCore
         let disputed = (0..<4).map { ChatMessage(id: "private-\($0)", role: .assistant,
             text: "Guarded private needle\nMEDIA:/private-\($0).txt", timestamp: Date(timeIntervalSince1970: Double($0))) }
         let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let warmCache = ArtifactCache(root: root), warmSession = warmCache.session(scope: scope)
-        let warm = WorkspaceLibrary(service: service, cache: warmSession)
-        warm.observeBots(service.profiles, evidence: .cached)
-        await warm.restore(); warm.setOnline(true)
-        let peerStartedAt = ContinuousClock.now
-        let peerPage = try await service.conversationHistory(service.second, offset: 0)
-        warm.accept(identity: service.second, snapshot: .init(id: service.second.root.text, storedID: service.second.stored.text,
-            profileID: service.second.profile.text, messages: peerPage.messages), title: "Peer",
-            evidence: .read(startedAt: peerStartedAt, observedSource: service.second, identityRead: try #require(peerPage.identityRead)))
-        let captureDeadline = ContinuousClock.now + .seconds(3)
-        while !warm.artifacts.contains(where: { $0.chat.identity == service.second }), ContinuousClock.now < captureDeadline {
-            await Task.yield()
-        }
-        let captured = try #require(warm.artifacts.first { $0.chat.identity == service.second })
-        #expect(try await warm.download(captured).data == Data("side".utf8))
-        let warmDeadline = ContinuousClock.now + .seconds(3)
-        var warmRows = try await warmSession.loadChats(), warmRecovery = try await warmSession.metadataRecovery()
-        while !warmRows.contains(where: { $0.identity == service.second && $0.messages == [peer] }) || warmRecovery.contains(service.second),
-              ContinuousClock.now < warmDeadline {
-            await Task.yield(); warmRows = try await warmSession.loadChats(); warmRecovery = try await warmSession.metadataRecovery()
-        }
-        try #require(warmRows.contains { $0.identity == service.second && $0.messages == [peer] })
-        try #require(!warmRecovery.contains(service.second))
-        try #require(!warmRows.contains { $0.identity == service.first })
-        warm.retire(); await warmCache.close()
-        let fixtureCache = ArtifactCache(root: root), fixture = fixtureCache.session(scope: scope)
-        try await fixture.upsert(.init(identity: oversized, botName: "Helper", title: "Guarded", messages: disputed,
+        try await savePeer(peer, service: service, scope: scope, fixture: fixture)
+        let savedSession = fixture.openCache().session(scope: scope)
+        try await savedSession.upsert(.init(identity: oversized, botName: "Helper", title: "Guarded", messages: disputed,
             updatedAt: Date(timeIntervalSince1970: 1), coverage: .partial, summary: nil, headFingerprint: nil,
             unavailableMessageIDs: Set(disputed.map { Data($0.id.utf8) })))
         let earlierTip = SessionIdentity(profile: service.first.profile, root: service.first.root,
@@ -409,15 +421,15 @@ import BottoCore
             text: savedSource == .differentTip ? "Retired saved tip private needle\nMEDIA:/earlier-tip.txt" : "Earlier safe public revision",
             timestamp: Date(timeIntervalSince1970: 10))
         if savedSource != .absent {
-            try await fixture.upsert(.init(identity: savedSource == .differentTip ? earlierTip : service.first,
+            try await savedSession.upsert(.init(identity: savedSource == .differentTip ? earlierTip : service.first,
                 botName: "Helper", title: "Main", messages: [prior], updatedAt: prior.timestamp,
                 coverage: .partial, summary: nil, headFingerprint: nil))
         }
-        try fixture.invalidateMetadata([(oversized.profile, oversized.root)])
-        try #require(try await fixture.metadataRecovery().contains(service.first) == false)
-        await fixtureCache.close()
+        try savedSession.invalidateMetadata([(oversized.profile, oversized.root)])
+        try #require(try await savedSession.metadataRecovery().contains(service.first) == false)
+        await fixture.closeCache()
         let limits = WorkspaceLibrary.Limits(messageCount: 3, chatCount: 3)
-        let cache = ArtifactCache(root: root), session = cache.session(scope: scope)
+        let session = fixture.openCache().session(scope: scope)
         let library = WorkspaceLibrary(service: service, limits: limits, cache: session)
         defer { library.retire() }
         var book = savedBook(service)
@@ -427,7 +439,7 @@ import BottoCore
         book.cache(partial, for: bookChat)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: book, service: service, onDirty: {})
-        defer { workspace.retireWorkspace() }
+        defer { if !library.isRetired { workspace.retireWorkspace() } }
         workspace.onAcceptedTranscript = { library.accept($0) }
         workspace.observeProfiles(service.profiles); workspace.setOnline(true)
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
@@ -445,13 +457,8 @@ import BottoCore
             #expect(try await library.download(availablePeer).data == Data("side".utf8))
             #expect(service.downloadCount == downloads)
         }
-        let deadline = ContinuousClock.now + .seconds(3)
-        var saved = try await session.loadChats(), recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == service.first && $0.messages == [current] }) || recovery.contains(service.first),
-              ContinuousClock.now < deadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-        }
-        #expect(await eventually { library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/independent.txt" } })
+        let (saved, recovery) = try await savedLibraryMessages([current], source: service.first, in: session)
+        #expect(try await waitForLibraryFixture { library.artifacts.contains { $0.chat.identity == service.first && $0.artifact.attachment?.path == "/independent.txt" } })
         #expect(!LibrarySearchResults(query: "Independent current needle", bots: [], chats: library.chats, artifacts: []).messages.isEmpty)
         #expect(saved.contains { $0.identity == service.first && $0.messages == [current] && $0.coverage == .partial })
         #expect(!recovery.contains(service.first) && recovery.contains(oversized))
@@ -462,17 +469,14 @@ import BottoCore
             timestamp: Date(timeIntervalSince1970: 201))
         service.messages[service.first] = [current]
         await workspace.refreshInboxHistory(profiles: [service.first.profile])
-        let updatedDeadline = ContinuousClock.now + .seconds(3)
-        saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-        while !saved.contains(where: { $0.identity == service.first && $0.messages == [current] }) || recovery.contains(service.first),
-              ContinuousClock.now < updatedDeadline {
-            await Task.yield(); saved = try await session.loadChats(); recovery = try await session.metadataRecovery()
-        }
+        let (updatedRows, updatedRecovery) = try await savedLibraryMessages([current], source: service.first, in: session)
         #expect(library.chats.contains { $0.identity == service.first && $0.messages == [current] })
-        #expect(saved.contains { $0.identity == service.first && $0.messages == [current] })
-        #expect(!recovery.contains(service.first) && recovery.contains(oversized))
-        library.retire(); await cache.close()
-        let coldCache = ArtifactCache(root: root), cold = WorkspaceLibrary(service: service, limits: limits, cache: coldCache.session(scope: scope))
+        #expect(updatedRows.contains { $0.identity == service.first && $0.messages == [current] })
+        #expect(!updatedRecovery.contains(service.first) && updatedRecovery.contains(oversized))
+        workspace.retireWorkspace()
+        library.retire(); await fixture.closeCache()
+        let cold = WorkspaceLibrary(service: service, limits: limits, cache: fixture.openCache().session(scope: scope))
+        defer { cold.retire() }
         if savedSource == .differentTip {
             var oldBook = ConversationBook()
             let oldChat = oldBook.merge(.init(identity: earlierTip, title: "Main", isCanonical: true, persistence: .durable))
@@ -491,7 +495,6 @@ import BottoCore
         let downloads = service.downloadCount
         #expect(try await cold.download(offlinePeer).data == Data("side".utf8))
         #expect(service.downloadCount == downloads)
-        cold.retire(); await coldCache.close()
     }
 
     @Test(arguments: [false, true])
@@ -6760,6 +6763,36 @@ import BottoCore
         let downloads = service.downloadCount
         await #expect(throws: (any Error).self) { _ = try await oldLibrary.download(oldArtifact) }
         #expect(service.downloadCount == downloads)
+    }
+}
+
+/// Owns one database handle at a time across the warm and cold phases of a test.
+@MainActor private final class LibraryCacheFixture {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    private var cache: ArtifactCache?
+
+    func openCache() -> ArtifactCache {
+        precondition(cache == nil)
+        let cache = ArtifactCache(root: root)
+        self.cache = cache
+        return cache
+    }
+
+    func closeCache() async {
+        await cache?.close()
+        cache = nil
+    }
+
+    static func run(_ test: (LibraryCacheFixture) async throws -> Void) async throws {
+        let fixture = LibraryCacheFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        do {
+            try await test(fixture)
+        } catch {
+            await fixture.closeCache()
+            throw error
+        }
+        await fixture.closeCache()
     }
 }
 

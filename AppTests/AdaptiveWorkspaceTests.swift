@@ -129,10 +129,16 @@ import BottoCore
         let destination = try #require(store.artifactDestination(for: files[0], botID: service.profile.text,
                                                                 producingMessage: message))
         presentation.openArtifact(destination, store: store)
-        try await waitUntil("The paired reader and native composer are ready") {
-            presentation.artifact?.file != nil &&
-                self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
+        let session = try #require(presentation.artifact)
+        try await waitForArtifactFile(session, store: store, presentation: presentation, service: service,
+                                      window: window, recordTiming: true)
+        try await waitUntil("The paired native composer is editable", timeout: .seconds(30), diagnostics: {
+            let editors = self.nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
+            return "nativeEditors=\(editors.count) editable=\(editors.map(\.isEditable)) fileReady=\(session.file != nil)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
+        }, recordTiming: true) {
+            self.nativeTextViews(in: root.view).contains { $0 is NativeComposerTextView && $0.isEditable }
         }
+        try #require(presentation.artifact?.file != nil)
         let editor = try #require(nativeTextViews(in: root.view).compactMap { $0 as? NativeComposerTextView }
             .first { $0.isEditable })
         let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
@@ -548,7 +554,8 @@ import BottoCore
         try await raise(cover, over: window, store: fixture.store)
         await fixture.tap()
         #expect(!fixture.store.showsConnection)
-        try await waitUntil("The tap lifted the root cover", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+        try await waitUntil("The tap lifted the root cover", timeout: Self.rootCoverWatchdog,
+                            diagnostics: { nativeStacks(in: window) }, recordTiming: true) {
             window.rootViewController?.presentedViewController == nil
         }
         try await expectTheTappedChat(fixture, keeping: draftOwner, in: window)
@@ -697,6 +704,7 @@ import BottoCore
     }
 
     enum RootCover: Sendable { case settings, connection }
+    private static let rootCoverWatchdog: Duration = .seconds(45)
 
     private func raise(_ cover: RootCover, over window: WorkspaceTestWindow, store: AppStore) async throws {
         switch cover {
@@ -704,7 +712,8 @@ import BottoCore
         case .settings:
             try activateNativeControl("Settings", in: window)
         }
-        try await waitUntil("The root cover is up", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+        try await waitUntil("The root cover is up", timeout: Self.rootCoverWatchdog,
+                            diagnostics: { nativeStacks(in: window) }, recordTiming: true) {
             let sheet = window.rootViewController?.presentedViewController
             return sheet != nil && sheet?.isBeingPresented == false
         }
@@ -723,7 +732,8 @@ import BottoCore
         case .connection: store.showsConnection = false
         case .settings: window.rootViewController?.presentedViewController?.dismiss(animated: false)
         }
-        try await waitUntil("The root cover lifted", timeout: .seconds(5), diagnostics: { nativeStacks(in: window) }) {
+        try await waitUntil("The root cover lifted", timeout: Self.rootCoverWatchdog,
+                            diagnostics: { nativeStacks(in: window) }, recordTiming: true) {
             window.rootViewController?.presentedViewController == nil
         }
     }
@@ -1200,11 +1210,12 @@ import BottoCore
 
     private func waitForArtifactFile(_ session: ArtifactPreviewSession, store: AppStore,
                                      presentation: WorkspacePresentation, service: WorkspaceTestService,
-                                     window: UIWindow) async throws {
+                                     window: UIWindow, recordTiming: Bool = false) async throws {
         let diagnostics = {
             "current=\(session.isCurrent) loading=\(session.isLoading) file=\(session.file != nil) error=\(session.errorMessage ?? "nil") presented=\(presentation.artifact === session) downloads=\(service.downloads)\n\(self.nativeNavigationState(window: window, presentation: presentation, store: store))"
         }
-        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics) {
+        try await waitUntil("Selected file finished loading", timeout: .seconds(30), diagnostics: diagnostics,
+                            recordTiming: recordTiming) {
             session.file != nil || session.errorMessage != nil || !session.isCurrent
         }
         try #require(session.file != nil, Comment(rawValue: diagnostics()))
@@ -1212,28 +1223,37 @@ import BottoCore
 
     private func waitUntil(_ message: String = "Condition became true", timeout: Duration = .seconds(10),
                            diagnostics: () -> String = { "" },
+                           recordTiming: Bool = false,
                            sourceLocation: SourceLocation = #_sourceLocation,
                            _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + timeout
+        let started = ContinuousClock.now
+        let deadline = started + timeout
         var polls = 0, maximumGap = Duration.zero
-        var previousPoll = ContinuousClock.now
+        var previousPoll = started
         while !condition() && ContinuousClock.now < deadline {
             polls += 1
             try await Task.sleep(for: .milliseconds(5))
             let resumed = ContinuousClock.now
             maximumGap = max(maximumGap, previousPoll.duration(to: resumed)); previousPoll = resumed
         }
-        if !condition() {
-            maximumGap = max(maximumGap, previousPoll.duration(to: .now))
-            #if DEBUG
-            let decoding = AvatarDecodeLedger.shared.failureSnapshot()
-            #else
-            let decoding = "Decoder metadata is excluded from Release"
-            #endif
-            Attachment.record("\(message)\npolls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())\n\(decoding)",
-                              named: "native-workspace-wait-failure.txt")
+        let settled = condition()
+        if !settled || recordTiming {
+            let finished = ContinuousClock.now
+            maximumGap = max(maximumGap, previousPoll.duration(to: finished))
+            let timing = "settled=\(settled) elapsed=\(started.duration(to: finished)) polls=\(polls) maximumPollGap=\(maximumGap)"
+            if settled {
+                Attachment.record("\(message)\n\(timing)\n\(diagnostics())", named: "native-workspace-wait-timing.txt")
+            } else {
+                #if DEBUG
+                let decoding = AvatarDecodeLedger.shared.failureSnapshot()
+                #else
+                let decoding = "Decoder metadata is excluded from Release"
+                #endif
+                Attachment.record("\(message)\n\(timing)\n\(diagnostics())\n\(decoding)",
+                                  named: "native-workspace-wait-failure.txt")
+            }
         }
-        try #require(condition(), Comment(rawValue: message), sourceLocation: sourceLocation)
+        try #require(settled, Comment(rawValue: message), sourceLocation: sourceLocation)
     }
 
 }

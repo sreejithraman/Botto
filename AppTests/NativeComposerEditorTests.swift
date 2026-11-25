@@ -466,16 +466,66 @@ import BottoCore
 
         let photo = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
         pasteboard.items = [[UTType.png.identifier: try #require(photo.pngData())], item]
+        let startedAt = ContinuousClock.now
         fixture.editor.paste(nil)
 
         #expect(pasted.count == 1 && pasted[0].map(\.type) == [.png])
-        #expect(await settledDraft(of: fixture, screen.owner, matching: text))
+        let isHTML = item[UTType.html.identifier] != nil
+        // UIKit can finish HTML conversion after the ordinary paste watchdog.
+        let timeout: Duration = isHTML ? .seconds(30) : .seconds(3)
+        let settled = await settledDraft(of: fixture, screen.owner, matching: text, timeout: timeout)
+        #expect(settled, "The draft should match \(text.debugDescription) within \(timeout)")
+        if isHTML && !settled {
+            try await recordHTMLPaste(fixture, owner: screen.owner, pasteboard: pasteboard,
+                                      expected: text, startedAt: startedAt)
+        } else if isHTML {
+            let elapsed = startedAt.duration(to: .now)
+            Attachment.record("UIKit published the expected HTML draft after \(elapsed).", named: "mixed-html-paste.txt")
+        }
+    }
+
+    private func recordHTMLPaste(_ fixture: Fixture, owner: PresentationOwner, pasteboard: UIPasteboard,
+                                 expected: String, startedAt: ContinuousClock.Instant) async throws {
+        func state() -> String {
+            "\(startedAt.duration(to: .now)) editor=\(fixture.editor.text.debugDescription) draft=\(fixture.store.chats.draft(owner).debugDescription) currentOwner=\(fixture.store.chats.isCurrent(owner)) firstResponder=\(fixture.editor.isFirstResponder)"
+        }
+        let initial = state()
+        let providers = ComposerPaste(pasteboard).text
+        let providerRead = HTMLProviderRead()
+        // Read a fresh provider after observing UIKit so the probe cannot prime its paste.
+        let progress = providers.first?.loadDataRepresentation(forTypeIdentifier: UTType.html.identifier) { data, error in
+            let result = "bytes=\(data?.count.description ?? "nil") error=\(String(describing: error))"
+            Task { @MainActor in providerRead.result = result }
+        }
+        defer { progress?.cancel() }
+        var lateUpdate: String?
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline {
+            if lateUpdate == nil,
+               fixture.store.chats.draft(owner).trimmingCharacters(in: .whitespacesAndNewlines) == expected {
+                lateUpdate = state()
+            }
+            if providerRead.result != nil && lateUpdate != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        Attachment.record("""
+            text providers=\(providers.map(\.registeredTypeIdentifiers))
+            paste watchdog expired \(initial)
+            independent provider read=\(providerRead.result ?? "no completion")
+            late matching draft=\(lateUpdate ?? "none observed")
+            final \(state())
+            """, named: "mixed-html-paste.txt")
+    }
+
+    @MainActor private final class HTMLProviderRead {
+        var result: String?
     }
 
     /// UIKit loads providers asynchronously and keeps an HTML block's trailing newline.
-    private func settledDraft(of fixture: Fixture, _ owner: PresentationOwner, matching text: String) async -> Bool {
+    private func settledDraft(of fixture: Fixture, _ owner: PresentationOwner, matching text: String,
+                              timeout: Duration = .seconds(3)) async -> Bool {
         let settled = { fixture.store.chats.draft(owner).trimmingCharacters(in: .whitespacesAndNewlines) == text }
-        let deadline = ContinuousClock.now + .seconds(3)
+        let deadline = ContinuousClock.now + timeout
         while !settled() && ContinuousClock.now < deadline {
             // Suspend polling so UIKit's paste conversion can advance on the main run loop.
             do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
