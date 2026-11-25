@@ -20,7 +20,13 @@
     <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
     <key>NSCameraUsageDescription</key><string>Scan your connection QR code. Botto only uses the camera while you’re scanning.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Connect directly to your host on your local network.</string>
-    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>NSAppTransportSecurity</key><dict>
+        <key>NSAllowsLocalNetworking</key><true/>
+        <key>NSExceptionDomains</key><dict>
+            <!-- Tailscale addresses -->
+            <key>100.64.0.0/10</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+        </dict>
+    </dict>
     <key>CFBundleURLTypes</key><array>
         <dict><key>CFBundleURLName</key><string>com.sree.botto.connect</string><key>CFBundleURLSchemes</key><array><string>botto</string></array></dict>
         <dict><key>CFBundleURLName</key><string>com.sree.botto.signin</string><key>CFBundleURLSchemes</key><array><string>botto-signin</string></array></dict>
