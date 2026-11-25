@@ -115,6 +115,13 @@ class LocalChecksTests(unittest.TestCase):
             [call["args"][0] for call in self.swift_calls()],
             ["test", "test", "build", "test", "build"],
         )
+        # The relative hooks path also applies in a linked worktree, checking that worktree.
+        worktree = self.directory / "linked worktree"
+        self.git("worktree", "add", "-b", "linked", str(worktree))
+        self.env["BOTTO_CHECK_FAIL"] = "test"
+        self.git("push", str(remote), "HEAD:refs/heads/linked", repo=worktree, expected=1)
+        self.git("show-ref", "--verify", "refs/heads/linked", repo=remote, expected=128)
+        self.assertEqual(self.swift_calls()[-1]["cwd"], str(worktree))
 
 
 if __name__ == "__main__":
