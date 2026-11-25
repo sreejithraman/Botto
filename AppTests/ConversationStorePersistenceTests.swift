@@ -110,6 +110,7 @@ import BottoCore
 
     private func t3Setup(token: String = "original") -> ConnectionConfiguration {
         .init(serverURL: URL(string: "https://saved.invalid")!, installID: "test-install",
-              t3: .init(environmentID: "test-install", accessToken: token, projectID: "milo"))
+              t3: .init(environmentID: "test-install", accessToken: token, projectID: "milo",
+                        workspaceRoot: "/host/.botto/bots/milo"))
     }
 }

@@ -391,8 +391,10 @@ import UIKit
 
     @Test(arguments: Replacement.allCases)
     func replacingSetupOnlyCarriesDraftsToTheSameT3Workspace(_ replacement: Replacement) async throws {
-        let original = t3Configuration()
+        var original = t3Configuration()
+        original.t3?.workspaceRoot = "/host/.botto/bots/main"
         var candidate = t3Configuration()
+        candidate.t3?.workspaceRoot = original.t3?.workspaceRoot
         candidate.t3?.accessToken = "rotated-fixture-token"
         switch replacement {
         case .differentAddress: candidate.serverURL = try #require(URL(string: "https://other.example"))

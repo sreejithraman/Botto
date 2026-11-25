@@ -8,6 +8,7 @@ struct T3Workspace: View {
     let presentation: WorkspacePresentation
     let rootCovered: Bool
     let onSettings: () -> Void
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editing = ComposerEditingHandle()

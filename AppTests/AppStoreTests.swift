@@ -287,9 +287,11 @@ import BottoCore
 
     @Test func failedCachePreparationLeavesTheSavedConnectionAndHistoryIntact() async throws {
         let old = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!, installID: "test-install",
-            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo"))
+            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         let candidate = ConnectionConfiguration(serverURL: old.serverURL,
-            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo"))
+            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         let cacheURL = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                   appropriateFor: nil, create: true)
             .appendingPathComponent("Botto/\(candidate.id.uuidString).json")
@@ -385,9 +387,11 @@ import BottoCore
 
     @Test func failedCredentialCommitRestoresAnExistingCandidateCacheAndNeverPrunes() async throws {
         let old = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!, installID: "test-install",
-            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo"))
+            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         let candidate = ConnectionConfiguration(serverURL: old.serverURL,
-            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo"))
+            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
         var cached = LocalHistory(); try cached.fixtureDraft("Existing candidate history", profile: "milo")
         try cached.save(for: candidate.id)

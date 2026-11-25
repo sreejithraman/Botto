@@ -130,7 +130,8 @@ import BottoCore
             return T3ChannelSummary(id: id, title: titles[key] ?? "", isMain: id == mainID,
                 isPinned: pinned.contains(id), isArchived: archived.contains(id),
                 isUnread: updatedAt.map { $0 > (visited[id] ?? .distantPast) } ?? false,
-                status: status(chat), preview: chat.messages.last?.text ?? "", updatedAt: updatedAt)
+                status: status(chat), preview: chat.messages.last?.text ?? "", updatedAt: updatedAt,
+                hasMessages: !chat.messages.isEmpty)
         }
     }
 
@@ -139,19 +140,30 @@ import BottoCore
         return .init(manifest: manifest, soulMarkdown: soul, memoryMarkdown: memory, skills: [], workspaceRoot: "")
     }
 
-    func saveSoul(_ markdown: String) async throws {
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws {
         try requireProfile(ExactID(bot.id))
+        if let expected, !soul.utf8.elementsEqual(expected.utf8) { throw T3ServiceError.proseChanged }
         soul = markdown
     }
 
-    func saveMemory(_ markdown: String) async throws {
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws {
         try requireProfile(ExactID(bot.id))
+        if let expected, !memory.utf8.elementsEqual(expected.utf8) { throw T3ServiceError.proseChanged }
         memory = markdown
     }
 
     func saveManifest(_ manifest: T3BotManifest) async throws {
         try requireProfile(ExactID(bot.id))
         self.manifest = manifest
+    }
+
+    func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
+        try requireProfile(ExactID(bot.id))
+        guard option == nil else { throw T3ServiceError.unsupported }
+        manifest.providerInstanceID = nil
+        manifest.model = nil
+        bot.model = nil
+        return manifest
     }
 
     func createChat(title: String?) async throws -> CreatedSession {
