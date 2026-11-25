@@ -77,14 +77,5 @@ The bundled `pele-provenance.json` records package integrity, source pins,
 checksums, and the controlled render options. No diagram scripts, fonts, or
 assets download at runtime.
 
-The proposed native-session observer and explicit-profile installer patch in
-`Push/upstream` modifies official Hermes Agent source at revision
-`fcc26fbd9f1641755e49793d7ed608f3b7214c3d`. Its upstream MIT notice, copyright
-(c) 2025 Nous Research, is preserved in
-[Push/upstream/LICENSE](Push/upstream/LICENSE). The patch is a development
-prerequisite for optional notifications, not a released Hermes capability.
-
-Botto's push plugin and relay retain their existing MIT notices in
-[Push/plugin/LICENSE](Push/plugin/LICENSE) and
-[Push/relay/LICENSE](Push/relay/LICENSE). Historical project names in copyright
-notices identify the original authorship and are preserved.
+Botto's push relay retains its [MIT notice](Push/relay/LICENSE). Historical
+project names in copyright notices identify the original authorship.

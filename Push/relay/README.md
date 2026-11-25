@@ -2,8 +2,8 @@
 
 The Cloudflare implementation of [Botto push protocol v1](../PROTOCOL.md).
 It authenticates installation-scoped lifecycle requests and forwards sealed
-per-device previews to Apple Push Notification service. The relay cannot
-decrypt previews and does not hold Hermes login credentials.
+per-device previews to Apple Push Notification service. Preview keys and
+T3 credentials stay with Botto.
 
 ## Local checks
 
@@ -86,9 +86,10 @@ test installs at real users.
 
 The first deployment creates the `INSTALLATIONS` SQLite Durable Object
 namespace and the request-rate-limit binding. Keep the migration history on
-subsequent deployments. Configure the deployed HTTPS URL on the Hermes plugin;
-there is no assumed production endpoint in this repository. The phone enrolls
-through its existing authenticated Hermes session, not with a relay capability.
+subsequent deployments. Configure the deployed HTTPS origin in BottoMac using
+the [notification setup guide](../../docs/push-notifications.md#owner-operated-setup).
+The phone uses a device-specific notification code to enroll with BottoMac.
+BottoMac holds the relay credential and registers the phone with the relay.
 
 Leave request/body/header logging and traces disabled. The Worker emits no
 application logs. Cloudflare still processes delivery metadata. A custom domain
@@ -168,9 +169,8 @@ Durable Object request; it is never persisted.
 
 The relay sees installation/device/event/chat digests, event category, timestamps,
 message size, token, environment, and bundle identity. The preview body and exact
-Hermes routing identity stay encrypted. Even when previews are disabled, retain
-the host's routing-only ciphertext so tapping can open the correct chat; do not
-strip it from the APNs payload.
+T3 routing identity stay encrypted. Keep routing-only ciphertext in the APNs
+payload so a tap can open the correct Space.
 
 ## Sources and reuse
 

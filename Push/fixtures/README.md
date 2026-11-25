@@ -1,8 +1,7 @@
 # Public notification fixtures
 
-These JSON files and `plugin/tests/fixtures/encrypted-preview.json` contain
-synthetic routing identities, fixed test keys, and fixed test nonces. They do
-not contain a real installation capability, APNs token, or private chat.
+`payload-boundary.json` contains synthetic routing identities, a fixed test
+key, and a fixed test nonce.
 
 The AES-256-GCM boxes use Python `cryptography` AESGCM and Botto v1 additional
 data. `sealed` is base64 of the 12-byte nonce followed by ciphertext and tag.
@@ -41,6 +40,6 @@ Swift decrypts this box independently of the Python producer.
 
 The boundary fixture holds a 2,598-byte plaintext, 2,626-byte combined box,
 and 3,504-character base64 string. The full Botto APNs payload is 3,970 bytes.
-Python tests check production encryption and fallback; Swift checks decryption
-and exact long destinations; relay tests check the complete provider payload.
-This demonstrates interoperability and size limits, not real Apple delivery.
+Swift tests check decryption and exact long destinations. Relay tests check
+the complete provider payload. These checks establish interoperability and
+size limits.
