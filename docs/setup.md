@@ -190,7 +190,8 @@ setup guide.
 
 ## 5. Ask Hermes to help, or use an address
 
-In Botto, choose **Connect your Hermes**, then **Copy prompt** or **Share**.
+In Botto, choose **Pair with your Mac**, then **Use a Hermes server**, then
+**Copy prompt** or **Share**.
 Send the text in the chat where you already use Hermes. **Preview prompt** opens the
 complete instructions in a bottom sheet. Expand it to read more, then swipe down
 to close it.

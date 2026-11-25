@@ -656,6 +656,175 @@ import UIKit
         #expect(T3RoutineSchedule.summary("*/5 * * * *", calendar: calendar, locale: locale) == "Cron · */5 * * * *")
     }
 
+    // MARK: First run
+
+    @Test func everyNewConnectionStartsWithPairingAMac() throws {
+        let t3 = t3Configuration()
+        var hermes = t3
+        hermes.t3 = nil
+        // A fresh install, a paired workspace and the demo all pair with a Mac.
+        #expect(ConnectionBackend.initial(input: "", saved: nil, isDemo: false) == .t3)
+        #expect(ConnectionBackend.initial(input: "", saved: t3, isDemo: false) == .t3)
+        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: true) == .t3)
+        #expect(ConnectionBackend.initial(input: "http://192.168.1.10:3774/pair#token=A", saved: hermes, isDemo: false) == .t3)
+        // Someone already on Hermes, or opening a Hermes link, still gets that page.
+        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: false) == .hermes)
+        #expect(ConnectionBackend.initial(input: "botto://hermes/connect?url=https%3A%2F%2Fhost.example", saved: nil, isDemo: false) == .hermes)
+        #expect(ConnectionBackend.named(by: "https://host.example") == nil)
+        #expect(ConnectionBackend.named(by: "hermes://connect?url=https%3A%2F%2Fhost.example") == .hermes)
+    }
+
+    @Test func freshInstallOpensOnBottoAndPairsWithoutNamingHermes() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        await store.start()
+        #expect(store.configuration == nil)
+        try await withHosted(RootView(store: store)) { window in
+            let welcome = try await labels(in: window) { $0.contains("Pair with your Mac") }
+            #expect(welcome.contains("Explore the demo"))
+            #expect(!welcome.contains { $0.localizedCaseInsensitiveContains("Hermes") || $0.contains("T3") })
+        }
+        try await withHosted(ConnectionView(store: store)) { window in
+            let pairing = try await labels(in: window) { $0.contains("Scan the code") }
+            #expect(pairing.contains("Find Botto on your Mac"))
+            #expect(!pairing.contains { $0.contains("T3 Code") || $0.localizedCaseInsensitiveContains("connect your hermes") })
+        }
+    }
+
+    @Test func pairingStopsAtTheAddressAndAsksBeforeUnencryptedLinks() throws {
+        for (link, origin) in [("http://192.168.1.10:3774/pair#token=Ab%2B", "http://192.168.1.10:3774"),
+                               ("http://100.64.1.2:3774/pair#token=A", "http://100.64.1.2:3774"),
+                               ("t3code://pair?pairingUrl=http%3A%2F%2F10.0.0.4%3A3774%2Fpair%23token%3DA", "http://10.0.0.4:3774")] {
+            let review = try T3PairingReview(link)
+            #expect(review.origin.absoluteString == origin)
+            #expect(!review.isEncrypted)
+            #expect(throws: PairingAddress.Failure.insecureHTTP) { try review.destination(allowingHTTP: false) }
+            #expect(try review.destination(allowingHTTP: true) == review.origin)
+        }
+        #expect(try T3PairingReview("http://192.168.1.10:3774/pair#token=Ab%2B").credential == "Ab+")
+        let tunnel = try T3PairingReview("https://botto.example.com/pair#token=A")
+        #expect(tunnel.isEncrypted)
+        #expect(try tunnel.destination(allowingHTTP: false).absoluteString == "https://botto.example.com")
+        // HTTP outside the local network is refused before there is anything to allow.
+        #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://botto.example.com/pair#token=A") }
+        #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://8.8.8.8:3774/pair#token=A") }
+        #expect(throws: T3PairingError.missingCredential) { try T3PairingReview("https://botto.example.com") }
+        #expect(try T3PairingReview("https://botto.example.com", code: "typed").credential == "typed")
+        #expect(T3PairingReview.message(for: T3PairingError.httpStatus(401)).contains("expired"))
+        #expect(!T3PairingReview.message(for: T3PairingError.missingCredential).contains("T3"))
+    }
+
+    @Test func firstRunNamesTheBotAndItsMainSpaceAndSavesTheFace() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService(fresh: true)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        #expect(store.needsT3BotSetup)
+
+        try await withHosted(T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})) { window in
+            let page = try await labels(in: window) { $0.contains("Meet your new bot") }
+            #expect(page.contains("Say hello to Botto"))
+            #expect(page.contains("Its main space gets this name too."))
+
+            // A failed rename keeps the page, so it can simply be tried again. The choices are already safe.
+            service.failsRename = true
+            await #expect(throws: HermesServiceError.uncertain) {
+                try await store.setUpT3Bot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
+            }
+            #expect(service.manifest.displayName == "Miso")
+            #expect(store.needsT3BotSetup)
+            _ = try await labels(in: window) { $0.contains("Meet your new bot") }
+
+            service.failsRename = false
+            try await store.setUpT3Bot(name: " Miso ", face: BotFace(shape: .cloud, color: "#f97316"))
+            #expect(!store.needsT3BotSetup)
+            _ = try await labels(in: window) { !$0.contains("Meet your new bot") }
+        }
+        #expect(service.renames == ["general": "Miso"])
+        #expect(store.primaryT3Bot?.name == "Miso")
+        #expect(store.primaryT3Bot?.appearance?.shape == .cloud)
+        #expect(store.t3Channels.first(where: \.isMain)?.displayTitle == "Miso")
+        // What bot.json holds.
+        let saved = try JSONDecoder().decode(T3BotManifest.self, from: Data(T3BotBootstrap.manifestJSON(service.manifest).utf8))
+        #expect(saved.displayName == "Miso")
+        #expect(saved.avatar?.shape == .cloud)
+        #expect(saved.avatar?.color == BotAvatarColors.preset(for: "#f97316")?.shared)
+    }
+
+    /// The main space can beat the bot list, or wait for a host that is still looking for its providers.
+    @Test(arguments: [true, false]) func firstRunEndsInTheMainSpace(whenItArrivesFirst early: Bool) async throws {
+        try NativeAccessibilityRuntime.enable()
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService(fresh: true, mainSpace: early)
+        // Real answers are slow enough for launch to see each half-loaded step.
+        service.latency = .milliseconds(150)
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+
+        try await withHosted(T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})) { window in
+            await store.start()
+            _ = try await labels(in: window) { $0.contains("Meet your new bot") }
+            if !early {
+                #expect(store.t3Channels.isEmpty)
+                service.makeMainSpace()
+                service.onEvent?(.botsChanged)
+            }
+            let deadline = ContinuousClock.now + .seconds(10)
+            while store.t3Channels.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            try #require(!store.t3Channels.isEmpty, "The main space never reached the store")
+            try await store.setUpT3Bot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
+            _ = try await labels(in: window) { $0.contains { $0.contains("Chat in general") } }
+            #expect(store.selectedT3ChannelID == "general")
+        }
+    }
+
+    @Test func aBotSomeoneAlreadyKnowsSkipsFirstRun() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        #expect(store.isT3Workspace)
+        #expect(!store.needsT3BotSetup)
+    }
+
+    private func withHosted(_ view: some View, _ body: (UIWindow) async throws -> Void) async throws {
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: view)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        try await body(window)
+    }
+
+    /// Everything the hosted view reads out, once it satisfies `ready`.
+    private func labels(in window: UIWindow, until ready: (Set<String>) -> Bool) async throws -> Set<String> {
+        func walk(_ object: NSObject, into found: inout Set<String>, seen: inout Set<ObjectIdentifier>) {
+            guard seen.insert(ObjectIdentifier(object)).inserted else { return }
+            if let label = object.accessibilityLabel, !label.isEmpty { found.insert(label) }
+            var children: [NSObject] = (object as? UIView)?.subviews ?? []
+            children += ((object.accessibilityElements ?? []) + (object.automationElements ?? [])).compactMap { $0 as? NSObject }
+            let count = object.accessibilityElementCount()
+            if count > 0, count < 4096 { children += (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
+            for child in children { walk(child, into: &found, seen: &seen) }
+        }
+        let deadline = ContinuousClock.now + .seconds(15)
+        var found: Set<String> = []
+        while ContinuousClock.now < deadline {
+            window.layoutIfNeeded()
+            found = []
+            var seen: Set<ObjectIdentifier> = []
+            walk(window, into: &found, seen: &seen)
+            if !found.isEmpty, ready(found) { return found }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        Issue.record("The hosted view never settled: \(found.sorted())")
+        return found
+    }
+
     private func t3Configuration() -> ConnectionConfiguration {
         .init(serverURL: URL(string: "https://studio.example")!, installID: "studio-id",
               t3: .init(environmentID: "studio-id", label: "Studio", accessToken: "fixture-only", projectID: "bot-project"))
@@ -679,7 +848,10 @@ import UIKit
     private(set) var createdThreads: [String] = []
     private(set) var sent: [String: [String]] = [:]
     private var routines: [T3ScheduledRoutine] = []
-    private var manifest = T3BotManifest(displayName: "Studio Bot")
+    private(set) var manifest = T3BotManifest(displayName: "Studio Bot")
+    var failsRename = false
+    var latency: Duration = .zero
+    private(set) var renames: [String: String] = [:]
     private var soul = "# Soul"
     private var memory = "# Memory"
     private let issuer = ConversationIssuer<SessionIdentity>()
@@ -693,6 +865,20 @@ import UIKit
               status: .waiting, preview: "Release notes", updatedAt: nil, providerInstanceID: "claude", model: "claude-test"),
     ]
 
+    /// A fresh workspace holds only the main space its first connection made.
+    init(fresh: Bool = false, mainSpace: Bool = true) {
+        guard fresh else { return }
+        manifest = T3BotManifest(displayName: "Botto")
+        currentT3Channels = []
+        if mainSpace { makeMainSpace() }
+    }
+
+    func makeMainSpace() {
+        manifest.mainThreadID = "general"
+        currentT3Channels = [.init(id: "general", title: "Botto", isMain: true, isPinned: false, isArchived: false,
+                                   isUnread: false, status: .idle, preview: "", updatedAt: nil)]
+    }
+
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
         if let connectError { throw connectError }
         if let resolvedPairing {
@@ -704,9 +890,12 @@ import UIKit
     }
     func disconnect() { disconnects += 1; issuer.retireAttachment() }
     func bots() async throws -> [BotProfile] {
-        [.init(id: profile.text, name: manifest.displayName, description: manifest.description, model: manifest.model)]
+        try await Task.sleep(for: latency)
+        return [.init(id: profile.text, name: manifest.displayName, description: manifest.description, model: manifest.model,
+               appearance: manifest.avatar)]
     }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
+        try await Task.sleep(for: latency)
         let summaries = try currentT3Channels.map { channel in
             let thread = try ExactID(channel.id)
             return SessionSummary(identity: .init(profile: profile, root: thread, stored: thread, aliases: []),
@@ -728,6 +917,7 @@ import UIKit
         default:
             throw T3ServiceError.missingChannel
         }
+        try await Task.sleep(for: latency * 3)
         let thread = identity.stored.text
         let snapshot = Conversation(id: thread, storedID: thread, profileID: profile.text,
                                     messages: [.init(id: "reply", role: .assistant, text: "Chat in \(thread)")])
@@ -809,7 +999,15 @@ import UIKit
         if let name = edit.name { manifest.displayName = name }
         return try await bots()[0]
     }
-    func renameChannel(threadID: String, title: String) async throws { throw T3ServiceError.unsupported }
+    func renameChannel(threadID: String, title: String) async throws {
+        if failsRename { throw HermesServiceError.uncertain }
+        renames[threadID] = title
+        currentT3Channels = currentT3Channels.map { space in
+            guard space.id == threadID else { return space }
+            return .init(id: space.id, title: title, isMain: space.isMain, isPinned: space.isPinned, isArchived: space.isArchived,
+                         isUnread: space.isUnread, status: space.status, preview: space.preview, updatedAt: space.updatedAt)
+        }
+    }
     func setChannelPinned(threadID: String, pinned: Bool) async throws { throw T3ServiceError.unsupported }
     func archiveChannel(threadID: String, archived: Bool) async throws { throw T3ServiceError.unsupported }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw T3ServiceError.unsupported }

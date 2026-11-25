@@ -1,0 +1,321 @@
+import SwiftUI
+import BottoCore
+
+/// Pairs this phone with Botto on a Mac: scan or paste its link, look over the address, then connect.
+/// Nothing is sent until the address has been reviewed.
+struct T3PairingView: View {
+    let store: AppStore
+    let onUseHermes: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var input: String
+    @State private var code = ""
+    @State private var review: T3PairingReview?
+    @State private var allowsHTTP = false
+    /// A one-time code that was already redeemed, so a retry after a failed connection doesn't spend it twice.
+    @State private var paired: ConnectionConfiguration?
+    @State private var showsScanner = false
+    @State private var typesAddress: Bool
+    @State private var error: String?
+    @State private var isConnecting = false
+    @State private var connectionTask: Task<Void, Never>?
+    @State private var attemptID = UUID()
+
+    init(store: AppStore, input: String = "", onUseHermes: @escaping (String) -> Void) {
+        self.store = store
+        self.onUseHermes = onUseHermes
+        let saved = store.isT3Workspace ? store.configuration?.serverURL.absoluteString ?? "" : ""
+        _input = State(initialValue: input.isEmpty ? saved : input)
+        _typesAddress = State(initialValue: !input.isEmpty)
+    }
+
+    var body: some View {
+        ScrollView {
+            Group {
+                if let review { reviewPage(review) } else { linkPage }
+            }
+            .frame(maxWidth: 480)
+            .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 32)
+            .frame(maxWidth: .infinity)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDismissesKeyboard(.interactively)
+        .background(BottoTheme.paper, ignoresSafeAreaEdges: .all)
+        .bottoNavigationChrome()
+        .navigationTitle("Pair with your Mac").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { cancelAttempt(); dismiss() }
+            }
+        }
+        .sheet(isPresented: $showsScanner) {
+            PairingScannerView(isT3: true) { scanned in
+                showsScanner = false
+                receive(scanned)
+            }
+        }
+        .interactiveDismissDisabled(isConnecting)
+        .onAppear {
+            // A link handed over from elsewhere still stops at the address review.
+            if review == nil, error == nil, T3PairingReview.isPairingLink(input) { reviewInput() }
+        }
+        .onDisappear { cancelAttempt() }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { cancelAttempt() } }
+    }
+
+    // MARK: Link
+
+    private var linkPage: some View {
+        VStack(spacing: 0) {
+            BotAvatarMark(profile: BottoBrand.squircle.profile, size: 96)
+                .accessibilityHidden(true)
+            Text("Find Botto on your Mac")
+                .font(.system(.title, design: .rounded, weight: .heavy))
+                .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.top, 18)
+            Text("Open Botto there and choose Pair Phone from the Engine menu. Then scan the code it shows.")
+                .font(.body).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+            if let error { notice(error).padding(.top, 20) }
+            Button { showsScanner = true } label: {
+                label("Scan the code", systemImage: "qrcode.viewfinder")
+            }
+            .buttonStyle(BottoPrimaryButtonStyle())
+            .accessibilityIdentifier("t3-pair-scan")
+            .padding(.top, 28)
+            HStack(spacing: 12) {
+                Text("Have the link?").font(.subheadline).foregroundStyle(.secondary)
+                PasteButton(payloadType: String.self) { values in
+                    if let value = values.first { receive(value) }
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonBorderShape(.capsule)
+                .tint(BottoTheme.action)
+            }
+            .padding(.top, 14)
+            typedAddress.padding(.top, 20)
+            Text("Your phone talks straight to your Mac over Wi-Fi, Tailscale, or your own tunnel. No account needed.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 24)
+            Button("Use a Hermes server") { onUseHermes("") }
+                .font(.footnote).foregroundStyle(.secondary)
+                .frame(minHeight: 44)
+                .padding(.top, 8)
+        }
+    }
+
+    private var typedAddress: some View {
+        VStack(spacing: 12) {
+            Button { withAnimation(.snappy) { typesAddress.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Text("Type it instead")
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(typesAddress ? 90 : 0))
+                }
+                .font(.subheadline.weight(.medium)).foregroundStyle(BottoTheme.action)
+                .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(typesAddress ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("t3-pair-type")
+            if typesAddress {
+                VStack(spacing: 10) {
+                    field {
+                        TextField("Pairing link or address", text: $input, axis: .vertical)
+                            .keyboardType(.URL).textContentType(.URL)
+                            .privacySensitive()
+                            .accessibilityIdentifier("t3-pair-address")
+                    }
+                    if !T3PairingReview.isPairingLink(input) {
+                        field {
+                            SecureField("Pairing code", text: $code)
+                                .privacySensitive()
+                                .accessibilityIdentifier("t3-pair-code")
+                        }
+                    }
+                    Button("Review address", action: reviewInput)
+                        .buttonStyle(BottoPillButtonStyle())
+                        .disabled(input.isEmpty)
+                        .accessibilityIdentifier("t3-pair-review")
+                }
+            }
+        }
+    }
+
+    private func field(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .textInputAutocapitalization(.never).autocorrectionDisabled()
+            .padding(.horizontal, 16).padding(.vertical, 12).frame(minHeight: 50)
+            .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    // MARK: Review
+
+    private func reviewPage(_ review: T3PairingReview) -> some View {
+        VStack(spacing: 0) {
+            Image(systemName: review.isEncrypted ? "lock.fill" : "network")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(BottoTheme.action)
+                .frame(width: 76, height: 76)
+                .background(BottoTheme.selection, in: Circle())
+                .accessibilityHidden(true)
+            Text("Is this your Mac?")
+                .font(.system(.title, design: .rounded, weight: .heavy))
+                .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.top, 18)
+            VStack(spacing: 6) {
+                Text(review.origin.absoluteString)
+                    .font(.headline).textSelection(.enabled)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("t3-pair-destination")
+                Text(review.isEncrypted ? "Secure connection" : "Local connection, not encrypted")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity)
+            .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(.top, 20)
+            Text("Continue only if you recognize this address. Your pairing code is sent there.")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 12)
+            if !review.isEncrypted { httpChoice.padding(.top, 18) }
+            if let error { notice(error).padding(.top, 18) }
+            Button { connect(review) } label: {
+                label(isConnecting ? "Connecting…" : "Connect", systemImage: nil)
+            }
+            .buttonStyle(BottoPrimaryButtonStyle())
+            .disabled(isConnecting || !(review.isEncrypted || allowsHTTP))
+            .accessibilityIdentifier("t3-pair-connect")
+            .padding(.top, 24)
+            Button("Change address") { clearReview() }
+                .font(.subheadline.weight(.medium)).foregroundStyle(BottoTheme.action)
+                .frame(minHeight: 44)
+                .disabled(isConnecting)
+                .padding(.top, 4)
+        }
+    }
+
+    private var httpChoice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Allow an HTTP connection", isOn: $allowsHTTP)
+                .font(.body.weight(.semibold))
+                .tint(BottoTheme.action)
+                .disabled(isConnecting)
+                .accessibilityIdentifier("t3-pair-allow-http")
+            Text("HTTP sends pairing details and messages without encryption. Turn it on only for a trusted LAN or Tailscale address.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func notice(_ message: String) -> some View {
+        InlineNotice(message: message) { error = nil }
+            .frame(maxWidth: .infinity)
+    }
+
+    private func label(_ title: LocalizedStringKey, systemImage: String?) -> some View {
+        HStack(spacing: 10) {
+            if let systemImage { Image(systemName: systemImage).accessibilityHidden(true) }
+            Text(title).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 24).padding(.vertical, 14)
+    }
+
+    // MARK: Actions
+
+    private func receive(_ text: String) {
+        clearReview()
+        input = text
+        code = ""
+        reviewInput()
+    }
+
+    private func reviewInput() {
+        // A Hermes code has its own page and review.
+        if ConnectionBackend.named(by: input) == .hermes { return onUseHermes(input) }
+        error = nil
+        do { review = try T3PairingReview(input, code: code) }
+        catch {
+            // Leave what was read where it can be corrected.
+            typesAddress = true
+            self.error = T3PairingReview.message(for: error)
+        }
+    }
+
+    /// A new address is a new decision, so it never inherits the last one's permission.
+    private func clearReview() {
+        cancelAttempt()
+        review = nil
+        paired = nil
+        allowsHTTP = false
+        error = nil
+    }
+
+    private func connect(_ review: T3PairingReview) {
+        guard !isConnecting else { return }
+        error = nil
+        let destination: URL
+        do { destination = try review.destination(allowingHTTP: allowsHTTP) }
+        catch { self.error = T3PairingReview.message(for: error); return }
+        isConnecting = true
+        let owner = UUID()
+        attemptID = owner
+        let existing = paired
+        connectionTask = Task { @MainActor in
+            defer {
+                if attemptID == owner { isConnecting = false; connectionTask = nil }
+            }
+            do {
+                let candidate: ConnectionConfiguration
+                if let existing { candidate = existing }
+                else {
+                    candidate = try await T3PairingExchange().exchangePairingCredential(
+                        origin: destination, credential: review.credential, clientLabel: "Botto"
+                    ).configuration
+                    try Task.checkCancellation()
+                    guard attemptID == owner else { return }
+                    paired = candidate
+                }
+                try Task.checkCancellation()
+                guard attemptID == owner, scenePhase == .active else { return }
+                if store.isDemo { store.leaveDemo() }
+                var failure: (any Error)?
+                let connected = await store.connect(candidate, onConnected: {
+                    guard attemptID == owner, !Task.isCancelled, scenePhase == .active else { return }
+                    BottoHaptics.shared.play(.celebration)
+                }, onFailure: { failure = $0 })
+                guard !Task.isCancelled, attemptID == owner else { return }
+                if connected { dismiss() }
+                else {
+                    error = failure.map(T3PairingReview.message) ?? store.connectionError
+                        ?? String(localized: "Couldn’t connect. Check that Botto is awake on your Mac and try again.")
+                    if let failure, scenePhase == .active { BottoHaptics.shared.play(.failure(failure)) }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, attemptID == owner else { return }
+                self.error = T3PairingReview.message(for: error)
+                if scenePhase == .active { BottoHaptics.shared.play(.failure(error)) }
+            }
+        }
+    }
+
+    private func cancelAttempt() {
+        attemptID = UUID()
+        connectionTask?.cancel()
+        connectionTask = nil
+        isConnecting = false
+    }
+}

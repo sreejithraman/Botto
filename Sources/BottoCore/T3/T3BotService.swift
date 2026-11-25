@@ -105,6 +105,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     private var connectingRPC: T3RPCClient?
     private var reconnectTask: Task<Void, Never>?
     private var session: Session?
+    /// Bots whose prompts were rewritten for an edit that never reached bot.json.
+    private var unsettledPrompts: Set<ExactID> = []
 
     public init(transport: @escaping T3PairingExchange.HTTPTransport = T3PairingExchange.directHTTP,
                 webSocket: @escaping WebSocketFactory = { T3URLSessionWebSocketTransport(request: $0) },
@@ -333,6 +335,15 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return modelOptions(config).map(\.option)
     }
 
+    public func providers() async throws -> [T3ProviderStatus] {
+        let session = try requireSession()
+        let reply = try await session.rpc.call("server.refreshProviders")
+        try check(session)
+        guard let providers = reply["providers"].list else { throw T3ServiceError.invalidResponse }
+        session.config["providers"] = .array(providers)
+        return providers.compactMap(T3ProviderStatus.init)
+    }
+
     public func readProjectFile(relativePath: String) async throws -> String {
         guard let contents = try await readFile(relativePath, in: requireSession()) else {
             throw T3ServiceError.invalidResponse
@@ -504,6 +515,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                 if let home = try currentMain(session) ?? T3ProjectionMapper.mostRecent(directory(session).channels) {
                     identity = try T3ProjectionMapper.identity(profile: profile, threadID: home.id)
                 } else {
+                    // Nobody asked for this space, so it isn't made where only a signed-out provider could answer.
+                    guard modelSelection(session, allowingSignedOut: false) != .null else { throw T3ServiceError.missingModel }
                     identity = try await createThread(title: nil, operationID: UUID(), in: session).summary.identity
                 }
             }
@@ -857,11 +870,26 @@ private extension T3BotService {
             try update(&manifest)
             manifest.displayName = try Self.name(manifest.displayName)
             // Looks, models and spaces never touch the prompt; only what it actually says about the bot does.
-            if T3BotBootstrap.agentsMarkdown(manifest) != T3BotBootstrap.agentsMarkdown(previous) {
+            // bot.json comes last, so a retry still sees what changed and writes the prompts again.
+            if T3BotBootstrap.agentsMarkdown(manifest) != T3BotBootstrap.agentsMarkdown(previous)
+                || service.unsettledPrompts.contains(session.profile) {
+                service.unsettledPrompts.insert(session.profile)
                 try await service.writeFile("AGENTS.md", contents: T3BotBootstrap.agentsMarkdown(manifest), in: session)
                 try await service.writeFile("CLAUDE.md", contents: T3BotBootstrap.claudeMarkdown(manifest), in: session)
             }
             try await service.persistManifest(manifest, in: session)
+            service.unsettledPrompts.remove(session.profile)
+        }
+    }
+
+    /// While the bot waits to be set up, a space that changes may mean another device did it; bot.json says.
+    func catchUpOnSetup(_ session: Session) {
+        guard session.ready, T3FirstRun.needsBotSetup(profile(session), spaces: currentT3Channels) else { return }
+        Task { [weak self] in
+            try? await self?.queueManifest(session) { service in
+                session.manifest = try await service.readManifest(session)
+                service.publishDirectory(session)
+            }
         }
     }
 
@@ -901,7 +929,7 @@ private extension T3BotService {
             let generation = savedID.map { "replacement:" + $0 } ?? "initial"
             let id = T3ProjectionMapper.stableUUID("botto-main:\(session.profile.text):\(generation)").uuidString
             if session.shells[id] == nil, session.archivedShells[id] == nil {
-                guard service.modelSelection(session) != .null else { return }
+                guard service.modelSelection(session, allowingSignedOut: false) != .null else { return }
                 let name = manifest.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
                 do {
                     _ = try await service.createThread(title: name.isEmpty ? T3BotBootstrap.defaultManifest.displayName : name,
@@ -1019,7 +1047,10 @@ private extension T3BotService {
 
     func modelOptions(_ config: HermesJSON) -> [(option: T3ModelOption, isDefault: Bool)] {
         let providers = config["providers"].list ?? []
-        return providers.filter { $0["enabled"].flag == true && $0["installed"].flag == true }.flatMap { provider in
+        // A signed-out provider can't answer, so it never becomes a space's model.
+        return providers.filter {
+            $0["enabled"].flag == true && $0["installed"].flag == true && !T3ProviderStatus.isSignedOut($0)
+        }.flatMap { provider in
             guard let instance = provider["instanceId"].nonempty else { return [(T3ModelOption, Bool)]() }
             let name = provider["displayName"].nonempty ?? provider["driver"].nonempty ?? instance
             return (provider["models"].list ?? []).compactMap { model in
@@ -1031,16 +1062,19 @@ private extension T3BotService {
         }
     }
 
-    func modelSelection(_ session: Session) -> HermesJSON {
+    func modelSelection(_ session: Session, allowingSignedOut: Bool = true) -> HermesJSON {
         let manifest = Self.modelSelection(provider: session.manifest.providerInstanceID, model: session.manifest.model)
         let defaults = [manifest, session.project["defaultModelSelection"],
                         session.config["settings"]["defaultModelSelection"]]
-        if let selected = defaults.first(where: { $0["instanceId"].nonempty != nil && $0["model"].nonempty != nil }) {
-            return selected
-        }
+            .filter { $0["instanceId"].nonempty != nil && $0["model"].nonempty != nil }
+        let signedOut = (session.config["providers"].list ?? []).filter(T3ProviderStatus.isSignedOut).compactMap { $0["instanceId"].nonempty }
+        if let selected = defaults.first(where: { !signedOut.contains($0["instanceId"].nonempty ?? "") }) { return selected }
         let options = modelOptions(session.config)
-        let candidate = options.first(where: { $0.isDefault })?.option ?? options.first?.option
-        return Self.modelSelection(provider: candidate?.providerInstanceID, model: candidate?.modelID)
+        guard let candidate = options.first(where: { $0.isDefault })?.option ?? options.first?.option else {
+            // Nothing else works either, so the chosen one waits for its sign-in.
+            return allowingSignedOut ? defaults.first ?? .null : .null
+        }
+        return Self.modelSelection(provider: candidate.providerInstanceID, model: candidate.modelID)
     }
 
     func updateConfiguration(_ session: Session) {
@@ -1159,6 +1193,7 @@ private extension T3BotService {
         case "thread.updated":
             let shell = item["thread"]
             guard shell["projectId"].text == session.profile.text, let id = shell["id"].nonempty else { return }
+            catchUpOnSetup(session)
             if shell["archivedAt"] == .null {
                 session.shells[id] = shell
                 session.archivedShells.removeValue(forKey: id)

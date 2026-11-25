@@ -56,6 +56,28 @@ import Testing
         #expect(withFallback.channels.first?.isUnread == true)
     }
 
+    /// T3 sends no message text with a space, and opening one marks it read.
+    @Test func aSpaceRemembersItWasTalkedIn() throws {
+        let shells = try t3JSON("""
+        [{"id":"used","title":"Botto","status":"idle","latestVisibleMessage":null,"updatedAt":"2026-11-24T12:06:00Z",
+          "latestUserMessageAt":"2026-11-24T12:00:00Z","lastVisitedAt":"2026-11-24T12:06:00Z"},
+         {"id":"routine","title":"Botto","status":"idle","latestVisibleMessage":null,"updatedAt":"2026-11-24T12:05:00Z",
+          "latestRunCompletedAt":"2026-11-24T12:00:00Z","latestUserMessageAt":null,"lastVisitedAt":"2026-11-24T12:06:00Z"},
+         {"id":"fresh","title":"Botto","status":"idle","latestVisibleMessage":null,"updatedAt":"2026-11-24T12:04:00Z",
+          "latestRunCompletedAt":null,"latestUserMessageAt":null,"lastVisitedAt":"2026-11-24T12:06:00Z"}]
+        """)
+        let spaces = try T3ProjectionMapper.directory(shells.list ?? [], profile: ExactID("project"), observedAt: .distantPast).channels
+        #expect(spaces.map(\.id) == ["used", "routine", "fresh"])
+        #expect(spaces.allSatisfy { !$0.isUnread && $0.preview.isEmpty })
+        #expect(spaces.map(\.hasMessages) == [true, true, false])
+        let cached = try JSONDecoder().decode([T3ChannelSummary].self, from: JSONEncoder().encode(spaces))
+        #expect(cached == spaces)
+        #expect(spaces[0].replacingPreview("Hi").replacingPreview("").hasMessages)
+        let bot = BotProfile(id: "bot", name: "Botto")
+        #expect(!T3FirstRun.needsBotSetup(bot, spaces: [spaces[0]]))
+        #expect(T3FirstRun.needsBotSetup(bot, spaces: [spaces[2]]))
+    }
+
     @Test func titleSeedsAreOneShortLine() {
         #expect(T3ProjectionMapper.titleSeed("  Plan\n the   Kyoto trip ") == "Plan the Kyoto trip")
         #expect(T3ProjectionMapper.titleSeed(" \n ") == nil)
@@ -71,6 +93,7 @@ import Testing
         #expect(channel.isMain)
         #expect(channel.replacingPreview("Hi").isMain)
         #expect(channel.model == nil)
+        #expect(!channel.hasMessages)
         // Caches from before main spaces carry no isMain.
         let older = Data(##"{"id":"b","title":"New thread","isPinned":false,"isArchived":false,"isUnread":false,"status":"idle","preview":""}"##.utf8)
         let untitled = try JSONDecoder().decode(T3ChannelSummary.self, from: older)

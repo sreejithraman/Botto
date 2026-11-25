@@ -20,7 +20,7 @@ final class DeveloperToolsUITests: XCTestCase {
             visibleButton("Leave demo", in: app).tap()
             XCTAssertTrue(app.navigationBars["Avatar playground"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["Try in demo"].exists)
-            XCTAssertFalse(app.buttons["Connect your Hermes"].isHittable)
+            XCTAssertFalse(app.buttons["Pair with your Mac"].isHittable)
             app.buttons["Done"].tap()
             XCTAssertTrue(app.buttons["developer.hapticsPlayground"].waitForExistence(timeout: 5))
             app.buttons["developer.hapticsPlayground"].tap()

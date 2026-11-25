@@ -88,9 +88,11 @@ public struct T3ChannelSummary: Identifiable, Codable, Equatable, Sendable {
     /// The space's own model, from the host's thread row when it reports one.
     public let providerInstanceID: String?
     public let model: String?
+    /// Someone, or Botto, has said something here.
+    public let hasMessages: Bool
 
     public init(id: String, title: String, isMain: Bool = false, isPinned: Bool, isArchived: Bool, isUnread: Bool, status: BotStatus,
-                preview: String, updatedAt: Date?, providerInstanceID: String? = nil, model: String? = nil) {
+                preview: String, updatedAt: Date?, providerInstanceID: String? = nil, model: String? = nil, hasMessages: Bool = false) {
         self.id = id
         self.title = title
         self.isMain = isMain
@@ -102,22 +104,24 @@ public struct T3ChannelSummary: Identifiable, Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.providerInstanceID = providerInstanceID
         self.model = model
+        self.hasMessages = hasMessages || !preview.isEmpty || status != .idle || isUnread
     }
 
-    /// Caches saved before main spaces carry no `isMain`.
+    /// Older caches carry no `isMain` or `hasMessages`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        isMain = try container.decodeIfPresent(Bool.self, forKey: .isMain) ?? false
-        isPinned = try container.decode(Bool.self, forKey: .isPinned)
-        isArchived = try container.decode(Bool.self, forKey: .isArchived)
-        isUnread = try container.decode(Bool.self, forKey: .isUnread)
-        status = try container.decode(BotStatus.self, forKey: .status)
-        preview = try container.decode(String.self, forKey: .preview)
-        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
-        providerInstanceID = try container.decodeIfPresent(String.self, forKey: .providerInstanceID)
-        model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.init(id: try container.decode(String.self, forKey: .id),
+                  title: try container.decode(String.self, forKey: .title),
+                  isMain: try container.decodeIfPresent(Bool.self, forKey: .isMain) ?? false,
+                  isPinned: try container.decode(Bool.self, forKey: .isPinned),
+                  isArchived: try container.decode(Bool.self, forKey: .isArchived),
+                  isUnread: try container.decode(Bool.self, forKey: .isUnread),
+                  status: try container.decode(BotStatus.self, forKey: .status),
+                  preview: try container.decode(String.self, forKey: .preview),
+                  updatedAt: try container.decodeIfPresent(Date.self, forKey: .updatedAt),
+                  providerInstanceID: try container.decodeIfPresent(String.self, forKey: .providerInstanceID),
+                  model: try container.decodeIfPresent(String.self, forKey: .model),
+                  hasMessages: try container.decodeIfPresent(Bool.self, forKey: .hasMessages) ?? false)
     }
 
     /// A plain title: no `#`, and a friendly name while T3 has not titled the space yet.
@@ -135,7 +139,7 @@ public struct T3ChannelSummary: Identifiable, Codable, Equatable, Sendable {
     public func replacingPreview(_ preview: String) -> T3ChannelSummary {
         T3ChannelSummary(id: id, title: title, isMain: isMain, isPinned: isPinned, isArchived: isArchived, isUnread: isUnread,
                          status: status, preview: preview, updatedAt: updatedAt,
-                         providerInstanceID: providerInstanceID, model: model)
+                         providerInstanceID: providerInstanceID, model: model, hasMessages: hasMessages)
     }
 }
 
@@ -200,6 +204,8 @@ public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
     func markChannelVisited(threadID: String) async throws
     func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws
     func availableModels() async throws -> [T3ModelOption]
+    /// The host's model providers, looked for anew. What it remembers can miss a sign-in or sign-out.
+    func providers() async throws -> [T3ProviderStatus]
     func readProjectFile(relativePath: String) async throws -> String
     func listOutputs() async throws -> [T3OutputFile]
     func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact
@@ -215,6 +221,8 @@ public extension T3BotBrainControlling {
     func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
         throw T3ServiceError.unsupported
     }
+
+    func providers() async throws -> [T3ProviderStatus] { [] }
 
     func listOutputs() async throws -> [T3OutputFile] { [] }
 

@@ -647,6 +647,23 @@ import BottoCore
         _ = await refreshBots()
     }
 
+    /// The bot still waits for someone to name it and pick its face. Setup that stopped partway counts, so it can
+    /// be tried again.
+    var needsT3BotSetup: Bool {
+        guard let bot = primaryT3Bot else { return false }
+        return settingUpT3Bot == configuration?.id || T3FirstRun.needsBotSetup(bot, spaces: t3Channels)
+    }
+    /// The workspace whose setup started and hasn't finished.
+    private var settingUpT3Bot: UUID?
+
+    /// The first-run page: names the bot and its main space and keeps the face.
+    func setUpT3Bot(name: String, face: BotFace) async throws {
+        settingUpT3Bot = configuration?.id
+        try await withT3Service { try await $0.setUpBot(name: name, face: face) }
+        _ = await refreshBots()
+        settingUpT3Bot = nil
+    }
+
     /// The model new chats start with; nil lets the host choose.
     @discardableResult func setT3DefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
         let manifest = try await withT3Service { try await $0.setDefaultModel(option) }

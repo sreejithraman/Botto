@@ -30,7 +30,7 @@ enum T3ProjectionMapper {
                                     isUnread: latestMessageAt.map { $0 > visitedAt } ?? false,
                                     status: status(shell), preview: previewText, updatedAt: updatedAt,
                                     providerInstanceID: model["instanceId"].nonempty ?? model["provider"].nonempty,
-                                    model: model["model"].nonempty)
+                                    model: model["model"].nonempty, hasMessages: latestMessageAt != nil)
         }.sorted(by: listOrder)
         let entries = try channels.map { channel -> SessionSummary in
             SessionSummary(identity: try identity(profile: profile, threadID: channel.id), title: channel.displayTitle,

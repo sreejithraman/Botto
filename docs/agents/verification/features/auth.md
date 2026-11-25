@@ -9,7 +9,7 @@ replaced sign-in, same-account reauthentication, and changed-host rejection.
 
 ## How to get to it
 
-- `auth.e.connect`: welcome → **Connect your Hermes** → review address →
+- `auth.e.connect`: welcome → **Pair with your Mac** → **Use a Hermes server** → review address →
   **Username** / **Password** → **Connect**.
 - `auth.e.browser`: reviewed destination → **Continue in browser**.
 - `auth.e.access`: reviewed destination → **Advanced connection** →

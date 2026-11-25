@@ -9,8 +9,15 @@ review that preserves the current workspace.
 
 ## How to get to it
 
-- `start.e.welcome`: normal empty-data launch → **Connect your Hermes** or
+- `start.e.welcome`: normal empty-data launch → **Pair with your Mac** or
   **Explore the demo**.
+- `start.e.pair`: **Pair with your Mac** → **Scan the code**, **Paste**, or
+  **Type it instead** → review.
+- `start.e.hermes`: **Pair with your Mac** → **Use a Hermes server**. "Connect"
+  below means this form.
+- `start.e.first-bot`: pair a host whose bot is still the unnamed default, or
+  wake a new BottoMac, → **Meet your new bot**.
+- `start.e.provider`: BottoMac with neither Claude nor Codex signed in.
 - `start.e.address`: Connect → **Hermes server address or connection code** →
   **Review destination**. The form also has Paste.
 - `start.e.setup`: Connect → **Copy prompt**, **Share**, or **Preview prompt**.
@@ -36,7 +43,7 @@ Workflow `start.first-run`:
    Expect welcome, both primary actions reachable, and no saved-setup error.
    Proof: isolation record, screenshot, and semantic snapshot.
 2. `.a2` Repeat on small iPhone and iPad at accessibility XXXL; scroll the
-   introduction. Expect Connect and demo actions reachable above safe areas.
+   introduction. Expect **Pair with your Mac** and demo actions reachable above safe areas.
    VoiceOver must encounter the greeting, tagline, and clearly named actions without a trap.
    Proof: screenshots and spoken/focus-order record on each target.
 
@@ -50,6 +57,22 @@ Workflow `start.demo`:
    welcome or the previously saved connection; demo content must not replace
    that connection's cache. Fresh normal relaunch must load the prior durable
    setup, if seeded. Proof: before/after captures and fresh-launch readback.
+
+Workflow `start.pair` (disposable `t3 serve`, never `~/.botto`):
+
+1. `.a1` Enter a fresh BottoMac link. Expect the scheme, host and port under
+   review with no request sent yet. Public HTTP must be refused. Private or
+   Tailscale HTTP must need **Allow an HTTP connection**, off again for each new
+   address. Proof: review captures and an untouched host log.
+2. `.a2` Connect to a new host. Expect **Meet your new bot**; name it and choose a
+   face. Expect the same name on the bot, the main space and in `bot.json`, with
+   `avatar` saved. Relaunch, then open the other app; expect no second setup.
+   With both apps on the page and a main space made, finishing on one closes it
+   on the other with the new name and face, even under the offered name. On iPhone the page's **Settings** still opens Settings.
+   Proof: captures and the host's `bot.json`.
+3. `.a3` On BottoMac with no provider signed in, expect the guide to name each
+   provider's next step. Sign in, then return or reopen; expect the main space
+   under the chosen name. Proof: before and after captures.
 
 Workflow `start.address` (repeat from equivalent state through typed and Paste):
 

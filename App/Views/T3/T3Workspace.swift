@@ -25,6 +25,8 @@ struct T3Workspace: View {
     @State private var openingError: String?
     @State private var launched = false
     @State private var pendingBottoDestination: (workspace: ObjectIdentifier, destination: BottoDestination)?
+    /// First run holds the window until the bot is set up, through any reconnect in between.
+    @State private var introducing = false
 
     private enum BottoDestination { case space(T3ChannelSummary), settings }
 
@@ -38,6 +40,60 @@ struct T3Workspace: View {
     private var showsChat: Bool { !showsFresh && store.selectedBot != nil && store.selectedT3ChannelID != nil }
 
     var body: some View {
+        Group {
+            if introducing, let bot = store.primaryT3Bot {
+                T3FirstBotPage(store: store, bot: bot, onSettings: onSettings).transition(.opacity)
+            } else {
+                workspace
+            }
+        }
+        .onChange(of: introduction, initial: true) { _, introduction in
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                // Only a settled connection knows whether another device already set the bot up.
+                introducing = introduction.needed && (introducing || introduction.settled)
+            }
+        }
+        .background(BottoTheme.paper.ignoresSafeArea())
+        .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
+            BottoPage(store: store, outputs: outputs, drafts: brainDrafts, onOpenChat: { channel in
+                pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
+                showsBotto = false
+            }, onSettings: {
+                pendingBottoDestination = (ObjectIdentifier(store.chats), .settings)
+                showsBotto = false
+            })
+        }
+        .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
+        .sheet(isPresented: artifactBinding) { artifactReader }
+        .task(id: launchReady) {
+            await decideLaunch()
+        }
+        .task(id: mayPreload) {
+            guard mayPreload else { return }
+            await outputs.load(store)
+        }
+        .task(id: mayPreload) {
+            guard mayPreload else { return }
+            await store.loadT3ModelsIfNeeded()
+        }
+        .onChange(of: store.notificationNavigationRevision) { _, _ in
+            showConversation()
+            closeDrawerImmediately()
+        }
+        .onChange(of: rootCovered) { _, covered in if covered { editing.cancel() } }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { editing.cancel() } }
+    }
+
+    private struct Introduction: Equatable {
+        let needed: Bool
+        let settled: Bool
+    }
+
+    private var introduction: Introduction {
+        Introduction(needed: store.needsT3BotSetup, settled: store.isConnected && !store.isRefreshing)
+    }
+
+    private var workspace: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width * 0.86, 340)
             let progress = drawerProgress(width: width)
@@ -73,35 +129,6 @@ struct T3Workspace: View {
                     .accessibilityHidden(true)
             }
         }
-        .background(BottoTheme.paper.ignoresSafeArea())
-        .sheet(isPresented: $showsBotto, onDismiss: routeFromBotto) {
-            BottoPage(store: store, outputs: outputs, drafts: brainDrafts, onOpenChat: { channel in
-                pendingBottoDestination = (ObjectIdentifier(store.chats), .space(channel))
-                showsBotto = false
-            }, onSettings: {
-                pendingBottoDestination = (ObjectIdentifier(store.chats), .settings)
-                showsBotto = false
-            })
-        }
-        .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
-        .sheet(isPresented: artifactBinding) { artifactReader }
-        .task(id: launchReady) {
-            await decideLaunch()
-        }
-        .task(id: mayPreload) {
-            guard mayPreload else { return }
-            await outputs.load(store)
-        }
-        .task(id: mayPreload) {
-            guard mayPreload else { return }
-            await store.loadT3ModelsIfNeeded()
-        }
-        .onChange(of: store.notificationNavigationRevision) { _, _ in
-            showConversation()
-            closeDrawerImmediately()
-        }
-        .onChange(of: rootCovered) { _, covered in if covered { editing.cancel() } }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { editing.cancel() } }
     }
 
     // MARK: Surface
@@ -196,7 +223,9 @@ struct T3Workspace: View {
 
     private var launchReady: Bool {
         guard !conversationCovered, openingChat == nil, store.primaryT3Bot != nil else { return false }
-        return T3ChatShelf.spaces(store.t3Channels).main != nil || (store.isConnected && !store.isRefreshing)
+        // First run ends here too, once the bot has a name.
+        guard !(store.isConnected && store.needsT3BotSetup) else { return false }
+        return T3ChatShelf.spaces(store.t3Channels).main != nil || introduction.settled
             || (store.link == .offline && !store.t3Channels.isEmpty)
     }
 

@@ -19,6 +19,11 @@ struct OnboardingView: View {
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: 280)
+                            Text("A companion that lives on your Mac and comes along in your pocket.")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: 300)
                         }
                         .frame(maxWidth: 440)
                         Spacer(minLength: 48)
@@ -34,7 +39,7 @@ struct OnboardingView: View {
                 Button("Forget on this device", role: .destructive) { Task { await store.forgetConnectionWithPush() } }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
+                Text("Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and their spaces stay where they live.")
             }
         }
     }
@@ -47,7 +52,7 @@ struct OnboardingView: View {
                 savedSetupRecovery
             } else {
                 Button { store.showsConnection = true } label: {
-                    primaryLabel("Connect your Hermes")
+                    primaryLabel("Pair with your Mac")
                 }
                 .buttonStyle(BottoPrimaryButtonStyle())
             }

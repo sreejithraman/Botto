@@ -24,6 +24,9 @@ final class MacBottoStore {
         let root: String
     }
     private(set) var models: [T3ModelOption] = []
+    /// Nil until the engine has looked for providers on this Mac.
+    private(set) var providers: [T3ProviderStatus]?
+    private(set) var isCheckingProviders = false
     /// Files Botto saved under outputs/, loaded when something needs them.
     private(set) var outputs: [T3OutputFile]?
     private(set) var routines: [T3ScheduledRoutine]?
@@ -51,22 +54,46 @@ final class MacBottoStore {
         return bot?.status ?? .idle
     }
 
-    private let service = T3BotService()
+    /// Nobody has named this bot yet, so it introduces itself before anything else. Setup that stopped partway
+    /// stays up to be tried again.
+    var needsBotSetup: Bool {
+        isConnected && (settingUpBot || bot.map { T3FirstRun.needsBotSetup($0, spaces: channels) } ?? false)
+    }
+    private var settingUpBot = false
+    /// The last look failed, or found nothing that can answer yet.
+    var wantsProviderCheck: Bool { isConnected && (providers == nil || models.isEmpty || !providersNeedingSetup.isEmpty) }
+    /// Claude and Codex, when neither they nor any other provider can answer yet.
+    var providersNeedingSetup: [T3ProviderStatus] { isConnected ? T3FirstRun.providersNeedingSetup(providers ?? []) : [] }
+    /// Without a conversation there is nothing to keep on screen, so provider help can have the whole page.
+    var hasStartedTalking: Bool { channels.contains(where: \.hasMessages) }
+    /// The guide has the window's detail, so a new space has nowhere to open.
+    /// A first send keeps its page.
+    var showsProviderGuide: Bool { !providersNeedingSetup.isEmpty && !hasStartedTalking && !fresh.ownsFirstSend }
+    var canStartSpace: Bool { isConnected && !showsProviderGuide }
+
+    private let service: any T3BotBrainControlling
     private let exchange = T3PairingExchange()
     private let session: MacSessionPersistence
     private var connectionID = UUID()
     private var openID = UUID()
     private var sessionWrite: Task<Void, Never>?
 
-    init(session: MacSessionPersistence = MacSessionPersistence()) {
+    init(session: MacSessionPersistence = MacSessionPersistence(), service: any T3BotBrainControlling = T3BotService()) {
         self.session = session
+        self.service = service
         service.onEvent = { [weak self] event in self?.receive(event) }
     }
 
     // MARK: Connection
 
     func connect(to server: LocalT3ServerManager, pairingAgain: Bool = false) async {
-        guard server.state == .running, !isConnected, !isConnecting else { return }
+        guard server.state == .running else { return }
+        await connect(origin: server.loopbackOrigin, pairingAgain: pairingAgain) { try await self.pair(with: server, attempt: $0) }
+    }
+
+    /// Connects with the saved session, or with a newly paired one when there is none.
+    func connect(origin: URL, pairingAgain: Bool = false, pair: (_ attempt: UUID) async throws -> ConnectionConfiguration) async {
+        guard !isConnected, !isConnecting else { return }
         let attempt = UUID()
         connectionID = attempt
         error = nil
@@ -74,7 +101,6 @@ final class MacBottoStore {
         defer { if connectionID == attempt { isConnecting = false } }
 
         do {
-            let origin = server.loopbackOrigin
             let session = session
             await sessionWrite?.value
             let saved = pairingAgain ? nil : await Task.detached { session.load() }.value
@@ -82,7 +108,9 @@ final class MacBottoStore {
             if let data = saved, let stored = try? JSONDecoder().decode(T3Connection.self, from: data) {
                 _ = try await service.connect(configuration: .init(serverURL: origin, t3: stored))
             } else {
-                try await pairAndConnect(to: server, attempt: attempt)
+                let paired = try await pair(attempt)
+                try checkConnection(attempt)
+                _ = try await service.connect(configuration: paired)
             }
             try checkConnection(attempt)
             bot = try await service.bots().first
@@ -90,7 +118,7 @@ final class MacBottoStore {
             channels = service.currentT3Channels
             isConnected = true
             isConnecting = false
-            Task { await loadModels() }
+            lookAround()
             if selectedChannelID == nil, fresh.createdSpace != nil { return }
             // Reopen the space from before a restart, else one that needs attention, else the main space.
             // The new-space page only stands in when the host can't hold a main space yet.
@@ -118,6 +146,8 @@ final class MacBottoStore {
         openedConversation = nil
         brain = nil
         models = []
+        providers = nil
+        isCheckingProviders = false
         outputs = nil
         routines = nil
         isConnected = false
@@ -403,6 +433,38 @@ final class MacBottoStore {
         models = options
     }
 
+    /// Has the engine look for providers that work.
+    func loadProviders() async {
+        guard isConnected, !isCheckingProviders else { return }
+        let connection = connectionID
+        isCheckingProviders = true
+        defer { if connectionID == connection { isCheckingProviders = false } }
+        guard let found = try? await live({ try await service.providers() }), connectionID == connection else { return }
+        let hadNone = models.isEmpty || !providersNeedingSetup.isEmpty
+        let hadNoSpace = channels.isEmpty
+        providers = found
+        // A provider that just became ready brings its models, and with them the main space.
+        guard hadNone, providersNeedingSetup.isEmpty else { return }
+        await loadModels()
+        guard connectionID == connection else { return }
+        channels = service.currentT3Channels
+        // Someone on the new-space page keeps it.
+        if hadNoSpace { await openInitialSpace() }
+    }
+
+    private func openInitialSpace() async {
+        guard selectedChannelID == nil, !fresh.ownsFirstSend, let initial = T3ChatShelf.initialSpace(channels) else { return }
+        await openChannel(initial.id)
+    }
+
+    /// What this connection can think with.
+    private func lookAround() {
+        Task {
+            await loadModels()
+            await loadProviders()
+        }
+    }
+
     func loadOutputs() async {
         guard isConnected, let files = try? await live({ try await service.listOutputs() }) else { return }
         outputs = files
@@ -436,6 +498,20 @@ final class MacBottoStore {
     func renameBot(_ name: String) async throws {
         guard let bot else { throw T3ServiceError.disconnected }
         self.bot = try await live { try await service.updateProfile(.init(name: name), for: bot) }
+    }
+
+    /// The first-run page: names the bot and its main space and keeps the face.
+    func setUpBot(name: String, face: BotFace) async throws {
+        settingUpBot = true
+        let refreshed = try await live { () -> BotProfile? in
+            try await service.setUpBot(name: name, face: face)
+            return try await service.bots().first
+        }
+        if let refreshed { bot = refreshed }
+        channels = service.currentT3Channels
+        settingUpBot = false
+        // The main space can appear after connecting, and saying hello leads there.
+        await openInitialSpace()
     }
 
     func setLook(_ choice: BotAvatarChoice) async throws {
@@ -503,20 +579,15 @@ final class MacBottoStore {
         }
     }
 
-    private func pairAndConnect(to server: LocalT3ServerManager, attempt: UUID) async throws {
-        let configuration: ConnectionConfiguration
+    private func pair(with server: LocalT3ServerManager, attempt: UUID) async throws -> ConnectionConfiguration {
         if let startup = server.startupLinks.pairingURL {
             do {
-                configuration = try await redeem(startup, using: server.loopbackOrigin)
+                return try await redeem(startup, using: server.loopbackOrigin)
             } catch where Self.invalidPairingCredential(error) {
                 try checkConnection(attempt)
-                configuration = try await redeem(server.mintPairingLink(), using: server.loopbackOrigin)
             }
-        } else {
-            configuration = try await redeem(server.mintPairingLink(), using: server.loopbackOrigin)
         }
-        try checkConnection(attempt)
-        _ = try await service.connect(configuration: configuration)
+        return try await redeem(server.mintPairingLink(), using: server.loopbackOrigin)
     }
 
     private func redeem(_ rawLink: String, using origin: URL) async throws -> ConnectionConfiguration {
@@ -566,6 +637,8 @@ final class MacBottoStore {
                 bot = refreshed
             }
         case .connected:
+            // Connecting looks around on its own; a reconnection has to.
+            if !isConnecting { lookAround() }
             isConnected = true
             isConnecting = false
             error = nil
@@ -606,6 +679,8 @@ final class MacFreshDraft {
     private(set) var createdSpace: String?
     private(set) var isSubmitting = false
 
+    /// A first send runs, or its space waits for the message it didn't get.
+    var ownsFirstSend: Bool { isSubmitting || createdSpace != nil }
     var offersAutomaticModel: Bool { createdSpace == nil || model == nil }
 
     func selectModel(_ option: T3ModelOption?) {
