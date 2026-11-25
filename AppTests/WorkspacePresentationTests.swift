@@ -42,8 +42,7 @@ import BottoCore
         #expect(presentation.artifact == nil && session.file == nil && !session.isCurrent)
     }
     private func loaded(_ session: ArtifactPreviewSession) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while session.file == nil && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { session.file == nil }
         _ = try #require(session.file)
     }
 
@@ -257,10 +256,7 @@ import BottoCore
         let presentation = WorkspacePresentation()
         let session = try openFile(presentation: presentation, store: store, service: service)
         func failed(after count: Int) async throws {
-            let deadline = ContinuousClock.now + .seconds(5)
-            while (service.downloads != count || session.isLoading || session.errorMessage == nil) && ContinuousClock.now < deadline {
-                await Task.yield()
-            }
+            await waitWhile { service.downloads != count || session.isLoading || session.errorMessage == nil }
             #expect(service.downloads == count && !session.isLoading && session.errorMessage != nil)
         }
         try await failed(after: 1)
@@ -382,15 +378,13 @@ import BottoCore
         service.onEvent?(.conversation(try service.publication(service.summaries[0].identity)))
         service.onEvent?(.connected(.init(version: "recovered")))
         #expect(store.isConnected)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while session.isLoading, ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { session.isLoading }
         try #require(!session.isLoading)
         #expect(service.downloads == 1)
         #expect(session.file === file && session.errorMessage != nil)
 
         session.reload()
-        let retryDeadline = ContinuousClock.now + .seconds(5)
-        while session.isLoading, ContinuousClock.now < retryDeadline { await Task.yield() }
+        await waitWhile { session.isLoading }
         try #require(!session.isLoading)
         #expect(service.downloads == 2)
         #expect(session.file?.data == Data("Recovered file bytes".utf8))

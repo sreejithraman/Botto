@@ -349,7 +349,7 @@ import BottoCore
     }
 
     private func waitForLayout(_ fixture: Fixture, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + readinessLimit
         repeat {
             fixture.window.layoutIfNeeded()
             if condition() { return }
@@ -471,10 +471,8 @@ import BottoCore
 
         #expect(pasted.count == 1 && pasted[0].map(\.type) == [.png])
         let isHTML = item[UTType.html.identifier] != nil
-        // UIKit can finish HTML conversion after the ordinary paste watchdog.
-        let timeout: Duration = isHTML ? .seconds(30) : .seconds(3)
-        let settled = await settledDraft(of: fixture, screen.owner, matching: text, timeout: timeout)
-        #expect(settled, "The draft should match \(text.debugDescription) within \(timeout)")
+        let settled = await settledDraft(of: fixture, screen.owner, matching: text)
+        #expect(settled, "The draft should match \(text.debugDescription) within \(readinessLimit)")
         if isHTML && !settled {
             try await recordHTMLPaste(fixture, owner: screen.owner, pasteboard: pasteboard,
                                       expected: text, startedAt: startedAt)
@@ -522,14 +520,9 @@ import BottoCore
     }
 
     /// UIKit loads providers asynchronously and keeps an HTML block's trailing newline.
-    private func settledDraft(of fixture: Fixture, _ owner: PresentationOwner, matching text: String,
-                              timeout: Duration = .seconds(3)) async -> Bool {
+    private func settledDraft(of fixture: Fixture, _ owner: PresentationOwner, matching text: String) async -> Bool {
         let settled = { fixture.store.chats.draft(owner).trimmingCharacters(in: .whitespacesAndNewlines) == text }
-        let deadline = ContinuousClock.now + timeout
-        while !settled() && ContinuousClock.now < deadline {
-            // Suspend polling so UIKit's paste conversion can advance on the main run loop.
-            do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
-        }
+        await waitWhile { !settled() }
         return settled()
     }
 
@@ -567,8 +560,7 @@ import BottoCore
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         let fixture = Fixture(store: store, service: service, configuration: configuration, scene: scene)
         fixture.window.makeKeyAndVisible(); fixture.window.layoutIfNeeded()
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !fixture.root.appeared && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !fixture.root.appeared }
         try #require(fixture.root.appeared)
         return fixture
     }

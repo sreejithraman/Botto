@@ -36,7 +36,7 @@ import BottoCore
                 return geometry
             }, accept: { _ in accepted += 1 })
         }
-        #expect(await barrier.waitUntilEntered(timeout: .seconds(2)))
+        #expect(await barrier.entersInTime())
         await model.generate(using: { _ in requests += 1; return geometry }, accept: { _ in accepted += 1 })
         #expect(requests == 1 && model.isGenerating)
         barrier.release()
@@ -57,7 +57,7 @@ import BottoCore
                 return geometry
             }, accept: { _ in accepted += 1 })
         }
-        #expect(await barrier.waitUntilEntered(timeout: .seconds(2)))
+        #expect(await barrier.entersInTime())
         if replacePrompt { model.description = "A dragon" }
         else { model.cancel() }
         #expect(!model.isGenerating)
@@ -79,7 +79,7 @@ import BottoCore
                 throw GenerationFailure()
             }, accept: { accepted.append($0.name) })
         }
-        #expect(await barrier.waitUntilEntered(timeout: .seconds(2)))
+        #expect(await barrier.entersInTime())
         model.cancel()
         await model.generate(using: { _ in geometry }, accept: { accepted.append($0.name) })
         barrier.release()

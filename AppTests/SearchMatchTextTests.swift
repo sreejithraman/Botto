@@ -211,8 +211,7 @@ import BottoCore
     }
 
     private func wait(_ description: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(8)
-        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !condition() }
         try #require(condition(), "Timed out: \(description)")
     }
 }

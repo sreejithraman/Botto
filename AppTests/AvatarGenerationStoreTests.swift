@@ -26,7 +26,7 @@ import BottoCore
         let barrier = StoreTestBarrier()
         service.avatarGenerator = { _, _ in await barrier.wait(); return geometry }
         let pending = Task { try await store.generateAvatar(description: "A dragon", for: destination) }
-        #expect(await barrier.waitUntilEntered(timeout: .seconds(2)))
+        #expect(await barrier.entersInTime())
         store.forgetConnection()
         barrier.release()
         await #expect(throws: HermesServiceError.disconnected) { try await pending.value }

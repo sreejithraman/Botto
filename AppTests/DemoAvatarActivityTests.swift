@@ -89,10 +89,7 @@ import BottoCore
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = Date.now.addingTimeInterval(3)
-        while !condition() {
-            guard Date.now < deadline else { throw HermesServiceError.timeout }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitWhile { !condition() }
+        guard condition() else { throw HermesServiceError.timeout }
     }
 }

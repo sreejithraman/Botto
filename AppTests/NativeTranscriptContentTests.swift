@@ -38,10 +38,7 @@ import BottoCore
     }
 
     private func pixelControlSettled(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !condition() }
         return condition()
     }
 
@@ -182,7 +179,7 @@ import BottoCore
                 trace.record("waiting-for-renderer", renderers: states)
                 try await Task.sleep(for: .milliseconds(40)); continue
             }
-            if observationDeadline == nil { observationDeadline = .now + .seconds(15) }
+            if observationDeadline == nil { observationDeadline = .now + readinessLimit }
             trace.record("capture-started", renderers: states)
             let captureStarted = CACurrentMediaTime()
             var drawn = false
@@ -293,8 +290,7 @@ import BottoCore
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await waitWhile { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 }
@@ -326,7 +322,7 @@ import BottoCore
             return try await NativeTextRecognition.recognize(#require(image.cgImage)).first { $0.contains("chats") }
         }
         var cached: String?
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + readinessLimit
         while cached == nil, ContinuousClock.now < deadline { await Task.yield(); cached = try await renderedCount() }
         try #require(cached != nil, "The cached bot row must actually paint its chat count")
         #expect(!store.chats.aggregate(profile: service.profile).directoryComplete)

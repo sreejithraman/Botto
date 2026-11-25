@@ -238,8 +238,7 @@ import BottoCore
     }
 
     private func ready(_ reason: String = "hosted view must settle", _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition() && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !condition() }
         try #require(condition(), Comment(rawValue: reason))
     }
     private func fixture() async throws -> Fixture {

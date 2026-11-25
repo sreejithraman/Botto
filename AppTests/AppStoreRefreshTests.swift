@@ -722,9 +722,6 @@ import BottoCore
 
 @MainActor private func eventually(_ condition: () -> Bool,
                                     sourceLocation: SourceLocation = #_sourceLocation) async throws {
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-    while !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(2))
-    }
+    await waitWhile { !condition() }
     try #require(condition(), sourceLocation: sourceLocation)
 }

@@ -230,8 +230,7 @@ struct RichReplyPressureTests {
     }
 
     private func wait(_ predicate: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        await waitWhile { !predicate() }
         try #require(predicate())
     }
 

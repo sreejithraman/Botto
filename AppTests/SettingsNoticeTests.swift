@@ -25,9 +25,7 @@ import BottoCore
             previous?.makeKey()
         }
 
-        let deadline = ContinuousClock.now + .seconds(5)
-        while (collection(in: host.view)?.numberOfSections ?? 0) == 0,
-              ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { (collection(in: host.view)?.numberOfSections ?? 0) == 0 }
         let form = try #require(collection(in: host.view))
         let section = try #require((0..<form.numberOfSections).last { form.numberOfItems(inSection: $0) > 0 })
         let action = IndexPath(item: form.numberOfItems(inSection: section) - 1, section: section)
@@ -35,8 +33,7 @@ import BottoCore
         _ = try await visibleElement("Forget this connection", in: window)
         await store.forgetConnectionWithPush()
 
-        let failureDeadline = ContinuousClock.now + .seconds(5)
-        while store.notice == nil, ContinuousClock.now < failureDeadline { await Task.yield() }
+        await waitWhile { store.notice == nil }
         #expect(store.configuration == configuration)
         let notice = try #require(store.notice)
         let error = try await visibleElement(notice, in: window)
@@ -53,7 +50,7 @@ import BottoCore
     }
 
     private func visibleElement(_ label: String, in window: UIWindow) async throws -> NSObject {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + readinessLimit
         while ContinuousClock.now < deadline {
             if let found = element(label, in: window), found.accessibilityFrame.intersects(window.frame) { return found }
             await Task.yield()

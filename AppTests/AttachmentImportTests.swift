@@ -45,7 +45,7 @@ import BottoCore
     }
 
     private func settled(_ reason: Comment = "a page finishes loading", _ condition: @MainActor () -> Bool) async throws {
-        for _ in 0..<500 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        await waitWhile { !condition() }
         #expect(condition(), reason)
     }
 

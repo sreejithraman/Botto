@@ -24,8 +24,7 @@ struct LibraryPreviewThumbnailTests {
         try await wait { !library.artifacts.isEmpty }
         let item = try #require(library.artifacts.first)
         let image = try #require(await covers.image(for: item, library: library))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try await session.loadChats().isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        try await waitWhile { try await session.loadChats().isEmpty }
         #expect(try await session.loadChats().count == 1)
         library.retire(); await cache.close()
 
@@ -157,8 +156,7 @@ struct LibraryPreviewThumbnailTests {
     }
 
     private func wait(_ ready: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await waitWhile { !ready() }
         #expect(ready())
     }
 }

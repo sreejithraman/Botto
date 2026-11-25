@@ -226,10 +226,7 @@ import BottoCore
         }
         _ = try await service.send(text: "Start", attachments: [], access: opened.access, operationID: UUID())
         let started = directory.appendingPathComponent("performance-stream.started")
-        let startDeadline = ContinuousClock.now + .seconds(5)
-        while !FileManager.default.fileExists(atPath: started.path), ContinuousClock.now < startDeadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await waitWhile { !FileManager.default.fileExists(atPath: started.path) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
         _ = try await service.send(text: "Steer this reply", attachments: [], delivery: .steer, access: opened.access, operationID: UUID())
         XCTAssertTrue(latest.queuedMessages.isEmpty, "Steering belongs to the active turn")
@@ -245,8 +242,7 @@ import BottoCore
         XCTAssertTrue(active.text.contains("Word 19."))
         XCTAssertFalse(active.text.contains("Word 199."))
         try FileManager.default.removeItem(at: hold)
-        let completionDeadline = ContinuousClock.now + .seconds(15)
-        while latest.isWorking, ContinuousClock.now < completionDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        await waitWhile { latest.isWorking }
         XCTAssertFalse(latest.isWorking)
         XCTAssertTrue(latest.queuedMessages.isEmpty)
         for number in 1...2 {
@@ -698,19 +694,12 @@ import BottoCore
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = Date.now.addingTimeInterval(3)
-        while !condition() {
-            guard Date.now < deadline else { throw HermesServiceError.timeout }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitWhile { !condition() }
+        guard condition() else { throw HermesServiceError.timeout }
     }
 
     private func waitForMarker(_ name: String, directory: URL) async throws {
-        let deadline = Date.now.addingTimeInterval(3)
-        while !FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) {
-            guard Date.now < deadline else { throw HermesServiceError.timeout }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntil { FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) }
     }
 
 }

@@ -536,8 +536,7 @@ import WebKit
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await waitWhile { !condition() }
         try #require(condition(), "Timed out: \(reason)")
     }
 

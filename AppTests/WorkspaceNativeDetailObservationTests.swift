@@ -53,8 +53,7 @@ import Testing
     }
 
     private func ready(sourceLocation: SourceLocation = #_sourceLocation, _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition() && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !condition() }
         try #require(condition(), "Native coverage fixture settled", sourceLocation: sourceLocation)
     }
     private func fixture() async throws -> Fixture {

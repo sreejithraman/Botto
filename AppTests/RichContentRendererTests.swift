@@ -801,7 +801,8 @@ struct RichContentRendererTests {
             window.testReport = e.data.testReport;
         });
         """)
-        for _ in 0..<80 {
+        let deadline = ContinuousClock.now + readinessLimit
+        while ContinuousClock.now < deadline {
             let json = try await evaluate(web, "JSON.stringify(window.testReport)")
             if let report = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) as? [String: String] {
                 return report

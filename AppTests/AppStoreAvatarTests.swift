@@ -718,10 +718,7 @@ import BottoCore
         let service = AvatarService(); service.holdImages = false
         let bot = try #require(service.profiles.first)
         avatars.refresh([bot], connectionID: UUID(), using: service)
-        let startupDeadline = ContinuousClock.now + .seconds(5)
-        while !gate.hasEntered, ContinuousClock.now < startupDeadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !gate.hasEntered }
         try #require(gate.hasEntered)
         avatars.cancel()
         gate.release()
@@ -730,10 +727,7 @@ import BottoCore
             let snapshot = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
             return (snapshot["recent"] as? [[String: Any]])?.last { $0["testOwner"] as? String == owner }
         }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while try finishedAttempt() == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await waitWhile { try finishedAttempt() == nil }
         let finished = try #require(try finishedAttempt())
         #expect(finished["workerCancelledAtEntry"] as? Bool == true)
         #expect(finished["imageProduced"] as? Bool != true)
@@ -745,10 +739,7 @@ import BottoCore
         var finished = false
         let worker = Task { await gate.wait(); finished = true }
         defer { worker.cancel(); gate.release() }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !finished, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !finished }
         try #require(finished)
         await worker.value
     }
@@ -964,7 +955,7 @@ import BottoCore
 #endif
 
 @MainActor private func avatarEventually(_ message: String = "Avatar condition became true",
-                                        timeout: Duration = .seconds(10),
+                                        timeout: Duration = readinessLimit,
                                         diagnostics: () -> String = { "" },
                                         sourceLocation: SourceLocation = #_sourceLocation,
                                         _ condition: () -> Bool) async throws {

@@ -366,8 +366,7 @@ import WebKit
         (view as? UITextView).map { [$0] } ?? view.subviews.flatMap(textViews)
     }
     private func wait(_ label: String, until condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(8)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await waitWhile { !condition() }
         try #require(condition(), "Timed out: \(label)")
     }
 

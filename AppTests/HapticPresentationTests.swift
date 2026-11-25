@@ -85,8 +85,7 @@ import Testing
     }
 
     private func ready(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        await waitWhile { !condition() }
         try #require(condition())
     }
 }

@@ -127,10 +127,8 @@ import BottoCore
         await withCheckedContinuation { entryWaiter = $0 }
     }
 
-    func waitUntilEntered(timeout: Duration) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while !entered, !Task.isCancelled, ContinuousClock.now < deadline { await Task.yield() }
-        return entered
+    func entersInTime() async -> Bool {
+        await waitWhile { !entered }
     }
 
     func release() {
@@ -139,27 +137,40 @@ import BottoCore
     }
 }
 
-@MainActor func waitForLibraryFixture(_ label: String? = nil, timeout: Duration = .seconds(30),
-                                     diagnostics: () -> String = { "" },
-                                     _ ready: () async throws -> Bool) async throws -> Bool {
-    let started = ContinuousClock.now, deadline = started + timeout
+/// The shared bound for a condition that a passing test always reaches. A hosted runner has held the
+/// main actor for 26 seconds, so this stops a hang rather than measuring speed. Assertions about elapsed
+/// time, an expected timeout, or something that must not happen keep their own limits.
+let readinessLimit = Duration.seconds(45)
+
+/// Suspends while `pending` is true, for at most `limit`, and returns whether it became false.
+/// It yields briefly so a ready condition returns at once, then sleeps: spinning on the main actor would
+/// compete with the utility-priority work that some conditions wait for. A slow or unmet wait is attached.
+@discardableResult
+@MainActor func waitWhile(_ label: String? = nil, limit: Duration = readinessLimit, diagnostics: () -> String = { "" },
+                          fileID: String = #fileID, line: Int = #line,
+                          _ pending: () async throws -> Bool) async rethrows -> Bool {
+    let started = ContinuousClock.now, deadline = started + limit
     var previousPoll = started, maximumGap = Duration.zero, polls = 0
     while true {
-        let settled = try await ready()
-        let now = ContinuousClock.now
+        let ready = try await !pending()
+        let now = ContinuousClock.now, elapsed = started.duration(to: now)
         maximumGap = max(maximumGap, previousPoll.duration(to: now))
-        polls += 1
-        if settled || now >= deadline {
-            let elapsed = started.duration(to: now)
-            if let label, !settled || elapsed > .seconds(5) {
-                Attachment.record("\(label)\nsettled=\(settled) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())",
-                                  named: "library-fixture-wait.txt")
+        previousPoll = now; polls += 1
+        if ready || now >= deadline || Task.isCancelled {
+            if !ready || elapsed > .seconds(3) {
+                Attachment.record("\(label ?? "\(fileID):\(line)")\nready=\(ready) elapsed=\(elapsed) polls=\(polls) maximumPollGap=\(maximumGap)\n\(diagnostics())",
+                                  named: "readiness-wait.txt")
             }
-            return settled
+            return ready
         }
-        previousPoll = now
-        try await Task.sleep(for: .milliseconds(20))
+        if elapsed < .milliseconds(50) { await Task.yield() } else { try? await Task.sleep(for: .milliseconds(5)) }
     }
+}
+
+@MainActor func waitForLibraryFixture(_ label: String? = nil, diagnostics: () -> String = { "" },
+                                     fileID: String = #fileID, line: Int = #line,
+                                     _ ready: () async throws -> Bool) async throws -> Bool {
+    try await waitWhile(label, diagnostics: diagnostics, fileID: fileID, line: line) { try await !ready() }
 }
 
 /// Owns one database handle at a time across the warm and cold phases of a test.

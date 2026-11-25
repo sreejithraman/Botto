@@ -80,10 +80,7 @@ import WebKit
     }
 
     private func waitForRecognitionControl(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await waitWhile { !condition() }
         return condition()
     }
 
@@ -455,8 +452,7 @@ import WebKit
             service.downloadGate = gate
             let reload = Task { await model.load(block, context: reloadContext) }
             defer { gate.release(); reload.cancel() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while service.downloads.count < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            await waitWhile { service.downloads.count < 2 }
             try #require(service.downloads.count == 2, "A different occurrence must request its own capture")
             #expect(model.resolved(for: block, context: reloadContext) == nil)
             gate.release(); await reload.value
@@ -665,7 +661,7 @@ import WebKit
     }
 
     static func waitForText(_ expected: String, in root: UIView, excluding previous: WKWebView? = nil,
-                            phase: String = "initial document", observationBudget: Duration = .seconds(15),
+                            phase: String = "initial document", observationBudget: Duration = readinessLimit,
                             diagnostics: () -> String = { "" },
                             recognize: @escaping @MainActor (CGImage) async throws -> [String] = {
                                 try await NativeTextRecognition.recognize($0, languages: ["en-US"])

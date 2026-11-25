@@ -21,7 +21,7 @@ import BottoCore
         service.connectBarrier = gate
         let request = Task { await store.connect(candidate) }
         defer { request.cancel() }
-        try #require(await gate.waitUntilEntered(timeout: .seconds(5)))
+        try #require(await gate.entersInTime())
         let owner = store.connectionGeneration
         let callback = try #require(service.onEvent)
         callback(.disconnected("Handshake interrupted"))
@@ -179,8 +179,7 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         try #require(await store.connect(configuration))
         await store.open(try #require(store.bot(withID: service.profile.text)))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !store.library.chats.contains(where: { $0.botID == service.profile.text }) && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !store.library.chats.contains(where: { $0.botID == service.profile.text }) }
         let target = try #require(store.library.chats.first { $0.botID == service.profile.text })
         store.selectedBotID = nil
         let workspace = store.chats, probe = CreationObservation()
@@ -214,8 +213,7 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         try #require(await store.connect(configuration))
         await store.open(try #require(store.bot(withID: scout.profile.text)))
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !store.library.chats.contains(where: { $0.botID == scout.profile.text }) && ContinuousClock.now < deadline { await Task.yield() }
+        await waitWhile { !store.library.chats.contains(where: { $0.botID == scout.profile.text }) }
         let target = try #require(store.library.chats.first { $0.botID == scout.profile.text })
         let milo = try #require(store.bot(withID: service.profile.text))
         await store.open(milo)

@@ -64,8 +64,7 @@ import BottoCore
                 updatedAt: nil, coverage: .complete, summary: nil, headFingerprint: nil)
             gate.arm()
             let writing = Task { try await session.upsert(old) }; defer { writing.cancel() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             try session.restrictMetadata(to: [])
             gate.release(); try await writing.value
@@ -92,7 +91,7 @@ import BottoCore
             try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
             let cache = own(ArtifactCache(root: root)), session = cache.session(scope: scope)
             let writing = Task { try await session.upsert(row) }; defer { writing.cancel() }
-            let deadline = ContinuousClock.now + .seconds(5)
+            let deadline = ContinuousClock.now + readinessLimit
             var registered = false
             while !registered, ContinuousClock.now < deadline {
                 registered = try await session.metadataRecovery().contains(key.identity)
@@ -276,8 +275,7 @@ import BottoCore
             gate.arm()
             let saving = Task { try await session.retainOriginal(bytes, for: next, admission: admission) }
             defer { saving.cancel(); admission.revokeAll() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             #expect(try await session.metadataRecovery().contains(key.identity))
             if newCanonicalGuard { try session.invalidateMetadata([(key.identity.profile, key.identity.root)]) }
@@ -318,8 +316,7 @@ import BottoCore
             gate.arm()
             let saving = Task { try await session.retainOriginal(bytes, for: next, admission: admission) }
             defer { saving.cancel(); admission.revokeAll() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             #expect(try await session.metadataRecovery().contains(key.identity), "The SQL transaction must really have staged A's eviction.")
             if guardKind == "newer" { try session.invalidateMetadata([(key.identity.profile, key.identity.root)]) }
@@ -372,8 +369,7 @@ import BottoCore
                 coverage: .complete, summary: nil, headFingerprint: nil)
             gate.arm()
             let saving = Task { try await session.upsert(old) }; defer { saving.cancel() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             let guardURL = root.appendingPathComponent("metadata-recovery.plist")
             let durableGuard = try Data(contentsOf: guardURL)
@@ -504,8 +500,7 @@ import BottoCore
             gate.arm()
             let saving = Task { try await session.retainOriginal(bytes, for: key, admission: admission) }
             defer { saving.cancel(); admission.revokeAll() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             admission.setReady(false, for: consumer); gate.release()
             #expect(try await session.original(for: key) == nil, "Pending publication must rollback and release the cache actor.")
@@ -533,8 +528,7 @@ import BottoCore
             gate.arm()
             let replacing = Task { try await session.retainOriginal(.init(data: Data("replacement".utf8), filename: "report.txt", mimeType: "text/plain"), for: key) }
             defer { replacing.cancel(); gate.release() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !gate.isEntered, ContinuousClock.now < deadline { await Task.yield() }
+            await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
             session.retire()
             gate.release()

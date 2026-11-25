@@ -20,9 +20,7 @@ struct CustomAvatarLayoutTests {
         await failure.firstFailure()
         #expect(model.frame == source.source.restingFrame)
         model.updatePresentation(.init(activity: .working, enteredAt: .now))
-        for _ in 0..<100 where failure.requests.count < 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitWhile { failure.requests.count < 2 }
         #expect(failure.requests.count >= 2, "A transient failure must resume canonical frames in the mounted view.")
         #expect(model.frame == expected)
         let firstID = try #require(failure.requests.first?.instanceID)
