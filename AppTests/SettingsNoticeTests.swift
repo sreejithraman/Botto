@@ -7,7 +7,8 @@ import BottoCore
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct SettingsNoticeTests {
     @Test(arguments: [false, true])
     func failedForgetKeepsTheConnectionAndShowsItsErrorInSettings(largeText: Bool) async throws {
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://settings-notice.invalid")!)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://settings-notice.invalid")!,
+            t3: .init(environmentID: "settings-notice", accessToken: "fixture-only", projectID: "studio"))
         let store = AppStore(service: try WorkspaceTestService(),
             persistence: .init(load: { configuration }, save: { _ in }, remove: { throw RemovalFailure() }))
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -30,7 +31,7 @@ import BottoCore
         let action = IndexPath(item: form.numberOfItems(inSection: section) - 1, section: section)
         form.scrollToItem(at: action, at: .top, animated: false)
         _ = try await visibleElement("Forget this connection", in: window)
-        store.forgetConnection()
+        await store.forgetConnectionWithPush()
 
         await waitWhile { store.notice == nil }
         #expect(store.configuration == configuration)

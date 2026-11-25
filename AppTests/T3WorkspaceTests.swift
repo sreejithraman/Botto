@@ -119,30 +119,40 @@ import UIKit
                                            key: invite.previewKey)
         var tampered = envelope
         tampered.eventID = String(repeating: "c", count: 64)
-        store.showsConnection = true
-        var presented = false
-        let presentation = store.bindNotificationPresentation { presented = true }
-        defer { withExtendedLifetime(presentation) {} }
-        await store.openPushNotification(tampered)
-        #expect(store.notificationNavigationRevision == revision)
-        #expect(store.showsConnection)
-        #expect(!presented)
+        func verifyTap() async throws {
+            await store.openPushNotification(tampered)
+            #expect(store.notificationNavigationRevision == revision)
+            #expect(store.showsConnection == !cold)
 
-        let profile = try ExactID("bot-project")
-        if let screen = store.chats.screen(profile: profile) {
+            let profile = try ExactID("bot-project")
+            if let screen = store.chats.screen(profile: profile) {
+                store.chats.setTranscriptVisible(true, owner: screen.owner)
+            }
+            #expect(store.shouldPresentPush(envelope))
+            await store.openPushNotification(envelope)
+            #expect(service.openedStoredThreads == initialOpens + ["release"])
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(!store.showsConnection)
+            #expect(store.notificationNavigationRevision != revision)
+            #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
+            let screen = try #require(store.chats.screen(profile: profile))
             store.chats.setTranscriptVisible(true, owner: screen.owner)
+            #expect(!store.shouldPresentPush(envelope))
         }
-        #expect(store.shouldPresentPush(envelope))
-        await store.openPushNotification(envelope)
-        #expect(service.openedStoredThreads == initialOpens + ["release"])
-        #expect(store.selectedT3ChannelID == "release")
-        #expect(!store.showsConnection)
-        #expect(presented)
-        #expect(store.notificationNavigationRevision != revision)
-        #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
-        let screen = try #require(store.chats.screen(profile: profile))
-        store.chats.setTranscriptVisible(true, owner: screen.owner)
-        #expect(!store.shouldPresentPush(envelope))
+        if cold {
+            try await verifyTap()
+        } else {
+            try NativeAccessibilityRuntime.enable()
+            store.showsConnection = true
+            try await withHosted(RootView(store: store)) { window in
+                _ = try await labels(in: window) { $0.contains("Find Botto on your Mac") }
+                try await verifyTap()
+                _ = try await labels(in: window) {
+                    !$0.contains("Find Botto on your Mac") && $0.contains { $0.contains("Chat in release") }
+                }
+                #expect(window.rootViewController?.presentedViewController == nil)
+            }
+        }
     }
 
     @Test func retiresOnlyTheOriginalNotificationKeyAfterUnlock() throws {
@@ -166,6 +176,53 @@ import UIKit
         try PushPairingVault.retireLegacyPairing(delete: delete)
         try PushPairingVault.retireLegacyPairing(delete: delete)
         #expect(accounts == ["t3-pairing-v1"])
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func forgettingFromWelcomeRetiresKnownT3Notifications(savedSetupUnreadable: Bool, removeFails: Bool) async throws {
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invitation = pushInvitation(host: "192.0.2.5", scope: scope, digit: "c")
+        let installation = String(repeating: "a", count: 64)
+        var pairings: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { pairings }, save: { pairings = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, _ in
+                if request.target == nil { throw T3PushRegistrationError.bridgeUnavailable }
+                return .init(.registered, installationID: installation)
+            })
+        await push.enable(code: try invitation.code(), scope: scope)
+        try #require(push.pairing(scope) != nil)
+
+        let saved = savedSetupUnreadable ? t3Configuration() : ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        var savedSetup: ConnectionConfiguration? = saved
+        let removalError = CocoaError(.fileWriteNoPermission)
+        let storage = ConnectionPersistence(load: {
+            if savedSetupUnreadable, savedSetup != nil { throw PushError.unavailableStorage }
+            return savedSetup
+        }, save: { savedSetup = $0 }, remove: {
+            if removeFails { throw removalError }
+            savedSetup = nil
+        })
+        let store = AppStore(persistence: storage, t3Push: push)
+        #expect(store.configuration == nil)
+        #expect(store.savedSetupLoadFailed == savedSetupUnreadable)
+        #expect(store.hasOlderSavedSetup == !savedSetupUnreadable)
+
+        await store.forgetConnectionWithPush()
+
+        #expect(push.pairing(scope) == nil)
+        #expect(pairings.count == 1 && pairings.first?.registration.target == nil)
+        if removeFails {
+            #expect(savedSetup == saved)
+            #expect(store.savedSetupLoadFailed == savedSetupUnreadable)
+            #expect(store.hasOlderSavedSetup == !savedSetupUnreadable)
+            #expect(store.notice == removalError.localizedDescription)
+        } else {
+            #expect(savedSetup == nil)
+            #expect(!store.savedSetupLoadFailed)
+            #expect(!store.hasOlderSavedSetup)
+            #expect(push.notice != nil && store.notice == push.notice)
+        }
     }
 
     @Test(arguments: [false, true])
@@ -559,18 +616,32 @@ import UIKit
         try history.save(for: older.id)
         let cache = try LocalHistory.file(for: older.id)
         let storage = MemoryConnectionStorage(saved: older)
-        let store = AppStore(persistence: storage.persistence)
+        let push = T3PushCoordinator(load: { throw PushError.unavailableStorage }, save: { _ in
+            Issue.record("A setup without active notification pairings should not write push storage")
+        })
+        let store = AppStore(persistence: storage.persistence, t3Push: push)
 
         try await withHosted(RootView(store: store)) { window in
             let options = try await labels(in: window) { $0.contains("Forget saved setup") }
             #expect(options.contains("Pair with your Mac"))
             #expect(options.contains("Explore the demo"))
         }
-        store.forgetConnection()
+        await store.forgetConnectionWithPush()
 
         #expect(storage.saved == nil)
         #expect(!store.hasOlderSavedSetup)
         #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    @Test func embeddedDemoOpensItsMainSpaceWithoutNotificationStartup() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        await store.enterDemo()
+        #expect(!store.hasStarted)
+        try await withHosted(RootView(store: store, onExitDemoPreview: {})) { window in
+            _ = try await labels(in: window) { $0.contains("Main Space") && store.selectedT3ChannelID != nil }
+            #expect(store.t3Channels.first(where: \.isMain)?.id == store.selectedT3ChannelID)
+        }
     }
 
     @Test func passesOutputsThroughTheMountedService() async throws {

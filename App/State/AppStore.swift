@@ -435,6 +435,7 @@ import BottoCore
     }
 
     private func mount(_ history: LocalHistory, configuration: ConnectionConfiguration?) {
+        settleOpeningInterruption()
         historySaveFailure = nil
         t3Models = []
         t3ModelsGeneration = nil
@@ -577,7 +578,10 @@ import BottoCore
         let summary = SessionSummary(identity: identity, title: current.displayTitle, isCanonical: false, persistence: .durable,
                                      preview: current.preview.isEmpty ? nil : current.preview, updatedAt: current.updatedAt)
         let opened = await authority.workspace.openStoredChat(summary, claim: authority.claim)
-        if opened, isCurrentLifetime(authority) { publishT3Channels() }
+        if opened, isCurrentLifetime(authority) {
+            settleOpeningInterruption()
+            publishT3Channels()
+        }
         return opened
     }
 
@@ -1393,6 +1397,12 @@ import BottoCore
 
     func forgetConnectionWithPush() async {
         guard !isDemo else { return }
+        // Setup recovery can proceed without consulting unavailable push storage when
+        // there is no mounted T3 setup or known active notification pairing.
+        guard configuration != nil || t3Push.hasOtherPairings(than: nil) || t3Push.isBusy else {
+            forgetConnection()
+            return
+        }
         let owner = generation
         let connectionID = configuration?.id
         let account = configuration.map(Self.richReplyAccount)
@@ -1402,8 +1412,7 @@ import BottoCore
         }
         guard generation == owner, !isDemo, configuration?.id == connectionID,
               configuration.map(Self.richReplyAccount) == account else { return }
-        forgetConnection()
-        if configuration == nil { notice = t3Push.notice }
+        if forgetConnection() { notice = notice ?? t3Push.notice }
     }
 
     func artifactDestination(for attachment: ChatAttachment, botID: String, producingMessage: ChatMessage? = nil) -> ArtifactDestination? {
@@ -1595,15 +1604,16 @@ import BottoCore
         }
     }
 
-    func forgetConnection() {
+    @discardableResult func forgetConnection() -> Bool {
         do {
             try persistence.remove()
             guard try persistence.load() == nil else {
                 notice = "Botto couldn’t confirm that saved setup was removed. Try again."
-                return
+                return false
             }
         }
-        catch { notice = error.localizedDescription; return }
+        catch { notice = error.localizedDescription; return false }
+        notice = nil
         let oldID = configuration?.id ?? olderSavedSetupID
         olderSavedSetupID = nil
         pendingPushNotification = nil; notificationRouting = nil
@@ -1627,6 +1637,7 @@ import BottoCore
         if let oldID, !protectedCaches.contains(oldID) { LocalHistory.remove(for: oldID) }
         cleanHistory(keeping: nil)
         demoConnectionID = nil
+        return true
     }
 
     func enterDemo() async {

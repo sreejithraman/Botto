@@ -6,6 +6,7 @@ struct OnboardingView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var openingDemo = false
     @State private var confirmsForget = false
+    @State private var isForgetting = false
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -36,10 +37,16 @@ struct OnboardingView: View {
             .background(BottoTheme.paper)
             .toolbar(.hidden, for: .navigationBar)
             .confirmationDialog("Forget this connection?", isPresented: $confirmsForget, titleVisibility: .visible) {
-                Button("Forget on this device", role: .destructive) { store.forgetConnection() }
+                Button("Forget on this device", role: .destructive) {
+                    isForgetting = true
+                    Task {
+                        await store.forgetConnectionWithPush()
+                        isForgetting = false
+                    }
+                }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saved pairing details, drafts, and cached messages will be removed from this device. Botto’s memory and spaces stay on the Mac.")
+                Text("Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the Mac.")
             }
         }
     }
@@ -70,6 +77,7 @@ struct OnboardingView: View {
             .disabled(openingDemo)
         }
         .padding(.top, 12)
+        .disabled(isForgetting)
         .frame(maxWidth: 500).frame(maxWidth: .infinity)
     }
 

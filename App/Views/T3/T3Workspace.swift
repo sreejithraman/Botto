@@ -248,7 +248,7 @@ struct T3Workspace: View {
     private enum LaunchMode { case waiting, automatic, notification }
 
     private var launchMode: LaunchMode {
-        guard store.hasStarted else { return .waiting }
+        guard store.hasStarted || store.isDemo else { return .waiting }
         if store.t3NotificationOwnsLaunch { return .notification }
         return launchReady ? .automatic : .waiting
     }
