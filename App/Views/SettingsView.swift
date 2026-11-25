@@ -26,7 +26,7 @@ struct SettingsView: View {
                         LabeledContent("Server", value: store.serverName)
                         LabeledContent("Status", value: store.isConnected ? "Connected" : store.link == .connecting ? "Connecting…" : "Offline")
                         if let version = store.serverInfo?.version, !version.isEmpty {
-                            LabeledContent("Hermes", value: version)
+                            LabeledContent(store.isT3Workspace ? "T3 Code" : "Hermes", value: version)
                         }
                         Button("Reconnect", systemImage: "arrow.clockwise") {
                             if let configuration = store.configuration { Task { await store.connect(configuration) } }
@@ -129,7 +129,9 @@ struct SettingsView: View {
                 } footer: {
                     Text(store.isDemo
                          ? (onLeaveDemo == nil ? "Return to your own Hermes connection." : "Return to the playground.")
-                         : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
+                         : store.isT3Workspace
+                            ? "Removes saved pairing details, drafts, and cached spaces from this device. Botto’s memory and spaces stay on the host."
+                            : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -155,7 +157,9 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
+                Text(store.isT3Workspace
+                     ? "Saved pairing details, drafts, and cached messages will be removed locally. Botto’s memory and spaces stay on the host."
+                     : "Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
             }
         }.tint(BottoTheme.action)
     }

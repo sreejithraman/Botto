@@ -548,7 +548,11 @@ import BottoCore
     }
 
     /// One-shot request from the new-space page for the next space's composer to open an attachment picker.
-    enum T3ComposerRequest: Equatable { case photos, files }
+    struct T3ComposerRequest: Equatable {
+        enum Kind: Equatable { case photos, files }
+        let kind: Kind
+        let owner: PresentationOwner
+    }
     var t3ComposerRequest: T3ComposerRequest?
 
     @discardableResult func openT3Channel(_ channel: T3ChannelSummary) async -> Bool {

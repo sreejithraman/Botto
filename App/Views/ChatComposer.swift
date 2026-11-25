@@ -134,66 +134,8 @@ struct ChatComposer: View {
                 Text("Sending…").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22)
             }
-            HStack(alignment: .bottom, spacing: 10) {
-                Menu {
-                    Button("Photo library", systemImage: "photo") {
-                        guard canCompose, requireConnection() else { return }
-                        editingHandle.cancel()
-                        guard let screen, let destination = workspace.captureImport(screen.owner) else { return }
-                        photoPicker = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
-                        selectedPhotos = []
-                        showsPhotos = true
-                    }
-                    Button("Choose a file", systemImage: "doc") {
-                        guard canCompose, requireConnection() else { return }
-                        editingHandle.cancel()
-                        guard let screen, let destination = workspace.captureImport(screen.owner) else { return }
-                        filePicker = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
-                        showsFiles = true
-                    }
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 20)).frame(width: 48, height: 48)
-                        .controlGlass(in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("composer-add-attachment")
-                .accessibilityLabel("Add attachment").disabled(!canCompose || uploading || sending)
-                HStack(alignment: .bottom, spacing: 8) {
-                    NativeComposerEditor(text: draft,
-                        identity: screen.map { .init(owner: $0.owner, viewLifetime: $0.selectedViewLifetime, revision: editingRevision) },
-                        enabled: inputAvailable && screen?.canEditDraft == true,
-                        placeholder: "Message \(bot.name)", accessibilityLabel: "Message to \(bot.name)",
-                        editing: editingHandle, canEdit: {
-                            guard canContinueEditing(), let screen else { return false }
-                            return workspace.canEditDraft(screen.owner)
-                        }, pasteAttachments: pasteAttachments, admitAttachmentPaste: admitAttachmentPaste)
-                    Button {
-                        if offersStop { stop() } else { send(defaultDelivery) }
-                    } label: {
-                        Image(systemName: actionSymbol)
-                            .font(.system(size: offersStop ? 14 : 17, weight: .semibold))
-                            .foregroundStyle(actionEnabled ? BottoTheme.onAction : BottoTheme.disabledForeground)
-                            .frame(width: 44, height: 44)
-                            .background(actionEnabled ? BottoTheme.action : .clear, in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain).disabled(!actionEnabled)
-                    .accessibilityLabel(actionLabel)
-                    .accessibilityIdentifier("chat-send-button")
-                    .accessibilityHint(working ? "Touch and hold for message options." : "")
-                    .contextMenu {
-                        if working {
-                            Button("Steer", systemImage: "arrow.turn.up.right") { send(.steer) }
-                                .disabled(!canSteer || stopping != nil)
-                            Button("Queue", systemImage: "text.badge.plus") { send(.queue) }
-                                .disabled(!canSend || stopping != nil)
-                            Button("Stop response", systemImage: "stop.fill") { stop() }
-                                .disabled(!canStop)
-                        }
-                    }
-                    .padding(3)
-                }
-                .controlGlass(in: RoundedRectangle(cornerRadius: 26))
+            Group {
+                if store.isT3Workspace { t3Field } else { field }
             }
             .composerGlassGroup()
             .padding(.horizontal, 12).padding(.bottom, 8)
@@ -248,6 +190,121 @@ struct ChatComposer: View {
                 picker.workspace.cancelImport(picker.destination); photoPicker = nil
             }
         }
+    }
+
+    private var field: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            attachMenu {
+                Image(systemName: "plus").font(.system(size: 20)).frame(width: 48, height: 48)
+                    .controlGlass(in: Circle())
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                editor
+                actionButton(prominentStop: false).padding(3)
+            }
+            .controlGlass(in: RoundedRectangle(cornerRadius: 26))
+        }
+    }
+
+    /// One calm box: the message on top, then attach, this chat's model, and Send or Stop.
+    private var t3Field: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            editor.padding(.horizontal, 6)
+            HStack(spacing: 6) {
+                attachMenu {
+                    Image(systemName: "plus").font(.system(size: 17, weight: .medium)).frame(width: 36, height: 36)
+                        .background(BottoTheme.paper, in: Circle())
+                        .frame(width: 44, height: 44).contentShape(Circle())
+                }
+                if let channel = store.selectedT3Channel, screen != nil {
+                    T3ModelChip(store: store, chat: channel)
+                }
+                Spacer(minLength: 0)
+                actionButton(prominentStop: true)
+            }
+        }
+        .padding(6)
+        .controlGlass(in: RoundedRectangle(cornerRadius: 26))
+        .onChange(of: store.t3ComposerRequest, initial: true) { _, _ in openRequestedPicker() }
+        .onChange(of: canCompose) { _, _ in openRequestedPicker() }
+        .onChange(of: screen?.owner) { _, _ in openRequestedPicker() }
+    }
+
+    private var editor: some View {
+        NativeComposerEditor(text: draft,
+            identity: screen.map { .init(owner: $0.owner, viewLifetime: $0.selectedViewLifetime, revision: editingRevision) },
+            enabled: inputAvailable && screen?.canEditDraft == true,
+            placeholder: store.isT3Workspace ? "Reply to \(bot.name)" : "Message \(bot.name)",
+            accessibilityLabel: "Message to \(bot.name)",
+            editing: editingHandle, canEdit: {
+                guard canContinueEditing(), let screen else { return false }
+                return workspace.canEditDraft(screen.owner)
+            }, pasteAttachments: pasteAttachments, admitAttachmentPaste: admitAttachmentPaste)
+    }
+
+    private func attachMenu<Label: View>(@ViewBuilder label: () -> Label) -> some View {
+        Menu {
+            Button("Photo library", systemImage: "photo") { presentPicker(.photos) }
+            Button("Choose a file", systemImage: "doc") { presentPicker(.files) }
+        } label: { label() }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("composer-add-attachment")
+        .accessibilityLabel("Add attachment").disabled(!canCompose || uploading || sending)
+    }
+
+    private func actionButton(prominentStop: Bool) -> some View {
+        let stopStyle = prominentStop && (offersStop || stopping != nil)
+        let fill: Color = !actionEnabled ? .clear : stopStyle ? BottoTheme.ink : BottoTheme.action
+        let glyph: Color = !actionEnabled ? BottoTheme.disabledForeground : stopStyle ? BottoTheme.paper : BottoTheme.onAction
+        return Button {
+            if offersStop { stop() } else { send(defaultDelivery) }
+        } label: {
+            Image(systemName: actionSymbol)
+                .font(.system(size: offersStop ? 14 : 17, weight: .semibold))
+                .foregroundStyle(glyph)
+                .frame(width: 44, height: 44)
+                .background(fill, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain).disabled(!actionEnabled)
+        .accessibilityLabel(actionLabel)
+        .accessibilityIdentifier("chat-send-button")
+        .accessibilityHint(working ? "Touch and hold for message options." : "")
+        .contextMenu {
+            if working {
+                Button("Steer", systemImage: "arrow.turn.up.right") { send(.steer) }
+                    .disabled(!canSteer || stopping != nil)
+                Button("Queue", systemImage: "text.badge.plus") { send(.queue) }
+                    .disabled(!canSend || stopping != nil)
+                Button("Stop response", systemImage: "stop.fill") { stop() }
+                    .disabled(!canStop)
+            }
+        }
+    }
+
+    @discardableResult private func presentPicker(_ kind: AppStore.T3ComposerRequest.Kind) -> Bool {
+        guard canCompose, requireConnection() else { return false }
+        editingHandle.cancel()
+        guard let screen, let destination = workspace.captureImport(screen.owner) else { return false }
+        let request = AttachmentImport(destination: destination, owner: screen.owner, workspace: workspace)
+        switch kind {
+        case .photos:
+            photoPicker = request
+            selectedPhotos = []
+            showsPhotos = true
+        case .files:
+            filePicker = request
+            showsFiles = true
+        }
+        return true
+    }
+
+    /// A picker chosen on the fresh page opens once its new chat can take attachments.
+    private func openRequestedPicker() {
+        guard let request = store.t3ComposerRequest else { return }
+        guard workspace.isCurrent(request.owner) else { store.t3ComposerRequest = nil; return }
+        guard screen?.owner == request.owner, store.isConnected, canCompose, importsAllowed, !uploading, !sending else { return }
+        if presentPicker(request.kind) { store.t3ComposerRequest = nil }
     }
 
     private func send(_ delivery: MessageDelivery) {
@@ -318,8 +375,8 @@ struct ChatComposer: View {
             return false
         }
         guard canCompose else {
-            attachmentError = .pasteGuidance(screen?.isOpening == true ? "The chat is opening. Paste again when it’s ready." :
-                "The chat isn’t ready for attachments. Reopen it, then paste again.")
+            attachmentError = .pasteGuidance(screen?.isOpening == true ? (store.isT3Workspace ? "The space is opening. Paste again when it’s ready." : "The chat is opening. Paste again when it’s ready.") :
+                store.isT3Workspace ? "The space isn’t ready for attachments. Reopen it, then paste again." : "The chat isn’t ready for attachments. Reopen it, then paste again.")
             return false
         }
         guard !sending, !uploading else {

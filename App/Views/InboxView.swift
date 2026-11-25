@@ -247,7 +247,7 @@ struct ConnectionStatusView: View {
     let store: AppStore
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Label(store.link == .connecting ? "Connecting to your Hermes…" : "You’re offline",
+            Label(store.link == .connecting ? (store.isT3Workspace ? "Connecting to T3 Code…" : "Connecting to your Hermes…") : "You’re offline",
                   systemImage: store.link == .connecting ? "network" : "wifi.slash")
                 .font(.subheadline.weight(.semibold))
             Text("Try your action again once connected. Nothing will be sent automatically.")

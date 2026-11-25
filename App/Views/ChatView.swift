@@ -24,6 +24,7 @@ struct ChatView: View {
     @State private var transcriptPreview = NativeTranscriptPreview()
     @State private var composerHeight: CGFloat = 0
     @State private var headerOverlap: CGFloat = 44
+    @State private var paneWidth: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,6 +40,7 @@ struct ChatView: View {
     @State private var showsAttachmentPicker = false
     @State private var childModals: Set<UUID> = []
     @State private var importPresentationRevision = UUID()
+    @Environment(\.t3Chrome) private var t3Chrome
 
     private var workspace: ConversationWorkspace { store.chats }
     private var screen: ChatScreen? {
@@ -139,14 +141,14 @@ struct ChatView: View {
 
     private var openingRetry: some View {
         HStack(spacing: 12) {
-            Text("This chat didn’t open.").font(.subheadline).foregroundStyle(.secondary)
+            Text(store.isT3Workspace ? "This space didn’t open." : "This chat didn’t open.").font(.subheadline).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Button(action: retryOpening) {
                 Label("Retry", systemImage: "arrow.clockwise")
                     .frame(minHeight: 44).contentShape(.rect)
             }
                 .font(.subheadline.weight(.semibold))
-                .accessibilityLabel("Retry opening this chat")
+                .accessibilityLabel(store.isT3Workspace ? "Retry opening this space" : "Retry opening this chat")
                 .accessibilityIdentifier("chat-opening-retry")
         }
         .padding(.horizontal, 16)
@@ -190,7 +192,7 @@ struct ChatView: View {
             ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
                            messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
-                           preview: transcriptPreview, topContentInset: toolbarVisible ? headerOverlap : 0,
+                           preview: transcriptPreview, topContentInset: toolbarVisible ? headerClearance : 0,
                            bottomContentInset: composerHeight,
                            searchFocus: presentation.searchFocus.flatMap {
                                $0.owner == screen?.owner && $0.matches(workspace: workspace) ? $0 : nil
@@ -208,7 +210,7 @@ struct ChatView: View {
                 if #unavailable(iOS 27) {
                     GeometryReader { geometry in
                         Rectangle().fill(.regularMaterial)
-                            .frame(height: geometry.safeAreaInsets.top + headerOverlap + 24)
+                            .frame(height: geometry.safeAreaInsets.top + headerClearance + 24)
                             .mask {
                                 VStack(spacing: 0) {
                                     Color.black
@@ -268,7 +270,7 @@ struct ChatView: View {
         .background(BottoTheme.paper)
         .toolbarColorScheme(colorScheme, for: .navigationBar)
         .overlay(alignment: .top) {
-            if toolbarVisible {
+            if toolbarVisible, !store.isT3Workspace {
                 NativeTranscriptHeader(preview: transcriptPreview,
                                        onActivate: profileActivation(screen, revision: toolbarRevision, owner: toolbarOwner)) {
                     profileButton(screen, revision: toolbarRevision, owner: toolbarOwner)
@@ -280,10 +282,11 @@ struct ChatView: View {
                 .offset(y: -headerReferenceHeight)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
         .environment(\.reportChatModal, modalReporter())
         .environment(\.composerEditing, editing)
         .toolbar {
-            if toolbarVisible {
+            if toolbarVisible, !store.isT3Workspace {
                 if #available(iOS 26, *) {
                     ToolbarItem(placement: .principal) {
                         Color.clear.frame(width: 72, height: 44).accessibilityHidden(true)
@@ -296,6 +299,34 @@ struct ChatView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     chatsButton(screen, revision: toolbarRevision, owner: toolbarOwner)
+                }
+            } else if toolbarVisible, let t3Chrome {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Spaces", systemImage: "line.3.horizontal") {
+                        guard canPresentToolbar() else { return }
+                        editing.cancel()
+                        t3Chrome.openDrawer()
+                    }
+                    .accessibilityIdentifier("t3-open-drawer")
+                }
+                // In the bar itself, so it shares the buttons' center line.
+                if #available(iOS 26, *) {
+                    ToolbarItem(placement: .principal) {
+                        t3Header(screen, revision: toolbarRevision, owner: toolbarOwner)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .principal) {
+                        t3Header(screen, revision: toolbarRevision, owner: toolbarOwner)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("New space", systemImage: "square.and.pencil") {
+                        guard canPresentToolbar() else { return }
+                        editing.cancel()
+                        t3Chrome.newSpace()
+                    }
+                    .accessibilityIdentifier("t3-new-space")
                 }
             }
         }
@@ -322,8 +353,13 @@ struct ChatView: View {
     }
 
     private func presentProfile(revision: UUID, owner: PresentationOwner?) {
-        guard mayPresent(revision: revision, owner: owner),
-              let destination = store.avatarDestination(for: bot) else { return }
+        guard mayPresent(revision: revision, owner: owner) else { return }
+        if store.isT3Workspace, let t3Chrome {
+            editing.cancel()
+            t3Chrome.openBotto()
+            return
+        }
+        guard let destination = store.avatarDestination(for: bot) else { return }
         coverTranscript()
         importPresentationRevision = UUID()
         profileDestination = destination
@@ -367,6 +403,12 @@ struct ChatView: View {
     /// Keep the mirrored profile target in the center region of the navigation bar.
     private var headerSideClearance: CGFloat { 16 + 44 + 8 }
 
+    /// How far the header hangs below the bar. T3's header lives in the bar.
+    private var headerClearance: CGFloat { store.isT3Workspace ? 0 : headerOverlap }
+
+    /// The widest the bar's title may be without reaching the buttons or leaving the center.
+    private var t3HeaderMaxWidth: CGFloat { max(120, paneWidth - 2 * (headerSideClearance + 8)) }
+
     private var headerReferenceHeight: CGFloat {
         BotAvatarLayout(shape: .circle, size: 56).fittedHeight
     }
@@ -404,6 +446,41 @@ struct ChatView: View {
         .accessibilityValue(store.avatarPresentation(for: bot, scope: .selectedChat).accessibilityStatus ?? "")
         .accessibilityHint("View bot details or edit the profile.")
         .accessibilityIdentifier("bot-profile-button")
+        .disabled(screen == nil)
+    }
+
+    /// A small live face, the space's own name, and what Botto is doing. Tapping it opens Botto.
+    private func t3Header(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> some View {
+        let activity = store.avatarPresentation(for: bot, scope: .selectedChat).activity
+        let title = store.selectedT3ChannelTitle ?? T3ChannelSummary.untitledDisplayTitle
+        let cue = T3ActivityCue.text(for: activity)
+        return Button { presentProfile(revision: revision, owner: owner) } label: {
+            HStack(spacing: 9) {
+                AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 32, fitsBody: true)
+                    .frame(height: 32, alignment: .bottom)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(.bottoRounded(.subheadline, weight: .bold)).foregroundStyle(BottoTheme.ink)
+                        .lineLimit(1).truncationMode(.tail)
+                    if let cue {
+                        Text(cue).font(.caption.weight(.medium)).foregroundStyle(BottoTheme.action)
+                            .lineLimit(1).contentTransition(.opacity)
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: cue)
+            }
+            .padding(.leading, 8).padding(.trailing, 14).frame(minHeight: 44)
+            .t3HeaderGlass()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Like a system bar title: it stays one bar tall, and large text shows on a long press.
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .accessibilityShowsLargeContentViewer { Text(title) }
+        .frame(maxWidth: t3HeaderMaxWidth)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(cue.map { "\(title), \(bot.name) is \($0)" } ?? title)
+        .accessibilityHint("Open \(bot.name)’s page.")
+        .accessibilityIdentifier("t3-chat-header")
         .disabled(screen == nil)
     }
 
@@ -748,6 +825,7 @@ private struct ChatTranscript: View {
                 })
             }
         } else {
+            let isSpace = store.isT3Workspace
             let display = NativeTranscriptEmptyDisplay(profile: bot, image: store.avatar(for: bot),
                 opening: screen?.isOpening == true, connected: store.isConnected,
                 presentation: store.avatarPresentation(for: bot, scope: .selectedChat))
@@ -756,10 +834,11 @@ private struct ChatTranscript: View {
                     BotAvatar(profile: display.profile, image: display.image, size: display.opening ? 64 : 90,
                         presentation: display.presentation)
                     if display.opening {
-                        Text("Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
+                        Text(isSpace ? "Opening your space…" : "Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
                     } else {
                         Text("Hello, \(display.profile.name).").font(.title2.weight(.semibold))
-                        Text(display.connected ? "A thought, a question, a little job.\nThis is a good place to start." : "No saved messages yet.\nReconnect to start the chat.")
+                        Text(display.connected ? "A thought, a question, a little job.\nThis is a good place to start."
+                             : isSpace ? "No saved messages yet.\nReconnect to pick this space up." : "No saved messages yet.\nReconnect to start the chat.")
                             .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
                 }.frame(maxWidth: .infinity).padding(.vertical, 44))
@@ -934,14 +1013,15 @@ private struct ChatTranscript: View {
         } else if screen?.isOpening == true {
             VStack(spacing: 16) {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 64)
-                Text("Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
+                Text(store.isT3Workspace ? "Opening your space…" : "Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
         } else {
             requestRows
             VStack(spacing: 16) {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 90)
                 Text("Hello, \(bot.name).").font(.title2.weight(.semibold))
-                Text(store.isConnected ? "A thought, a question, a little job.\nThis is a good place to start." : "No saved messages yet.\nReconnect to start the chat.")
+                Text(store.isConnected ? "A thought, a question, a little job.\nThis is a good place to start."
+                     : store.isT3Workspace ? "No saved messages yet.\nReconnect to pick this space up." : "No saved messages yet.\nReconnect to start the chat.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
         }
