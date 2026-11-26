@@ -101,6 +101,18 @@ final class ConversationUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Browse"].exists)
     }
 
+    @MainActor func testNewSpaceAttachmentMenuOpensTheFilesPicker() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launch()
+        app.buttons["t3-new-space"].tap()
+        XCTAssertTrue(app.scrollViews["t3-fresh-page"].waitForExistence(timeout: 5))
+        app.buttons["Add attachment"].tap()
+        app.buttons["Choose a file"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Browse"].firstMatch.waitForExistence(timeout: 20))
+    }
+
     @MainActor func testOfflineDecisionRequiresDeliberateRetryAfterRecovery() throws {
         continueAfterFailure = false
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
