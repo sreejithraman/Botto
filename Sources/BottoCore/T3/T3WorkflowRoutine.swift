@@ -17,6 +17,7 @@ public enum T3WorkflowRoutineError: LocalizedError, Equatable, Sendable {
     case changed
     case updating
     case questionChanged
+    case deleteRejected
     case definition(String)
 
     public var errorDescription: String? {
@@ -26,6 +27,7 @@ public enum T3WorkflowRoutineError: LocalizedError, Equatable, Sendable {
         case .changed: "This Routine changed on the host. Refresh Routines and try again."
         case .updating: "This Routine is already updating."
         case .questionChanged: "That Routine question changed or has already been answered."
+        case .deleteRejected: "Couldn’t delete this Routine. Finish any open question or check its run in T3 Code, then try again."
         case .definition(let message): message
         }
     }
@@ -90,11 +92,11 @@ public struct T3WorkflowRoutine: Identifiable, Equatable, Sendable {
               data: { threadId: \(try literal(proposal.threadID)) },
             });
             if (Option.isNone(answer) || answer.value.choice !== "Run") return "Skipped";
-            yield* T3.agent("routine-work", {
+            const work = yield* T3.agent.try("routine-work", {
               brief: \(try literal(proposal.prompt)),
               thread: { threadId: \(try literal(proposal.threadID)) },
             });
-            return "Finished in this Space";
+            return work.outcome === "done" ? "Finished in this Space" : "Couldn’t finish. Check T3 Code.";
           }) : T3.skip("Routine paused"));
         }
 

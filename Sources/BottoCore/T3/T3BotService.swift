@@ -460,7 +460,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         guard let file = files.first(where: { $0["name"].text == routine.fileName }) else { return }
         guard T3WorkflowRoutine(file: file, scope: proposal.scope) == routine else { throw T3WorkflowRoutineError.changed }
         try await changeWorkflowDefinition("workflows.deleteDefinition", payload: .object(["name": .string(routine.fileName)]),
-                                           in: session)
+                                           in: session, refusal: .deleteRejected)
         guard try await !workflowRoutineFiles(in: session).contains(where: { $0["name"].text == routine.fileName }) else {
             throw ConversationServiceError.uncertain
         }
@@ -492,14 +492,18 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         }
     }
 
-    private func changeWorkflowDefinition(_ method: String, payload: JSONValue, in session: Session) async throws {
+    private func changeWorkflowDefinition(_ method: String, payload: JSONValue, in session: Session,
+                                          refusal: T3WorkflowRoutineError? = nil) async throws {
         let reply = try await mutationReply(method, payload: payload, in: session)
         try check(session)
+        guard let changed = reply["changed"].flag else { throw T3ServiceError.invalidResponse }
+        // T3 can report warnings after writing. The caller reads back what took effect.
+        if changed { return }
+        if let refusal { throw refusal }
         if let problem = reply["problems"].list?.first?["message"].nonempty {
             throw T3WorkflowRoutineError.definition(problem)
         }
-        guard let changed = reply["changed"].flag else { throw T3ServiceError.invalidResponse }
-        guard changed else { throw T3WorkflowRoutineError.changed }
+        throw T3WorkflowRoutineError.changed
     }
 
     func workflowRoutineActivity(threadID: String) async throws -> [T3WorkflowRoutineActivity] {

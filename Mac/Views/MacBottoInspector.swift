@@ -370,7 +370,10 @@ private struct MacRoutinesPage: View {
                     if store.workflowRoutinesAvailable {
                         Button("Refresh Routines") {
                             self.error = nil
-                            Task { await store.loadWorkflowRoutines() }
+                            Task {
+                                await store.loadRoutines()
+                                await store.loadWorkflowRoutines()
+                            }
                         }
                     }
                 }

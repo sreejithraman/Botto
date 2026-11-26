@@ -346,6 +346,7 @@ import Testing
         let proposal = try service.proposeWorkflowRoutine(name: "Check the plan", prompt: "Review the latest notes.",
                                                           schedule: schedule, threadID: "existing-general")
         #expect(await host.workflowWrites.isEmpty)
+        await host.warnOnNextWorkflowSave("An unrelated workflow could not load.")
         let installed = try await service.turnOnWorkflowRoutine(proposal)
         #expect(installed.proposal == proposal)
         #expect(installed.enabled)
@@ -1166,6 +1167,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var scheduledTasks: [String: JSONValue] = [:]
     private var workflowDefinitions: [String: JSONValue] = [:]
     private(set) var workflowWrites: [JSONValue] = []
+    private var workflowSaveWarning: String?
     private(set) var workflowDeletes: [String] = []
     private(set) var workflowAnswers: [JSONValue] = []
     private var workflowRuns: [JSONValue] = []
@@ -1294,6 +1296,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
     }
 
     func addOutputs() { outputsAvailable = true }
+
+    func warnOnNextWorkflowSave(_ message: String) { workflowSaveWarning = message }
 
     func holdNextWorkflowSnapshot() -> AsyncStream<String> {
         let (requests, continuation) = AsyncStream<String>.makeStream()
@@ -1612,7 +1616,9 @@ private actor T3ServiceHost: T3WebSocketTransport {
             workflowDefinitions[name] = .object(["name": .string(name), "source": request["source"],
                                                   "workflows": .array((1...version).map { .string("\(workflow)@\($0)") }),
                                                   "problems": .array([])])
-            reply = .object(["changed": .bool(true), "problems": .array([])])
+            let warnings = workflowSaveWarning.map { [JSONValue.object(["message": .string($0)])] } ?? []
+            workflowSaveWarning = nil
+            reply = .object(["changed": .bool(true), "problems": .array(warnings)])
         case "workflows.deleteDefinition":
             let name = try #require(request["name"].text)
             workflowDeletes.append(name)

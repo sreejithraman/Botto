@@ -33,36 +33,50 @@ import Testing
         let schedule = try #require(T3RoutineSchedule(hour: hour, minute: minute, days: [day]))
         let proposal = try service.proposeWorkflowRoutine(name: "Review the plan", prompt: "Read the sample plan.",
                                                           schedule: schedule, threadID: threadID)
+        let failure = try service.proposeWorkflowRoutine(name: "Check the model", prompt: "Read the sample plan.",
+                                                         schedule: schedule, threadID: threadID)
         #expect(try await service.listWorkflowRoutines().isEmpty)
         let installed = try await service.turnOnWorkflowRoutine(proposal)
         #expect(installed.enabled)
         #expect(try await service.turnOnWorkflowRoutine(proposal) == installed)
+        let installedFailure = try await service.turnOnWorkflowRoutine(failure)
         service.disconnect()
 
         _ = try await service.connect(configuration: pairing)
-        #expect(try await service.listWorkflowRoutines() == [installed])
+        #expect(try await service.listWorkflowRoutines() == [installedFailure, installed])
         let watched = try await service.watchWorkflowRoutineActivity(threadID: threadID)
-        var questionFromStream: T3WorkflowRoutineQuestion?
+        var questions: [T3WorkflowRoutineQuestion] = []
         for try await activity in watched {
-            questionFromStream = activity.first?.question
-            if questionFromStream != nil { break }
+            questions = activity.compactMap(\.question)
+            if questions.count == 2 { break }
         }
-        let question = try #require(questionFromStream)
+        let question = try #require(questions.first { $0.proposal == proposal })
+        let failureQuestion = try #require(questions.first { $0.proposal == failure })
         #expect(question.choices == ["Run", "Skip"])
         let paused = try await service.setWorkflowRoutineEnabled(installed, enabled: false)
         #expect(!paused.enabled)
-        #expect(try await service.workflowRoutineActivity(threadID: threadID).first?.question == question)
+        #expect(try await service.workflowRoutineActivity(threadID: threadID).contains { $0.question == question })
+        await #expect(throws: T3WorkflowRoutineError.deleteRejected) {
+            try await service.deleteWorkflowRoutine(paused)
+        }
         let identity = try T3ProjectionMapper.identity(profile: ExactID(projectID), threadID: threadID)
         let opened = try await service.openChat(.stored(identity))
         try await service.answerWorkflowRoutineQuestion(question, choice: "Skip", access: opened.access)
         let result = try await waitFor(seconds: 12, "Routine result") {
-            try await service.workflowRoutineActivity(threadID: threadID).first?.result
+            try await service.workflowRoutineActivity(threadID: threadID).first { $0.id == question.runID }?.result
         }
         #expect(result == "Skipped")
         await #expect(throws: T3WorkflowRoutineError.questionChanged) {
             try await service.answerWorkflowRoutineQuestion(question, choice: "Run", access: opened.access)
         }
 
+        // The disposable engine has no provider login. Run must end and leave its Routine deletable.
+        try await service.answerWorkflowRoutineQuestion(failureQuestion, choice: "Run", access: opened.access)
+        let failureResult = try await waitFor(seconds: 30, "Routine failure result") {
+            try await service.workflowRoutineActivity(threadID: threadID).first { $0.id == failureQuestion.runID }?.result
+        }
+        #expect(failureResult == "Couldn’t finish. Check T3 Code.")
+        try await service.deleteWorkflowRoutine(installedFailure)
         try await service.deleteWorkflowRoutine(paused)
         #expect(try await service.listWorkflowRoutines().isEmpty)
         #expect(try await service.listRoutines() == existing)

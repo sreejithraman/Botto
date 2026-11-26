@@ -26,8 +26,8 @@ At the scheduled time, the Space asks whether to run it. Choose **Run** to send
 the approved prompt in that Space, or **Skip** to leave the Space as it is.
 A question that goes unanswered for 24 hours is skipped. Use **Active** to
 pause or resume future starts. A question that's already open can still be
-answered after pausing. If the host refuses deletion while a run is unfinished,
-finish that run and try again.
+answered after pausing. If a Run cannot finish, the Space shows the result and
+points to T3 Code. Finish any open question before deleting the Routine.
 
 ## Workflow pilot verification
 
@@ -77,8 +77,9 @@ To run the separate Swift lifecycle test against the same disposable engine:
 node scripts/check-t3-routine-workflows.mjs --native-routine
 ```
 
-It opens a seeded Space, turns on the proposal, reconnects, waits for a real
-scheduled question on the native client's stream, pauses, answers **Skip**,
-and deletes the Routine. It also reads back the existing scheduled tasks and
-Space. The scheduled question and Skip run don't require a provider login.
-Capturing a provider-backed result requires a configured model on the disposable host.
+It opens a seeded Space, turns on two proposals, reconnects, and waits for
+their scheduled questions on the native client's stream. It pauses one,
+checks that deletion waits for the question, and answers **Skip**. It answers
+**Run** for the other on a host without a provider login, checks the failure
+result, and deletes both Routines. It also reads back the existing scheduled
+tasks and Space. A successful model-backed Run requires a configured provider.
