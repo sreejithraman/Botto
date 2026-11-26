@@ -1,7 +1,7 @@
 # Third-party notices
 
-Botto adapts native Hermes connection, gateway, profile creation, request parsing,
-transcript reconciliation, attachment preparation, shared avatar identity and appearance rules from
+Botto adapts request parsing, transcript reconciliation, attachment preparation,
+shared avatar identity and appearance rules from
 [Hermex](https://github.com/uzairansaruzi/hermex), revision
 `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (2026-10-22).
 
@@ -17,11 +17,8 @@ revision above and `1a12ab2b90d7459c96c45598936b671af412c04f`. The same MIT noti
 Adapted source areas:
 
 - `HermesMobile/Networking/Bots/BotProtocol.swift`: JSON payload representation.
-- `Networking/Hermes/HermesConnection.swift`, `HermesGateway.swift`,
-  `HermesREST.swift`, `HermesCall.swift`: direct authentication, ticket upgrade,
-  request multiplexing, heartbeat and sidecar request contracts.
-- `Features/Bots/BotCreator.swift`, `BotPendingRequest.swift`: canonical profile
-  creation, exact request identities and host-offered approval choices.
+- `Features/Bots/BotPendingRequest.swift`: exact request identities and
+  host-offered approval choices.
 - `Features/Hermes/HermesConversation.swift`,
   `Features/Chat/HermesChatTurnCoordinator.swift`, `HermesTranscriptHistory.swift`:
   scoped events, replay recovery and durable transcript reconciliation.
