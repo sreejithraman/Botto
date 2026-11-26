@@ -3,44 +3,11 @@ import BottoCore
 
 /// Reader intent stays separate from programmatic scrolling and content changes.
 nonisolated struct TranscriptScrollPolicy {
-    struct Metrics: Equatable {
-        let contentHeight: CGFloat
-        let isNearBottom: Bool
-
-        init(_ geometry: ScrollGeometry) {
-            contentHeight = geometry.contentSize.height
-            // Normalize the offset to the content origin. Navigation/keyboard
-            // insets can leave the reported offset negative even at the top.
-            let offsetFromTop = geometry.contentOffset.y + geometry.contentInsets.top
-            let bottomOffset = max(0, geometry.contentSize.height + geometry.contentInsets.bottom -
-                                   geometry.containerSize.height)
-            isNearBottom = offsetFromTop >= bottomOffset - 90
-        }
-    }
-
     private(set) var followsLatest = true
     private(set) var isUserScrolling = false
     private var hasNewMessages = false
     var shouldFollowLatest: Bool { followsLatest && !isUserScrolling }
     var showsLatest: Bool { !followsLatest && hasNewMessages }
-
-    mutating func geometryChanged(from previous: Metrics, to current: Metrics) -> Bool {
-        if isUserScrolling {
-            updateReaderIntent(current)
-            return false
-        }
-        return followsLatest && previous.contentHeight != current.contentHeight
-    }
-
-    mutating func phaseChanged(from previous: ScrollPhase, to current: ScrollPhase, geometry: ScrollGeometry) {
-        let wasUserScrolling = isUserScrolling && (previous == .interacting || previous == .decelerating)
-        isUserScrolling = current == .interacting || current == .decelerating
-        // Equatable geometry can stay unchanged throughout a drag. Its phase
-        // boundary still carries the current position, including the final stop.
-        if isUserScrolling || (wasUserScrolling && current != .animating) {
-            updateReaderIntent(Metrics(geometry))
-        }
-    }
 
     static func attentionChanged(from previous: Conversation?, to current: Conversation?) -> Bool {
         switch (previous, current) {
@@ -75,11 +42,6 @@ nonisolated struct TranscriptScrollPolicy {
         self.isUserScrolling = isUserScrolling
         followsLatest = isNearBottom
         if isNearBottom { hasNewMessages = false }
-    }
-
-    private mutating func updateReaderIntent(_ metrics: Metrics) {
-        followsLatest = metrics.isNearBottom
-        if metrics.isNearBottom { hasNewMessages = false }
     }
 }
 

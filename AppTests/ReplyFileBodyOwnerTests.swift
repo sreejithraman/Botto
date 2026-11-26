@@ -174,11 +174,12 @@ import BottoCore
         let store: AppStore
         let profile: String
         let state: OwnerState
+        @State private var history = ReplyBodyMeasurements()
         var body: some View {
             let generation = store.artifactGeneration
             ScrollView {
                 ForEach([state.message]) { message in
-                    ReplyBodyLayoutOwner(message: message, acceptsWrites: { generation == store.artifactGeneration }) {
+                    ReplyBodyLayoutOwner(message: message, acceptsWrites: { generation == store.artifactGeneration }, history: history) {
                         OwnerChild(state: state, generation: generation)
                             .environment(\.richReplyContext, store.richReplyContext(for: profile, messageID: message.id))
                             .id(generation)

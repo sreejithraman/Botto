@@ -463,7 +463,7 @@ import BottoCore
         let viewport: Viewport
         @State private var presentation = WorkspacePresentation()
         var body: some View {
-            transcriptFixture(store: store, bot: bot, presentation: presentation, native: true)
+            transcriptFixture(store: store, bot: bot, presentation: presentation)
                 .frame(width: viewport.width, height: viewport.height)
                 .environment(\.dynamicTypeSize, viewport.type).environment(\.scenePhase, .active)
                 .environment(\.colorScheme, .light)

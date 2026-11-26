@@ -6,10 +6,8 @@ import BottoCore
 struct ReplyBodyLayoutOwner<Content: View>: View {
     let message: ChatMessage
     let acceptsWrites: @MainActor @Sendable () -> Bool
+    let history: ReplyBodyMeasurements
     @ViewBuilder var content: () -> Content
-    var providedHistory: ReplyBodyMeasurements? = nil
-    @State private var localHistory = ReplyBodyMeasurements()
-    private var history: ReplyBodyMeasurements { providedHistory ?? localHistory }
 
     private var directives: [ReplyBodyDirective] {
         guard message.role == .assistant else { return [] }

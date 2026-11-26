@@ -133,13 +133,13 @@ import WebKit
             let context = NativeTranscriptContext(workspace: ObjectIdentifier(store.chats), profile: Data(service.profile.text.utf8),
                 chat: screen?.selectedChatID, owner: screen?.owner, generation: generation, reviewingConnection: store.showsConnection)
             let row = NativeTranscriptRow(id: .message(Data(message.id.utf8)), value: .message(message, working: false)) { scope, history in
-                AnyView(ReplyBodyLayoutOwner(message: message, acceptsWrites: { scope.isCurrent && store.artifactGeneration == generation }, content: {
+                AnyView(ReplyBodyLayoutOwner(message: message, acceptsWrites: { scope.isCurrent && store.artifactGeneration == generation }, history: history, content: {
                     VStack(spacing: 0) {
                         AssistantReplyBody(message: message, isStreaming: false)
                             .environment(\.richReplyContext, richContext).id(generation)
                         Color.clear.frame(height: 1400)
                     }
-                }, providedHistory: history).environment(\.scenePhase, .active))
+                }).environment(\.scenePhase, .active))
             }
             let workspace = store.chats, owner = screen?.owner
             controller.apply(context, snapshot: screen?.snapshot, rows: [row, .init(id: .terminal, value: .auxiliary("terminal"), content: { _, _ in AnyView(Color.clear.frame(height: 1)) })], active: active, currentTaskSnapshot: {
@@ -248,4 +248,14 @@ import WebKit
         scope.invalidate(); scope.setActive(true); scope.setDisplayed(true); scope.refresh()
         #expect(!visible.isVisible && !below.isVisible, "late reuse callbacks cannot revive retired content")
     }
+}
+
+/// Mounts the product transcript owner with the same rows, model and action guards.
+@MainActor func transcriptFixture(store: AppStore, bot: BotProfile, presentation: WorkspacePresentation) -> some View {
+    let workspace = store.chats
+    let screen = (try? ExactID(bot.id)).flatMap { workspace.screen(profile: $0) }
+    return ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
+                          messageDisplayRevision: (screen?.snapshot?.messages ?? []).map { .message($0, working: false) }, isExposed: true,
+                          onOpenArtifact: { presentation.openArtifact($0, store: store) })
+        .id(screen?.selectedChatID)
 }

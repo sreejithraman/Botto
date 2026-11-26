@@ -9,7 +9,7 @@ enum RichReplyPresentationMode: String, Identifiable {
 }
 
 /// Inline preview and foreground controls for a `.preview` block.
-/// The native transcript owns foreground lifetime; standalone callers use a local sheet.
+/// The native transcript owns foreground lifetime and presents its sheets.
 struct RichReplyBlockView: View {
     let block: ReplyContent.Block
     let initialHeight: CGFloat?
@@ -17,9 +17,6 @@ struct RichReplyBlockView: View {
     @Environment(\.reportChatModal) private var reportModal
     @Environment(\.nativeTranscriptRow) private var nativeRow
     private var isCurrent: Bool { nativeRow?.isCurrent ?? true }
-    @State private var modalID = UUID()
-    @State private var presentation: RichReplyPresentationMode?
-    @State private var reportedStandaloneModal: UUID?
 
     init(block: ReplyContent.Block, initialHeight: CGFloat? = nil) {
         self.block = block; self.initialHeight = initialHeight
@@ -42,38 +39,15 @@ struct RichReplyBlockView: View {
                     actionButtons
                 }
             }
-            RichPreviewSurface(block: block, expanded: false, active: presentation == nil, initialHeight: initialHeight)
+            RichPreviewSurface(block: block, expanded: false, active: true, initialHeight: initialHeight)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
-        .onChange(of: presentation == nil) { _, dismissed in
-            if dismissed { finishStandaloneCoverage() }
-        }
-        .onDisappear { finishStandaloneCoverage() }
-        .sheet(item: $presentation) { selected in
-            RichReplyPresentationContent(block: block, context: context,
-                selection: Binding(get: { presentation ?? selected }, set: { presentation = $0 }),
-                isCurrent: { isCurrent }, close: { presentation = nil })
-            .presentationDragIndicator(.visible)
-            .hapticSheet(enabled: presentation != nil && isCurrent)
-        }
     }
 
     private func open(_ mode: RichReplyPresentationMode) {
         guard isCurrent else { return }
-        if let nativeRow {
-            nativeRow.present(block: block, context: context, mode: mode, report: reportModal)
-        } else {
-            guard presentation == nil else { return }
-            presentation = mode; reportedStandaloneModal = modalID
-            reportModal(modalID, true)
-        }
-    }
-
-    private func finishStandaloneCoverage() {
-        guard let id = reportedStandaloneModal else { return }
-        reportedStandaloneModal = nil
-        reportModal(id, false)
+        nativeRow?.present(block: block, context: context, mode: mode, report: reportModal)
     }
 
     private var sectionTitle: some View {

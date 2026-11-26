@@ -108,7 +108,7 @@ import BottoCore
         @State private var presentation = WorkspacePresentation()
         var body: some View {
             if let bot = store.selectedBot {
-                transcriptFixture(store: store, bot: bot, presentation: presentation, native: true)
+                transcriptFixture(store: store, bot: bot, presentation: presentation)
                     .id(store.selectedT3ChannelID)
                     .frame(width: 382, height: viewport.height)
                     .environment(\.scenePhase, .active)
