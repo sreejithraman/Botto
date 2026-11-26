@@ -18,7 +18,7 @@ public enum T3WorkflowRoutineError: LocalizedError, Equatable, Sendable {
     case updating
     case questionChanged
     case deleteRejected
-    case definition(String)
+    case saveRejected
 
     public var errorDescription: String? {
         switch self {
@@ -28,7 +28,7 @@ public enum T3WorkflowRoutineError: LocalizedError, Equatable, Sendable {
         case .updating: "This Routine is already updating."
         case .questionChanged: "That Routine question changed or has already been answered."
         case .deleteRejected: "Couldn’t delete this Routine. Finish any open question or check its run in T3 Code, then try again."
-        case .definition(let message): message
+        case .saveRejected: "Couldn’t save this Routine. Check T3 Code and try again."
         }
     }
 }

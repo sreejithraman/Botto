@@ -459,8 +459,10 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let files = try await workflowRoutineFiles(in: session)
         guard let file = files.first(where: { $0["name"].text == routine.fileName }) else { return }
         guard T3WorkflowRoutine(file: file, scope: proposal.scope) == routine else { throw T3WorkflowRoutineError.changed }
-        try await changeWorkflowDefinition("workflows.deleteDefinition", payload: .object(["name": .string(routine.fileName)]),
-                                           in: session, refusal: .deleteRejected)
+        let payload: JSONValue = .object(["name": .string(routine.fileName)])
+        guard try await changeWorkflowDefinition("workflows.deleteDefinition", payload: payload, in: session) else {
+            throw T3WorkflowRoutineError.deleteRejected
+        }
         guard try await !workflowRoutineFiles(in: session).contains(where: { $0["name"].text == routine.fileName }) else {
             throw ConversationServiceError.uncertain
         }
@@ -485,25 +487,21 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     private func saveWorkflowRoutine(_ routine: T3WorkflowRoutine, in session: Session) async throws {
         let source = try routine.definitionSource()
         let payload: JSONValue = .object(["name": .string(routine.fileName), "source": .string(source)])
-        try await changeWorkflowDefinition("workflows.saveDefinition", payload: payload, in: session)
+        guard try await changeWorkflowDefinition("workflows.saveDefinition", payload: payload, in: session) else {
+            throw T3WorkflowRoutineError.saveRejected
+        }
         let files = try await workflowRoutineFiles(in: session)
         guard files.contains(where: { T3WorkflowRoutine(file: $0, scope: routine.proposal.scope) == routine }) else {
             throw ConversationServiceError.uncertain
         }
     }
 
-    private func changeWorkflowDefinition(_ method: String, payload: JSONValue, in session: Session,
-                                          refusal: T3WorkflowRoutineError? = nil) async throws {
+    private func changeWorkflowDefinition(_ method: String, payload: JSONValue, in session: Session) async throws -> Bool {
         let reply = try await mutationReply(method, payload: payload, in: session)
         try check(session)
         guard let changed = reply["changed"].flag else { throw T3ServiceError.invalidResponse }
         // T3 can report warnings after writing. The caller reads back what took effect.
-        if changed { return }
-        if let refusal { throw refusal }
-        if let problem = reply["problems"].list?.first?["message"].nonempty {
-            throw T3WorkflowRoutineError.definition(problem)
-        }
-        throw T3WorkflowRoutineError.changed
+        return changed
     }
 
     func workflowRoutineActivity(threadID: String) async throws -> [T3WorkflowRoutineActivity] {
