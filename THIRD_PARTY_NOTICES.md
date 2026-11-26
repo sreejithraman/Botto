@@ -1,7 +1,7 @@
 # Third-party notices
 
-Botto adapts native Hermes connection, gateway, profile creation, request parsing,
-transcript reconciliation, attachment preparation, shared avatar identity and appearance rules from
+Botto adapts request parsing, transcript reconciliation, attachment preparation,
+shared avatar identity and appearance rules from
 [Hermex](https://github.com/uzairansaruzi/hermex), revision
 `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (2026-10-22).
 
@@ -17,11 +17,8 @@ revision above and `1a12ab2b90d7459c96c45598936b671af412c04f`. The same MIT noti
 Adapted source areas:
 
 - `HermesMobile/Networking/Bots/BotProtocol.swift`: JSON payload representation.
-- `Networking/Hermes/HermesConnection.swift`, `HermesGateway.swift`,
-  `HermesREST.swift`, `HermesCall.swift`: direct authentication, ticket upgrade,
-  request multiplexing, heartbeat and sidecar request contracts.
-- `Features/Bots/BotCreator.swift`, `BotPendingRequest.swift`: canonical profile
-  creation, exact request identities and host-offered approval choices.
+- `Features/Bots/BotPendingRequest.swift`: exact request identities and
+  host-offered approval choices.
 - `Features/Hermes/HermesConversation.swift`,
   `Features/Chat/HermesChatTurnCoordinator.swift`, `HermesTranscriptHistory.swift`:
   scoped events, replay recovery and durable transcript reconciliation.
@@ -32,8 +29,8 @@ Adapted source areas:
 - `Features/Bots/BotProfileAppearance.swift`: shared palette, profile-ID defaults and adaptive color contrast.
 - `Features/Bots/BotProfileEditor.swift`: merge/CAS and explicit image-clear contracts.
 
-Botto's corresponding files are under `Sources/BottoCore`, `App/Design`, and
-`App/State`. No Hermex branding, plugins or third-party Swift packages were copied.
+Botto's corresponding files are under `Sources/BottoCore`, `App/Design`, `App/State`,
+`App/Views`, `App/Resources` and `Mac/Views`. No Hermex branding, plugins or third-party Swift packages were copied.
 
 The sixteen stored expression names retain compatibility with earlier Botto
 versions. The former eye geometries derived through Hermex from
@@ -56,8 +53,8 @@ Botto draws its own face and body rather than bundling Blobatar's renderer.
 All premade and custom drawn faces use [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar)
 v1, copyright (c) 2026 Dominik Scholz, revision
 `3a5119877844165eebafe57d3100da475f67d0a8`. Botto vendors its DOM-free validator,
-path/contour/volume code, motion, animator, renderer frame generation and canonical
-model-neutral prompt. JavaScriptCore executes the local bundle; a native Canvas
+path/contour/volume code, motion, animator and renderer frame generation.
+JavaScriptCore executes the local bundle; a native Canvas
 paints the canonical frames with Botto's palette and status adaptations.
 The complete MIT notice is bundled in [LICENSES/OpenBotAvatar.txt](LICENSES/OpenBotAvatar.txt)
 and retained in [scripts/avatar-engine/upstream/LICENSE](scripts/avatar-engine/upstream/LICENSE).
