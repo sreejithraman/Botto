@@ -11,3 +11,42 @@ prompt to check that a routine starts and its output appears in the intended Spa
 
 See the [T3 service](../Sources/BottoCore/T3/T3BotService.swift) and the
 [Mac inspector](../Mac/Views/MacBottoInspector.swift).
+
+## Workflow pilot verification
+
+The pilot targets a single-owner T3 environment. Each paired device acts for
+that owner. Botto must match the connected environment and project against the
+Routine it installed before showing a run or answering a question. T3 v0.1.12
+grants read and answer permissions across the environment, so the pilot does
+not support shared multi-operator hosts.
+
+On Apple Silicon with Node.js 22.4 or newer and Python 3, run the proof from the
+repository root:
+
+```sh
+node scripts/check-t3-routine-workflows.mjs
+```
+
+The check uses the released v0.1.12 engine from Botto's bundle script. It
+starts T3 on loopback with a temporary home and UTC, then removes the engine
+data on exit. Allow two minutes for it to cross a real scheduled time. An
+approved fixture and an inert proposal have the same fixed time and weekday.
+The approved fixture starts once after the engine restarts. The proposal
+remains inert over its due time and is installed only when the check takes
+the explicit approval path. A deliberately discarded installation response
+is reconciled by reading back the approved source and registered version.
+Pausing replaces the schedule with a version that skips manual starts and
+keeps the outstanding run's version until it can finish.
+
+The check uses Botto's default pairing exchange for the owner. Installing a
+definition uses the existing `terminal:operate` permission. A session with
+`orchestration:read` can read a run. Answering uses
+`orchestration:operate`, the same permission used to act in ordinary
+threads. The check confirms that an orchestration operator can already send to
+and rename threads in both test projects. Read-only access cannot answer, and
+the proof's Botto-side project filter rejects the other project's run. T3 still
+accepts that answer directly from an operator.
+
+This is a provider-free check of the T3 contract. The workflow returns a
+sample result after a durable question. Native proposal cards, message
+delivery and the existing scheduled Routine path have their own checks.
