@@ -149,17 +149,13 @@ public struct T3PairingExchange: Sendable {
     }
 
     func request(origin: URL, path: String, method: String = "GET", token: String? = nil,
-                 body: Data? = nil, headers: [String: String] = [:], query: [URLQueryItem] = []) async throws -> Data {
+                 body: Data? = nil, headers: [String: String] = [:]) async throws -> Data {
         let origin = try Self.validatedOrigin(origin.absoluteString)
         guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains("\\"),
               let endpoint = URL(string: path, relativeTo: origin)?.absoluteURL,
               try Self.validatedOrigin(endpoint.absoluteString) == origin,
-              var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
+              let components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
               components.fragment == nil else { throw T3PairingError.invalidOrigin }
-        if !query.isEmpty {
-            components.queryItems = (components.queryItems ?? []) + query
-            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
-        }
         guard let url = components.url else { throw T3PairingError.invalidOrigin }
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.httpMethod = method

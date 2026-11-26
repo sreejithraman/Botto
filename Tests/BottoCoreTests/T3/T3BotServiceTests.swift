@@ -635,14 +635,7 @@ import Testing
         let stopped = try await nextConversation(&published) { $0.activity?.signal?.kind == .stopped }
         #expect(!stopped.snapshot.isWorking)
 
-        let latest = try await service.conversationHistory(identity, offset: 0)
-        #expect(latest.messages.map(\.text) == ["Latest"])
-        let offset = try #require(latest.nextOffset)
         #expect(try await service.recentConversationHistory(identity)?.hasEarlierMessages == true)
-        let older = try await service.conversationHistory(identity, offset: offset)
-        #expect(older.messages.map(\.text) == ["Earlier"])
-        #expect(older.nextOffset == nil)
-        await #expect(throws: T3ServiceError.unknownHistoryOffset) { try await service.conversationHistory(identity, offset: 99) }
         let artifact = try await service.downloadArtifact(.init(name: "report.txt", path: "outputs/report.txt"), access: opened.access)
         #expect(artifact.data == Data("report".utf8))
 
@@ -1405,13 +1398,6 @@ private actor T3ServiceHost: T3WebSocketTransport {
                  "projection":{"thread":{"id":"\(id)"},
                   "visibleTurnItems":[{"position":0,"item":{"id":"latest","type":"assistant_message","text":"Latest"}}]}}
                 """
-                status = 200
-            } else if url.path.hasSuffix("/history") {
-                #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems == [
-                    URLQueryItem(name: "cursor", value: "older+page")
-                ])
-                #expect(url.absoluteString.hasSuffix("?cursor=older%2Bpage"))
-                json = #"{"nextCursor":null,"hasMoreHistory":false,"items":[{"position":0,"item":{"id":"earlier","type":"user_message","text":"Earlier"}}]}"#
                 status = 200
             } else {
                 Issue.record("Unexpected HTTP request \(url.path)")

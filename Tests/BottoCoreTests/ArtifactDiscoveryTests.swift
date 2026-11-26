@@ -23,11 +23,9 @@ import Testing
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
     let outputs = artifacts.filter { $0.category == .output }
     let references = artifacts.filter { $0.category == .reference }
-    #expect(Set(outputs.map(\.title)) == ["report.pdf", "notes.txt", "slides.pptx"])
-    #expect(Set(references.map(\.title)) == ["source.csv", "chart.png"])
-    #expect(artifacts.first { $0.title == "report.pdf" }?.kind == .document)
-    #expect(artifacts.first { $0.title == "chart.png" }?.kind == .image)
-    #expect(artifacts.allSatisfy { $0.attachment != nil && $0.block == nil })
+    #expect(Set(outputs.compactMap(\.attachment?.name)) == ["report.pdf", "notes.txt", "slides.pptx"])
+    #expect(Set(references.compactMap(\.attachment?.name)) == ["source.csv", "chart.png"])
+    #expect(artifacts.allSatisfy { $0.attachment != nil })
 }
 
 @Test func artifactDiscoveryIncludesCompleteVisualsAndFilePreviews() throws {
@@ -52,10 +50,9 @@ import Testing
     let artifacts = ArtifactDiscovery.artifacts(in: [message])
     #expect(artifacts.count == 4)
     #expect(artifacts.allSatisfy { $0.category == .output })
-    #expect(artifacts.filter { $0.kind == .preview }.count == 3)
+    #expect(artifacts.filter { $0.attachment == nil }.count == 3)
     #expect(artifacts.compactMap(\.attachment).map(\.path) == ["./dashboard.html"])
-    #expect(artifacts.contains { $0.searchableText.contains("Quarterly report") })
-    let inline = try #require(artifacts.first { $0.block?.previewFormat == .html })
+    let inline = try #require(artifacts.first { $0.attachment == nil })
     let edited = ArtifactDiscovery.artifacts(in: [.init(id: "visuals", role: .assistant,
         text: "```html\n<h1>Revised report</h1>\n```")])
     #expect(edited.first?.id != inline.id)
@@ -75,7 +72,6 @@ import Testing
     #expect(report.timestamp == Date(timeIntervalSince1970: 20))
     #expect(report.category == .output)
     #expect(report.attachment == final)
-    #expect(report.title == "Final report")
 }
 
 @Test func artifactDiscoveryKeepsExamplesHiddenMessagesAndToolTrafficOut() {
@@ -103,7 +99,7 @@ import Testing
         .init(id: "user-example", role: .user, text: "Please emit MEDIA:/host/user-example.pdf")
     ]
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
-    #expect(artifacts.map(\.title) == ["delivered.pdf"])
+    #expect(artifacts.map(\.attachment?.name) == ["delivered.pdf"])
     #expect(artifacts.first?.category == .output)
 }
 
@@ -130,8 +126,8 @@ import Testing
         .init(id: "assistant", role: .assistant, text: "MEDIA:/host/result.pdf")
     ]
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
-    #expect(artifacts.filter { $0.category == .reference }.map(\.title) == ["Q3 notes.txt"])
-    #expect(artifacts.filter { $0.category == .output }.map(\.title) == ["result.pdf"])
+    #expect(artifacts.filter { $0.category == .reference }.map(\.attachment?.name) == ["Q3 notes.txt"])
+    #expect(artifacts.filter { $0.category == .output }.map(\.attachment?.name) == ["result.pdf"])
 }
 
 @Test func artifactDiscoveryUsesStrongOutputMetadataFromProducerTools() {
@@ -145,7 +141,7 @@ import Testing
     ]
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
     #expect(Set(artifacts.compactMap(\.attachment).map(\.path)) == ["/host/cover.png", "./report.pdf"])
-    #expect(artifacts.allSatisfy { $0.category == .output && $0.block == nil && $0.messageID == "generated" })
+    #expect(artifacts.allSatisfy { $0.category == .output && $0.attachment != nil && $0.messageID == "generated" })
 }
 
 @Test func artifactDiscoveryRecognizesExplicitTerminalDeliveries() {

@@ -180,7 +180,6 @@ struct T3FreshPage: View {
                     .focused($focused, equals: .message)
                     .disabled(form.isStarting)
                     .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
-                    .accessibilityIdentifier("t3-fresh-composer")
                 HStack(spacing: 6) {
                     Menu {
                         Button("Photo library", systemImage: "photo") { startWithAttachment(.photos) }
