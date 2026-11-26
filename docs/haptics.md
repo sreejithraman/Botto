@@ -45,7 +45,7 @@ not a promise that people will distinguish them until tested.
 | Open a selected sheet | Cushion | The actual sheet reaches its presented state. See the sheet map below. |
 | A new actionable request arrives | Knock | Its card becomes visible in the active chat. A batch gets one knock; restored requests do not knock again. |
 | A reply finishes normally | Done | A new verified successful turn reaction begins. A small cue marks the end of work without judging the answer or celebrating every reply. |
-| Create a bot, save its profile, or complete connection setup | Ta-da | The requested operation is confirmed and its successful result is visible. New-bot creation gets one welcome celebration, shared with the completed flow. |
+| Save a bot profile or complete connection setup | Ta-da | The requested operation is confirmed and its successful result is visible. |
 | Stop work | Thud | The host confirms the stopped state. An acknowledgment of a stop request alone is insufficient. A racing natural completion follows its actual outcome. |
 | An action's result is uncertain | Warning | Show the uncertainty and recovery guidance. This does not mean the mutation failed or can safely be repeated. |
 | A definite action or turn failure appears | Error | Show the failure and a recovery path. One cue per outcome, including repeated failures from separate deliberate attempts. |
@@ -63,7 +63,6 @@ does not claim that a network action succeeded.
 
 | Surface in Botto | Proposed feedback |
 | --- | --- |
-| New bot sheet | Cushion on arrival. Ta-da only after confirmed creation. |
 | Bot profile sheet | Cushion on arrival. Edit bot is a navigation destination inside this sheet, so it gets no second sheet cue. |
 | Settings sheet | Cushion on arrival. Subpages and licenses stay quiet. |
 | Connection sheet | Cushion when opened deliberately. Automatic recovery or an external route opening it stays quiet. Setup success has its own confirmed outcome cue. |
@@ -94,18 +93,16 @@ A common vocabulary lets those moments build a recognizable character.
 - **A quiet done.** A verified reply completion gets one small pulse alongside
   the existing avatar completion reaction. It does not vibrate through the
   somersault or add a second landing celebration. Ta-da belongs to explicit
-  milestones such as creating a bot, saving its profile, and finishing setup.
+  milestones such as saving a profile and finishing setup.
 - **A polite knock.** The question cue and request card appear with the same
   gentle double tap. Persistent waiting and repeated question-mark motion stay
   silent.
 - **A soft cushion.** Important sheets feel like a light object settling into
-  the hand. The feel stays the same across profile, creation, and reading tools.
+  the hand. The feel stays the same across profile and reading tools.
 - **An avatar plip.** In Playful mode, compare a slightly rounder single selection
   pulse for a new shape against the ordinary Tick for a color. Keep both single
   and short enough for rapid browsing. Picker previews stay still, and neither
   cue implies that the avatar was saved.
-- **A welcome.** Confirmed bot creation reuses Ta-da as the new face appears.
-  Returning to the inbox or reconnecting never repeats the welcome.
 
 Keep typing texture as a separate experiment: Pulse while streaming, off by
 default. If enabled, use sparse, low-strength ticks at least 320 ms apart only
@@ -133,7 +130,7 @@ sheet. Explicit actions inside that sheet can still acknowledge their results.
 
 When events collide, preserve the meaningful outcome rather than stacking
 patterns: error or warning takes priority over celebration, and a confirmed
-creation celebration replaces a coincident dismissal or receipt cue. New direct
+celebration replaces a coincident dismissal or receipt cue. New direct
 input can cancel a decorative flourish. Drop superseded accents instead of
 queuing late vibrations. Coalescing never suppresses the visible result.
 

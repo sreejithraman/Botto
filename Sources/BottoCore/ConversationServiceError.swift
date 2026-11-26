@@ -5,7 +5,7 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
     case incompatible, authentication
     case redirected, disconnected, staleConversation, wrongConversation, missingChat, timeout, uncertain
     case rejected(Int), unsupportedRequest, invalidResponse, attachmentLimit, invalidAttachment
-    case missingModel, partialCreation, profileUnavailable, staleGeneration
+    case profileUnavailable, staleGeneration
     case steeringUnavailable, steeringAttachments
     case queuedMessageUnavailable
     case responseTooLong
@@ -45,8 +45,6 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
         case .responseTooLong: "This answer is too long. Use 16,384 UTF-8 bytes or fewer, then submit again. Some characters use more than one byte. Nothing was sent."
         case .attachmentLimit: AttachmentLimits.message
         case .invalidAttachment: "This attachment is invalid or belongs to another chat. Attach the file again."
-        case .missingModel: "The bot and its chat were created, but no default model was inherited. Set a model on the host before chatting."
-        case .partialCreation: "The bot was created, but its appearance or chat setup was not confirmed. Refresh the bot list and check it on the host before creating another."
         case .profileUnavailable: "The host has not made this profile available. Wait a moment and refresh."
         case .staleGeneration: "This turn changed before the action reached the host. Refresh the chat before trying again."
         }

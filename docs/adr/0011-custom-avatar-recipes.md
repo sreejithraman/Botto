@@ -4,6 +4,13 @@ status: accepted
 
 # Store custom drawn faces as shape recipes
 
+## Update
+
+In November 2026 Botto moved to T3 Code. Avatar generation had no screen and was
+removed, together with its Hermes `llm.oneshot` path. The generation and bundled
+prompt paragraphs below are history. The recipe storage and rendering decision
+still holds.
+
 Botto stores validated character geometry in the existing shared `shape` value
 as a versioned `botto-path:1:` recipe wrapping an
 [Open Bot Avatar v1 definition](https://github.com/DominikScholz/open-bot-avatar/blob/3a5119877844165eebafe57d3100da475f67d0a8/docs/avatar-contract.md).
