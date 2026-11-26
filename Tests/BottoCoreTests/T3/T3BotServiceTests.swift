@@ -315,6 +315,105 @@ import Testing
         await #expect(throws: T3ServiceError.invalidPath) { try await service.downloadOutput(traversal) }
     }
 
+    @Test func workflowRoutineProposalStaysOffAndBelongsToAnActiveSpace() async throws {
+        let host = T3ServiceHost(existing: true, archivedChannel: true, workflowsEnabled: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let writes = await host.writtenFiles
+        let schedule = try #require(T3RoutineSchedule(hour: 9, minute: 15, days: [1, 3]))
+
+        let proposal = try service.proposeWorkflowRoutine(name: " Check the plan ", prompt: "Review the latest notes.",
+                                                          schedule: schedule, threadID: "existing-general")
+        #expect(proposal.name == "Check the plan")
+        #expect(proposal.threadID == "existing-general")
+        #expect(proposal.schedule == schedule)
+        #expect(await host.writtenFiles == writes)
+        #expect(await host.createdThreads.isEmpty)
+        #expect(await host.routineUpserts.isEmpty)
+        #expect(throws: ConversationServiceError.wrongConversation) {
+            try service.proposeWorkflowRoutine(name: "Check the plan", prompt: "Review the latest notes.",
+                                               schedule: schedule, threadID: "archived-channel")
+        }
+    }
+
+    @Test func turningOnAWorkflowRoutinePublishesItOnce() async throws {
+        let host = T3ServiceHost(existing: true, workflowsEnabled: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let schedule = try #require(T3RoutineSchedule(hour: 9, minute: 15, days: [3, 1]))
+        let proposal = try service.proposeWorkflowRoutine(name: "Check the plan", prompt: "Review the latest notes.",
+                                                          schedule: schedule, threadID: "existing-general")
+        #expect(await host.workflowWrites.isEmpty)
+        let installed = try await service.turnOnWorkflowRoutine(proposal)
+        #expect(installed.proposal == proposal)
+        #expect(installed.enabled)
+        #expect(try await service.turnOnWorkflowRoutine(proposal) == installed)
+        #expect(try await service.listWorkflowRoutines() == [installed])
+        let writes = await host.workflowWrites
+        #expect(writes.count == 1)
+        let write = try #require(writes.first)
+        #expect(write["name"].text == "botto-routine-\(proposal.id.uuidString.lowercased()).ts")
+        #expect(write["source"].text?.contains(#"T3.daily("09:15", { weekdays: [1,3] })"#) == true)
+        #expect(await host.routineUpserts.isEmpty)
+        #expect(await host.createdThreads.isEmpty)
+    }
+
+    @Test func pausingAndDeletingWorkflowRoutinesLeavesTheirSpaceAndLegacyTasks() async throws {
+        let host = T3ServiceHost(existing: true, workflowsEnabled: true)
+        try await host.seedRoutines()
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let schedule = try #require(T3RoutineSchedule(hour: 9, minute: 15, days: [3]))
+        let proposal = try service.proposeWorkflowRoutine(name: "Check the plan", prompt: "Review the notes.",
+                                                          schedule: schedule, threadID: "existing-general")
+        let active = try await service.turnOnWorkflowRoutine(proposal)
+        let paused = try await service.setWorkflowRoutineEnabled(active, enabled: false)
+        #expect(!paused.enabled)
+        #expect(try await service.setWorkflowRoutineEnabled(active, enabled: false) == paused)
+        #expect(try await service.listWorkflowRoutines() == [paused])
+        await #expect(throws: T3WorkflowRoutineError.changed) { try await service.deleteWorkflowRoutine(active) }
+
+        try await service.deleteWorkflowRoutine(paused)
+        try await service.deleteWorkflowRoutine(paused)
+        #expect(try await service.listWorkflowRoutines().isEmpty)
+        #expect(await host.workflowWrites.count == 2)
+        #expect(await host.workflowDeletes.count == 1)
+        #expect(try await service.listRoutines().map(\.id) == ["once-task"])
+        #expect(service.currentT3Channels.map(\.id) == ["existing-general"])
+    }
+
+    @Test func workflowRoutineQuestionsBelongToTheLinkedSpace() async throws {
+        let host = T3ServiceHost(existing: true, archivedChannel: true, workflowsEnabled: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let schedule = try #require(T3RoutineSchedule(hour: 9, minute: 15, days: [3]))
+        let proposal = try service.proposeWorkflowRoutine(name: "Check the plan", prompt: "Review the notes.",
+                                                          schedule: schedule, threadID: "existing-general")
+        _ = try await service.turnOnWorkflowRoutine(proposal)
+        let workflow = "botto-routine-\(proposal.id.uuidString.lowercased())"
+        try await host.seedWorkflowQuestions(workflow: workflow)
+        let activities = try await service.workflowRoutineActivity(threadID: "existing-general")
+        #expect(activities.map(\.id) == ["own-run"])
+        let question = try #require(activities.first?.question)
+        #expect(question.choices == ["Run", "Skip"])
+        #expect(try await service.workflowRoutineActivity(threadID: "archived-channel").isEmpty)
+        await #expect(throws: T3WorkflowRoutineError.questionChanged) {
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Delete")
+        }
+        try await service.answerWorkflowRoutineQuestion(question, choice: "Skip")
+        let completed = try await service.workflowRoutineActivity(threadID: "existing-general")
+        #expect(completed.first?.question == nil)
+        #expect(completed.first?.result == "Skipped")
+        await #expect(throws: T3WorkflowRoutineError.questionChanged) {
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Skip")
+        }
+        #expect(await host.workflowAnswers.map { $0["runId"].text } == ["own-run"])
+    }
+
     @Test func managesProjectRoutinesThroughT3ScheduledTasks() async throws {
         let host = T3ServiceHost(existing: true, archivedChannel: true)
         try await host.seedRoutines()
@@ -1040,12 +1139,19 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private let ticketStatuses: [Int]
     nonisolated let visits: AsyncStream<JSONValue>
     private let visitCommands: AsyncStream<JSONValue>.Continuation
+    private let workflowsEnabled: Bool
     private var withholdFirstVisitReply: Bool
     private var withheldVisitID: String?
     private(set) var modelCommands: [JSONValue] = []
     private var outputsAvailable = false
     private(set) var listedDirectories: [String] = []
     private var scheduledTasks: [String: JSONValue] = [:]
+    private var workflowDefinitions: [String: JSONValue] = [:]
+    private(set) var workflowWrites: [JSONValue] = []
+    private(set) var workflowDeletes: [String] = []
+    private(set) var workflowAnswers: [JSONValue] = []
+    private var workflowRuns: [JSONValue] = []
+    private var workflowQuestions: [JSONValue] = []
     private var routineStreams: Set<String> = []
     private(set) var interruptedRoutineStreams = 0
     private(set) var routineUpserts: [JSONValue] = []
@@ -1071,8 +1177,9 @@ private actor T3ServiceHost: T3WebSocketTransport {
 
     init(existing: Bool = false, archivedChannel: Bool = false, ticketStatuses: [Int] = [200],
          withholdFirstVisitReply: Bool = false, models: Bool = true, signedOut: Bool = false,
-         signedOutDefault: Bool = false) {
+         signedOutDefault: Bool = false, workflowsEnabled: Bool = false) {
         self.existing = existing
+        self.workflowsEnabled = workflowsEnabled
         self.models = models
         self.signedOut = signedOut
         probedSignedOut = signedOut
@@ -1167,6 +1274,18 @@ private actor T3ServiceHost: T3WebSocketTransport {
     }
 
     func addOutputs() { outputsAvailable = true }
+
+    func seedWorkflowQuestions(workflow: String) throws {
+        workflowRuns = [
+            try t3JSON(#"{"runId":"own-run","version":1,"status":"waiting","result":null}"#),
+            try t3JSON(#"{"runId":"foreign-run","workflow":"foreign-workflow","version":1,"status":"waiting","result":null}"#),
+        ]
+        workflowRuns[0]["workflow"] = .string(workflow)
+        workflowQuestions = [
+            try t3JSON(#"{"runId":"own-run","name":"run-routine","request":{"title":"Run the Routine?","choices":["Run","Skip"],"data":{"threadId":"existing-general"}}}"#),
+            try t3JSON(#"{"runId":"foreign-run","name":"run-routine","request":{"title":"Foreign question","choices":["Run","Skip"],"data":{"threadId":"existing-general"}}}"#),
+        ]
+    }
 
     func seedRoutines() throws {
         let once = scheduledTask(id: "once-task", input: try t3JSON("""
@@ -1291,7 +1410,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
             if frame["tag"].text == "server.refreshProviders" { probedSignedOut = signedOut }
             reply = try t3JSON("""
             {"cwd":"/srv","environment":{"environmentId":"environment"},"threadSnapshotPagination":true,
-             "settings":{"defaultRuntimeMode":"approval-required"},
+             "settings":{"defaultRuntimeMode":"approval-required","workflowsEnabled":\(workflowsEnabled)},
              "providers":[{"instanceId":"claude-1","driver":"claudeAgent","displayName":"Claude",
                "installed":true,"enabled":true,"auth":{"status":"\(probedSignedOut ? "unauthenticated" : "authenticated")"},"models":[\(models ? #"{"slug":"claude-test","name":"Claude Test","isDefault":true}"# : "")]}
              \(signedOutDefault ? #",{"instanceId":"codex-1","driver":"codex","installed":true,"enabled":true,"auth":{"status":"unauthenticated"},"models":[{"slug":"gpt-test"}]}"# : "")]}
@@ -1423,6 +1542,34 @@ private actor T3ServiceHost: T3WebSocketTransport {
                 #expect(resource["path"].text == "outputs/report.txt")
                 reply = try t3JSON(#"{"relativeUrl":"/api/assets/signed/report.txt","expiresAt":4100000000000}"#)
             }
+        case "workflows.subscribe":
+            try chunk(id, values: [.object(["runs": .array(workflowRuns), "questions": .array(workflowQuestions)])])
+            return
+        case "workflows.answer":
+            workflowAnswers.append(request)
+            let run = try #require(workflowRuns.firstIndex { $0["runId"] == request["runId"] })
+            workflowRuns[run]["status"] = .string("completed")
+            workflowRuns[run]["result"] = .string("Skipped")
+            workflowQuestions.removeAll { $0["runId"] == request["runId"] && $0["name"] == request["name"] }
+            reply = .null
+        case "workflows.getDefinition":
+            reply = .object(["single": .bool(false), "files": .array(Array(workflowDefinitions.values)),
+                             "problems": .array([])])
+        case "workflows.saveDefinition":
+            workflowWrites.append(request)
+            let name = try #require(request["name"].text)
+            let workflow = String(name.dropLast(3))
+            let source = try #require(request["source"].text)
+            let registration = try #require(source.firstMatch(of: /version <= ([0-9]+)/))
+            let version = try #require(Int(registration.1))
+            workflowDefinitions[name] = .object(["name": .string(name), "source": request["source"],
+                                                  "workflows": .array((1...version).map { .string("\(workflow)@\($0)") }),
+                                                  "problems": .array([])])
+            reply = .object(["changed": .bool(true), "problems": .array([])])
+        case "workflows.deleteDefinition":
+            let name = try #require(request["name"].text)
+            workflowDeletes.append(name)
+            reply = .object(["changed": .bool(workflowDefinitions.removeValue(forKey: name) != nil), "problems": .array([])])
         case "scheduledTasks.subscribe":
             #expect(request == .object([:]))
             routineStreams.insert(id)

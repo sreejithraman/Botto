@@ -225,13 +225,8 @@ const readEnvironment = async () => {
 };
 
 let stop;
-try {
-  console.log(`T3 ${pin.version} on disposable loopback`);
-  await writeFile(join(engineHome, ".bash_profile"), `export PATH=${env.PATH}\n`);
-  stop = await start();
-  const environmentId = await readEnvironment();
-  assert.ok(environmentId);
-  const owner = await pair("Disposable owner");
+
+async function verifyEngine(owner, environmentId) {
   const operator = await pair("Disposable operator", orchestration);
   const reader = await pair("Disposable reader", ["orchestration:read"]);
   assert.ok(["filesystem:read", "terminal:operate", "settings:write", ...orchestration].every(scope => owner.scopes.includes(scope)));
@@ -408,6 +403,42 @@ try {
   assert.deepEqual(await rpc(owner, "workflows.deleteDefinition", { name: approvedRoutine + ".ts" }), { changed: true, problems: [] });
   assert.equal((await get(owner, runId)).run.result, "Allow");
   console.log("PASS: pause skipped a manual start; the in-progress run finished once, and deleting kept its history");
+}
+
+async function verifyNativeRoutine(owner) {
+  const workspace = "Native Routine Space";
+  const space = await projectSpace(owner, workspace);
+  const { stdout } = await engineCall(["pair", "--base-dir", engineHome], "native pairing");
+  const pairing = stdout.split("\n").find(line => line.startsWith("Pairing URL:"))?.slice("Pairing URL:".length).trim();
+  assert.ok(pairing?.startsWith(origin + "/"), "Native pairing must address the disposable server");
+  const check = spawn("/usr/bin/python3", [resolve(root, "scripts/dev-process.py"), "run", "--grace", "5", "--",
+    "/usr/bin/swift", "test", "--jobs", "2", "--filter", "T3WorkflowRoutineLiveTests", "--scratch-path", ".artifacts/CoreTests"],
+  {
+    cwd: root, stdio: "inherit", signal: cancellation.signal,
+    env: {
+      ...process.env, BOTTO_TEST_T3_WORKFLOW_PAIRING_URL: pairing,
+      BOTTO_TEST_T3_WORKFLOW_PROJECT: space.projectId,
+      BOTTO_TEST_T3_WORKFLOW_ROOT: join(engineHome, workspace),
+      BOTTO_TEST_T3_WORKFLOW_SPACE: space.threadId,
+    },
+  });
+  const [status] = await once(check, "close");
+  assert.equal(status, 0, "Native Routine lifecycle check failed");
+}
+
+try {
+  console.log(`T3 ${pin.version} on disposable loopback`);
+  await writeFile(join(engineHome, ".bash_profile"), `export PATH=${env.PATH}\n`);
+  stop = await start();
+  const environmentId = await readEnvironment();
+  assert.ok(environmentId);
+  const owner = await pair("Disposable owner");
+  if (process.argv.includes("--native-routine")) {
+    await rpc(owner, "server.updateSettings", { patch: { workflowsEnabled: true } });
+    await verifyNativeRoutine(owner);
+  } else {
+    await verifyEngine(owner, environmentId);
+  }
 } finally {
   if (stop) await stop();
   await rm(engineHome, { recursive: true, force: true });

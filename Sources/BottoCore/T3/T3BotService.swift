@@ -60,6 +60,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         var archivedShells: [String: JSONValue] = [:]
         var archiveSnapshotSequence: Int?
         var archiveRefresh: Task<Void, Never>?
+        var workflowWrites: Set<UUID> = []
+        var workflowAnswers: Set<String> = []
         var ready = false
         /// Profile edits apply one at a time, each to the manifest the previous one saved.
         var manifestTail: Task<Void, Error>?
@@ -391,6 +393,151 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let data = try await fetchAsset(path, in: session)
         try check(session)
         return DownloadedArtifact(data: data, filename: output.name, mimeType: output.mimeType)
+    }
+
+    public var workflowRoutinesAvailable: Bool {
+        session?.ready == true && session?.config["settings"]["workflowsEnabled"].flag == true
+    }
+
+    public func proposeWorkflowRoutine(name: String, prompt: String, schedule: T3RoutineSchedule,
+                                       threadID: String) throws -> T3WorkflowRoutineProposal {
+        let session = try requireSession()
+        guard workflowRoutinesAvailable, let environmentID = session.configuration.t3?.environmentID else {
+            throw T3WorkflowRoutineError.unavailable
+        }
+        guard session.shells[threadID] != nil else { throw ConversationServiceError.wrongConversation }
+        let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { throw T3WorkflowRoutineError.emptyPrompt }
+        return try T3WorkflowRoutineProposal(id: UUID(), name: Self.name(name), prompt: prompt, schedule: schedule,
+                                             threadID: threadID, environmentID: environmentID, projectID: session.profile.text)
+    }
+
+    public func listWorkflowRoutines() async throws -> [T3WorkflowRoutine] {
+        guard workflowRoutinesAvailable else { return [] }
+        let session = try requireSession()
+        return try await workflowRoutineFiles(in: session)
+            .compactMap { T3WorkflowRoutine(file: $0, scope: pushScope(session)) }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    public func turnOnWorkflowRoutine(_ proposal: T3WorkflowRoutineProposal) async throws -> T3WorkflowRoutine {
+        let session = try beginWorkflowRoutineWrite(proposal)
+        defer { session.workflowWrites.remove(proposal.id) }
+        guard session.shells[proposal.threadID] != nil else { throw ConversationServiceError.wrongConversation }
+        let requested = T3WorkflowRoutine(proposal: proposal, version: 1)
+        let files = try await workflowRoutineFiles(in: session)
+        if let file = files.first(where: { $0["name"].text == requested.fileName }) {
+            guard T3WorkflowRoutine(file: file, scope: proposal.scope) == requested else {
+                throw T3WorkflowRoutineError.changed
+            }
+            return requested
+        }
+        guard session.shells[proposal.threadID] != nil else { throw ConversationServiceError.wrongConversation }
+        try await saveWorkflowRoutine(requested, in: session)
+        return requested
+    }
+
+    public func setWorkflowRoutineEnabled(_ routine: T3WorkflowRoutine, enabled: Bool) async throws -> T3WorkflowRoutine {
+        let proposal = routine.proposal
+        let session = try beginWorkflowRoutineWrite(proposal)
+        defer { session.workflowWrites.remove(proposal.id) }
+        let files = try await workflowRoutineFiles(in: session)
+        guard let file = files.first(where: { $0["name"].text == routine.fileName }),
+              let current = T3WorkflowRoutine(file: file, scope: proposal.scope),
+              current.proposal == proposal else { throw T3WorkflowRoutineError.changed }
+        let version = routine.enabled == enabled ? routine.version : routine.version + 1
+        if current.version == version { return current }
+        guard current == routine else { throw T3WorkflowRoutineError.changed }
+        if enabled, session.shells[proposal.threadID] == nil { throw ConversationServiceError.wrongConversation }
+        let updated = T3WorkflowRoutine(proposal: proposal, version: version)
+        try await saveWorkflowRoutine(updated, in: session)
+        return updated
+    }
+
+    public func deleteWorkflowRoutine(_ routine: T3WorkflowRoutine) async throws {
+        let proposal = routine.proposal
+        let session = try beginWorkflowRoutineWrite(proposal)
+        defer { session.workflowWrites.remove(proposal.id) }
+        let files = try await workflowRoutineFiles(in: session)
+        guard let file = files.first(where: { $0["name"].text == routine.fileName }) else { return }
+        guard T3WorkflowRoutine(file: file, scope: proposal.scope) == routine else { throw T3WorkflowRoutineError.changed }
+        try await changeWorkflowDefinition("workflows.deleteDefinition", payload: .object(["name": .string(routine.fileName)]),
+                                           in: session)
+        guard try await !workflowRoutineFiles(in: session).contains(where: { $0["name"].text == routine.fileName }) else {
+            throw ConversationServiceError.uncertain
+        }
+    }
+
+    private func beginWorkflowRoutineWrite(_ proposal: T3WorkflowRoutineProposal) throws -> Session {
+        let session = try requireSession()
+        guard workflowRoutinesAvailable else { throw T3WorkflowRoutineError.unavailable }
+        guard proposal.scope == pushScope(session) else { throw ConversationServiceError.wrongConversation }
+        guard session.workflowWrites.insert(proposal.id).inserted else { throw T3WorkflowRoutineError.updating }
+        return session
+    }
+
+    private func workflowRoutineFiles(in session: Session) async throws -> [JSONValue] {
+        let reply = try await session.rpc.call("workflows.getDefinition")
+        try check(session)
+        guard reply["single"].flag == false else { throw T3WorkflowRoutineError.unavailable }
+        guard let files = reply["files"].list else { throw T3ServiceError.invalidResponse }
+        return files
+    }
+
+    private func saveWorkflowRoutine(_ routine: T3WorkflowRoutine, in session: Session) async throws {
+        let source = try routine.definitionSource()
+        let payload: JSONValue = .object(["name": .string(routine.fileName), "source": .string(source)])
+        try await changeWorkflowDefinition("workflows.saveDefinition", payload: payload, in: session)
+        let files = try await workflowRoutineFiles(in: session)
+        guard files.contains(where: { T3WorkflowRoutine(file: $0, scope: routine.proposal.scope) == routine }) else {
+            throw ConversationServiceError.uncertain
+        }
+    }
+
+    private func changeWorkflowDefinition(_ method: String, payload: JSONValue, in session: Session) async throws {
+        let reply = try await mutationReply(method, payload: payload, in: session)
+        try check(session)
+        if let problem = reply["problems"].list?.first?["message"].nonempty {
+            throw T3WorkflowRoutineError.definition(problem)
+        }
+    }
+
+    public func workflowRoutineActivity(threadID: String) async throws -> [T3WorkflowRoutineActivity] {
+        guard workflowRoutinesAvailable else { return [] }
+        let session = try requireSession()
+        guard session.shells[threadID] != nil else { return [] }
+        return try await workflowRoutineActivity(threadID: threadID, in: session)
+    }
+
+    public func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws {
+        let session = try requireSession()
+        let proposal = question.proposal
+        guard workflowRoutinesAvailable, proposal.scope == pushScope(session),
+              session.shells[proposal.threadID] != nil, question.choices.contains(choice),
+              session.workflowAnswers.insert(question.runID).inserted else {
+            throw T3WorkflowRoutineError.questionChanged
+        }
+        defer { session.workflowAnswers.remove(question.runID) }
+        let activities = try await workflowRoutineActivity(threadID: proposal.threadID, in: session)
+        guard session.shells[proposal.threadID] != nil,
+              activities.contains(where: { $0.question == question }) else {
+            throw T3WorkflowRoutineError.questionChanged
+        }
+        _ = try await mutationReply("workflows.answer", payload: .object([
+            "runId": .string(question.runID), "name": .string(question.name), "choice": .string(choice),
+        ]), in: session)
+        try check(session)
+    }
+
+    private func workflowRoutineActivity(threadID: String, in session: Session) async throws -> [T3WorkflowRoutineActivity] {
+        let scope = pushScope(session)
+        let routines = try await workflowRoutineFiles(in: session)
+            .compactMap { T3WorkflowRoutine(file: $0, scope: scope) }
+            .filter { $0.proposal.threadID.utf8.elementsEqual(threadID.utf8) }
+        guard !routines.isEmpty else { return [] }
+        let snapshot = try await session.rpc.call("workflows.subscribe", firstStreamValue: true)
+        try check(session)
+        return try T3WorkflowRoutineActivity.read(snapshot, routines: routines)
     }
 
     public func listRoutines() async throws -> [T3ScheduledRoutine] {
