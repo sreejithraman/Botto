@@ -62,9 +62,6 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
     private var reconciling = false
     private let prompt = UILabel()
     private var maximumLines = 6
-    #if DEBUG
-    private lazy var inputTrace = InteractionFrameTrace.make(viewport: self, outputVariable: "BOTTO_TYPING_TRACE_OUTPUT")
-    #endif
     weak var editingHandle: ComposerEditingHandle?
     var pasteAttachments: ((PresentationOwner, [PastedAttachment]) -> Void)?
     var admitAttachmentPaste: ((PresentationOwner) -> Bool)?
@@ -127,9 +124,6 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
         // native edit. A different context still reconciles immediately.
         let publishingCurrentDraft = publishingDraft != nil && publishingDraft == nextIdentity
         if replaced || (!publishingCurrentDraft && self.text != value && markedTextRange == nil) {
-            #if DEBUG
-            let clearsText = value.isEmpty && !self.text.isEmpty
-            #endif
             reconciling = true
             let selected = selectedRange
             self.text = value
@@ -140,9 +134,6 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
                 selectedRange = NSRange(location: start, length: min(selected.length, value.utf16.count - start))
             }
             reconciling = false
-            #if DEBUG
-            if clearsText { inputTrace?.mark("cleared") }
-            #endif
         }
         prompt.isHidden = !self.text.isEmpty
         if geometryChanged || markedTextRange != nil { invalidateIntrinsicContentSize() }
@@ -174,9 +165,6 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
             height: font?.lineHeight ?? 0)
     }
     func textViewDidChange(_ textView: UITextView) {
-        #if DEBUG
-        inputTrace?.mark("edit")
-        #endif
         publishDraft(measureHeightChange: true)
     }
     private func publishDraft(measureHeightChange: Bool = false) {
@@ -193,15 +181,8 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
         }
     }
     func textViewDidBeginEditing(_ textView: UITextView) {
-        #if DEBUG
-        inputTrace?.begin()
-        #endif
         guard eligible, canEdit() else { cancelEditing(commit: false); return }
     }
-    #if DEBUG
-    func textViewDidEndEditing(_ textView: UITextView) { inputTrace?.finish() }
-    func markSend() { inputTrace?.mark("send") }
-    #endif
     func commitComposition() {
         guard !reconciling, eligible, canEdit() else { return }
         unmarkText()
@@ -212,9 +193,6 @@ final class NativeComposerTextView: UITextView, UITextViewDelegate {
         if isFirstResponder { resignFirstResponder() }
     }
     func retire() {
-        #if DEBUG
-        inputTrace?.finish()
-        #endif
         reconciling = true; cancelEditing(commit: false); unmarkText(); undoManager?.removeAllActions()
         boundText = .constant(""); identity = nil; canEdit = { false }; pasteAttachments = nil; admitAttachmentPaste = nil
         if editingHandle?.editor === self { editingHandle?.editor = nil }

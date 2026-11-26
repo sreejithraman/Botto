@@ -57,9 +57,6 @@ final class RichContentRenderer: NSObject {
     init(bundle: Bundle = .main) {
         self.bundle = bundle
         super.init()
-        #if DEBUG
-        TranscriptMeasurements.current?.register(self)
-        #endif
     }
 
     func load(_ block: ReplyContent.Block, context: RichReplyContext = .isolated, dark: Bool = false, reduceMotion: Bool = false,
@@ -161,9 +158,6 @@ final class RichContentRenderer: NSObject {
             controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true, in: Self.bridgeWorld))
             let view = AttachedRichWebView(frame: .zero, configuration: configuration)
-            #if DEBUG
-            TranscriptMeasurements.current?.register(view)
-            #endif
             view.navigationDelegate = self
             view.uiDelegate = self
             view.allowsBackForwardNavigationGestures = false

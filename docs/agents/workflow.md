@@ -44,8 +44,7 @@ for route review, test isolation, and evidence.
 ## Performance work
 
 Workloads live in the
-[native performance tests](../../AppUITests/ConversationUITests.swift), and
-[scrolling, typing and sending benchmarks](../../AppUITests/ConversationPerformanceUITests.swift).
+[native performance tests](../../AppUITests/ConversationUITests.swift).
 The [verification record](../verification.md) records checked workloads,
 results, and limits. Compare the same workload before and after a performance
 change, and keep its behavior intact.
