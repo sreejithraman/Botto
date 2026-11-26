@@ -31,9 +31,7 @@ import BottoCore
     var sendGate: WorkspaceGate?
     var createGate: WorkspaceGate?
     var openGate: WorkspaceGate?
-    var openGatedProfile: ExactID?
     var directoryGate: WorkspaceGate?
-    var directoryGatedProfile: ExactID?
     var uploadGate: WorkspaceGate?
     var downloadGate: WorkspaceGate?
     var createError: (any Error)?
@@ -95,7 +93,7 @@ import BottoCore
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCalls += 1
         let captured = directoryResult
-        if directoryGatedProfile == nil || directoryGatedProfile == profile { await directoryGate?.wait() }
+        await directoryGate?.wait()
         if let directoryError { throw directoryError }
         if let captured { return captured }
         return .init(summaries: summaries.filter { $0.identity.profile == profile }, activity: directoryActivity, isComplete: directoryComplete)
@@ -137,7 +135,7 @@ import BottoCore
         let observed = readSummaryAvailable ? summaries.first { $0.identity.profile == identity.profile && $0.identity.root == identity.root
             && $0.identity.stored == identity.stored } : nil
         let opened = try publication(identity, readEvidence: observed.map(ConversationReadEvidence.init))
-        if openGatedProfile == nil || openGatedProfile == identity.profile { await openGate?.wait() }
+        await openGate?.wait()
         if let openError { throw openError }
         let result = try openResult?(opened) ?? opened
         beforeOpenReturn?(result)

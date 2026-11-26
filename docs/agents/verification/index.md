@@ -11,7 +11,7 @@ until its assertions run on the recorded target and revision. The
 | Start | [Welcome and first run](features/start.md) | `start.first-run`, `start.demo`, `start.pair`, `start.address`, `start.qr`, `start.external` |
 | Pairing | [Pairing and reconnection](features/auth.md) | `auth.access`, `auth.interruption`, `auth.recovery` |
 | Space navigation | [Spaces drawer](features/inbox.md) | `inbox.find`, `inbox.activity`, `inbox.pins`, `inbox.navigation` |
-| Library | [Workspace files and search](features/library.md) | `library.navigation`, `library.outputs`, `library.search`, `library.captures` |
+| Workspace files | [Botto's page files and captures](features/library.md) | `library.navigation`, `library.outputs`, `library.captures` |
 | Spaces | [Main Space and permanent Spaces](features/chats.md) | `chats.choose`, `chats.isolation`, `chats.recovery` |
 | Conversation | [Send, draft, and read](features/chat.md) | `chat.send`, `chat.drafts`, `chat.history`, `chat.reading-position` |
 | Requests | [Answer and stop work](features/requests.md) | `requests.approval`, `requests.question`, `requests.recovery`, `requests.stop` |
