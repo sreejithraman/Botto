@@ -1325,7 +1325,7 @@ import BottoCore
               let localOwner = currentArtifactPresentationKey(), let source = chatSelection(for: botID)?.identity else { return nil }
         if let producingMessage, !TranscriptMessageIndex(conversation).matches(producingMessage) { return nil }
         let intent = chats.captureArtifact(attachment, owner: screen.owner)
-        return .init(attachment: attachment, siblings: producingMessage?.attachments ?? [],
+        return .init(attachment: attachment, siblings: producingMessage.map { AttachmentPresentation.display($0).attachments } ?? [],
                      conversation: conversation, producingMessage: producingMessage, workspace: chats, intent: intent,
                      identity: source, captures: captures, localOwner: localOwner, localEpoch: artifactPresentationEpoch)
     }

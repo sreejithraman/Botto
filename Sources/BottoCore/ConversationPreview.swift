@@ -7,10 +7,11 @@ public struct ConversationPreview: Codable, Equatable, Sendable {
 
     public init?(message: ChatMessage) {
         guard message.role == .user || message.role == .assistant else { return nil }
-        let summary = ReplyContent.summary(message.text)
+        let display = AttachmentPresentation.display(message)
+        let summary = ReplyContent.summary(display.text)
         if !summary.isEmpty { text = summary }
-        else if !message.attachments.isEmpty {
-            text = message.attachments.allSatisfy { $0.mimeType.hasPrefix("image/") } ? "Shared a photo" : "Shared a file"
+        else if !display.attachments.isEmpty {
+            text = display.attachments.allSatisfy { $0.mimeType.hasPrefix("image/") } ? "Shared a photo" : "Shared a file"
         } else { return nil }
         messageID = message.id
         timestamp = message.timestamp

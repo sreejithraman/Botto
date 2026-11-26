@@ -21,25 +21,26 @@ struct MessageView: View {
                 systemImage: message.role == .tool ? "wrench.and.screwdriver" : "info.circle",
                 identifier: "message-details-" + message.id, messages: [message])
         } else {
-            let stack = outgoing ? thumbnails.flatMap { showsStack(message.attachments, $0) ? $0 : nil } : nil
+            let presentation = AttachmentPresentation.display(message)
+            let stack = outgoing ? thumbnails.flatMap { showsStack(presentation.attachments, $0) ? $0 : nil } : nil
             VStack(alignment: .trailing, spacing: 8) {
                 if let stack {
-                    SentAttachmentStack(attachments: message.attachments, thumbnails: stack, open: onOpenAttachment)
+                    SentAttachmentStack(attachments: presentation.attachments, thumbnails: stack, open: onOpenAttachment)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                if stack == nil || !message.text.isEmpty {
+                if stack == nil || !presentation.text.isEmpty {
                     HStack(alignment: .top, spacing: 0) {
                         if outgoing { Spacer(minLength: 35) }
                         VStack(alignment: .leading, spacing: 10) {
-                            if !message.text.isEmpty {
-                                if outgoing { Text(message.text).textSelection(.enabled) }
-                                else if !rendersRichContent { MarkdownBody(text: message.text) }
+                            if !presentation.text.isEmpty {
+                                if outgoing { Text(presentation.text).textSelection(.enabled) }
+                                else if !rendersRichContent { MarkdownBody(text: presentation.text) }
                                 else { AssistantReplyBody(message: message, isStreaming: isStreaming,
                                                           filePreviewsAreSettled: filePreviewsAreSettled,
                                                           onOpenAttachment: onOpenAttachment) }
                             }
                             if stack == nil {
-                                ForEach(message.attachments) { attachment in
+                                ForEach(presentation.attachments) { attachment in
                                     ArtifactCard(attachment: attachment, outgoing: outgoing,
                                                  open: onOpenAttachment.map { action in { action(attachment) } })
                                 }

@@ -59,3 +59,8 @@ private let oldRows = #"""
 func replyThatLooksLikeASilenceMarkerIsPreviewed(text: String) {
     #expect(ConversationPreview(message: .init(id: "reply", role: .assistant, text: text))?.text == text)
 }
+
+@Test func anOlderSavedAttachmentCanOmitItsByteCount() throws {
+    let legacy = Data(#"{"name":"old.txt","path":"/host/old.txt","mimeType":"text/plain"}"#.utf8)
+    #expect(try JSONDecoder().decode(ChatAttachment.self, from: legacy).byteCount == nil)
+}

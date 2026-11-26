@@ -58,6 +58,41 @@ import BottoCore
         workspace.displayed(freshA.owner)
         #expect(workspace.cards(profile: profile).first { $0.id == a.selectedChatID }?.unread == false)
     }
+    /// T3 never marks a reply quiet, so a reply whose whole text is "Silent." is new content like any other.
+    @Test(arguments: [false, true])
+    func aSilentLookingReplyMarksAReadChatUnreadUntilDisplayed(directoryCountsTheReply: Bool) async throws {
+        let service = try WorkspaceTestService(), profile = service.profile, identity = service.summaries[0].identity
+        let oldAt = Date.now.addingTimeInterval(-60)
+        let old = ChatMessage(id: "answer", role: .assistant, text: "The report is ready.", timestamp: oldAt)
+        service.snapshots[identity.root]?.messages = [old]
+        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
+            preview: old.text, updatedAt: oldAt, messageCount: 1)
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: .init(), service: service, onDirty: {})
+        workspace.setOnline(true)
+        await workspace.openBot(profile: profile)
+        let read = try #require(workspace.screen(profile: profile))
+        await workspace.refreshDirectory(read.owner)
+        workspace.displayed(read.owner)
+        let chat = read.selectedChatID
+        #expect(workspace.cards(profile: profile).first { $0.id == chat }?.unread == false)
+
+        let silentAt = Date.now
+        service.snapshots[identity.root]?.messages = [old, .init(id: "silent", role: .assistant, text: "Silent.", timestamp: silentAt)]
+        if directoryCountsTheReply {
+            service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
+                preview: "Silent.", updatedAt: silentAt, messageCount: 2)
+        }
+        await workspace.openBot(profile: profile)
+        let fresh = try #require(workspace.screen(profile: profile))
+        await workspace.refreshDirectory(fresh.owner)
+        #expect(fresh.snapshot?.messages.last?.id == "silent")
+        let card = try #require(workspace.cards(profile: profile).first { $0.id == chat })
+        #expect(card.unread, "A reply that looks like an old silence marker still counts as unread")
+        #expect(card.replyPreview == "Silent.")
+        workspace.displayed(try #require(workspace.screen(profile: profile)).owner)
+        #expect(workspace.cards(profile: profile).first { $0.id == chat }?.unread == false)
+    }
     @Test func directoryPreviewMayBeAnExactTruncatedPrefixOfDisplayedContent() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let text = "A complete answer with more detail than the directory preview."
