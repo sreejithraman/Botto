@@ -55,6 +55,7 @@ import WebKit
         let disclosure = try #require(element("Work details, 2 tools", in: host.view))
         #expect(disclosure.accessibilityActivate())
         let controller = try #require(collectionController(host))
+        let readerOpened = ContinuousClock.now
         try await wait("one reader opens with collapsed tool summaries") {
             guard let sheet = controller.presentedViewController else { return false }
             return element("Expand terminal", in: sheet.view) != nil && element("Expand cronjob_manage", in: sheet.view) != nil
@@ -79,7 +80,6 @@ import WebKit
                 element("UPDATED-SECOND-TOOL-OUTPUT", in: originalReader.view) != nil
         }
         let reader = try #require(controller.presentedViewController)
-        let readerOpened = ContinuousClock.now
         reader.sheetPresentationController?.animateChanges {
             reader.sheetPresentationController?.selectedDetentIdentifier = .large
         }
@@ -113,18 +113,17 @@ import WebKit
         let presenting = reader.isBeingPresented, dismissing = reader.isBeingDismissed
         let accepted = done.accessibilityActivate()
         if !accepted {
+            let current = element("Done", in: reader.view)
             Attachment.record("presenting=\(presenting) dismissing=\(dismissing) node=\(type(of: done)) " +
-                "presented=\(controller.presentedViewController === reader) Done shown=\(element("Done", in: reader.view) != nil) " +
-                "replaced=\(element("Done", in: reader.view).map(ObjectIdentifier.init) != ObjectIdentifier(done)) " +
-                "sinceReaderOpened=\(readerOpened.duration(to: .now))", named: "done-refusal.txt")
+                "presented=\(controller.presentedViewController === reader) Done shown=\(current != nil) " +
+                "replaced=\(current.map { $0 !== done } ?? false) sinceReaderOpened=\(readerOpened.duration(to: .now))",
+                named: "done-refusal.txt")
         }
         withKnownIssue("Done refuses accessibilityActivate intermittently (W21-F1)", isIntermittent: true) {
             #expect(accepted, "Done refused its first accessibility activation.")
         }
         if !accepted {
-            try await wait("Done accepts a press") {
-                controller.presentedViewController !== reader || element("Done", in: reader.view)?.accessibilityActivate() == true
-            }
+            try await wait("Done accepts a press") { element("Done", in: reader.view)?.accessibilityActivate() == true }
         }
         try await wait("Done closes the reader") { controller.presentedViewController == nil }
         try await wait("updated work can reopen") { element("Work details, 3 tools", in: host.view) != nil }
@@ -488,9 +487,9 @@ import WebKit
     private func webViews(_ view: UIView) -> [WKWebView] {
         (view as? WKWebView).map { [$0] } ?? view.subviews.flatMap(webViews)
     }
+    /// Evaluates the condition only inside the shared wait, so a condition that acts runs once per poll.
     private func wait(_ reason: String, until condition: () -> Bool) async throws {
-        await waitWhile(reason) { !condition() }
-        try #require(condition(), "Timed out: \(reason)")
+        try #require(await waitWhile(reason) { !condition() }, "Timed out: \(reason)")
     }
 
     @Test func nativeReconfigurationUsesExactPayloadBytesRatherThanCanonicalStringEquality() {
