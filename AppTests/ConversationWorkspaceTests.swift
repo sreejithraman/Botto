@@ -633,9 +633,13 @@ import BottoCore
         service.directoryGate = nil
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
+        #expect(workspace.screen(profile: service.profile)?.canAct == true)
         service.directoryError = ConversationServiceError.timeout
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
+        let failed = try #require(workspace.screen(profile: service.profile))
+        #expect(failed.owner == b.owner && failed.canAct)
+        #expect(failed.snapshot?.messages.first?.text == "Other")
     }
 
     @Test func lateOpenedSnapshotCannotReplaceNewerSelectionAndCurrentOwnerCanStillSend() async throws {

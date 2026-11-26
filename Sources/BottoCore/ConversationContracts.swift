@@ -54,7 +54,9 @@ public struct ProfileActivityUpdate: Sendable {
         self.profile = profile; self.observations = observations
     }
 }
-/// Every Space the host has for one bot. A Space missing from it is gone from the host.
+/// Botto's current inventory of the Spaces it can list for one bot. A Space missing from it
+/// is unavailable here until a later directory lists it; that says nothing about whether its
+/// thread still exists on the host.
 public struct ConversationDirectory: Sendable {
     public let summaries: [SessionSummary]
     public let activity: [SessionIdentity: ObservedActivity]
