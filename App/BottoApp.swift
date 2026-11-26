@@ -54,9 +54,6 @@ private struct BottoWorkspace: View {
 
     var body: some View {
         RootView(store: store)
-            #if DEBUG
-            .environment(\.scenePhase, ProcessInfo.processInfo.arguments.contains("--inactive-root-scene") ? .inactive : scenePhase)
-            #endif
             .task { [store] in
                 try? PushPairingVault.retireLegacyPairing()
                 PushNotificationBridge.onToken = { [weak store] token in
