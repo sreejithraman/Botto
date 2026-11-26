@@ -361,7 +361,7 @@ struct T3Workspace: View {
         if let session = presentation.artifact {
             let revision = presentation.revision
             let active = scenePhase == .active && !rootCovered
-            ArtifactPreview(session: session, isExpanded: true, isActive: active, holdsOutput: scenePhase != .background,
+            ArtifactPreview(session: session, isActive: active, holdsOutput: scenePhase != .background,
                 onClose: {
                     guard presentation.acceptsArtifactCallback(id: session.id, revision: revision) else { return }
                     presentation.closeArtifact(id: session.id)

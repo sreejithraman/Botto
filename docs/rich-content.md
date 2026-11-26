@@ -127,10 +127,8 @@ Botto recognizes explicit `MEDIA:` and
 paths. Ordinary web links and code examples remain text. Host paths identify
 files on the T3 host. The iPhone only reads downloaded copies.
 
-The retained file reader appears beside its conversation when space permits,
-or fills the detail area in narrow space. Where it can sit beside the chat, **Full
-screen** and **Exit full screen** change its allocation; **Close** ends the preview.
-Close the reader to return to the conversation. Changing the selected Space
+The retained file reader opens as a full-height sheet over its Space. **Close**
+ends the preview and returns to the conversation. Changing the selected Space
 retires that reader.
 
 Plain text uses a selectable, read-only native text view with strict decoding.

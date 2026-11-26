@@ -215,3 +215,16 @@ import BottoCore
     }
     func release() { let waiting = waiters; waiters = []; waiting.forEach { $0.resume() } }
 }
+
+extension ConversationWorkspace {
+    /// A bot's saved chats, Main first.
+    func chats(_ profile: ExactID) -> [ChatRecord] { persisted().ordered(profile) }
+    func isUnread(_ summary: SessionSummary) -> Bool? {
+        chats(summary.identity.profile).first { $0.binding.identity?.root == summary.identity.root }?.isUnread
+    }
+    /// Opens a saved chat the way a Spaces drawer tap does.
+    @discardableResult func openSaved(_ summary: SessionSummary) async -> Bool {
+        guard let claim = captureNavigationClaim() else { return false }
+        return await openStoredChat(summary, claim: claim)
+    }
+}

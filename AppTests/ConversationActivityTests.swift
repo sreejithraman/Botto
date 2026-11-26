@@ -27,7 +27,7 @@ import BottoCore
         let owner = try #require(workspace.screen(profile: service.profile)?.owner)
         await workspace.refreshDirectory(owner)
         let other = service.summaries[1].identity
-        let sibling = try #require(workspace.cards(profile: service.profile).first { $0.id != owner.chat }?.id)
+        let sibling = try #require(workspace.chats(service.profile).first { $0.id != owner.chat }?.id)
         let callback = BatchActivityObserverEntry()
         dirty = 0
         await confirmation("A guarded history callback runs before batch reduction") { changed in
@@ -53,7 +53,7 @@ import BottoCore
         #expect(workspace.persisted().record(independentID)?.lastKnownActivity == .init(status: .working, observedAt: .init(timeIntervalSince1970: 20)))
         if newerActivity {
             #expect(workspace.persisted().record(sibling)?.lastKnownActivity == .init(status: .waiting, observedAt: .init(timeIntervalSince1970: 30)))
-            #expect(workspace.cards(profile: service.profile).first { $0.id == sibling }?.status == .waiting)
+            #expect(workspace.aggregate(profile: service.profile).attentionChat == sibling)
             #expect(workspace.avatarPresentation(profile: service.profile, scope: .profile).activity == .waiting)
         } else {
             #expect(workspace.draft(owner) == "Keep the callback draft")
@@ -135,8 +135,7 @@ import BottoCore
         #expect(workspace.aggregate(profile: service.profile).status == .waiting)
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
-        let screenCards = workspace.cards(profile: service.profile)
-        #expect(screenCards.first { $0.id == screen.owner.chat }?.status == .idle)
+        #expect(workspace.aggregate(profile: service.profile).attentionChat == nil)
         #expect(workspace.persisted().record(screen.owner.chat)?.lastKnownActivity?.status == .idle)
     }
 
@@ -212,13 +211,13 @@ import BottoCore
             main: .known(.idle, .distantFuture), other: .known(.waiting, .distantFuture)
         ])])
         let after = try #require(workspace.screen(profile: service.profile))
-        let afterCards = workspace.cards(profile: service.profile)
         #expect(after.owner == before.owner && workspace.isCurrent(before.owner))
         #expect(after.snapshot == before.snapshot && after.canAct)
         #expect(workspace.draft(before.owner) == "Keep the editor")
         #expect(try encoder.encode(workspace.persisted().record(before.owner.chat)) == saved)
-        #expect(afterCards.first { $0.id == before.owner.chat }?.status == .waiting)
-        #expect(afterCards.first { $0.id != before.owner.chat }?.status == .waiting)
+        #expect(workspace.aggregate(profile: service.profile).attentionChat == before.owner.chat,
+                "The open chat's request keeps it waiting")
+        #expect(workspace.chats(service.profile).first { $0.id != before.owner.chat }?.lastKnownActivity?.status == .waiting)
     }
 
     @Test(arguments: [false, true])
@@ -324,17 +323,14 @@ import BottoCore
         let refreshing = Task { await workspace.refreshActivityDirectories(for: [bot]) }
         await gate.entered()
         let during = try #require(workspace.screen(profile: service.profile))
-        let duringCards = workspace.cards(profile: service.profile)
         #expect(during.isLoadingDirectory && !during.canAct)
-        #expect(duringCards.allSatisfy { $0.activity == .unobserved && $0.activity.label == nil })
         #expect(workspace.aggregate(profile: service.profile).activity == .unobserved)
         #expect(during.snapshot?.messages.first?.text == "Bot Chat")
         #expect(workspace.draft(during.owner) == "A saved thought\n")
         gate.release(); await refreshing.value
         let after = try #require(workspace.screen(profile: service.profile))
-        let afterCards = workspace.cards(profile: service.profile)
         #expect(!after.isLoadingDirectory && after.selectedChatID == before.selectedChatID)
-        #expect(afterCards.allSatisfy { $0.activity == .current(.idle) })
+        #expect(workspace.aggregate(profile: service.profile).activity == .current(.idle))
         #expect(workspace.draft(after.owner) == "A saved thought\n")
         #expect(service.opens.isEmpty && service.sends.isEmpty)
     }
@@ -374,9 +370,9 @@ import BottoCore
         #expect(!store.inbox.contains { $0.needsAttention })
         await store.chats.openBot(profile: service.profile)
         let screen = try #require(store.chats.screen(profile: service.profile))
-        let screenCards = store.chats.cards(profile: service.profile)
-        let restored = try #require(screenCards.first { $0.id == savedID })
-        #expect(restored.activity.label == "Previously waiting" && restored.status == nil)
+        let restored = store.chats.aggregate(profile: service.profile).activity
+        #expect(restored == .historical(observation) && restored.label == "Previously waiting" && restored.currentStatus == nil)
+        #expect(store.chats.persisted().record(savedID)?.lastKnownActivity == observation)
         #expect(!screen.canAct && screen.requests.isEmpty)
         #expect(screen.snapshot?.messages.first?.text == "Bot Chat")
         #expect(service.opens.isEmpty && service.responses.isEmpty)
@@ -407,20 +403,17 @@ import BottoCore
         service.directoryError = ConversationServiceError.timeout
         await workspace.refreshActivityDirectories(for: [bot])
         let failed = try #require(workspace.screen(profile: service.profile))
-        let failedCards = workspace.cards(profile: service.profile)
         #expect(failed.selectedChatID == before.selectedChatID && !failed.canAct)
         #expect(workspace.draft(failed.owner) == "Keep this draft")
-        let card = try #require(failedCards.first { !$0.isMain })
-        #expect(card.activity == .unavailable(lastKnown: observation))
-        #expect(card.activity.label == "Previously waiting")
-        #expect(workspace.persisted().record(card.id)?.lastKnownActivity == observation)
+        let activity = workspace.aggregate(profile: service.profile).activity
+        #expect(activity == .unavailable(lastKnown: observation) && activity.label == "Previously waiting")
+        let sibling = try #require(workspace.chats(service.profile).dropFirst().first?.id)
+        #expect(workspace.persisted().record(sibling)?.lastKnownActivity == observation)
 
         service.directoryError = nil
         service.directoryActivity[identity] = .known(.working, observedAt.addingTimeInterval(5))
         await workspace.refreshActivityDirectories(for: [bot])
         let recovered = try #require(workspace.screen(profile: service.profile))
-        let recoveredCards = workspace.cards(profile: service.profile)
-        #expect(recoveredCards.first { !$0.isMain }?.activity == .current(.working))
         #expect(workspace.aggregate(profile: service.profile).activity == .current(.working))
         #expect(workspace.draft(recovered.owner) == "Keep this draft")
         #expect(recovered.selectedChatID == before.selectedChatID && !recovered.canAct)
@@ -631,34 +624,6 @@ import BottoCore
         #expect(reloaded.book.records.allSatisfy { $0.lastKnownActivity?.status == .idle })
     }
 
-    @Test func olderInboxDirectoryCannotDisableANewlyCreatedChat() async throws {
-        let service = try WorkspaceTestService(), gate = WorkspaceGate()
-        let bot = BotProfile(id: service.profile.text, name: "Milo")
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
-        workspace.observeProfiles([bot]); workspace.setOnline(true)
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        service.directoryResult = .init(summaries: service.summaries,
-            activity: Dictionary(uniqueKeysWithValues: service.summaries.map { ($0.identity, .known(.idle, .now)) }),
-            isComplete: true)
-        service.directoryGate = gate
-        let loading = Task { await workspace.refreshActivityDirectories(for: [bot]) }
-        await gate.entered()
-        await workspace.create(try #require(workspace.captureCreation(main.owner)))
-        let created = try #require(workspace.screen(profile: service.profile))
-        #expect(created.selectedChatID != main.selectedChatID && created.canAct)
-        gate.release(); await loading.value
-        let current = try #require(workspace.screen(profile: service.profile))
-        #expect(current.selectedChatID == created.selectedChatID && current.canAct)
-        #expect(current.error == nil)
-        service.directoryGate = nil; service.directoryResult = nil
-        for summary in service.summaries { service.directoryActivity[summary.identity] = .known(.idle, .now) }
-        await workspace.refreshActivityDirectories(for: [bot])
-        #expect(!workspace.aggregate(profile: service.profile).hasUnknownActivity)
-        #expect(workspace.screen(profile: service.profile)?.canAct == true)
-    }
-
     @Test(arguments: [true, false])
     func cancellingOneWaiterKeepsSharedDirectoryRead(cancelBackground: Bool) async throws {
         let service = try WorkspaceTestService(), gate = WorkspaceGate()
@@ -716,8 +681,7 @@ import BottoCore
         var workspace = store.chats
         var a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        var b = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         #expect(store.inbox.filter(\.needsAttention).map(\.id) == [bot.id])
         let reads = service.directoryCalls
         service.rosterActivity = [identity: .known(.idle, .now.addingTimeInterval(1))]
@@ -730,8 +694,7 @@ import BottoCore
         workspace = store.chats
         a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        b = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         #expect(store.inbox.contains { $0.needsAttention })
         let seen = workspace.persisted().record(a.selectedChatID)?.seen
         retired(.activity(profile: service.profile, observations: [identity: .known(.idle, .distantFuture)]))

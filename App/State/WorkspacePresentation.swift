@@ -5,37 +5,11 @@ import BottoCore
 /// Scene-owned task presentation. Native hosts project this state; they never
 /// create a second destination or own a download's lifetime.
 @MainActor @Observable final class WorkspacePresentation {
-    private enum Target {
-        case chat
-        case artifact(ArtifactPreviewSession, expanded: Bool)
-    }
-    private enum Surface {
-        case reading(Target)
-        case browsingBots(returnTo: Target)
-    }
-    private var surface: Surface = .reading(.chat)
+    private(set) var artifact: ArtifactPreviewSession?
     /// Loaded pages beside the selected file, by position, so a swipe shows their content.
     /// They never own export or navigation; only `artifact` does.
     private var artifactNeighbors: [Int: ArtifactPreviewSession] = [:]
     private(set) var revision = UUID()
-
-    private var target: Target {
-        switch surface {
-        case .reading(let target), .browsingBots(let target): target
-        }
-    }
-    var isBrowsingBots: Bool {
-        if case .browsingBots = surface { return true }
-        return false
-    }
-    var artifact: ArtifactPreviewSession? {
-        if case .artifact(let session, _) = target { return session }
-        return nil
-    }
-    var isArtifactExpanded: Bool {
-        if case .artifact(_, let expanded) = target { return expanded }
-        return false
-    }
 
     func openArtifact(_ destination: AppStore.ArtifactDestination, store: AppStore) {
         guard artifact?.id != destination.id else { return }
@@ -45,7 +19,7 @@ import BottoCore
         }
         let previous = artifact
         let session = ArtifactPreviewSession(destination: destination, store: store)
-        surface = .reading(.artifact(session, expanded: false)); revision = UUID()
+        artifact = session; revision = UUID()
         // Retire UI/callback ownership before releasing its operation reservation.
         previous?.finish(); retireArtifactNeighbors()
         session.retry()
@@ -58,13 +32,13 @@ import BottoCore
 
     /// Selects a sibling, returning false when the current reader can't turn the page.
     @discardableResult func moveArtifact(by step: Int, id: UUID, store: AppStore) -> Bool {
-        guard let selected = artifact, selected.id == id, !isBrowsingBots, !selected.isPresentingOutput,
+        guard let selected = artifact, selected.id == id, !selected.isPresentingOutput,
               let index = selected.page?.index else { return false }
         var pages = artifactNeighbors
         pages[index] = selected
         guard let next = sibling(of: selected, by: step, reusing: pages.removeValue(forKey: index + step),
                                  store: store) else { return false }
-        surface = .reading(.artifact(next, expanded: isArtifactExpanded))
+        artifact = next
         next.retry()
         loadArtifactNeighbors(reusing: pages, store: store)
         return true
@@ -103,40 +77,18 @@ import BottoCore
         neighbors.values.forEach { $0.finish() }
     }
 
-    func browseBots() {
-        guard !isBrowsingBots, artifact?.isPresentingOutput != true else { return }
-        surface = .browsingBots(returnTo: target); revision = UUID()
-    }
-
-    func resumeTask() {
-        guard isBrowsingBots else { return }
-        surface = .reading(target); revision = UUID()
-    }
-
-    /// Choosing a chat settles presentation at once: bot browsing ends, and an open
-    /// file reader and its loaded neighbor pages give up their reads.
-    func didChooseConversation() {
-        let previous = artifact
-        surface = .reading(.chat); revision = UUID()
-        previous?.finish(); retireArtifactNeighbors()
-    }
+    /// Choosing a chat settles presentation at once: an open file reader and its
+    /// loaded neighbor pages give up their reads.
+    func didChooseConversation() { removeArtifact() }
 
     func closeArtifact(id: UUID) {
         guard artifact?.id == id, artifact?.isPresentingOutput != true else { return }
         removeArtifact()
     }
 
-    func setArtifactExpanded(_ expanded: Bool, id: UUID) {
-        guard let artifact, artifact.id == id, artifact.isCurrent,
-              !isBrowsingBots, !artifact.isPresentingOutput,
-              isArtifactExpanded != expanded else { return }
-        surface = .reading(.artifact(artifact, expanded: expanded)); revision = UUID()
-    }
-
-    /// Bindings also check their geometric host. A callback from a previous
-    /// semantic surface cannot close a resumed or replacement reader.
+    /// A callback from a previous reader cannot close or retry its replacement.
     func acceptsArtifactCallback(id: UUID, revision: UUID) -> Bool {
-        self.revision == revision && artifact?.id == id && !isBrowsingBots
+        self.revision == revision && artifact?.id == id
             && artifact?.isCurrent == true && artifact?.isPresentingOutput != true
     }
 
@@ -151,8 +103,7 @@ import BottoCore
 
     private func removeArtifact() {
         let previous = artifact
-        surface = isBrowsingBots ? .browsingBots(returnTo: .chat) : .reading(.chat)
-        revision = UUID()
+        artifact = nil; revision = UUID()
         previous?.finish(); retireArtifactNeighbors()
     }
 }

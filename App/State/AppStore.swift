@@ -1456,12 +1456,12 @@ import BottoCore
                 bot(withID: profile.text) != nil && isCurrent()
         }
     }
-    func prepareBotOpening(_ bot: BotProfile, attention: Bool = false) -> BotOpening? {
+    func prepareBotOpening(_ bot: BotProfile) -> BotOpening? {
         guard let profile = try? ExactID(bot.id), self.bot(withID: bot.id) != nil,
               let authority = captureBotAuthority(),
               selectBotID(profile.text, presentation: .preserveNavigation(authority.claim), while: {
                   ownsBotNavigation(authority) && self.bot(withID: bot.id) != nil
-              }), let intent = authority.workspace.captureOpening(profile: profile, attention: attention, claim: authority.claim) else { return nil }
+              }), let intent = authority.workspace.captureOpening(profile: profile, claim: authority.claim) else { return nil }
         let opening = BotOpening(authority: authority, profile: profile, intent: intent)
         return canOpenBot(opening) ? opening : nil
     }

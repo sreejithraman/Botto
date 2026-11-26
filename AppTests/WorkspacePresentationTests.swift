@@ -1,5 +1,4 @@
 import Foundation
-import CoreGraphics
 import Testing
 import BottoCore
 @testable import Botto
@@ -16,31 +15,6 @@ import BottoCore
         return (store, service, configuration)
     }
 
-    @Test func browsingAndExpansionRetainCapturedLoadAndDraft() async throws {
-        let (store, service, configuration) = try await fixture()
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
-        store.chats.editDraft("  Keep this thought\n", owner: owner)
-        let gate = WorkspaceGate(); service.downloadGate = gate
-        let presentation = WorkspacePresentation()
-        presentation.openArtifact(try #require(store.artifactDestination(for: .init(name: "notes.txt", path: "/notes.txt"), botID: service.profile.text)), store: store)
-        let session = try #require(presentation.artifact)
-        await gate.entered()
-        presentation.setArtifactExpanded(true, id: session.id)
-        presentation.browseBots()
-        #expect(presentation.isBrowsingBots)
-        #expect(presentation.artifact === session && presentation.isArtifactExpanded)
-        presentation.resumeTask()
-        presentation.setArtifactExpanded(false, id: session.id)
-        #expect(presentation.artifact === session && session.isCurrent)
-        #expect(service.downloads == 1 && service.opens.count == 1)
-        #expect(store.chats.draft(owner) == "  Keep this thought\n")
-        gate.release()
-        try await loaded(session)
-        #expect(session.file?.data == Data("artifact".utf8))
-        presentation.closeArtifact(id: session.id)
-        #expect(presentation.artifact == nil && session.file == nil && !session.isCurrent)
-    }
     private func loaded(_ session: ArtifactPreviewSession) async throws {
         await waitWhile { session.file == nil }
         _ = try #require(session.file)
@@ -53,7 +27,7 @@ import BottoCore
         return try #require(presentation.artifact)
     }
 
-    @Test func loadedBytesAndReservationSurviveGeometryBrowseAndExpansionUntilExplicitClose() async throws {
+    @Test func loadedBytesAndReservationSurviveTranscriptCoverageUntilExplicitClose() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let presentation = WorkspacePresentation()
@@ -67,16 +41,12 @@ import BottoCore
         service.summaries[0] = .init(identity: main, title: "Bot Chat", isCanonical: true, persistence: .durable, messageCount: 6)
         await store.chats.refreshDirectory(owner)
         let revision = presentation.revision
-        for width: CGFloat in [951, 466, 669, 951] {
-            let layout = WorkspaceLayout(compact: width == 466, accessibilityText: false, workspaceWidth: width)
-            store.chats.setTranscriptVisible(layout.pairsChatAndFile, owner: owner)
+        for visible in [true, false, true] {
+            store.chats.setTranscriptVisible(visible, owner: owner)
             presentation.reconcile(store: store)
             #expect(presentation.revision == revision)
             #expect(session.file === file && session.isCurrent)
         }
-        presentation.setArtifactExpanded(true, id: session.id)
-        presentation.browseBots(); presentation.resumeTask()
-        presentation.setArtifactExpanded(false, id: session.id)
         session.retry()
         #expect(session.file === file && service.downloads == 1 && service.opens.count == 1)
         #expect(store.artifactGeneration == generation && store.chats.isCurrent(owner))
@@ -142,9 +112,7 @@ import BottoCore
         #expect(saving.file === file && saving.file.data == Data("artifact".utf8))
         #expect(try Data(contentsOf: saving.file.url) == saving.file.data)
         session.endOutput(id: saving.id)
-        presentation.setArtifactExpanded(true, id: session.id)
-        presentation.browseBots(); presentation.resumeTask()
-        #expect(presentation.artifact === session && presentation.isArtifactExpanded)
+        #expect(presentation.artifact === session)
         #expect(presentation.acceptsArtifactCallback(id: session.id, revision: presentation.revision))
         session.retry()
         if transition != "secret rotation" {
@@ -206,8 +174,7 @@ import BottoCore
         case "sibling":
             let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
             await store.chats.refreshDirectory(owner)
-            let other = try #require(store.chats.cards(profile: service.profile).first { !$0.isMain })
-            await store.chats.select(try #require(store.chats.captureSelection(other.id, owner: owner)))
+            #expect(await store.chats.openSaved(service.summaries[1]))
         case "workspace":
             #expect(await store.connect(replacement))
             await store.open(try #require(store.bots.first))
@@ -223,7 +190,7 @@ import BottoCore
         #expect(try Data(contentsOf: file.url) == saving.file.data, "The captured native output retains its bytes until it finishes")
     }
 
-    @Test func oldNativeCallbacksCannotCloseParkedResumedOrReplacementSessions() async throws {
+    @Test func oldNativeCallbacksCannotCloseAReplacementSession() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let presentation = WorkspacePresentation()
@@ -231,17 +198,14 @@ import BottoCore
         try await loaded(first)
         let contextualRevision = presentation.revision
         #expect(presentation.acceptsArtifactCallback(id: first.id, revision: contextualRevision))
-        presentation.setArtifactExpanded(true, id: first.id)
-        let expandedRevision = presentation.revision
-        #expect(!presentation.acceptsArtifactCallback(id: first.id, revision: contextualRevision))
-        presentation.browseBots()
-        #expect(!presentation.acceptsArtifactCallback(id: first.id, revision: expandedRevision))
-        presentation.resumeTask()
-        #expect(!presentation.acceptsArtifactCallback(id: first.id, revision: expandedRevision))
-        #expect(presentation.isArtifactExpanded && first.isCurrent)
+        presentation.closeArtifact(id: first.id)
+        let reopened = try openFile(presentation: presentation, store: store, service: service)
+        #expect(reopened !== first)
+        #expect(!presentation.acceptsArtifactCallback(id: first.id, revision: contextualRevision),
+                "A closed reader's callback cannot act on a reopened reader of the same file")
+        #expect(presentation.acceptsArtifactCallback(id: reopened.id, revision: presentation.revision))
         let second = try openFile("second.txt", presentation: presentation, store: store, service: service)
         presentation.closeArtifact(id: first.id)
-        presentation.setArtifactExpanded(false, id: first.id)
         first.retry(); first.beginOutput(.save)
         try await loaded(second)
         #expect(presentation.artifact === second && !first.isCurrent && first.file == nil)
@@ -270,16 +234,7 @@ import BottoCore
         await Task.yield()
         #expect(service.downloads == 1, "A covered failed reader cannot admit a new download")
         uncovered = true
-        presentation.browseBots()
-        capturedRetry()
-        await Task.yield()
-        #expect(service.downloads == 1, "Parking retains the session, not old retry admission")
-        presentation.resumeTask()
-        capturedRetry()
-        await Task.yield()
-        #expect(service.downloads == 1, "Return cannot revive the old surface callback")
-        let visibleRevision = presentation.revision
-        presentation.retryArtifact(id: session.id, revision: visibleRevision, canPresent: { uncovered })
+        presentation.retryArtifact(id: session.id, revision: revision, canPresent: { uncovered })
         try await failed(after: 2)
         service.downloadError = nil
         presentation.retryArtifact(id: session.id, revision: presentation.revision, canPresent: { uncovered })
@@ -288,7 +243,7 @@ import BottoCore
     }
 
     @Test(arguments: ["selection", "reopen", "sibling", "review", "background", "reconnect", "workspace", "forget"])
-    func actualInvalidationRetiresParkedSessionAndRejectsCancellationIgnoringLateBytes(_ reason: String) async throws {
+    func actualInvalidationRetiresTheReaderAndRejectsCancellationIgnoringLateBytes(_ reason: String) async throws {
         let (store, service, configuration) = try await fixture()
         let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.invalid")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id); LocalHistory.remove(for: replacement.id) }
@@ -296,15 +251,13 @@ import BottoCore
         let presentation = WorkspacePresentation()
         let session = try openFile(presentation: presentation, store: store, service: service)
         await gate.entered()
-        presentation.setArtifactExpanded(true, id: session.id); presentation.browseBots()
         switch reason {
         case "selection": store.selectedBotID = "another-bot"
         case "reopen": await store.open(try #require(store.bots.first))
         case "sibling":
             let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
             await store.chats.refreshDirectory(owner)
-            let other = try #require(store.chats.cards(profile: service.profile).first { !$0.isMain })
-            await store.chats.select(try #require(store.chats.captureSelection(other.id, owner: owner)))
+            #expect(await store.chats.openSaved(service.summaries[1]))
         case "review": store.showsConnection = true
         case "background": await store.setActive(false)
         case "reconnect": #expect(await store.connect(configuration))
@@ -313,13 +266,13 @@ import BottoCore
         }
         #expect(!session.isCurrent && session.file == nil && !session.isPresentingOutput)
         presentation.reconcile(store: store)
-        #expect(presentation.artifact == nil && !presentation.isArtifactExpanded)
+        #expect(presentation.artifact == nil)
         gate.release()
         session.retry()
         for _ in 0..<100 { await Task.yield() }
         #expect(session.file == nil && session.errorMessage == nil && !session.isLoading)
         #expect(service.downloads == 1)
-        presentation.resumeTask(); presentation.closeArtifact(id: session.id)
+        presentation.closeArtifact(id: session.id)
         #expect(presentation.artifact == nil)
     }
 
@@ -467,8 +420,6 @@ import BottoCore
         try await loaded(first)
         first.beginOutput(.share)
         let oldOutput = try #require(first.output)
-        presentation.browseBots(); presentation.setArtifactExpanded(true, id: first.id)
-        #expect(!presentation.isBrowsingBots && !presentation.isArtifactExpanded, "User host moves wait for native output")
         first.endOutput(id: oldOutput.id)
         first.beginOutput(.save)
         let saving = try #require(first.output)
@@ -510,7 +461,7 @@ import BottoCore
         presentation.closeArtifact(id: session.id)
     }
 
-    @Test func heldUploadInstallsIntoSameDraftAcrossGeometricCoverageAndStaysStagedWhileBrowsing() async throws {
+    @Test func heldUploadInstallsIntoSameDraftAcrossTranscriptCoverage() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let presentation = WorkspacePresentation()
@@ -523,14 +474,12 @@ import BottoCore
         let uploading = Task { await store.chats.upload(Data([1, 2, 3]), filename: "kept.txt", mimeType: "text/plain", to: intent) }
         await gate.entered()
         let revision = presentation.revision
-        for width: CGFloat in [951, 466, 669, 951] {
-            let layout = WorkspaceLayout(compact: width == 466, accessibilityText: false, workspaceWidth: width)
-            store.chats.setTranscriptVisible(layout.pairsChatAndFile, owner: owner)
+        for visible in [true, false, true] {
+            store.chats.setTranscriptVisible(visible, owner: owner)
             presentation.reconcile(store: store)
             #expect(presentation.revision == revision && store.chats.isCurrent(owner))
         }
         gate.release(); await uploading.value
-        presentation.browseBots(); presentation.resumeTask()
         let current = try #require(store.chats.screen(profile: service.profile))
         #expect(current.attachments.map(\.name) == ["kept.txt"])
         #expect(!current.needsReattachment && service.uploads.count == 1)

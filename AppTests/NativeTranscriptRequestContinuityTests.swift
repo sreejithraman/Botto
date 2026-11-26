@@ -77,7 +77,7 @@ import BottoCore
         #expect(fresh.response == expected && fixture.service.base.responseOperations.isEmpty)
     }
 
-    @Test(arguments: ["covered", "parked", "offscreen"])
+    @Test(arguments: ["covered", "offscreen"])
     func retainedInitialRequestCallbacksCannotActOnAnInactiveCurrentRow(condition: String) async throws {
         let choice = RequestChoice(id: "suggested", label: "Use suggested answer")
         let fixture = try await Fixture(request: .init(id: "question", kind: .question, title: "What should happen next?", choices: [choice]))
@@ -87,12 +87,7 @@ import BottoCore
         state.responseBinding.wrappedValue = "  Deliberate answer  "
         let actions = try #require(scope.requestActions)
         #expect(actions.enabled)
-        if condition == "parked" {
-            // The semantic surface guard must reject immediately, even before
-            // the next native apply has withdrawn this row's display flag.
-            fixture.presentation.browseBots()
-            actions.submitText()
-        } else if condition == "covered" {
+        if condition == "covered" {
             fixture.coverage.covered = true
         } else {
             fixture.controller.collection.setContentOffset(.zero, animated: false)
@@ -104,7 +99,6 @@ import BottoCore
         actions.submitText()
         #expect(actions.choose(choice) == nil)
         #expect(fixture.service.base.responseOperations.isEmpty)
-        if condition == "parked" { #expect(fixture.presentation.isBrowsingBots); fixture.presentation.resumeTask() }
         fixture.coverage.covered = false
         let returned = try await fixture.requestCell()
         let current = try #require(returned.exposure?.requestActions)
@@ -298,8 +292,8 @@ import BottoCore
         }
     }
 
-    @Test(arguments: ["covered", "parked", "offscreen"])
-    func capturedFileCallbackDeniesNewDownloadsAndTaskSwitchesFromInactiveRows(condition: String) async throws {
+    @Test(arguments: ["covered", "offscreen"])
+    func capturedFileCallbackDeniesNewDownloadsFromInactiveRows(condition: String) async throws {
         let fixture = try await Fixture()
         defer { fixture.close() }
         let cell = try await fixture.requestCell()
@@ -310,12 +304,11 @@ import BottoCore
         var opened = 0
         let capturedAction = transcriptArtifactAction(store: fixture.store, workspace: fixture.store.chats,
             botID: fixture.service.base.profile.text, owner: owner,
-            admittedBy: { scope.canPresent && fixture.presentation.revision == revision && !fixture.presentation.isBrowsingBots },
+            admittedBy: { scope.canPresent && fixture.presentation.revision == revision },
             onOpen: { destination in opened += 1; fixture.presentation.openArtifact(destination, store: fixture.store) })
         let action = try #require(capturedAction)
         #expect(scope.canPresent && fixture.store.chats.isCurrent(owner))
-        if condition == "parked" { fixture.presentation.browseBots() }
-        else if condition == "covered" {
+        if condition == "covered" {
             fixture.coverage.covered = true
             try await continuityWait("covered file callback loses native display admission") { !scope.canPresent }
         } else {
@@ -327,23 +320,17 @@ import BottoCore
         action(attachment)
         #expect(opened == 0 && fixture.service.base.downloads == 0 && fixture.presentation.artifact == nil)
         #expect(fixture.store.chats.isCurrent(owner), "denial must come from action admission, while conversation authority remains current")
-        if condition == "parked" {
-            #expect(fixture.presentation.isBrowsingBots)
-            fixture.presentation.resumeTask()
-            action(attachment)
-            #expect(opened == 0, "the old surface revision cannot become admissible again after Return")
-        }
         fixture.coverage.covered = false
         let current = try #require((try await fixture.requestCell()).exposure)
         let currentRevision = fixture.presentation.revision
         let currentAction = transcriptArtifactAction(store: fixture.store, workspace: fixture.store.chats,
             botID: fixture.service.base.profile.text, owner: owner,
-            admittedBy: { current.canPresent && fixture.presentation.revision == currentRevision && !fixture.presentation.isBrowsingBots },
+            admittedBy: { current.canPresent && fixture.presentation.revision == currentRevision },
             onOpen: { destination in opened += 1; fixture.presentation.openArtifact(destination, store: fixture.store) })
         let deliberate = try #require(currentAction)
         deliberate(attachment)
         try await continuityWait("a new displayed current file gesture opens the reader and downloads") { opened == 1 && fixture.service.base.downloads == 1 }
-        #expect(fixture.presentation.artifact != nil && !fixture.presentation.isBrowsingBots)
+        #expect(fixture.presentation.artifact != nil)
     }
 
     @MainActor private final class Fixture {
@@ -399,16 +386,17 @@ import BottoCore
         }
     }
     @MainActor @Observable final class Coverage { var covered = false }
+    /// Mirrors T3Workspace: an open file covers the conversation.
     private struct Host: View {
         let store: AppStore
         let presentation: WorkspacePresentation
         let coverage: Coverage
         var body: some View {
             if let bot = store.selectedBot {
+                let covered = coverage.covered || presentation.artifact != nil
                 ChatView(store: store, bot: bot, presentation: presentation,
-                         isExposed: !presentation.isBrowsingBots, isEditingExposed: !presentation.isBrowsingBots,
-                         importPaneVisible: !presentation.isBrowsingBots,
-                         rootCovered: coverage.covered, onLocalModalPresentation: { _ in })
+                         isExposed: !covered, isEditingExposed: !covered, importPaneVisible: presentation.artifact == nil,
+                         rootCovered: covered, onLocalModalPresentation: { _ in })
                     .frame(width: 382, height: 434).environment(\.scenePhase, .active)
             }
         }

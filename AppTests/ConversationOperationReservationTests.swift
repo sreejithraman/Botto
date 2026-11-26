@@ -95,20 +95,6 @@ import BottoCore
         readGate.release(); _ = try await settled(workspace, service)
     }
 
-    @Test func failedCreateReservationSpansCaptureAndServiceThenReleasesForRead() async throws {
-        let (workspace, service, screen) = try await fixture()
-        let intent = try #require(workspace.captureCreation(screen.owner))
-        let createGate = WorkspaceGate(), readGate = WorkspaceGate()
-        service.createGate = createGate; service.createError = ConversationServiceError.rejected(-32601); service.openGate = readGate
-        workspace.setTranscriptVisible(true, owner: screen.owner)
-        #expect(service.opens.count == 1)
-        let creation = Task { await workspace.create(intent) }; await createGate.entered()
-        #expect(service.opens.count == 1)
-        createGate.release(); await creation.value; await readGate.entered()
-        #expect(service.creates.count == 1 && service.opens.count == 2)
-        readGate.release(); _ = try await settled(workspace, service)
-    }
-
     @Test(arguments: [true, false]) func importPreflightEitherCancelsOrInstallsStagingBeforeRead(_ cancel: Bool) async throws {
         let (workspace, service, screen) = try await fixture()
         let intent = try #require(workspace.captureImport(screen.owner))
@@ -151,7 +137,7 @@ import BottoCore
         readGate.release(); _ = try await settled(workspace, service)
     }
 
-    @Test(arguments: ["send", "stop", "create", "artifact"])
+    @Test(arguments: ["send", "stop", "artifact"])
     func discardedCapturedIntentReleasesItsBarrier(_ kind: String) async throws {
         let (workspace, service, screen) = try await fixture()
         if kind == "stop" { try idlePublication(workspace, service, working: true) }
@@ -160,7 +146,6 @@ import BottoCore
         switch kind {
         case "send": keep = try #require(workspace.captureSend(screen.owner)) as SendIntent
         case "stop": keep = try #require(workspace.captureStop(screen.owner)) as StopIntent; try idlePublication(workspace, service)
-        case "create": keep = try #require(workspace.captureCreation(screen.owner)) as CreationIntent
         default: keep = try #require(workspace.captureArtifact(.init(name: "x", path: "/x"), owner: screen.owner)) as ArtifactIntent
         }
         workspace.setTranscriptVisible(true, owner: screen.owner)

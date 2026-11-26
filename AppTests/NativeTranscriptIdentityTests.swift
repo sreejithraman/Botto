@@ -238,7 +238,6 @@ import WebKit
         var book = ConversationBook()
         let chat = book.merge(SessionSummary(identity: identity, title: "Main", isCanonical: true, persistence: .durable, messageCount: 1))
         book.cache(Conversation(id: "runtime", storedID: "stored", profileID: "bot", messages: [reply]), for: chat)
-        #expect(book.record(chat)?.replyPreview == text)
         #expect(book.record(chat)?.inboxMessage?.text == text)
     }
     @Test func queuedSubmissionRowsStayHiddenUntilAdmissionWithoutLosingRawDuplicateQuarantine() {

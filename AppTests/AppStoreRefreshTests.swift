@@ -135,11 +135,10 @@ import BottoCore
         let main = try #require(store.chats.screen(profile: service.profile))
         await store.chats.refreshDirectory(main.owner)
         store.chats.displayed(main.owner)
-        let other = try #require(store.chats.cards(profile: service.profile).first { !$0.isMain })
-        try #require(other.unread)
+        try #require(store.chats.isUnread(service.summaries[1]) == true)
         #expect(!store.isUnread(bot), "Unread sibling chats must not light the selected chat's inbox dot")
 
-        await store.chats.select(try #require(store.chats.captureSelection(other.id, owner: main.owner)))
+        #expect(await store.chats.openSaved(service.summaries[1]))
         #expect(store.isUnread(bot), "Selecting an unread chat lights the dot before its content is displayed")
         let selected = try #require(store.chats.screen(profile: service.profile))
         store.chats.displayed(selected.owner)
@@ -150,16 +149,14 @@ import BottoCore
         service.summaries[0] = .init(identity: service.summaries[0].identity, title: "Main", isCanonical: true,
             persistence: .durable, messageCount: 2)
         await store.chats.refreshDirectory(selected.owner)
-        #expect(store.chats.cards(profile: service.profile).first { $0.isMain }?.unread == true)
+        #expect(store.chats.isUnread(service.summaries[0]) == true)
         #expect(!store.isUnread(bot), "New activity in Main must not light the dot while the read sibling is selected")
-        store.chats.preferOpening(main.selectedChatID, owner: selected.owner)
-        #expect(!store.isUnread(bot), "The open chat takes precedence over a different saved opening choice")
         await store.setActive(false)
         #expect(!store.isUnread(bot), "The selected chat's dot keeps the same meaning offline")
         let restored = ConversationWorkspace(scope: .init(cacheID: configuration.id, exactAccount: [], incarnation: UUID()),
             book: store.chats.persisted(), service: service, onDirty: {})
-        #expect(restored.aggregate(profile: service.profile).selectedChatIsUnread,
-                "Without an open chat, the dot follows the saved opening choice")
+        #expect(!restored.aggregate(profile: service.profile).selectedChatIsUnread,
+                "Without an open chat, the dot follows the last opened chat, not unread Main")
     }
 
     @Test func lookupKeepsCanonicallyEquivalentProfileIDsDistinct() async throws {

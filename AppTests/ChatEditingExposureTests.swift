@@ -80,22 +80,26 @@ import BottoCore
         #expect(f.service.uploads.isEmpty)
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["BOTTO_RUN_WIDE_IMPORT_TESTS"] == "1"),
-          arguments: ["reader", "renew", "cancel", "page"], [false, true])
-    func importsFollowPaneExposureAndReportInterruptions(action: String, duringUpload: Bool) async throws {
+    private func accessibilityNode(_ label: String, in root: NSObject) -> NSObject? {
+        var visited = Set<ObjectIdentifier>()
+        func find(_ object: NSObject) -> NSObject? {
+            guard visited.insert(ObjectIdentifier(object)).inserted else { return nil }
+            if object.accessibilityLabel == label { return object }
+            var children: [NSObject] = (object as? UIView)?.subviews ?? []
+            children += (object.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+            children += (object.automationElements ?? []).compactMap { $0 as? NSObject }
+            let count = object.accessibilityElementCount()
+            if count > 0, count < 4096 { children += (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
+            for child in children { if let found = find(child) { return found } }
+            return nil
+        }
+        return find(root)
+    }
+
+    @Test(arguments: [false, true])
+    func cancelAllStopsAHeldPasteAndKeepsItsNoticeUntilRetry(duringUpload: Bool) async throws {
         let f = try await fixture()
         defer { f.close() }
-        try #require(f.window.bounds.width >= 681, "Run wide import checks in an iPad window")
-        f.state.width = 950; f.state.compact = false
-        let identity = try #require(f.service.completedOpens.last?.identity)
-        let files = [ChatAttachment(name: "first.txt", path: "/first.txt", mimeType: "text/plain"),
-                     ChatAttachment(name: "second.txt", path: "/second.txt", mimeType: "text/plain")]
-        let message = ChatMessage(id: identity.stored.text + ":row:1", role: .assistant, text: "Files", attachments: files)
-        f.service.snapshots[identity.root]?.messages = [message]
-        f.store.chats.receive(try f.service.publication(identity))
-        let destination = try #require(f.store.artifactDestination(for: files[0], botID: f.service.profile.text, producingMessage: message))
-        f.state.presentation.openArtifact(destination, store: f.store)
-        try await ready("paired editor and loaded reader") { f.editor?.isEditable == true && f.state.presentation.artifact?.file != nil }
         let owner = try #require(f.store.chats.screen(profile: f.service.profile)?.owner)
         let gate = WorkspaceGate()
         defer { gate.release() }
@@ -114,108 +118,32 @@ import BottoCore
         let paste = try #require(f.editor?.pasteAttachments)
         paste(owner, [item("first.png", held: !duringUpload), item("second.png", held: false)])
         await gate.entered()
+        let notice = "Attachment import stopped. Check the attached files before sending."
         try await ready("visible Cancel All control") { self.accessibilityNode("Cancel All", in: f.host.view) != nil }
-        switch action {
-        case "reader":
-            f.state.presentation.setArtifactExpanded(true, id: destination.id)
-            try await ready { f.editor?.isEditable == false }
-        case "renew": f.store.chats.receive(try f.service.publication(identity))
-        case "cancel":
-            let cancel = try #require(accessibilityNode("Cancel All", in: f.host.view))
-            try #require(cancel.accessibilityActivate())
-            try await ready("Cancel independently shows its notice") {
-                self.accessibilityNode("Attachment import stopped. Check the attached files before sending.", in: f.host.view) != nil
-            }
-            #expect(f.store.chats.screen(profile: f.service.profile)?.isUploading == duringUpload)
-            f.state.rootCovered = true
-            try await ready { f.editor?.isEditable == false }
-            f.state.rootCovered = false
-        default:
-            f.state.presentation.moveArtifact(by: 1, id: destination.id, store: f.store)
-            try await ready { f.state.presentation.artifact?.title == "second.txt" }
-        }
-        if action != "page", action != "reader" {
-            try await ready("interruption notice") { self.accessibilityNode("Attachment import stopped. Check the attached files before sending.", in: f.host.view) != nil }
-        }
+        let cancel = try #require(accessibilityNode("Cancel All", in: f.host.view))
+        try #require(cancel.accessibilityActivate())
+        try await ready("Cancel All shows its notice") { self.accessibilityNode(notice, in: f.host.view) != nil }
+        #expect(f.store.chats.screen(profile: f.service.profile)?.isUploading == duringUpload)
+        // Release the held import before any cover: a cover also stops imports, so only
+        // checking afterwards could not tell Cancel All apart from the cover.
         f.service.uploadGate = nil
         gate.release()
         try await Task.sleep(for: .milliseconds(150))
         try await ready { f.store.chats.screen(profile: f.service.profile)?.isUploading == false }
-        let screen = try #require(f.store.chats.screen(profile: f.service.profile))
-        #expect(screen.attachments.count == (action == "page" ? 2 : 0))
-        #expect(f.service.uploads.count == (action == "page" ? 2 : duringUpload ? 1 : 0))
-        if action == "reader" {
-            f.state.presentation.setArtifactExpanded(false, id: destination.id)
-            try await ready { f.editor?.isEditable == true }
-            try await ready { self.accessibilityNode("Attachment import stopped. Check the attached files before sending.", in: f.host.view) != nil }
-        }
-        if action != "page" {
-            try await ready { f.editor?.isEditable == true }
-            let current = try #require(f.store.chats.screen(profile: f.service.profile))
-            f.editor?.pasteAttachments?(current.owner, [item("retry.png", held: false)])
-            try await ready { f.store.chats.screen(profile: f.service.profile)?.attachments.map(\.name) == ["retry.png"] }
-            try await ready { self.accessibilityNode("Attachment import stopped. Check the attached files before sending.", in: f.host.view) == nil }
-        }
+        #expect(f.store.chats.screen(profile: f.service.profile)?.attachments.isEmpty == true)
+        #expect(f.service.uploads.count == (duringUpload ? 1 : 0))
+        f.state.rootCovered = true
+        try await ready { f.editor?.isEditable == false }
+        f.state.rootCovered = false
+        try await ready("the notice outlasts a cover") { self.accessibilityNode(notice, in: f.host.view) != nil }
+        try await ready { f.editor?.isEditable == true }
+        let current = try #require(f.store.chats.screen(profile: f.service.profile))
+        f.editor?.pasteAttachments?(current.owner, [item("retry.png", held: false)])
+        try await ready { f.store.chats.screen(profile: f.service.profile)?.attachments.map(\.name) == ["retry.png"] }
+        try await ready("a retry clears the notice") { self.accessibilityNode(notice, in: f.host.view) == nil }
     }
 
-    private func accessibilityNode(_ label: String, in root: NSObject) -> NSObject? {
-        var visited = Set<ObjectIdentifier>()
-        func find(_ object: NSObject) -> NSObject? {
-            guard visited.insert(ObjectIdentifier(object)).inserted else { return nil }
-            if object.accessibilityLabel == label { return object }
-            var children: [NSObject] = (object as? UIView)?.subviews ?? []
-            children += (object.accessibilityElements ?? []).compactMap { $0 as? NSObject }
-            children += (object.automationElements ?? []).compactMap { $0 as? NSObject }
-            let count = object.accessibilityElementCount()
-            if count > 0, count < 4096 { children += (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
-            for child in children { if let found = find(child) { return found } }
-            return nil
-        }
-        return find(root)
-    }
-
-    @Test func aChatOnlyZeroAllocationFencesReadsWithoutDisablingItsFocusedNativeEditor() async throws {
-        let f = try await fixture()
-        defer { f.close() }
-        let editor = try #require(f.editor)
-        try #require(editor.becomeFirstResponder())
-        let exact = "  Geometry keeps this draft\n  exact spaces  "
-        editor.insertText(exact)
-        f.state.width = 0
-        try await ready { f.state.observedWidth == 0 }
-        #expect(!f.state.readExposed && !f.state.toolbarAvailable)
-        try #require(editor.isEditable && editor.isUserInteractionEnabled,
-                     "Geometry-only zero allocation must not revoke semantic chat editing")
-        try #require(editor.isFirstResponder, "The existing responder remains; no restoration is requested")
-        #expect(f.editor === editor && f.store.chats.draft(f.owner) == exact)
-        f.state.width = 517
-        try await ready { abs(f.state.observedWidth - 517) < 1 }
-        #expect(editor.isFirstResponder && editor.isEditable)
-        editor.insertText(" + visible")
-        #expect(f.store.chats.draft(f.owner) == exact + " + visible")
-        #expect(f.service.opens.count == 1 && f.service.sends.isEmpty)
-    }
-
-    @Test func editingPolicySeparatesChatOnlyAllocationFromReadingAndRetainsAllCoverRules() {
-        for compact in [false, true] {
-            for width: CGFloat in [0, 48, 382, 951] {
-                let layout = WorkspaceLayout(compact: compact, accessibilityText: false, workspaceWidth: width)
-                func editing(file: Bool = false, expanded: Bool = false, browse: Bool = false,
-                             root: Bool = false, local: Bool = false, active: Bool = true) -> Bool {
-                    layout.editorExposed(browsingBots: browse, hasArtifact: file, expanded: expanded,
-                        rootCovered: root, localCovered: local, sceneActive: active, compactShowsSidebar: true)
-                }
-                #expect(editing())
-                #expect(!editing(browse: true) && !editing(root: true) && !editing(local: true) && !editing(active: false))
-                #expect(!editing(file: true, expanded: true))
-                if width == 0 { #expect(!layout.transcriptExposed(browsingBots: false, hasArtifact: false, expanded: false,
-                    rootCovered: false, localCovered: false, sceneActive: true, compactShowsSidebar: false)) }
-                if compact || width < 681 { #expect(!editing(file: true)) }
-            }
-        }
-    }
-
-    @Test(arguments: ["root", "bots", "inactive", "file"])
+    @Test(arguments: ["root", "inactive", "file"])
     func semanticCoversStillEndNativeEditingAndFenceDraftWrites(cover: String) async throws {
         let f = try await fixture()
         defer { f.close() }
@@ -224,7 +152,6 @@ import BottoCore
         editor.insertText("  Keep this source draft\n")
         switch cover {
         case "root": f.state.rootCovered = true
-        case "bots": f.state.presentation.browseBots()
         case "inactive": f.state.active = false
         default:
             let destination = try #require(f.store.artifactDestination(for:
@@ -254,54 +181,29 @@ import BottoCore
         let host = ExposureHostingController(rootView: ExposureHost(store: store, bot: try #require(store.bots.first), state: state))
         let f = Fixture(service: service, store: store, owner: owner, cacheID: configuration.id, state: state, scene: scene, host: host)
         f.window.makeKeyAndVisible(); f.window.layoutIfNeeded()
-        try await ready { host.hasAppeared && host.transitionCoordinator == nil && f.window.isKeyWindow && f.editor?.isEditable == true && f.state.observedWidth > 0 }
+        try await ready { host.hasAppeared && host.transitionCoordinator == nil && f.window.isKeyWindow && f.editor?.isEditable == true }
         return f
     }
 
+    /// Mirrors T3Workspace: an open file covers the conversation, and actions need an active scene.
     @MainActor @Observable final class ExposureState {
-        var width: CGFloat = 382
-        var observedWidth: CGFloat = -1
         var rootCovered = false
         var active = true
-        var compact = true
         let presentation = WorkspacePresentation()
-        var layout: WorkspaceLayout { .init(compact: compact, accessibilityText: false, workspaceWidth: width) }
-        var allocation: WorkspacePaneAllocation {
-            layout.allocation(hasArtifact: presentation.artifact != nil, browsingBots: presentation.isBrowsingBots,
-                              expanded: presentation.isArtifactExpanded)
-        }
-        var readExposed: Bool {
-            layout.transcriptExposed(browsingBots: presentation.isBrowsingBots, hasArtifact: presentation.artifact != nil,
-                expanded: presentation.isArtifactExpanded, rootCovered: rootCovered, localCovered: false,
-                sceneActive: active, compactShowsSidebar: presentation.isBrowsingBots)
-        }
-        var editingExposed: Bool {
-            layout.editorExposed(browsingBots: presentation.isBrowsingBots, hasArtifact: presentation.artifact != nil,
-                expanded: presentation.isArtifactExpanded, rootCovered: rootCovered, localCovered: false,
-                sceneActive: active, compactShowsSidebar: presentation.isBrowsingBots)
-        }
-        var toolbarAvailable: Bool { readExposed && width > 0 }
+        var covered: Bool { rootCovered || presentation.artifact != nil }
+        var actionsAvailable: Bool { !covered && active }
     }
     private struct ExposureHost: View {
         let store: AppStore
         let bot: BotProfile
         let state: ExposureState
         var body: some View {
-            GeometryReader { geometry in
-                ChatView(store: store, bot: bot, presentation: state.presentation,
-                        isExposed: state.readExposed, isEditingExposed: state.editingExposed,
-                        importPaneVisible: state.presentation.artifact == nil || state.allocation.chatVisible, rootCovered: state.rootCovered,
-                        onLocalModalPresentation: { _ in }, canPresentToolbar: { state.toolbarAvailable },
-                        canContinueEditing: { state.editingExposed })
-                .frame(width: max(state.width, WorkspaceLayout.minimumChatWidth), height: geometry.size.height)
-                // The slot can collapse while the mounted editor keeps usable bounds.
-                .frame(width: state.width, height: geometry.size.height, alignment: .topLeading)
-                .clipped()
-                .opacity(state.readExposed ? 1 : 0)
-                .accessibilityHidden(!state.readExposed)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { state.observedWidth = $0 }
-            }
-            .environment(\.scenePhase, state.active ? .active : .inactive)
+            ChatView(store: store, bot: bot, presentation: state.presentation,
+                    isExposed: !state.covered, isEditingExposed: !state.covered,
+                    importPaneVisible: state.presentation.artifact == nil, rootCovered: state.covered,
+                    onLocalModalPresentation: { _ in }, canPresentToolbar: { state.actionsAvailable },
+                    canContinueEditing: { state.actionsAvailable })
+                .environment(\.scenePhase, state.active ? .active : .inactive)
         }
     }
 

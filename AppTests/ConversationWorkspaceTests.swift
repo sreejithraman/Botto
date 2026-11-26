@@ -5,213 +5,22 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct ConversationWorkspaceTests {
-    @Test func localTabClosurePersistsWithoutChangingReaderOrHistory() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        let otherScreen = try #require(workspace.screen(profile: service.profile))
-        workspace.editDraft("Keep this draft", owner: otherScreen.owner)
-        await workspace.select(try #require(workspace.captureSelection(main.owner.chat, owner: otherScreen.owner)))
-        let reader = try #require(workspace.screen(profile: service.profile))
-        let openCount = service.opens.count
-        #expect(workspace.captureClose(reader.owner.chat, owner: reader.owner) == nil)
-        let closeIntent = try #require(workspace.captureClose(other, owner: reader.owner))
-        let closed = try #require(workspace.close(closeIntent))
-        #expect(closed.id == other)
-        #expect(workspace.cards(profile: service.profile).map(\.id) == [reader.owner.chat])
-        #expect(workspace.screen(profile: service.profile)?.owner == reader.owner)
-        #expect(service.opens.count == openCount)
-        await workspace.refreshDirectory(reader.owner)
-        #expect(workspace.cards(profile: service.profile).count == 1)
-        let saved = try JSONDecoder().decode(ConversationBook.self, from: JSONEncoder().encode(workspace.persisted()))
-        #expect(saved.record(other)?.draft.text == "Keep this draft")
-        #expect(saved.record(other)?.transcript != nil)
-        let restored = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: saved, service: service, onDirty: {})
-        await restored.openBot(profile: service.profile)
-        let restoredReader = try #require(restored.screen(profile: service.profile))
-        #expect(restored.cards(profile: service.profile).count == 1)
-        #expect(restored.closedChats(profile: service.profile).map(\.id) == [other])
-        restored.reopen(try #require(restored.captureReopening(closed.id, owner: restoredReader.owner)))
-        #expect(restored.cards(profile: service.profile).count == 2)
-        #expect(restored.screen(profile: service.profile)?.owner == restoredReader.owner)
-        #expect(service.opens.count == openCount)
-    }
-
     @Test(arguments: [false, true])
-    func closingSelectedTabChoosesCachedMainWithoutAcknowledgingOrStoppingWork(emptyDirectory: Bool) async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        let otherScreen = try #require(workspace.screen(profile: service.profile))
-        workspace.editDraft("Unsent", owner: otherScreen.owner)
-        await workspace.upload(Data([1]), filename: "keep.txt", mimeType: "text/plain",
-            to: try #require(workspace.captureImport(otherScreen.owner)))
-        let staged = try #require(workspace.screen(profile: service.profile)?.attachments.first)
-        workspace.preferOpening(other, owner: otherScreen.owner)
-        if emptyDirectory {
-            service.summaries = []
-            await workspace.refreshDirectory(otherScreen.owner)
-        }
-        let beforeClose = try #require(workspace.screen(profile: service.profile))
-        let openCount = service.opens.count
-        let intent = try #require(workspace.captureClose(other, owner: beforeClose.owner))
-        let closed = workspace.close(intent)
-        #expect(closed?.id == other)
-        let fallback = try #require(workspace.screen(profile: service.profile))
-        #expect(fallback.owner.chat == main.owner.chat)
-        #expect(!workspace.isCurrent(beforeClose.owner))
-        #expect(workspace.persisted().opening(service.profile) == main.owner.chat)
-        #expect(workspace.persisted().record(main.owner.chat)?.seen == nil)
-        #expect(workspace.persisted().record(other)?.draft.text == "Unsent")
-        #expect(workspace.persisted().record(other)?.transcript != nil)
-        #expect(workspace.cards(profile: service.profile).map(\.id) == [main.owner.chat])
-        #expect(workspace.captureClose(main.owner.chat, owner: fallback.owner) == nil)
-        #expect(service.opens.count == openCount)
-        #expect(service.sends.isEmpty && service.creates.isEmpty && service.stops.isEmpty)
-        if emptyDirectory {
-            #expect(workspace.captureActivation(fallback.owner) == nil)
-            #expect(!fallback.canAct && !fallback.canCreate)
-        } else {
-            #expect(fallback.canEditDraft && fallback.canCreate && !fallback.canAct)
-            workspace.editDraft("Main draft", owner: fallback.owner)
-            #expect(workspace.captureSend(fallback.owner) == nil)
-            await workspace.select(try #require(workspace.captureActivation(fallback.owner)))
-            let active = try #require(workspace.screen(profile: service.profile))
-            #expect(active.owner.chat == main.owner.chat && active.canAct && active.canCreate)
-            #expect(workspace.draft(active.owner) == "Main draft")
-            #expect(workspace.captureActivation(active.owner) == nil)
-        }
-        let active = try #require(workspace.screen(profile: service.profile))
-        #expect(service.opens.count == openCount + (emptyDirectory ? 0 : 1))
-        await workspace.select(try #require(workspace.captureSelection(other, owner: active.owner)))
-        #expect(workspace.screen(profile: service.profile)?.attachments == [staged])
-        #expect(service.uploads.count == 1)
-    }
-
-    @Test(arguments: [false, true])
-    func localFallbackActivationCannotReviveAnOfflineOrReplacedOwner(offline: Bool) async throws {
-        let (workspace, service, main, other) = try await closedSelectedFixture()
-        let activation = try #require(workspace.captureActivation(main.owner))
-        if offline {
-            workspace.retireConnection()
-            let cached = try #require(workspace.screen(profile: service.profile))
-            #expect(cached.canEditDraft && !cached.canCreate)
-            #expect(workspace.captureActivation(cached.owner) == nil)
-        } else {
-            await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        }
-        let count = service.opens.count
-        let owner = workspace.screen(profile: service.profile)?.owner
-        await workspace.select(activation)
-        #expect(service.opens.count == count)
-        #expect(workspace.screen(profile: service.profile)?.owner == owner)
-    }
-
-    @Test func failedLocalFallbackActivationKeepsDraftAndAllowsDeliberateRetry() async throws {
-        let (workspace, service, main, _) = try await closedSelectedFixture()
-        workspace.editDraft("Keep through failure", owner: main.owner)
-        service.openError = ConversationServiceError.timeout
-        await workspace.select(try #require(workspace.captureActivation(main.owner)))
-        let failed = try #require(workspace.screen(profile: service.profile))
-        #expect(failed.canEditDraft && !failed.canAct && failed.error != nil)
-        #expect(workspace.draft(failed.owner) == "Keep through failure")
-        service.openError = nil
-        await workspace.select(try #require(workspace.captureActivation(failed.owner)))
-        let ready = try #require(workspace.screen(profile: service.profile))
-        #expect(ready.canAct && ready.error == nil)
-        #expect(workspace.draft(ready.owner) == "Keep through failure")
-    }
-
-    @Test func explicitCreationFromLocalFallbackNeedsNoReadOfMain() async throws {
-        let (workspace, service, main, other) = try await closedSelectedFixture()
-        let count = service.opens.count
-        let creation = try #require(workspace.captureCreation(main.owner))
-        #expect(workspace.screen(profile: service.profile)?.canCreate == false)
-        await workspace.create(creation)
-        let created = try #require(workspace.screen(profile: service.profile))
-        #expect(service.creates.count == 1 && service.opens.count == count + 1)
-        #expect(created.canAct && created.owner.chat != main.owner.chat)
-        #expect(workspace.closedChats(profile: service.profile).map(\.id) == [other])
-        #expect(workspace.persisted().record(main.owner.chat)?.seen == nil)
-    }
-
-    private func closedSelectedFixture() async throws -> (ConversationWorkspace, WorkspaceTestService, ChatScreen, ChatID) {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        let selected = try #require(workspace.screen(profile: service.profile))
-        _ = workspace.close(try #require(workspace.captureClose(other, owner: selected.owner)))
-        return (workspace, service, try #require(workspace.screen(profile: service.profile)), other)
-    }
-
-    @Test(arguments: [false, true])
-    func deliberateTargetOpenRevealsClosedTabAndRetainsBotAttention(attention: Bool) async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        let intent = try #require(workspace.captureClose(other, owner: main.owner))
-        _ = workspace.close(intent)
-        workspace.applyActivity(profile: service.profile, observations: [service.summaries[1].identity: .known(.waiting, .distantFuture)])
-        #expect(workspace.aggregate(profile: service.profile).attentionChat == other)
-        #expect(workspace.aggregate(profile: service.profile).activity == .current(.waiting))
-        if attention { await workspace.openAttention(profile: service.profile) }
-        else { await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner))) }
-        #expect(workspace.screen(profile: service.profile)?.owner.chat == other)
-        #expect(workspace.cards(profile: service.profile).contains { $0.id == other })
-        #expect(workspace.closedChats(profile: service.profile).isEmpty)
-        #expect(service.stops.isEmpty)
-    }
-
-    @Test func staleLocalTabIntentsCannotChangeTheNewReader() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        let staleClose = try #require(workspace.captureClose(other, owner: main.owner))
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        #expect(workspace.close(staleClose) == nil)
-        let reader = try #require(workspace.screen(profile: service.profile))
-        let close = try #require(workspace.captureClose(other, owner: reader.owner))
-        _ = workspace.close(close)
-        let fallback = try #require(workspace.screen(profile: service.profile))
-        let staleReopen = try #require(workspace.captureReopening(other, owner: fallback.owner))
-        await workspace.select(try #require(workspace.captureSelection(fallback.owner.chat, owner: fallback.owner)))
-        let current = try #require(workspace.screen(profile: service.profile))
-        workspace.reopen(staleReopen)
-        #expect(workspace.cards(profile: service.profile).count == 1)
-        #expect(workspace.screen(profile: service.profile)?.owner == current.owner)
-    }
-
-    @Test(arguments: [false, true])
-    func inventoryBookkeepingNotifiesCardsAndPersistenceWithoutInvalidatingSelectedScreen(activity: Bool) async throws {
+    func inventoryBookkeepingNotifiesAggregatesAndPersistenceWithoutInvalidatingSelectedScreen(activity: Bool) async throws {
         let (workspace, service) = try fixture()
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(screen.owner)
         let rendered = try #require(screen.snapshot)
         let sibling = service.summaries[1].identity
-        try await confirmation("Inventory bookkeeping does not change selected-screen facts", expectedCount: 0) { changed in
+        await confirmation("Inventory bookkeeping does not change selected-screen facts", expectedCount: 0) { changed in
             withObservationTracking {
                 _ = workspace.screen(profile: service.profile)
                 _ = workspace.selection(profile: service.profile)
                 _ = workspace.canEditDraft(screen.owner)
                 _ = workspace.draft(screen.owner)
             } onChange: { changed() }
-            await confirmation("Cards, aggregates and persistence remain observed", expectedCount: 3) { changed in
-                withObservationTracking { _ = workspace.cards(profile: service.profile) } onChange: { changed() }
+            await confirmation("Aggregates and persistence remain observed", expectedCount: 2) { changed in
                 withObservationTracking { _ = workspace.aggregate(profile: service.profile) } onChange: { changed() }
                 withObservationTracking { _ = workspace.persisted() } onChange: { changed() }
                 if activity {
@@ -220,11 +29,11 @@ import BottoCore
             }
             #expect(workspace.screen(profile: service.profile)?.owner == screen.owner)
             if activity {
-                #expect(workspace.cards(profile: service.profile).first { $0.id != screen.owner.chat }?.activity == .current(.waiting))
+                #expect(workspace.aggregate(profile: service.profile).attentionChat == workspace.chats(service.profile).last?.id)
                 #expect(workspace.persisted().records.first { $0.id != screen.owner.chat }?.lastKnownActivity?.observedAt == .distantFuture)
             } else {
                 #expect(workspace.persisted().record(screen.owner.chat)?.seen?.content == ChatContentEvidence(rendered))
-                #expect(workspace.cards(profile: service.profile).first { $0.id == screen.owner.chat }?.unread == false)
+                #expect(workspace.persisted().record(screen.owner.chat)?.isUnread == false)
             }
         }
     }
@@ -235,8 +44,7 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let main = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let screen = try #require(workspace.screen(profile: service.profile))
         let old = service.summaries[1]
         let nextIdentity = SessionIdentity(profile: old.identity.profile, root: old.identity.root,
@@ -296,47 +104,18 @@ import BottoCore
         let (workspace, service) = try fixture()
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
-        let preferred = screen.owner.chat
+        let newcomer = try ExactID("newcomer")
         workspace.editDraft("Keep this draft", owner: screen.owner)
-        await confirmation("A preference change reaches presentation and complete readers", expectedCount: 4) { changed in
+        await confirmation("A newly observed bot reaches presentation and complete readers", expectedCount: 4) { changed in
             withObservationTracking { _ = workspace.screen(profile: service.profile) } onChange: { changed() }
             withObservationTracking { _ = workspace.draft(screen.owner) } onChange: { changed() }
             withObservationTracking { _ = workspace.persisted() } onChange: { changed() }
             withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
-            workspace.preferOpening(preferred, owner: screen.owner)
+            workspace.observeProfiles([.init(id: service.profile.text, name: "Milo"), .init(id: newcomer.text, name: "Newcomer")])
         }
-        #expect(workspace.cards(profile: service.profile).first { $0.id == preferred }?.isPreferred == true)
+        #expect(workspace.persisted().preference(newcomer) != nil)
         #expect(workspace.draft(screen.owner) == "Keep this draft")
         #expect(workspace.persisted().record(screen.owner.chat)?.draft.text == "Keep this draft")
-    }
-
-    @Test func openingDraftFollowsTheSavedChoiceInsteadOfTheSelectedChat() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(main.owner)
-        workspace.editDraft("Main draft", owner: main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        let saved = try #require(workspace.screen(profile: service.profile))
-        workspace.preferOpening(other, owner: saved.owner)
-        await confirmation("A draft edit reaches the opening draft reader") { changed in
-            withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
-            workspace.editDraft("Saved choice draft", owner: saved.owner)
-        }
-
-        await workspace.select(try #require(workspace.captureSelection(main.owner.chat, owner: saved.owner)))
-        let selected = try #require(workspace.screen(profile: service.profile))
-        #expect(workspace.draft(selected.owner) == "Main draft")
-        #expect(workspace.openingDraft(profile: service.profile) == "Saved choice draft")
-
-        // Closing an unselected chat changes the opening choice without a presentation mutation.
-        let intent = try #require(workspace.captureClose(other, owner: selected.owner))
-        await confirmation("Closing the saved choice reaches the opening draft reader") { changed in
-            withObservationTracking { _ = workspace.openingDraft(profile: service.profile) } onChange: { changed() }
-            #expect(workspace.close(intent)?.id == other)
-        }
-        #expect(workspace.openingDraft(profile: service.profile) == "Main draft")
     }
 
     @Test func generalBookMutationPreservesDraftWrittenDuringItsObservationCallback() async throws {
@@ -347,7 +126,7 @@ import BottoCore
         workspace.setOnline(true)
         await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
-        let preferred = screen.owner.chat
+        let newcomer = try ExactID("newcomer")
         var persistedAtDirty: String?
         dirtyReadback = { [weak workspace] in
             persistedAtDirty = workspace?.persisted().record(screen.owner.chat)?.draft.text
@@ -359,11 +138,11 @@ import BottoCore
                     workspace.editDraft("Draft from the callback", owner: screen.owner)
                 }
             }
-            workspace.preferOpening(preferred, owner: screen.owner)
+            workspace.observeProfiles([.init(id: service.profile.text, name: "Milo"), .init(id: newcomer.text, name: "Newcomer")])
         }
         #expect(workspace.draft(screen.owner) == "Draft from the callback")
         #expect(persistedAtDirty == "Draft from the callback")
-        #expect(workspace.cards(profile: service.profile).first { $0.id == preferred }?.isPreferred == true)
+        #expect(workspace.persisted().preference(newcomer) != nil)
     }
 
     func fixture() throws -> (ConversationWorkspace, WorkspaceTestService) {
@@ -600,8 +379,7 @@ import BottoCore
         let gate = WorkspaceGate(); service.replacementGate = gate
         let save = Task { await workspace.saveQueuedEdit(a.owner) }
         await gate.entered()
-        let target = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(target, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("Composer B", owner: b.owner)
         workspace.beginQueuedEdit(sibling, owner: b.owner)
@@ -640,13 +418,13 @@ import BottoCore
         await workspace.refreshDirectory(a.owner)
         workspace.editDraft("  A thought \n", owner: a.owner)
         let queued = try #require(workspace.captureSend(a.owner))
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        let bID = try #require(workspace.chats(service.profile).dropFirst().first?.id)
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("B thought", owner: b.owner)
         await workspace.send(queued)
         #expect(service.sends.isEmpty)
-        await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: b.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let returned = try #require(workspace.screen(profile: service.profile))
         #expect(workspace.draft(returned.owner) == "  A thought \n")
         #expect(!workspace.isCurrent(a.owner))
@@ -667,19 +445,19 @@ import BottoCore
         let gate = WorkspaceGate(); service.sendGate = gate
         let sending = Task { await workspace.send(intent) }
         await gate.entered()
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        let bID = try #require(workspace.chats(service.profile).dropFirst().first?.id)
+        #expect(await workspace.openSaved(service.summaries[1]))
         var b = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("B stays", owner: b.owner)
         await workspace.upload(Data([2]), filename: "b.txt", mimeType: "text/plain", to: try #require(workspace.captureImport(b.owner)))
         if retyped {
-            await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: b.owner)))
+            #expect(await workspace.openSaved(service.summaries[0]))
             let returned = try #require(workspace.screen(profile: service.profile))
             workspace.editDraft("", owner: returned.owner)
             workspace.editDraft("submitted", owner: returned.owner)
             workspace.removeAttachment(stagedA, owner: returned.owner)
             await workspace.upload(Data([3]), filename: "a.txt", mimeType: "text/plain", to: try #require(workspace.captureImport(returned.owner)))
-            await workspace.select(try #require(workspace.captureSelection(bID, owner: returned.owner)))
+            #expect(await workspace.openSaved(service.summaries[1]))
             b = try #require(workspace.screen(profile: service.profile))
         }
         let bEpoch = b.epoch
@@ -689,7 +467,7 @@ import BottoCore
         #expect(workspace.draft(after.owner) == "B stays")
         #expect(after.attachments.map(\.name) == ["b.txt"] && after.error == nil)
         #expect(workspace.persisted().record(a.selectedChatID)?.draft.text == (retyped ? "submitted" : ""))
-        await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: after.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let settled = try #require(workspace.screen(profile: service.profile))
         #expect(settled.attachments.count == (retyped ? 1 : 0))
         #expect(workspace.persisted().record(settled.selectedChatID)?.draft.revision != initialRevision)
@@ -723,32 +501,10 @@ import BottoCore
         #expect(workspace.aggregate(profile: service.profile).unreadCount == 0)
         workspace.setOnline(false)
         let offline = try #require(workspace.screen(profile: service.profile))
-        let offlineCards = workspace.cards(profile: service.profile)
         #expect(!offline.canAct && offline.requests.isEmpty)
         #expect(offline.snapshot?.pendingRequests.isEmpty == true)
-        #expect(offlineCards.allSatisfy { $0.isOffline && $0.status == nil })
+        #expect(workspace.aggregate(profile: service.profile).status == nil)
         #expect(workspace.aggregate(profile: service.profile).hasUnknownActivity)
-    }
-
-    @Test func lateCreationIsRetainedWithoutSelectingAndDuplicateCaptureDispatchesOnce() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let a = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(a.owner)
-        let create = try #require(workspace.captureCreation(a.owner))
-        #expect(workspace.captureCreation(a.owner) == nil)
-        let gate = WorkspaceGate(); service.createGate = gate
-        let creating = Task { await workspace.create(create) }
-        await gate.entered()
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
-        let b = try #require(workspace.screen(profile: service.profile))
-        gate.release(); await creating.value
-        await workspace.create(create)
-        let after = try #require(workspace.screen(profile: service.profile))
-        let afterCards = workspace.cards(profile: service.profile)
-        #expect(service.creates.count == 1 && afterCards.count == 3)
-        #expect(after.selectedChatID == bID && after.epoch == b.epoch)
     }
 
     @Test func pendingImportRetiresButCompletedFilesSurviveSwitchUntilRecovery() async throws {
@@ -758,11 +514,9 @@ import BottoCore
         await workspace.refreshDirectory(a.owner)
         await workspace.upload(Data([1]), filename: "kept", mimeType: "text/plain", to: try #require(workspace.captureImport(a.owner)))
         let queued = try #require(workspace.captureImport(a.owner))
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         await workspace.upload(Data([2]), filename: "stale", mimeType: "text/plain", to: queued)
-        let b = try #require(workspace.screen(profile: service.profile))
-        await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: b.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let returned = try #require(workspace.screen(profile: service.profile))
         #expect(returned.attachments.map(\.name) == ["kept"] && !returned.needsReattachment)
         #expect(service.uploads.count == 1)
@@ -773,50 +527,23 @@ import BottoCore
         #expect(workspace.captureSend(recovered.owner) == nil)
     }
 
-    @Test func cachedCardsRemainSelectableOfflineAndMissingRemoteKeepsReadableRecord() async throws {
+    @Test func cachedChatsRemainOpenableOfflineWithTheirDrafts() async throws {
         let (workspace, service) = try fixture()
         await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
-        let aCards = workspace.cards(profile: service.profile)
         await workspace.refreshDirectory(a.owner)
-        let bID = try #require(aCards.first { !$0.isMain }?.id ?? workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("cached B draft", owner: b.owner)
         workspace.setOnline(false)
-        let offlineB = try #require(workspace.screen(profile: service.profile))
-        let offlineBCards = workspace.cards(profile: service.profile)
-        #expect(offlineBCards.allSatisfy { $0.isAvailable })
-        await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: offlineB.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let offlineA = try #require(workspace.screen(profile: service.profile))
         #expect(offlineA.snapshot?.messages.first?.text == "Bot Chat" && !offlineA.canAct)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: offlineA.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let restored = try #require(workspace.screen(profile: service.profile))
         #expect(workspace.draft(restored.owner) == "cached B draft")
         #expect(restored.snapshot?.messages.first?.text == "Other")
         #expect(service.opens.count == 2)
-    }
-
-    @Test func unresolvedLegacyCardOpensReadOnlyBesideProvenMain() async throws {
-        let service = try WorkspaceTestService()
-        var history = LocalHistory()
-        try history.fixtureDraft("unverified draft", profile: service.profile.text)
-        try history.fixtureConversation(.init(id: "legacy-runtime", storedID: "unproven-tip", profileID: service.profile.text,
-            messages: [.init(id: "legacy-message", role: .assistant, text: "Preserved transcript")]), profile: service.profile.text)
-        let old = try #require(history.book.opening(service.profile))
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: history.book, service: service, onDirty: {})
-        workspace.setOnline(true)
-        await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        let mainCards = workspace.cards(profile: service.profile)
-        #expect(main.selectedChatID != old && mainCards.first { $0.id == old }?.isAvailable == true)
-        await workspace.select(try #require(workspace.captureSelection(old, owner: main.owner)))
-        let recovered = try #require(workspace.screen(profile: service.profile))
-        #expect(recovered.snapshot?.messages.first?.text == "Preserved transcript")
-        #expect(workspace.draft(recovered.owner) == "unverified draft" && !recovered.canAct)
-        #expect(recovered.error?.contains("read-only") == true)
-        #expect(workspace.captureSend(recovered.owner) == nil && service.opens.count == 1)
     }
 
     @Test func draftRevisionTracksExactUnicodeEditsAndUndo() async throws {
@@ -840,24 +567,6 @@ import BottoCore
         #expect(workspace.persisted().record(undone.selectedChatID)?.draft.revision == undoneRevision)
     }
 
-    @Test func uncertainCreationRequiresInventoryBeforeAnotherDeliberateCreate() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let screen = try #require(workspace.screen(profile: service.profile))
-        #expect(screen.canCreate)
-        service.createError = ConversationServiceError.uncertain
-        let intent = try #require(workspace.captureCreation(screen.owner))
-        #expect(workspace.screen(profile: service.profile)?.canCreate == false)
-        await workspace.create(intent)
-        await workspace.create(intent)
-        let uncertain = try #require(workspace.screen(profile: service.profile))
-        #expect(!uncertain.canCreate && workspace.captureCreation(uncertain.owner) == nil)
-        #expect(service.creates.count == 1)
-        await workspace.refreshDirectory(uncertain.owner)
-        #expect(workspace.screen(profile: service.profile)?.canCreate == true)
-        #expect(service.creates.count == 1)
-    }
-
     @Test func lightweightActivityClearsRetiredSiblingWaitingWithoutDirectoryPaging() async throws {
         let (workspace, service) = try fixture()
         let main = service.summaries[0].identity
@@ -867,8 +576,7 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         let reads = service.directoryCalls
         #expect(workspace.aggregate(profile: service.profile).attentionChat == a.selectedChatID)
@@ -878,7 +586,6 @@ import BottoCore
         workspace.applyActivity(profile: service.profile, observations: [main: .unknown("Ambiguous runtime")])
         #expect(workspace.aggregate(profile: service.profile).hasUnknownActivity)
         #expect(workspace.aggregate(profile: service.profile).status == nil)
-        #expect(workspace.cards(profile: service.profile).first { $0.id == a.selectedChatID }?.status == nil)
         #expect(service.directoryCalls == reads && workspace.screen(profile: service.profile)?.epoch == b.epoch)
         #expect(workspace.persisted().record(a.selectedChatID)?.seen == nil)
     }
@@ -892,8 +599,7 @@ import BottoCore
         await workspace.refreshDirectory(a.owner)
         workspace.applyActivity(profile: service.profile, observations: [main: .known(.idle, .distantFuture)])
         #expect(workspace.aggregate(profile: service.profile).attentionChat == a.selectedChatID)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let sampled = Date.now.addingTimeInterval(1)
         workspace.applyActivity(profile: service.profile, observations: [main: .known(.idle, sampled)])
         workspace.applyActivity(profile: service.profile, observations: [main: .known(.waiting, sampled.addingTimeInterval(-10))])
@@ -901,7 +607,7 @@ import BottoCore
         let foreign = SessionIdentity(profile: try ExactID("foreign"), root: main.root, stored: main.stored, aliases: [])
         workspace.applyActivity(profile: service.profile, observations: [foreign: .known(.waiting, .distantFuture)])
         #expect(workspace.aggregate(profile: service.profile).attentionChat == nil)
-        #expect(workspace.cards(profile: service.profile).count == 2)
+        #expect(workspace.chats(service.profile).count == 2)
     }
 
     @Test func directoryReadsCoalesceAndLateOrPartialResultsPreserveCurrentAndCachedRecords() async throws {
@@ -909,7 +615,6 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
         let baselineReads = service.directoryCalls
         let gate = WorkspaceGate(); service.directoryGate = gate
         let first = Task { await workspace.refreshDirectory(a.owner) }
@@ -920,43 +625,22 @@ import BottoCore
         #expect(service.directoryCalls == baselineReads + 1)
         let extra = SessionIdentity(profile: service.profile, root: try ExactID("new-root"), stored: try ExactID("new-tip"), aliases: [])
         service.summaries.append(.init(identity: extra, title: "New", isCanonical: false, persistence: .durable))
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         gate.release(); await first.value; await second.value
-        #expect(workspace.cards(profile: service.profile).count == 2)
+        #expect(workspace.chats(service.profile).count == 2)
         #expect(workspace.screen(profile: service.profile)?.epoch == b.epoch)
         service.directoryGate = nil
         await workspace.refreshDirectory(b.owner)
-        #expect(workspace.cards(profile: service.profile).count == 3)
+        #expect(workspace.chats(service.profile).count == 3)
         service.summaries = [service.summaries[0]]; service.directoryComplete = false
         await workspace.refreshDirectory(b.owner)
-        #expect(workspace.cards(profile: service.profile).count == 3)
+        #expect(workspace.chats(service.profile).count == 3)
         #expect(workspace.screen(profile: service.profile)?.snapshot?.messages.first?.text == "Other")
         #expect(workspace.screen(profile: service.profile)?.directoryComplete == false)
         service.directoryError = ConversationServiceError.timeout
         await workspace.refreshDirectory(b.owner)
-        #expect(workspace.cards(profile: service.profile).count == 3)
-    }
-
-    @Test func preferredBotEntryAndExactAttentionChooseIndependentChats() async throws {
-        let (workspace, service) = try fixture()
-        let main = service.summaries[0].identity
-        service.snapshots[main.root]?.pendingRequests = [.init(id: "approval", kind: .approval, title: "Waiting")]
-        service.directoryActivity[main] = .known(.waiting, .now)
-        await workspace.openBot(profile: service.profile)
-        let a = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(a.owner)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        workspace.preferOpening(bID, owner: a.owner)
-        let opening = try #require(workspace.captureOpening(profile: service.profile))
-        await workspace.open(opening)
-        #expect(workspace.screen(profile: service.profile)?.selectedChatID == bID)
-        let attention = try #require(workspace.captureOpening(profile: service.profile, attention: true))
-        await workspace.open(attention)
-        #expect(workspace.screen(profile: service.profile)?.selectedChatID == a.selectedChatID)
-        #expect(workspace.screen(profile: service.profile)?.requests.first?.request.id == "approval")
-        #expect(workspace.persisted().preference(service.profile)?.preferred == bID)
-        #expect(service.summaries.first { $0.isCanonical }?.identity == main)
+        #expect(workspace.chats(service.profile).count == 3)
     }
 
     @Test func lateOpenedSnapshotCannotReplaceNewerSelectionAndCurrentOwnerCanStillSend() async throws {
@@ -966,9 +650,9 @@ import BottoCore
         await gate.entered()
         let a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
+        let bID = try #require(workspace.chats(service.profile).dropFirst().first?.id)
         service.openGate = nil
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         gate.release(); await old.value
         #expect(workspace.screen(profile: service.profile)?.selectedChatID == bID)
@@ -1002,18 +686,16 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner)
-        let bID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(bID, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let b = try #require(workspace.screen(profile: service.profile))
         let now = Date.now
         workspace.applyActivity(profile: service.profile, observations: [main: .known(.idle, now)])
         service.directoryActivity[main] = .known(.waiting, now.addingTimeInterval(-60))
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.aggregate(profile: service.profile).attentionChat == nil)
-        #expect(workspace.cards(profile: service.profile).first { $0.id == a.selectedChatID }?.status == .idle)
     }
 
-    @Test func disappearedCachedChatRemainsReadableWithUnknownActivityAndNoActions() async throws {
+    @Test func disappearedCachedChatKeepsItsRecordAndDraftAndLosesItsActivity() async throws {
         let (workspace, service) = try fixture()
         let other = service.summaries[1].identity
         service.snapshots[other.root]?.pendingRequests = [.init(id: "old-approval", kind: .approval, title: "Old waiting")]
@@ -1021,22 +703,18 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let main = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(main.owner)
-        let otherID = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(otherID, owner: main.owner)))
+        let otherID = try #require(workspace.chats(service.profile).dropFirst().first?.id)
+        #expect(await workspace.openSaved(service.summaries[1]))
         let cached = try #require(workspace.screen(profile: service.profile))
         workspace.editDraft("kept unavailable draft", owner: cached.owner)
-        await workspace.select(try #require(workspace.captureSelection(main.selectedChatID, owner: cached.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let returned = try #require(workspace.screen(profile: service.profile))
         service.summaries.removeAll { !$0.isCanonical }
         await workspace.refreshDirectory(returned.owner)
-        #expect(workspace.cards(profile: service.profile).first { $0.id == otherID }?.status == nil)
         #expect(workspace.aggregate(profile: service.profile).attentionChat == nil)
-        await workspace.select(try #require(workspace.captureSelection(otherID, owner: returned.owner)))
-        let unavailable = try #require(workspace.screen(profile: service.profile))
-        let unavailableCards = workspace.cards(profile: service.profile)
-        #expect(unavailable.snapshot?.messages.first?.text == "Other")
-        #expect(workspace.draft(unavailable.owner) == "kept unavailable draft")
-        #expect(!unavailable.canAct && unavailable.requests.isEmpty && unavailableCards.count == 2)
+        #expect(workspace.chats(service.profile).count == 2)
+        #expect(workspace.persisted().record(otherID)?.transcript?.messages.first?.text == "Other")
+        #expect(workspace.persisted().record(otherID)?.draft.text == "kept unavailable draft")
     }
 
 }
@@ -1055,10 +733,8 @@ import BottoCore
             book: book, service: service, onDirty: {})
         #expect(workspace.aggregate(profile: composed).count == 1)
         #expect(workspace.aggregate(profile: decomposed).count == 1)
-        #expect(workspace.cards(profile: composed).map(\.id) == [first])
-        #expect(workspace.cards(profile: decomposed).map(\.id) == [second])
-        #expect(workspace.cards(profile: composed).first?.userPreview == "First question")
-        #expect(workspace.cards(profile: decomposed).first?.replyPreview == "Second reply")
+        #expect(workspace.chats(composed).map(\.id) == [first])
+        #expect(workspace.chats(decomposed).map(\.id) == [second])
     }
 
     @Test func completeKnownDirectorySuppressesRosterFallbackAndPartialOrUnknownDirectoryRetainsIt() async throws {
@@ -1130,12 +806,10 @@ import BottoCore
         #expect(aggregate.count == 3 && aggregate.unreadCount == 1)
         #expect(aggregate.status == nil && aggregate.hasUnknownActivity && aggregate.attentionChat == nil)
         let screen = try #require(workspace.screen(profile: profile))
-        let screenCards = workspace.cards(profile: profile)
-        #expect(screenCards.map(\.id) == [main, other, empty])
-        #expect(screen.selectedChatID == empty && screenCards.last?.isPreferred == true)
-        #expect(screenCards.first?.userPreview == "Question" && screenCards.first?.replyPreview == "é")
-        #expect(screenCards.first?.unread == false && screenCards[1].unread)
-        #expect(screenCards[1].replyPreview.utf8.elementsEqual("e\u{301}".utf8))
+        let screenChats = workspace.chats(profile)
+        #expect(screenChats.map(\.id) == [main, other, empty])
+        #expect(screen.selectedChatID == empty, "A saved opening choice from an older build still opens")
+        #expect(screenChats.first?.isUnread == false && screenChats[1].isUnread)
         #expect(workspace.aggregate(profile: foreign).count == 1)
         workspace.setOnline(true)
         workspace.observeProfiles([.init(id: profile.text, name: "Milo", status: .waiting)])
@@ -1155,10 +829,9 @@ import BottoCore
         workspace.applyActivity(profile: profile, observations: [otherIdentity: .unknown("Unavailable")])
         aggregate = workspace.aggregate(profile: profile)
         #expect(aggregate.status == nil && aggregate.attentionChat == nil && aggregate.hasUnknownActivity)
-        #expect(workspace.cards(profile: profile)[1].status == nil)
         #expect(workspace.aggregate(profile: profile).unreadCount == 1)
         workspace.setOnline(false)
-        #expect(workspace.cards(profile: profile).allSatisfy { $0.status == nil && $0.isOffline } == true)
+        #expect(workspace.aggregate(profile: profile).status == nil)
     }
 
     @Test func batchedOrderingKeepsExactProfilesAndMainBeforeEarlierSiblings() throws {

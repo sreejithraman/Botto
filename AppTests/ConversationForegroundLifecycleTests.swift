@@ -33,7 +33,6 @@ import BottoCore
         workspace.receive(.init(identity: publication.identity, snapshot: pending, access: publication.access))
         let row = try #require(workspace.screen(profile: service.profile)?.requests.first)
         workspace.receive(publication)
-        let oldSelection = try #require(workspace.captureSelection(initial.selectedChatID, owner: initial.owner))
         let destination = try #require(store.artifactDestination(for: .init(name: "old.txt", path: "/old.txt"), botID: service.profile.text))
         store.finishArtifact(destination) // Consumer has installed its result; keep the old callback for rejection.
         let message = try #require(initial.snapshot?.messages.first)
@@ -55,7 +54,6 @@ import BottoCore
         #expect(workspace.captureArtifact(.init(name: "new", path: "/new"), owner: reading.owner) == nil)
         await gate.entered()
         await workspace.answer(row.intent, response: .choice("once"))
-        await workspace.select(oldSelection)
         #expect(service.responses.isEmpty && service.opens.count == 2)
         let intermediateGeneration = store.artifactGeneration
         gate.release()
@@ -96,7 +94,7 @@ import BottoCore
         #expect(failed.snapshot == initial.snapshot && failed.snapshot?.pendingRequests.isEmpty == true)
         #expect(workspace.persisted().record(initial.selectedChatID)?.transcript == initial.snapshot)
         #expect(store.artifactGeneration != firstGeneration && service.opens.count == 2)
-        #expect(workspace.captureCreation(failed.owner) == nil && workspace.captureSend(failed.owner) == nil)
+        #expect(workspace.captureSend(failed.owner) == nil)
         workspace.editDraft("still editable", owner: failed.owner)
         workspace.receive(try service.fullReadPublication(service.summaries[0].identity))
         #expect(workspace.screen(profile: service.profile)?.canAct == false, "A late callback cannot restore the retired read")
@@ -126,8 +124,7 @@ import BottoCore
         service.openGate = nil
         switch retirement {
         case "selection":
-            let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-            await workspace.select(try #require(workspace.captureSelection(other, owner: readOwner)))
+            #expect(await workspace.openSaved(service.summaries[1]))
         case "background": await store.setActive(false)
         case "review": store.showsConnection = true
         case "connection": workspace.retireConnection()
@@ -170,8 +167,7 @@ import BottoCore
         #expect(workspace.screen(profile: service.profile)?.epoch == second.epoch)
         secondGate.release()
         let done = try await settled(workspace, service)
-        let doneCards = workspace.cards(profile: service.profile)
-        #expect(done.canAct && doneCards.first?.unread == true)
+        #expect(done.canAct && workspace.isUnread(service.summaries[0]) == true)
         #expect(service.opens.count == 4)
     }
     @Test func cancelledReadCallbackBeforeItsReturnCannotReplaceExplicitNewAttachment() async throws {

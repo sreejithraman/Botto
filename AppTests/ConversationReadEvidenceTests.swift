@@ -67,7 +67,7 @@ import BottoCore
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let initial = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(initial.owner); workspace.displayed(initial.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         return (workspace, service, identity)
     }
 
@@ -79,13 +79,13 @@ import BottoCore
             preview: "First prompt", updatedAt: Date(timeIntervalSince1970: timestamp), messageCount: 3)
         let old = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(old.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.displayed(old.owner); workspace.displayed(old.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         // Positive: an explicit current full read of the new tip can acknowledge it.
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test func incrementalContentAndAccessRotationCannotAcknowledgeNewDirectoryObservation() async throws {
@@ -98,11 +98,11 @@ import BottoCore
             timestamp: Date(timeIntervalSince1970: 200)))
         workspace.receive(try service.publication(identity))
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true,
+        #expect(workspace.chats(service.profile).first?.isUnread == true,
             "A delta and a new access grant do not prove a full read after the inventory observation")
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     enum Mismatch: CaseIterable { case missing, profile, root, tip, previewBytes, count, date }
@@ -125,11 +125,11 @@ import BottoCore
         workspace.receive(try service.publication(identity, readEvidence: evidence))
         let screen = try #require(workspace.screen(profile: service.profile))
         workspace.displayed(screen.owner); workspace.displayed(screen.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         // Each rejection has a matching positive through an explicit service full read.
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test func inventoryArrivingDuringHeldReadCannotBeBackfilledIntoItsWitness() async throws {
@@ -142,10 +142,10 @@ import BottoCore
         await workspace.refreshDirectory(try #require(workspace.screen(profile: service.profile)?.owner))
         gate.release(); await opening.value; service.openGate = nil
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test func firstCanonicalReadSeedsOnlyMissingMetadataAndLaterEnrichmentNeedsMatchingRead() async throws {
@@ -159,7 +159,7 @@ import BottoCore
         let before = workspace.persisted(), preferences = before.preference(service.profile)
         #expect(before.record(initial.selectedChatID)?.summary == nil)
         workspace.displayed(initial.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(initial.selectedChatID)?.summary?.messageCount == 4)
         #expect(workspace.persisted().preference(service.profile)?.main == preferences?.main)
         #expect(workspace.persisted().preference(service.profile)?.lastSelected == preferences?.lastSelected)
@@ -168,12 +168,12 @@ import BottoCore
         let seenAt = workspace.persisted().record(initial.selectedChatID)?.seen?.observedAt
         await workspace.refreshDirectory(initial.owner)
         workspace.displayed(initial.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true,
+        #expect(workspace.chats(service.profile).first?.isUnread == true,
             "Later REST preview/date cannot be retroactively attached to the earlier count-only read")
         #expect(workspace.persisted().record(initial.selectedChatID)?.seen?.observedAt == seenAt)
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test func staleOwnerAndOfflineRecoveryPublicationCannotAcknowledgeUntilCurrentLiveDisplay() async throws {
@@ -185,17 +185,17 @@ import BottoCore
         let fresh = try service.fullReadPublication(identity)
         workspace.receive(fresh)
         workspace.displayed(old.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.retireConnection()
         workspace.receive(fresh)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.setOnline(true); workspace.receive(fresh)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.receive(try service.fullReadPublication(identity))
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test(arguments: [2, 99]) func opaqueInventoryCounterChangesRequireMatchingRead(_ counter: Int) async throws {
@@ -204,10 +204,10 @@ import BottoCore
             preview: "First prompt", updatedAt: Date(timeIntervalSince1970: 100), messageCount: counter)
         let old = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(old.owner); workspace.displayed(old.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.receive(try service.fullReadPublication(identity))
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == false,
+        #expect(workspace.chats(service.profile).first?.isUnread == false,
             "Opaque inventory counts may be smaller or larger than all eleven projected rows")
     }
 
@@ -220,14 +220,14 @@ import BottoCore
         service.readSummaryAvailable = false
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         service.readSummaryAvailable = true
         workspace.receive(try service.fullReadPublication(identity))
         let refreshed = try #require(workspace.screen(profile: service.profile))
-        let refreshedCards = workspace.cards(profile: service.profile)
-        #expect(refreshedCards.first?.unread == true, "Publication alone never marks read")
+        let refreshedChats = workspace.chats(service.profile)
+        #expect(refreshedChats.first?.isUnread == true, "Publication alone never marks read")
         workspace.displayed(refreshed.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test func lateSelectionAndCancelledReadCannotAcknowledgeOrigin() async throws {
@@ -235,23 +235,20 @@ import BottoCore
         service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
             preview: "New inventory", messageCount: 40)
         let a = try #require(workspace.screen(profile: service.profile))
-        let aCards = workspace.cards(profile: service.profile)
         await workspace.refreshDirectory(a.owner)
         let late = try service.fullReadPublication(identity)
-        let b = try #require(aCards.first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         workspace.receive(late)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
         #expect(workspace.persisted().record(a.selectedChatID)?.isUnread == true)
         let gate = WorkspaceGate(); service.openGate = gate
-        let ownerB = try #require(workspace.screen(profile: service.profile)?.owner)
-        let intent = try #require(workspace.captureSelection(a.selectedChatID, owner: ownerB))
-        let cancelled = Task { await workspace.select(intent) }
-        await gate.entered(); cancelled.cancel(); gate.release(); await cancelled.value
-        service.openGate = nil
+        let cancelled = Task { await workspace.openSaved(service.summaries[0]) }
+        await gate.entered(); cancelled.cancel()
+        service.openGate = nil // The cancelled opening restores B with a fresh read.
+        gate.release(); #expect(await !cancelled.value)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
         #expect(workspace.persisted().record(a.selectedChatID)?.isUnread == true)
-        await workspace.openBot(profile: service.profile)
+        #expect(await workspace.openSaved(service.summaries[0]))
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
         #expect(workspace.persisted().record(a.selectedChatID)?.isUnread == false)
     }

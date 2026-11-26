@@ -42,9 +42,7 @@ import BottoCore
         let screen = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(screen.owner)
         workspace.displayed(screen.owner)
-        let card = try #require(workspace.cards(profile: service.profile).first)
-        #expect(!card.unread)
-        #expect(card.replyPreview == "The latest assistant reply.")
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(screen.selectedChatID)?.summary?.preview == Data(shape.preview.utf8))
         #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == messages)
     }
@@ -64,21 +62,20 @@ import BottoCore
             book: book, service: service, onDirty: {})
         await workspace.openBot(profile: service.profile)
         let stale = try #require(workspace.screen(profile: service.profile))
-        let staleCards = workspace.cards(profile: service.profile)
-        #expect(staleCards.first?.unread == true)
+        let staleChats = workspace.chats(service.profile)
+        #expect(staleChats.first?.isUnread == true)
         workspace.displayed(stale.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.displayed(stale.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         service.snapshots[identity.root]?.messages = [old[0],
             .init(id: "reply", role: .assistant, text: "Updated reply", timestamp: newAt)]
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let actual = try #require(workspace.screen(profile: service.profile))
-        let actualCards = workspace.cards(profile: service.profile)
-        #expect(actualCards.first?.unread == true)
+        let actualChats = workspace.chats(service.profile)
+        #expect(actualChats.first?.isUnread == true)
         workspace.displayed(actual.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
-        #expect(workspace.cards(profile: service.profile).first?.replyPreview == "Updated reply")
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
     }
 
     @Test(arguments: Shape.allCases)
@@ -95,27 +92,24 @@ import BottoCore
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(a.owner); workspace.displayed(a.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
-        let b = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
+        #expect(await workspace.openSaved(service.summaries[1]))
         let ownerB = try #require(workspace.screen(profile: service.profile)?.owner)
         service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
             preview: shape.preview, updatedAt: newAt, messageCount: 4)
         await workspace.refreshDirectory(ownerB)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         workspace.setOnline(false)
-        let offlineB = try #require(workspace.screen(profile: service.profile))
-        await workspace.select(try #require(workspace.captureSelection(a.selectedChatID, owner: offlineB.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         let fresh = old + [.init(id: "follow-up", role: .user, text: "A follow-up", timestamp: newAt),
             .init(id: "new-reply", role: .assistant, text: "New reply", timestamp: newAt)]
         service.snapshots[identity.root]?.messages = fresh
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let actual = try #require(workspace.screen(profile: service.profile))
         workspace.displayed(actual.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
-        #expect(workspace.cards(profile: service.profile).first?.replyPreview == "New reply")
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == fresh)
     }
     @Test(arguments: Shape.allCases)
@@ -137,21 +131,19 @@ import BottoCore
         workspace.receive(try service.fullReadPublication(identity))
         let fresh = try #require(workspace.screen(profile: service.profile))
         workspace.displayed(fresh.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         let seenBefore = workspace.persisted().record(fresh.selectedChatID)?.seen
         service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
             preview: shape.preview, updatedAt: newAt, messageCount: 4)
         await workspace.refreshDirectory(fresh.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true,
+        #expect(workspace.chats(service.profile).first?.isUnread == true,
             "The earlier full read did not observe these later directory facts")
         workspace.displayed(fresh.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true)
+        #expect(workspace.chats(service.profile).first?.isUnread == true)
         #expect(workspace.persisted().record(fresh.selectedChatID)?.seen?.observedAt == seenBefore?.observedAt)
         await workspace.openBot(profile: service.profile)
         workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        let card = try #require(workspace.cards(profile: service.profile).first)
-        #expect(!card.unread)
-        #expect(card.replyPreview == "Already displayed new reply")
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(fresh.selectedChatID)?.seen?.observedAt == seenBefore?.observedAt)
     }
 
@@ -168,11 +160,10 @@ import BottoCore
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
         workspace.displayed(screen.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         let seenAt = workspace.persisted().record(screen.selectedChatID)?.seen?.observedAt
         await workspace.refreshDirectory(screen.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
-        #expect(workspace.cards(profile: service.profile).first?.replyPreview == "Already displayed reply")
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(screen.selectedChatID)?.seen?.observedAt == seenAt)
     }
 
@@ -369,9 +360,8 @@ import BottoCore
         book.updatePreference(service.profile) { $0.preferred = mainID }
         let workspace = fixture(service, book: book)
         await workspace.openBot(profile: service.profile)
-        let main = try #require(workspace.screen(profile: service.profile))
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
+        #expect(workspace.screen(profile: service.profile) != nil)
+        #expect(await workspace.openSaved(service.summaries[1]))
         let gate = WorkspaceGate(); service.openGate = gate
         let cancellation = Callback()
         let opening = Task { await workspace.openNotificationChat(target, isCurrent: { !cancellation.entered }) }
@@ -530,8 +520,8 @@ extension InboxMessagePreviewTests {
         workspace.setOnline(true)
         defer { workspace.retireWorkspace() }
         await workspace.openBot(profile: service.profile)
-        let mainOwner = try #require(workspace.screen(profile: service.profile)?.owner)
-        await workspace.select(try #require(workspace.captureSelection(siblingID, owner: mainOwner)))
+        #expect(workspace.screen(profile: service.profile)?.owner.chat == mainID)
+        #expect(await workspace.openSaved(service.summaries[1]))
         let siblingOwner = try #require(workspace.screen(profile: service.profile)?.owner)
         let queued = QueuedMessage(id: "queued", text: "Keep the sibling queue", canEdit: true)
         service.snapshots[sibling.root]?.queuedMessages = [queued]

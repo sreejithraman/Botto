@@ -210,22 +210,20 @@ import BottoCore
         let (_, service, workspace, screen, close) = try await connected()
         defer { close() }
         await workspace.refreshDirectory(screen.owner)
-        let sibling = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
         let gate = WorkspaceGate()
         service.uploadGate = gate
         let intent = try #require(workspace.captureImport(screen.owner))
         let running = Task { await workspace.importAttachments([file("mine.txt"), file("queued.txt")], to: intent) }
         await gate.entered()
 
-        await workspace.select(try #require(workspace.captureSelection(sibling, owner: screen.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let elsewhere = try #require(workspace.screen(profile: service.profile))
         #expect(elsewhere.owner.chat != screen.owner.chat)
         #expect(elsewhere.pendingAttachments.isEmpty && elsewhere.attachments.isEmpty)
 
         workspace.cancelImport(intent)
         gate.release(); service.uploadGate = nil; await running.value
-        let returned = try #require(workspace.cards(profile: service.profile).first(where: \.isMain)?.id)
-        await workspace.select(try #require(workspace.captureSelection(returned, owner: elsewhere.owner)))
+        #expect(await workspace.openSaved(service.summaries[0]))
         let original = try #require(workspace.screen(profile: service.profile))
         #expect(original.owner.chat == screen.owner.chat)
         #expect(original.pendingAttachments.isEmpty && original.attachments.isEmpty, "A stopped import publishes nothing on return")
@@ -284,20 +282,18 @@ import BottoCore
         #expect(selected.file == nil, "An unselected page waits for a deliberate turn back")
     }
 
-    @Test func choosingAConversationClosesTheReaderAndItsPagesAndEndsBrowsing() async throws {
+    @Test func choosingAConversationClosesTheReaderAndItsPages() async throws {
         let (_, _, presentation, close) = try await pagedReader(["a.txt", "b.txt", "c.txt"], opening: 1)
         defer { close() }
         try await settled { [0, 1, 2].allSatisfy { presentation.artifactSession(atPage: $0)?.file != nil } }
         let selected = try #require(presentation.artifact)
         let before = try #require(presentation.artifactSession(atPage: 0))
         let after = try #require(presentation.artifactSession(atPage: 2))
-        presentation.browseBots()
-        #expect(presentation.isBrowsingBots && presentation.artifact === selected)
         let revision = presentation.revision
 
         presentation.didChooseConversation()
 
-        #expect(!presentation.isBrowsingBots && presentation.artifact == nil)
+        #expect(presentation.artifact == nil)
         #expect(presentation.revision != revision)
         #expect(!selected.isCurrent && selected.file == nil, "The open reader gives up its read")
         #expect(!before.isCurrent && !after.isCurrent, "Its loaded neighbor pages retire with it")
