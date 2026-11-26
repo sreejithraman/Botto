@@ -24,13 +24,22 @@ import BottoCore
         let gate = WorkspaceGate(); service.openGate = gate
         if outcome == "failure" { service.openError = ConversationServiceError.disconnected }
         var authorized = true
-        let routing = Task { await workspace.openNotificationChat(service.summaries[1].identity, isCurrent: { authorized }) }
+        var committed: [SessionIdentity] = []
+        let destination = service.summaries[1].identity
+        let claim = try #require(workspace.captureNavigationClaim())
+        let routing = Task {
+            await workspace.openNotificationChat(destination, claim: claim, exact: true, isCurrent: { authorized }) {
+                committed.append($0)
+                return true
+            }
+        }
         await gate.entered()
         if outcome == "removed" { authorized = false }
         gate.release()
         #expect(await routing.value == (outcome == "current"))
 
         let result = try #require(workspace.screen(profile: service.profile))
+        #expect(committed == (outcome == "current" ? [destination] : []))
         if outcome == "current" {
             #expect(result.owner.chat == other && result.canAct)
             #expect(workspace.closedChats(profile: service.profile).isEmpty)
@@ -48,8 +57,9 @@ import BottoCore
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true)
         let destination = service.summaries[1].identity
+        let claim = try #require(workspace.captureNavigationClaim())
 
-        #expect(await workspace.openNotificationChat(destination, isCurrent: { true }))
+        #expect(await workspace.openNotificationChat(destination, claim: claim, exact: true, isCurrent: { true }))
 
         #expect(service.opens.count == 1)
         #expect(service.opens.first?.profile == destination.profile)
@@ -64,8 +74,10 @@ import BottoCore
         let service = try WorkspaceTestService()
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
+        let claim = try #require(workspace.captureNavigationClaim())
 
-        #expect(await !workspace.openNotificationChat(service.summaries[1].identity, isCurrent: { true }))
+        #expect(await !workspace.openNotificationChat(service.summaries[1].identity,
+            claim: claim, exact: true, isCurrent: { true }))
         #expect(service.directoryCalls == 0 && service.opens.isEmpty)
     }
 
@@ -76,7 +88,10 @@ import BottoCore
         workspace.setOnline(true)
         let destination = service.summaries[1].identity
         let gate = WorkspaceGate(); service.directoryGate = gate
-        let routing = Task { await workspace.openNotificationChat(destination, isCurrent: { true }) }
+        let claim = try #require(workspace.captureNavigationClaim())
+        let routing = Task {
+            await workspace.openNotificationChat(destination, claim: claim, exact: true, isCurrent: { true })
+        }
         await gate.entered()
         await workspace.openBot(profile: service.profile)
         gate.release()
@@ -87,7 +102,7 @@ import BottoCore
         #expect(workspace.selection(profile: service.profile)?.identity?.root == service.summaries[0].identity.root)
     }
 
-    @Test func notificationUsesTheCurrentHostTipInsteadOfTheOldPayloadTip() async throws {
+    @Test func notificationCannotOpenADifferentHostTip() async throws {
         let service = try WorkspaceTestService()
         let destination = service.summaries[1].identity
         let current = SessionIdentity(profile: destination.profile, root: destination.root,
@@ -97,25 +112,25 @@ import BottoCore
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true)
+        let claim = try #require(workspace.captureNavigationClaim())
 
-        #expect(await workspace.openNotificationChat(destination, isCurrent: { true }))
-        #expect(service.opens.count == 1)
-        #expect(service.opens.first?.root == current.root && service.opens.first?.stored == current.stored)
-        #expect(workspace.selection(profile: service.profile)?.identity?.root == current.root)
-        #expect(workspace.selection(profile: service.profile)?.identity?.stored == current.stored)
+        #expect(await !workspace.openNotificationChat(destination, claim: claim, exact: true, isCurrent: { true }))
+        #expect(service.opens.isEmpty)
+        #expect(workspace.selection(profile: service.profile) == nil)
     }
 
-    @Test func ambiguousHostAliasesNeverChooseAnArbitraryChat() async throws {
+    @Test func notificationDoesNotOpenAnAliasOfTheExactChat() async throws {
         let service = try WorkspaceTestService()
         let destination = service.summaries[1].identity
         let other = SessionIdentity(profile: destination.profile, root: try ExactID("another-root"),
             stored: try ExactID("another-tip"), aliases: [destination.root])
-        service.summaries.append(.init(identity: other, title: "Ambiguous", isCanonical: false, persistence: .durable))
+        service.summaries[1] = .init(identity: other, title: "Other", isCanonical: false, persistence: .durable)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true)
+        let claim = try #require(workspace.captureNavigationClaim())
 
-        #expect(await !workspace.openNotificationChat(destination, isCurrent: { true }))
+        #expect(await !workspace.openNotificationChat(destination, claim: claim, exact: true, isCurrent: { true }))
         #expect(service.opens.isEmpty && service.creates.isEmpty && service.responses.isEmpty)
     }
 

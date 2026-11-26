@@ -60,8 +60,8 @@ struct T3PushPairing: Codable, Equatable, Sendable {
             && (1...registration.generation).contains(envelope.generation)
     }
 
-    func preview(_ envelope: PushEnvelope) -> PushPreview? {
-        guard matches(envelope), let preview = try? envelope.decrypt(key: invitation.previewKey),
+    func preview(_ envelope: PushEnvelope, allowExpired: Bool = false) -> PushPreview? {
+        guard matches(envelope), let preview = try? envelope.decrypt(key: invitation.previewKey, allowExpired: allowExpired),
               preview.destination == invitation.scope.destination(spaceID: preview.storedID) else { return nil }
         return preview
     }

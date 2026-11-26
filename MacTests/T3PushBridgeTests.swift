@@ -4,6 +4,27 @@ import Testing
 @testable import BottoMac
 
 @MainActor struct T3PushBridgeTests {
+    @Test func rejectsOneCharacterBundleIDBeforeSendingRegistration() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let relay = RelayFixture()
+        let bridge = try T3PushBridge(relay: #require(URL(string: "https://relay.example")),
+            file: directory.appending(path: "bridge.json"), transport: { try await relay.send($0) })
+        let scope = T3PushScope(environmentID: "my-engine", projectID: "my-project")
+        bridge.setScope(scope)
+        let code = try await bridge.makeInvitation(host: "127.0.0.1", port: 3775)
+        let token = String(repeating: "12", count: 32)
+        let invalid = T3PushRegistration(scope: scope, generation: 1,
+            target: .init(token: token, bundleID: "a", environment: .sandbox))
+        let valid = T3PushRegistration(scope: scope, generation: 1,
+            target: .init(token: token, bundleID: "a1", environment: .sandbox))
+
+        #expect(await bridge.register(code.deviceID, expiresAt: code.expiresAt, request: invalid).status == .retired)
+        #expect(await relay.methods.isEmpty)
+        #expect(await bridge.register(code.deviceID, expiresAt: code.expiresAt, request: valid).status == .registered)
+        #expect(await relay.methods == ["PUT"])
+    }
+
     @Test func pairsOverLocalTCPAndSealsTheExactSpaceForAPNs() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
