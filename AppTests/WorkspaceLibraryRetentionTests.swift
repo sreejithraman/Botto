@@ -2713,7 +2713,6 @@ import BottoCore
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { .init(version: "test") }
     func disconnect() {}
     func bots() async throws -> [BotProfile] { profiles }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw ConversationServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         .init(summaries: summaries, activity: [:], isComplete: true)
     }

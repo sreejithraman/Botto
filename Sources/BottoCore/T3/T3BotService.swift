@@ -264,7 +264,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     public func bots() async throws -> [BotProfile] { [profile(try requireSession())] }
 
-    public func createBot(_ draft: BotDraft) async throws -> BotProfile { throw T3ServiceError.unsupported }
 
     public func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         let session = try requireSession(profile: ExactID(bot.id))

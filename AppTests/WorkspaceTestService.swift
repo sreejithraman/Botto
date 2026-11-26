@@ -4,7 +4,6 @@ import BottoCore
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
-    var onCreate: (() -> Void)?
     var onOpen: (() -> Void)?
     var onDownload: (() -> Void)?
     var downloadData = Data("artifact".utf8)
@@ -31,8 +30,6 @@ import BottoCore
     var replacements: [(QueuedMessage, String, SessionIdentity, UUID)] = []
     var sendGate: WorkspaceGate?
     var createGate: WorkspaceGate?
-    var botCreationGate: WorkspaceGate?
-    var createdBot: BotProfile?
     var openGate: WorkspaceGate?
     var openGatedProfile: ExactID?
     var directoryGate: WorkspaceGate?
@@ -93,11 +90,6 @@ import BottoCore
         for profile in changes { onEvent?(.conversationDirectoryChanged(profile: profile)) }
         if !rosterActivity.isEmpty { onEvent?(.activity(profile: profile, observations: rosterActivity)) }
         return rosterProfiles ?? [rosterBot ?? .init(id: profile.text, name: "Milo", status: rosterStatus)]
-    }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile {
-        onCreate?()
-        await botCreationGate?.wait()
-        return createdBot ?? .init(id: profile.text, name: draft.name)
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }

@@ -773,14 +773,6 @@ import BottoCore
                                  installID: configuration.installID.map { Data($0.utf8) }, demo: isDemo)
     }
 
-    func generateAvatar(description: String, for destination: AvatarDestination) async throws -> BotAvatarGeometry {
-        let owner = generation, recovery = attachmentRecoveryGeneration
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        let geometry = try await service.generateAvatar(description: description, for: destination.profile)
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        return geometry
-    }
-
     func saveAvatar(_ choice: BotAvatarChoice, to destination: AvatarDestination) async throws {
         let owner = generation, recovery = attachmentRecoveryGeneration
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)

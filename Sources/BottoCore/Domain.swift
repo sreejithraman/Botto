@@ -63,38 +63,6 @@ public struct BotProfile: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public struct BotDraft: Equatable, Sendable {
-    public var name: String
-    /// Retained for source compatibility; shared appearance comes from avatar.
-    public var emoji: String
-    public var instructions: String
-    public var model: String?
-    public var avatar: BotAvatarChoice
-    public init(name: String, emoji: String = "✳️", instructions: String = "", model: String? = nil,
-                avatar: BotAvatarChoice = .automatic) {
-        self.name = name; self.emoji = emoji; self.instructions = instructions; self.model = model
-        self.avatar = avatar
-    }
-
-    /// The preview and server create must seed defaults from the same canonical ID.
-    public var profileID: String {
-        let folded = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX")).lowercased()
-        var result = "", dash = false
-        for scalar in folded.unicodeScalars {
-            if ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar) || scalar == "_" {
-                if dash, !result.isEmpty { result += "-" }; dash = false; result.unicodeScalars.append(scalar)
-            } else { dash = true }
-        }
-        return String(result.prefix(64))
-    }
-}
-
-public enum BotAvatarGenerationError: Error, LocalizedError, Equatable, Sendable {
-    case unsupportedHost
-
-    public var errorDescription: String? { "This connection does not support creating characters in Botto." }
-}
-
 /// Only fields deliberately changed in the profile editor. Identity remains stable.
 public struct BotProfileEdit: Equatable, Sendable {
     public var name: String?
@@ -270,11 +238,8 @@ public enum MessageDelivery: Equatable, Sendable {
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo
     func disconnect()
     func bots() async throws -> [BotProfile]
-    func createBot(_ draft: BotDraft) async throws -> BotProfile
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
-    /// Creates an unsaved drawing without changing chat history.
-    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
@@ -294,9 +259,6 @@ public enum MessageDelivery: Equatable, Sendable {
 }
 
 public extension BotService {
-    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
-        throw BotAvatarGenerationError.unsupportedHost
-    }
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
         throw ConversationServiceError.rejected(-32601)
     }

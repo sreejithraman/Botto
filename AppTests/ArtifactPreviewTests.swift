@@ -547,7 +547,6 @@ import UniformTypeIdentifiers
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { ServerInfo(version: "test") }
     func disconnect() {}
     func bots() async throws -> [BotProfile] { profiles }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { profiles[0] }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         return try authority.opened(Conversation(id: "runtime-" + bot.id, storedID: "stored-" + bot.id, profileID: bot.id))

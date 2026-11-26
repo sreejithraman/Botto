@@ -1029,10 +1029,6 @@ import BottoCore
         if let avatarToSave { suppliedAsset = avatarToSave }
         return saved
     }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile {
-        let bot = BotProfile(id: "new", name: draft.name, appearance: draft.avatar.appearance)
-        profiles.append(bot); return bot
-    }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         return try authority.opened(Conversation(id: bot.id, storedID: bot.id, profileID: bot.id))
