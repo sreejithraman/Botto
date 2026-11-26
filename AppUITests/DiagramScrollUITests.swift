@@ -25,9 +25,9 @@ final class DiagramScrollUITests: XCTestCase {
                     delta = -viewport.height * 0.4
                 }
                 let distance = max(-viewport.height * 0.4, min(viewport.height * 0.4, delta))
-                // Stay in the outer gutter and hold before release, including
-                // while finding the header, so inertia cannot hide the pixels.
-                let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: distance > 0 ? 0.75 : 0.25))
+                // Stay in the right gutter (the left is the drawer's swipe strip) and
+                // hold before release, even finding the header, so inertia can't hide pixels.
+                let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: distance > 0 ? 0.75 : 0.25))
                 let end = start.withOffset(CGVector(dx: 0, dy: -distance))
                 start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.3)
             }
