@@ -15,8 +15,7 @@ final class DeveloperToolsUITests: XCTestCase {
             app.buttons["developer.avatarPlayground"].tap()
             XCTAssertTrue(app.navigationBars["Avatar playground"].waitForExistence(timeout: 5))
             app.buttons["Try in demo"].tap()
-            XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
-            visibleButton("Settings", in: app).tap()
+            WorkspaceNavigation.openSettings(in: app)
             visibleButton("Leave demo", in: app).tap()
             XCTAssertTrue(app.navigationBars["Avatar playground"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["Try in demo"].exists)
@@ -54,10 +53,7 @@ final class DeveloperToolsUITests: XCTestCase {
         let demo = app.buttons["Explore the demo"]
         XCTAssertTrue(demo.waitForExistence(timeout: 10))
         demo.tap()
-        let settings = app.buttons["Settings"].firstMatch
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        settings.tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        WorkspaceNavigation.openSettings(in: app)
         return app
     }
 

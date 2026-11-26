@@ -100,8 +100,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let currentTaskSnapshot: @MainActor () -> Conversation?
     let currentReaderSnapshot: (@MainActor () -> Conversation?)?
     var admitsAction: @MainActor () -> Bool = { true }
-    var preview: NativeTranscriptPreview? = nil
-    var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
     var searchFocus: SearchMessageFocus?
     var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
@@ -112,230 +110,24 @@ struct NativeTranscript: UIViewControllerRepresentable {
          currentTaskSnapshot: @escaping @MainActor () -> Conversation?,
          currentReaderSnapshot: (@MainActor () -> Conversation?)? = nil,
          admitsAction: @escaping @MainActor () -> Bool = { true },
-         preview: NativeTranscriptPreview? = nil, topContentInset: CGFloat = 0, bottomContentInset: CGFloat = 0,
+         bottomContentInset: CGFloat = 0,
          searchFocus: SearchMessageFocus? = nil,
          reportSearchFocus: @escaping @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }) {
         self.context = context; self.snapshot = snapshot; self.rows = rows; self.active = active
         self.currentTaskSnapshot = currentTaskSnapshot; self.currentReaderSnapshot = currentReaderSnapshot; self.admitsAction = admitsAction
-        self.preview = preview; self.topContentInset = topContentInset; self.bottomContentInset = bottomContentInset
+        self.bottomContentInset = bottomContentInset
         self.searchFocus = searchFocus; self.reportSearchFocus = reportSearchFocus
         displayRevision = rows.map(\.value)
     }
 
     func makeUIViewController(context: Context) -> NativeTranscriptController { NativeTranscriptController() }
     func updateUIViewController(_ controller: NativeTranscriptController, context: Context) {
-        if let preview { preview.bind(controller) }
-        else { controller.previewReceiver?.unbind(controller) }
-        controller.updateContentInsets(top: topContentInset, bottom: bottomContentInset)
+        controller.updateBottomContentInset(bottomContentInset)
         controller.apply(self.context, snapshot: snapshot, rows: rows, active: active, currentTaskSnapshot: currentTaskSnapshot, currentReaderSnapshot: currentReaderSnapshot, admitsAction: admitsAction,
                          searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
-        preview?.refreshHeader()
-        preview?.requestCapture(from: controller)
     }
     static func dismantleUIViewController(_ controller: NativeTranscriptController, coordinator: ()) {
         controller.retire()
-    }
-}
-
-/// UIKit uses this overlay container to shape the native scroll-edge effect.
-struct NativeTranscriptHeader<Content: View>: UIViewControllerRepresentable {
-    let preview: NativeTranscriptPreview
-    var onActivate: (@MainActor () -> Void)? = nil
-    @ViewBuilder let content: () -> Content
-
-    func makeUIViewController(context: Context) -> NativeTranscriptHeaderController {
-        NativeTranscriptHeaderController(rootView: AnyView(content().environment(\.self, context.environment)), preview: preview, onActivate: onActivate)
-    }
-    func updateUIViewController(_ controller: NativeTranscriptHeaderController, context: Context) {
-        controller.rootView = AnyView(content().environment(\.self, context.environment))
-        controller.onActivate = onActivate
-        controller.view.setNeedsLayout()
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, uiViewController: NativeTranscriptHeaderController, context: Context) -> CGSize? {
-        uiViewController.sizeThatFits(in: proposal.replacingUnspecifiedDimensions(by: UIView.layoutFittingExpandedSize))
-    }
-    static func dismantleUIViewController(_ controller: NativeTranscriptHeaderController, coordinator: ()) {
-        controller.retire()
-    }
-}
-
-final class NativeTranscriptHeaderController: UIHostingController<AnyView> {
-    private let preview: NativeTranscriptPreview
-    private var scrollEdge: (any UIInteraction)?
-    private weak var barContentOwner: UIViewController?
-    private weak var barScrollView: UIScrollView?
-    var onActivate: (@MainActor () -> Void)?
-    private let navigationTarget = UIButton(type: .custom)
-    private var retired = false
-
-    init(rootView: AnyView, preview: NativeTranscriptPreview, onActivate: (@MainActor () -> Void)? = nil) {
-        self.preview = preview
-        self.onActivate = onActivate
-        super.init(rootView: rootView)
-        safeAreaRegions = []
-    }
-    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .clear
-        navigationTarget.isAccessibilityElement = false
-        navigationTarget.accessibilityElementsHidden = true
-        navigationTarget.addAction(UIAction { [weak self] _ in self?.onActivate?() }, for: .touchUpInside)
-        if #available(iOS 26, *) {
-            let interaction = UIScrollEdgeElementContainerInteraction()
-            interaction.edge = .top
-            view.addInteraction(interaction)
-            scrollEdge = interaction
-        }
-        preview.bindHeader(self)
-    }
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        updateScrollView()
-        updateNavigationTarget()
-    }
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        updateScrollView()
-        updateNavigationTarget()
-    }
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        navigationTarget.removeFromSuperview()
-        releaseBarScrollView()
-    }
-    private func updateNavigationTarget() {
-        // The bar receives touches above the content. Mirror only the header's actual overlap.
-        guard !retired, onActivate != nil, let bar = navigationController?.navigationBar,
-              let window = view.window, bar.window === window, !bar.isHidden else {
-            navigationTarget.removeFromSuperview()
-            return
-        }
-        let overlap = view.convert(view.bounds, to: bar).intersection(bar.bounds)
-        guard !overlap.isNull, !overlap.isEmpty else {
-            navigationTarget.removeFromSuperview()
-            return
-        }
-        navigationTarget.frame = overlap
-        if navigationTarget.superview !== bar { bar.addSubview(navigationTarget) }
-        bar.bringSubviewToFront(navigationTarget)
-    }
-    func retire() {
-        retired = true
-        onActivate = nil
-        navigationTarget.removeFromSuperview()
-        releaseBarScrollView()
-        if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
-            interaction.scrollView = nil
-        }
-    }
-    func updateScrollView() {
-        if #available(iOS 26, *), let interaction = scrollEdge as? UIScrollEdgeElementContainerInteraction {
-            let scrollView = retired ? nil : preview.viewportView as? UIScrollView
-            if interaction.scrollView !== scrollView { interaction.scrollView = scrollView }
-            guard !retired, let scrollView, let owner = navigationController?.topViewController,
-                  view.window != nil, view.isDescendant(of: owner.view), scrollView.isDescendant(of: owner.view) else {
-                releaseBarScrollView()
-                return
-            }
-            if barContentOwner !== owner || barScrollView !== scrollView {
-                releaseBarScrollView()
-                owner.setContentScrollView(scrollView, for: .top)
-                barContentOwner = owner; barScrollView = scrollView
-            }
-        }
-    }
-
-    private func releaseBarScrollView() {
-        if let owner = barContentOwner, let scrollView = barScrollView,
-           owner.contentScrollView(for: .top) === scrollView {
-            owner.setContentScrollView(nil, for: .top)
-        }
-        barContentOwner = nil; barScrollView = nil
-    }
-}
-
-@MainActor final class NativeTranscriptPreview {
-    struct State: Equatable {
-        let owner: PresentationOwner
-        let generation: UUID
-        let revision: UInt64
-        let bounds: CGRect
-        let colorScheme: ColorScheme
-        let textSize: DynamicTypeSize
-    }
-    private weak var controller: NativeTranscriptController?
-    private weak var header: NativeTranscriptHeaderController?
-    func bindHeader(_ header: NativeTranscriptHeaderController) {
-        if self.header !== header { self.header?.retire() }
-        self.header = header
-        refreshHeader()
-    }
-    func refreshHeader() { header?.updateScrollView() }
-    var viewportView: UIView? { controller?.collection }
-    func viewportView(for id: String) -> UIView? {
-        guard let state = controller?.viewportIdentity, state.owner.chat.value.uuidString == id else { return nil }
-        return controller?.collection
-    }
-    var viewportDidChange: (() -> Void)?
-    var hasCurrentViewportCapture: Bool {
-        guard let captured, let controller else { return false }
-        return captured == controller.viewportIdentity
-    }
-    private var task: Task<Void, Never>?
-    private var pending: State?
-    private var captured: State?
-    var canCapture: @MainActor () -> Bool = { true }
-    var didCapture: (@MainActor (PresentationOwner, UIImage, ColorScheme, DynamicTypeSize) -> Void)?
-    #if DEBUG
-    private(set) var lastCaptureMilliseconds: Double?
-    #endif
-
-    func bind(_ controller: NativeTranscriptController) {
-        if controller.previewReceiver !== self { controller.previewReceiver?.unbind(controller) }
-        if self.controller !== controller { invalidate(); self.controller = controller }
-        controller.previewReceiver = self
-    }
-
-    func unbind(_ controller: NativeTranscriptController) {
-        guard self.controller === controller else { return }
-        invalidate(); self.controller = nil
-        refreshHeader()
-        viewportDidChange?()
-        if controller.previewReceiver === self { controller.previewReceiver = nil }
-    }
-
-    func invalidate() { cancel(); captured = nil }
-    func cancel() { task?.cancel(); task = nil; pending = nil }
-    func cancel(from controller: NativeTranscriptController) {
-        if self.controller === controller { cancel() }
-    }
-
-    func requestCapture(from controller: NativeTranscriptController) {
-        guard self.controller === controller else { return }
-        viewportDidChange?()
-        guard didCapture != nil, canCapture(), let state = controller.previewState else { cancel(); return }
-        guard state != captured, state != pending else { return }
-        cancel(); pending = state
-        // Coalesce streaming/layout changes. This delay is an idle policy, not a frame budget.
-        task = Task { [weak self, weak controller] in
-            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            guard let self else { return }
-            defer { if self.pending == state { self.pending = nil; self.task = nil } }
-            guard !Task.isCancelled, self.pending == state, let controller,
-                  self.canCapture(), self.controller === controller, controller.previewState == state else { return }
-            #if DEBUG
-            let started = ContinuousClock.now
-            #endif
-            guard let image = controller.capturePreview(state: state) else { return }
-            #if DEBUG
-            let elapsed = started.duration(to: .now).components
-            self.lastCaptureMilliseconds = Double(elapsed.seconds) * 1_000 + Double(elapsed.attoseconds) / 1e15
-            #endif
-            self.captured = state
-            self.didCapture?(state.owner, image, state.colorScheme, state.textSize)
-        }
     }
 }
 
@@ -447,36 +239,6 @@ private struct NativeTranscriptHostedRow: View {
 }
 
 @MainActor final class NativeTranscriptController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
-    weak var previewReceiver: NativeTranscriptPreview?
-    fileprivate var viewportIdentity: NativeTranscriptPreview.State? {
-        guard committed, let context, let owner = context.owner, isViewLoaded else { return nil }
-        return .init(owner: owner, generation: context.generation, revision: revision,
-                     bounds: collection.bounds, colorScheme: context.colorScheme, textSize: context.dynamicType)
-    }
-    var previewState: NativeTranscriptPreview.State? {
-        guard active, isViewLoaded,
-              let window = view.window, window.isKeyWindow, transitionCoordinator == nil,
-              snapshot?.isWorking != true, !collection.isTracking, !collection.isDragging,
-              !collection.isDecelerating, collection.bounds.width > 0, collection.bounds.height > 0,
-              window.keyboardLayoutGuide.layoutFrame.height <= window.safeAreaInsets.bottom + 1 else { return nil }
-        return viewportIdentity
-    }
-
-    func capturePreview(state: NativeTranscriptPreview.State) -> UIImage? {
-        guard previewState == state else { return nil }
-        let scale = min(1, 300 / collection.bounds.width, 560 / collection.bounds.height)
-        let size = CGSize(width: collection.bounds.width * scale, height: collection.bounds.height * scale)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1; format.opaque = true
-        var captured = false
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { renderer in
-            UIColor.bottoPaper.resolvedColor(with: collection.traitCollection).setFill()
-            renderer.fill(CGRect(origin: .zero, size: size))
-            renderer.cgContext.scaleBy(x: scale, y: scale)
-            captured = collection.drawHierarchy(in: CGRect(origin: .zero, size: collection.bounds.size), afterScreenUpdates: false)
-        }
-        return captured ? image : nil
-    }
     private enum Section { case transcript }
     private(set) var collection: UICollectionView!
     #if DEBUG
@@ -530,12 +292,10 @@ private struct NativeTranscriptHostedRow: View {
     private var latestBottom: NSLayoutConstraint?
     private var contentInsetsChanged = false
 
-    func updateContentInsets(top: CGFloat, bottom: CGFloat) {
+    func updateBottomContentInset(_ bottom: CGFloat) {
         loadViewIfNeeded()
-        guard abs(collection.contentInset.top - top) > 0.5 || abs(collection.contentInset.bottom - bottom) > 0.5 else { return }
-        collection.contentInset.top = top
+        guard abs(collection.contentInset.bottom - bottom) > 0.5 else { return }
         collection.contentInset.bottom = bottom
-        collection.verticalScrollIndicatorInsets.top = top
         collection.verticalScrollIndicatorInsets.bottom = bottom
         latestBottom?.constant = -bottom - 8
         contentInsetsChanged = true
@@ -754,7 +514,6 @@ private struct NativeTranscriptHostedRow: View {
             self.recordFittingBaselines()
             self.scopes.allObjects.forEach { $0.setActive(self.active) }
             self.refreshExposure(); self.updateLatest()
-            self.previewReceiver?.requestCapture(from: self)
         }
     }
     private func rawMessageIsCurrent(_ row: NativeTranscriptRow, index: TranscriptMessageIndex, snapshot: Conversation?) -> Bool {
@@ -865,7 +624,6 @@ private struct NativeTranscriptHostedRow: View {
         scope.setDisplayed(cell.isDisplayed)
     }
     func retire() {
-        previewReceiver?.unbind(self)
         pendingSearch = false; searchFocus = nil
         #if DEBUG
         performanceStreamRelease?.cancel()
@@ -887,7 +645,7 @@ private struct NativeTranscriptHostedRow: View {
     private func presentRequest(_ confirmation: RequestCardConfirmation, report: @escaping @MainActor (UUID, Bool) -> Void) {
         guard requestAlert == nil, requestConfirmation == nil, !foreground.isPresenting, presentedViewController == nil, viewIfLoaded?.window != nil else { confirmation.cancel(); return }
         let alert = UIAlertController(title: "Allow future actions?",
-            message: "This choice can let Hermes run matching actions again without asking you. Only continue if you trust the scope described in this request.",
+            message: "This choice can let your bot run matching actions again without asking you. Only continue if you trust the scope described in this request.",
             preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: confirmation.choice.label, style: .default) { [weak self, weak alert] _ in
             confirmation.confirm()
@@ -931,7 +689,6 @@ private struct NativeTranscriptHostedRow: View {
         (cell as? NativeTranscriptCell)?.exposure?.setDisplayed(false)
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        previewReceiver?.cancel(from: self)
         cancelSearchPosition()
         #if DEBUG
         scrollTrace?.begin()
@@ -969,7 +726,6 @@ private struct NativeTranscriptHostedRow: View {
         #endif
         if !interruptedReaderScroll { recordReaderIntent(scrolling: decelerate) }
         updateLatest()
-        if !decelerate { previewReceiver?.requestCapture(from: self) }
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         #if DEBUG
@@ -977,7 +733,6 @@ private struct NativeTranscriptHostedRow: View {
         #endif
         if !interruptedReaderScroll { recordReaderIntent(scrolling: false) }
         updateLatest()
-        previewReceiver?.requestCapture(from: self)
     }
     private func recordReaderIntent(scrolling: Bool) {
         scrollPolicy.readerChanged(isUserScrolling: scrolling, isNearBottom: nearBottom)
@@ -1000,7 +755,6 @@ private struct NativeTranscriptHostedRow: View {
             settleViewport()
         }
         refreshExposure()
-        previewReceiver?.requestCapture(from: self)
     }
     private func settleViewport() {
         guard !collection.isTracking, !collection.isDragging, !collection.isDecelerating else { return }

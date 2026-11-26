@@ -38,14 +38,14 @@ struct AttachmentReadError: LocalizedError {
     init(_ message: String) { errorDescription = message }
 }
 
-/// Bounded local previews for files imported on this device. Hermes returns host paths,
+/// Bounded local previews for files imported on this device. The host returns paths,
 /// so evicted previews cannot be regenerated without downloading the file.
 @MainActor @Observable final class AttachmentThumbnails {
     private static let capacity = 64
     private var images: [String: UIImage] = [:]
     @ObservationIgnored private var order: [String] = []
 
-    /// Hermes stores a sent image under a new directory, keeping its unique filename.
+    /// The host stores a sent image under a new directory, keeping its unique filename.
     func image(for attachment: ChatAttachment) -> UIImage? {
         images[attachment.id] ?? images[attachment.path] ?? images[Self.hostFilename(attachment)]
     }
@@ -249,7 +249,7 @@ nonisolated enum AttachmentSource {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-           size > AttachmentLimits.fileBytes { throw HermesServiceError.attachmentLimit }
+           size > AttachmentLimits.fileBytes { throw ConversationServiceError.attachmentLimit }
         var coordinationError: NSError?
         var result: Result<AttachmentPayload, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { current in
@@ -263,7 +263,7 @@ nonisolated enum AttachmentSource {
             if let coordinationError { throw coordinationError }
             guard let result else { throw CocoaError(.fileReadUnknown) }
             return try result.get()
-        } catch let limit as HermesServiceError {
+        } catch let limit as ConversationServiceError {
             throw limit
         } catch {
             throw AttachmentReadError("Couldn’t attach this file. \(error.localizedDescription)")
@@ -272,7 +272,7 @@ nonisolated enum AttachmentSource {
 
     private static func contents(of url: URL) throws -> Data {
         guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= AttachmentLimits.fileBytes else {
-            throw HermesServiceError.attachmentLimit
+            throw ConversationServiceError.attachmentLimit
         }
         return try Data(contentsOf: url, options: .mappedIfSafe)
     }

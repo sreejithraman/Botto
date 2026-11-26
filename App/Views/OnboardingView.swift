@@ -6,6 +6,7 @@ struct OnboardingView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var openingDemo = false
     @State private var confirmsForget = false
+    @State private var isForgetting = false
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -36,10 +37,16 @@ struct OnboardingView: View {
             .background(BottoTheme.paper)
             .toolbar(.hidden, for: .navigationBar)
             .confirmationDialog("Forget this connection?", isPresented: $confirmsForget, titleVisibility: .visible) {
-                Button("Forget on this device", role: .destructive) { Task { await store.forgetConnectionWithPush() } }
+                Button("Forget on this device", role: .destructive) {
+                    isForgetting = true
+                    Task {
+                        await store.forgetConnectionWithPush()
+                        isForgetting = false
+                    }
+                }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and their spaces stay where they live.")
+                Text("Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the Mac.")
             }
         }
     }
@@ -55,6 +62,7 @@ struct OnboardingView: View {
                     primaryLabel("Pair with your Mac")
                 }
                 .buttonStyle(BottoPrimaryButtonStyle())
+                if store.hasOlderSavedSetup { forgetSavedSetup }
             }
             Button {
                 guard !openingDemo else { return }
@@ -69,6 +77,7 @@ struct OnboardingView: View {
             .disabled(openingDemo)
         }
         .padding(.top, 12)
+        .disabled(isForgetting)
         .frame(maxWidth: 500).frame(maxWidth: .infinity)
     }
 
@@ -80,21 +89,25 @@ struct OnboardingView: View {
             }
             .buttonStyle(BottoPrimaryButtonStyle(tint: BottoTheme.error,
                                                        pressedTint: BottoTheme.error.opacity(0.85)))
-            Button(role: .destructive) { confirmsForget = true } label: {
-                Text("Forget saved setup")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(BottoTheme.error)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            forgetSavedSetup
         }
         .padding(20)
         .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 24))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("saved-setup-recovery")
+    }
+
+    private var forgetSavedSetup: some View {
+        Button(role: .destructive) { confirmsForget = true } label: {
+            Text("Forget saved setup")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(BottoTheme.error)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var recoveryMessage: some View {

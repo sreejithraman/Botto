@@ -12,7 +12,7 @@ import BottoCore
     private var latestLoad: UUID?
 
     func load(_ store: AppStore) async {
-        guard store.isT3Workspace, store.isConnected else { return }
+        guard store.isConnected else { return }
         let workspace = store.chats
         let request = UUID()
         latestLoad = request

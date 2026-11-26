@@ -252,7 +252,7 @@ import BottoCore
         let identity = service.summaries[0].identity
         service.onEvent?(.activity(profile: service.profile, observations: [identity: .known(.waiting, .now)]))
         #expect(store.chats.aggregate(profile: service.profile).status == .waiting)
-        #expect(store.needsYou.map(\.id) == [service.profile.text])
+        #expect(store.inbox.filter(\.needsAttention).map(\.id) == [service.profile.text])
         gate.release(); await refresh.value
     }
 
@@ -264,21 +264,21 @@ import BottoCore
         for summary in service.summaries { service.directoryActivity[summary.identity] = .known(.waiting, .now) }
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
-        #expect(store.needsYou.count == 1)
+        #expect(store.inbox.filter(\.needsAttention).count == 1)
         await store.setActive(false)
         let historical = store.chats.aggregate(profile: service.profile).activity
         service.rosterGate = gate
-        service.rosterError = HermesServiceError.timeout
+        service.rosterError = ConversationServiceError.timeout
         let reconnecting = Task { await store.connect(configuration) }
         await gate.entered()
         #expect(store.isConnected)
         #expect(store.chats.aggregate(profile: service.profile).activity == historical)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         #expect(store.inbox.allSatisfy { !$0.needsAttention && $0.bot.status == .idle })
         gate.release()
         #expect(await reconnecting.value)
         #expect(store.chats.aggregate(profile: service.profile).activity == historical)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         #expect(store.inbox.allSatisfy { !$0.needsAttention && $0.bot.status == .idle })
         await store.setActive(false)
     }
@@ -371,7 +371,7 @@ import BottoCore
         #expect(store.chats.aggregate(profile: service.profile).activity == .historical(observation))
         #expect(store.chats.aggregate(profile: service.profile).status == nil)
         #expect(store.chats.aggregate(profile: service.profile).attentionChat == nil)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         await store.chats.openBot(profile: service.profile)
         let screen = try #require(store.chats.screen(profile: service.profile))
         let screenCards = store.chats.cards(profile: service.profile)
@@ -404,7 +404,7 @@ import BottoCore
         workspace.setOnline(false)
         #expect(workspace.aggregate(profile: service.profile).activity == .historical(observation))
         workspace.setOnline(true)
-        service.directoryError = HermesServiceError.timeout
+        service.directoryError = ConversationServiceError.timeout
         await workspace.refreshActivityDirectories(for: [bot])
         let failed = try #require(workspace.screen(profile: service.profile))
         let failedCards = workspace.cards(profile: service.profile)
@@ -434,7 +434,7 @@ import BottoCore
             book: .init(), service: service, onDirty: {})
         workspace.observeProfiles([bot]); workspace.setOnline(true)
         #expect(workspace.aggregate(profile: service.profile).activity == .unobserved)
-        service.directoryError = HermesServiceError.timeout
+        service.directoryError = ConversationServiceError.timeout
         await workspace.refreshActivityDirectories(for: [bot])
         #expect(workspace.aggregate(profile: service.profile).activity == .unavailable(lastKnown: nil))
         #expect(workspace.aggregate(profile: service.profile).activity.label == "Activity unavailable")
@@ -495,7 +495,7 @@ import BottoCore
         for summary in service.summaries { service.directoryActivity[summary.identity] = .known(.idle, .now) }
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
-        #expect(store.needsYou.isEmpty && service.directoryCalls == 1)
+        #expect(!store.inbox.contains { $0.needsAttention } && service.directoryCalls == 1)
         let root = try ExactID("remote-chat")
         let identity = SessionIdentity(profile: service.profile, root: root, stored: root, aliases: [root])
         service.summaries.append(.init(identity: identity, title: "From another client", isCanonical: false, persistence: .durable))
@@ -503,7 +503,7 @@ import BottoCore
         service.rosterActivity = [identity: .known(.waiting, .now)]
         service.directoryChanges = [service.profile]
         await store.refresh()
-        #expect(store.needsYou.count == 1)
+        #expect(store.inbox.filter(\.needsAttention).count == 1)
         #expect(store.chats.aggregate(profile: service.profile).count == 3)
         let entry = try #require(store.inbox.first { $0.id == service.profile.text })
         #expect(entry.aggregate?.count == 3 && entry.aggregate?.directoryComplete == true)
@@ -569,13 +569,13 @@ import BottoCore
         let sibling = service.summaries[1].identity
         service.rosterActivity = [sibling: .known(.waiting, .now.addingTimeInterval(1))]
         await store.refresh()
-        #expect(store.needsYou.count == 1)
+        #expect(store.inbox.filter(\.needsAttention).count == 1)
         #expect(service.directoryCalls == 1 && service.opens.isEmpty)
 
         service.directoryActivity[sibling] = .known(.waiting, .now.addingTimeInterval(2))
         #expect(await store.connect(configuration))
         #expect(!store.chats.aggregate(profile: service.profile).hasUnknownActivity)
-        #expect(store.needsYou.count == 1)
+        #expect(store.inbox.filter(\.needsAttention).count == 1)
         #expect(service.directoryCalls == 2 && service.opens.isEmpty)
         await store.setActive(false)
     }
@@ -584,7 +584,7 @@ import BottoCore
         let service = try WorkspaceTestService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://activity-failure.invalid")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        service.directoryError = HermesServiceError.timeout
+        service.directoryError = ConversationServiceError.timeout
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         #expect(store.chats.aggregate(profile: service.profile).hasUnknownActivity)
@@ -619,7 +619,7 @@ import BottoCore
         gate.release()
         #expect(await connecting.value == false)
         #expect(store.configuration?.id == second.id)
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         #expect(!store.chats.aggregate(profile: service.profile).hasUnknownActivity)
         #expect(retired.aggregate(profile: service.profile).hasUnknownActivity)
         #expect(retired.persisted().records.allSatisfy { $0.lastKnownActivity == nil })
@@ -718,11 +718,11 @@ import BottoCore
         await workspace.refreshDirectory(a.owner)
         var b = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
         await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
-        #expect(store.needsYou.map(\.id) == [bot.id])
+        #expect(store.inbox.filter(\.needsAttention).map(\.id) == [bot.id])
         let reads = service.directoryCalls
         service.rosterActivity = [identity: .known(.idle, .now.addingTimeInterval(1))]
         await store.refresh()
-        #expect(store.needsYou.isEmpty && service.directoryCalls == reads)
+        #expect(!store.inbox.contains { $0.needsAttention } && service.directoryCalls == reads)
         let retired = try #require(service.onEvent)
         #expect(await store.connect(second))
         service.rosterActivity = [:]
@@ -732,12 +732,12 @@ import BottoCore
         await workspace.refreshDirectory(a.owner)
         b = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
         await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
-        #expect(!store.needsYou.isEmpty)
+        #expect(store.inbox.contains { $0.needsAttention })
         let seen = workspace.persisted().record(a.selectedChatID)?.seen
         retired(.activity(profile: service.profile, observations: [identity: .known(.idle, .distantFuture)]))
-        #expect(!store.needsYou.isEmpty)
+        #expect(store.inbox.contains { $0.needsAttention })
         service.onEvent?(.activity(profile: service.profile, observations: [identity: .known(.idle, .distantFuture)]))
-        #expect(store.needsYou.isEmpty)
+        #expect(!store.inbox.contains { $0.needsAttention })
         #expect(workspace.persisted().record(a.selectedChatID)?.seen?.observedAt == seen?.observedAt)
     }
 }

@@ -85,7 +85,7 @@ import WebKit
         }
         let chat = try #require(store.library.chats.first { $0.identity == session })
         guard case .opened(let focus) = await store.openSearchMessage(.init(chat: chat, message: message, query: "search needle")) else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         try #require(focus.matches(workspace: store.chats))
         let snapshot = try #require(store.chats.screen(profile: session.profile)?.snapshot)

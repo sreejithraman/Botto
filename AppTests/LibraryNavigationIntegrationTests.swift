@@ -23,7 +23,7 @@ import BottoCore
         await gate.entered()
         #expect(workspace.screen(profile: service.profile)?.owner.chat == main.owner.chat)
         #expect(workspace.closedChats(profile: service.profile).map(\.id) == [other])
-        if outcome == "failure" { service.openError = HermesServiceError.disconnected }
+        if outcome == "failure" { service.openError = ConversationServiceError.disconnected }
         if outcome == "cancelled" { opening.cancel() }
         service.openGate = nil
         gate.release()
@@ -131,7 +131,7 @@ import BottoCore
         let oldPublication = try #require(service.completedOpens.last)
         workspace.retireConnection()
         workspace.setOnline(true)
-        service.directoryError = HermesServiceError.disconnected
+        service.directoryError = ConversationServiceError.disconnected
 
         #expect(await !workspace.openNotificationChat(service.summaries[1].identity, isCurrent: { true }))
 

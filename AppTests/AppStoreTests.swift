@@ -55,86 +55,6 @@ import BottoCore
         }
     }
 
-    @Test(arguments: ["creation", "selection", "dismissal"])
-    func createdBotOpeningNeverAcquiresRecoveredAuthority(_ interruption: String) async throws {
-        let service = try WorkspaceTestService()
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot.invalid")!)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try #require(await store.connect(configuration))
-        let probe = CreationObservation()
-        let recover: @MainActor () -> Void = {
-            probe.fired = true
-            service.onEvent?(.disconnected("Creation interrupted"))
-            service.onEvent?(.connected(.init(version: "recovered")))
-        }
-        if interruption == "creation" { service.onCreate = recover }
-        let creation = try #require(await store.create(.init(name: "Orbit")))
-        service.onCreate = nil
-        if interruption == "selection" {
-            withObservationTracking { _ = store.selectedBotID } onChange: {
-                MainActor.assumeIsolated { recover() }
-            }
-        }
-        let opening = store.prepareCreatedBotOpening(creation)
-        if interruption == "dismissal" {
-            let captured = try #require(opening)
-            recover()
-            #expect(!store.canOpenBot(captured))
-            await store.openBot(captured)
-        } else {
-            #expect(opening == nil, "Old creation authority cannot be recaptured after recovery.")
-            #expect(store.selectedBotID == nil, "A reentrant recovery must retire selection before it commits.")
-        }
-        #expect(probe.fired && store.isConnected)
-        #expect(service.opens.isEmpty, "The old handoff must not start an attachment on recovered authority.")
-    }
-
-    @Test func createdBotOpeningCannotOverwriteReentrantNavigation() async throws {
-        let service = try WorkspaceTestService()
-        service.rosterProfiles = [.init(id: service.profile.text, name: "Milo"), .init(id: "scout", name: "Scout")]
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot-selection.invalid")!)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try #require(await store.connect(configuration))
-        let creation = try #require(await store.create(.init(name: "Orbit")))
-        let probe = CreationObservation()
-        withObservationTracking { _ = store.selectedBotID } onChange: {
-            MainActor.assumeIsolated {
-                guard !probe.fired else { return }
-                probe.fired = true; store.selectedBotID = "scout"
-            }
-        }
-        #expect(store.prepareCreatedBotOpening(creation) == nil)
-        #expect(probe.fired && store.selectedBotID == "scout")
-        #expect(service.opens.isEmpty)
-    }
-
-    @Test func creationCompletionCannotTakeANewerPendingLibraryRoute() async throws {
-        let service = try WorkspaceTestService()
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://creation-navigation.invalid")!)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try #require(await store.connect(configuration))
-        let workspace = store.chats, probe = CreationObservation()
-        service.onCreate = {
-            probe.creates += 1
-            probe.library = workspace.beginLibraryOpening(service.summaries[1].identity)
-        }
-        let result = try #require(await store.create(.init(name: "Orbit")))
-        #expect(store.prepareCreatedBotOpening(result) == nil)
-        #expect(store.selectedBotID == nil)
-        let newer = try #require(probe.library)
-        let opened = await workspace.openLibraryChat(newer, commit: { _ in true })
-        #expect(opened?.profile == service.profile)
-        #expect(opened?.root == service.summaries[1].identity.root)
-        #expect(opened?.stored == service.summaries[1].identity.stored)
-        #expect(workspace.selection(profile: service.profile)?.identity?.root == service.summaries[1].identity.root)
-        #expect(workspace.selection(profile: service.profile)?.identity?.stored == service.summaries[1].identity.stored)
-        #expect(workspace.screen(profile: service.profile)?.canAct == true)
-        #expect(probe.creates == 1)
-    }
-
     @Test func ordinaryBotEntryCannotReplaceReentrantNavigation() async throws {
         let service = try WorkspaceTestService()
         let scout = try ExactID("scout")
@@ -272,13 +192,12 @@ import BottoCore
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.responses.isEmpty)
     }
 
-    enum OlderSelection: CaseIterable { case creation, ordinary }
     enum NewerSelection: CaseIterable {
         case inboxSameBot, sameValue, retirement, inboxEquivalentBot, equivalentValue
     }
 
-    @Test(arguments: OlderSelection.allCases, NewerSelection.allCases)
-    func olderSelectionYieldsToNewerIntentEvenWhenItsBytesAreUnchanged(older: OlderSelection, newer: NewerSelection) async throws {
+    @Test(arguments: NewerSelection.allCases)
+    func olderSelectionYieldsToNewerIntentEvenWhenItsBytesAreUnchanged(newer: NewerSelection) async throws {
         let service = try WorkspaceTestService()
         let composed = try addSelectionProfile("caf\u{e9}", to: service)
         let decomposed = try addSelectionProfile("cafe\u{301}", to: service)
@@ -303,8 +222,6 @@ import BottoCore
             await store.open(try #require(store.bot(withID: initial.profile.text)))
             try #require(store.chats.screen(profile: initial.profile)?.canAct == true)
         }
-        var creation: AppStore.BotCreationResult?
-        if older == .creation { creation = await store.create(.init(name: "Orbit")) }
         let baseline = service.opens.count, probe = CreationObservation()
         withObservationTracking { _ = store.selectedBotID } onChange: {
             MainActor.assumeIsolated {
@@ -318,12 +235,7 @@ import BottoCore
                 }
             }
         }
-        switch older {
-        case .creation:
-            let creation = try #require(creation)
-            #expect(store.prepareCreatedBotOpening(creation) == nil)
-        case .ordinary: await store.open(try #require(store.bot(withID: service.profile.text)))
-        }
+        await store.open(try #require(store.bot(withID: service.profile.text)))
         #expect(probe.fired)
         #expect(store.selectedBotID.map { Data($0.utf8) } == expected?.profile.bytes, "The newer selection intent must win.")
         #expect(service.opens.count == baseline, "The superseded selection must not start an attachment.")
@@ -373,99 +285,21 @@ import BottoCore
         if initial == "equivalent" { #expect(store.chats.screen(profile: decomposed.profile)?.canAct != true) }
     }
 
-    @Test func currentCreatedBotOpeningUsesItsPublishedProfile() async throws {
-        let service = try WorkspaceTestService()
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://created-bot-control.invalid")!)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try #require(await store.connect(configuration))
-        let creation = try #require(await store.create(.init(name: "Orbit")))
-        let opening = try #require(store.prepareCreatedBotOpening(creation))
-        #expect(store.canOpenBot(opening))
-        await store.openBot(opening)
-        #expect(service.opens == [service.summaries[0].identity])
-        #expect(store.selectedBotID == creation.bot.id)
-        #expect(store.conversation(for: creation.bot.id)?.storedID == service.summaries[0].identity.stored.text)
-    }
-
-    @Test func demoCreationAndReconnectKeepTheBotAndWorkspace() async throws {
-        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
-        await store.enterDemo()
-        defer { store.leaveDemo() }
-        let workspace = store.chats
-        let bot = try #require(await store.create(.init(name: "Fern", avatar: .shape(.drop)))).bot
-        #expect(store.bot(withID: bot.id)?.name == "Fern")
-        await store.open(bot)
-        #expect(store.selectedBotID == bot.id)
-        #expect(store.chats.screen(profile: try ExactID(bot.id)) != nil)
-        let configuration = try #require(store.configuration)
-        #expect(await store.connect(configuration))
-        #expect(store.chats === workspace)
-        #expect(store.bot(withID: bot.id)?.face.shape == .drop)
-    }
-
-    @Test(arguments: ["current", "background", "workspace"])
-    func creationRefreshRejectsRetiredWorkspace(retirement: String) async throws {
-        let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
-        let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
-        defer { LocalHistory.remove(for: original.id); LocalHistory.remove(for: replacement.id) }
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        #expect(await store.connect(original))
-        let bot = BotProfile(id: "created", name: "Orbit")
-        service.createdBot = bot; service.profiles = [bot]
-        let barrier = StoreTestBarrier()
-        service.botsBarrier = barrier
-        let creation = Task { await store.create(.init(name: "Orbit")) }
-        await barrier.waitUntilEntered()
-        service.botsBarrier = nil
-        if retirement == "background" { await store.setActive(false) }
-        if retirement == "workspace" { service.profiles = []; #expect(await store.connect(replacement)) }
-        barrier.release()
-        let result = await creation.value
-        #expect(result?.bot.id == (retirement == "current" ? bot.id : nil))
-        #expect(service.createCount == 1)
-        #expect(store.selectedBotID == nil)
-        if retirement == "background" { #expect(store.link == .connecting) }
-        if retirement == "workspace" { #expect(store.configuration?.id == replacement.id) }
-    }
-
-    @Test func reauthenticationWritesCacheBeforeCredentialsAndForgetRemovesBothCacheIDs() async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          password: "old", installID: "test-install")
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new")
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        var cached = LocalHistory()
-        try cached.fixtureDraft("Previously saved", profile: "milo")
-        try cached.save(for: old.id)
-        let storage = MemoryConnectionStorage(saved: old)
-        let store = AppStore(service: StoreTestService(), persistence: storage.persistence)
-        await store.testEdit("Latest unsaved thought", for: "milo")
-        storage.beforeSave = { saved in
-            if saved.id == candidate.id {
-                #expect((try? LocalHistory.load(for: candidate.id).fixtureRecord("milo")?.draft.text) == "Latest unsaved thought")
-            }
-        }
-
-        #expect(await store.connect(candidate))
-        #expect(try LocalHistory.load(for: old.id).book.records.allSatisfy({ $0.draft.text.isEmpty }))
-        let restarted = AppStore(service: StoreTestService(), persistence: storage.persistence)
-        #expect(restarted.draft(for: "milo") == "Latest unsaved thought")
-        restarted.forgetConnection()
-        #expect(storage.saved == nil)
-        #expect(try LocalHistory.load(for: old.id).book.records.allSatisfy({ $0.draft.text.isEmpty }))
-        #expect(try LocalHistory.load(for: candidate.id).book.records.allSatisfy({ $0.draft.text.isEmpty }))
-    }
-
     @Test func failedCachePreparationLeavesTheSavedConnectionAndHistoryIntact() async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          password: "old", installID: "test-install")
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new")
+        let old = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!, installID: "test-install",
+            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
+        let candidate = ConnectionConfiguration(serverURL: old.serverURL,
+            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         let cacheURL = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                   appropriateFor: nil, create: true)
             .appendingPathComponent("Botto/\(candidate.id.uuidString).json")
         try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cacheURL); LocalHistory.remove(for: old.id) }
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let store = AppStore(service: StoreTestService(), persistence: storage.persistence)
         await store.testEdit("Keep this draft", for: "milo")
@@ -494,9 +328,9 @@ import BottoCore
     }
 
     @Test func attachmentTotalIsCheckedBeforeUploadAndRemovalAndSendFreeCapacity() async throws {
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         let bot = BotProfile(id: "milo", name: "Milo")
@@ -552,12 +386,18 @@ import BottoCore
     }
 
     @Test func failedCredentialCommitRestoresAnExistingCandidateCacheAndNeverPrunes() async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          password: "old", installID: "test-install")
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new")
+        let old = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!, installID: "test-install",
+            t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
+        let candidate = ConnectionConfiguration(serverURL: old.serverURL,
+            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo",
+                      workspaceRoot: "/host/.botto/bots/milo"))
         defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
         var cached = LocalHistory(); try cached.fixtureDraft("Existing candidate history", profile: "milo")
         try cached.save(for: candidate.id)
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         var cleanups: [UUID?] = []
         let store = AppStore(service: StoreTestService(), persistence: storage.persistence, cleanupHistory: { cleanups.append($0) })
@@ -608,9 +448,9 @@ import BottoCore
 
     @Test(arguments: [true, false])
     func failedOrRetiredUploadReleasesItsReservation(retired: Bool) async throws {
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         let bot = BotProfile(id: "milo", name: "Milo")
@@ -623,7 +463,7 @@ import BottoCore
         await store.testUpload(data, filename: "concurrent.txt", mimeType: "text/plain", intent: destination)
         #expect(service.uploadedConversations.count == 1)
         if retired { await store.open(.init(id: "scout", name: "Scout")); await store.open(bot) }
-        else { service.uploadError = HermesServiceError.invalidAttachment }
+        else { service.uploadError = ConversationServiceError.invalidAttachment }
         barrier.release(); await first.value
         service.uploadError = nil; service.uploadBarrier = nil
         #expect(store.attachments(for: bot.id).isEmpty)
@@ -639,9 +479,9 @@ import BottoCore
 
     @Test(arguments: [true, false])
     func imageReservationsUsePreparedSizesWithAConservativeLegacyFallback(reportsSize: Bool) async throws {
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!)
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         service.uploadedByteCount = reportsSize ? 5 * 1024 * 1024 : nil
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
@@ -655,204 +495,11 @@ import BottoCore
         #expect(store.attachments(for: bot.id).count == (reportsSize ? 3 : 2))
     }
 
-    enum Reauthentication: CaseIterable {
-        case password, accessHeaders, native, passwordToNativeBasic, nativeBasicToPassword
-    }
-
-    @Test(arguments: Reauthentication.allCases)
-    func freshSignInPreservesVerifiedAccountHistoryAcrossRestart(_ method: Reauthentication) async throws {
-        var old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!,
-                                          username: "alice", password: "old-password", installID: "test-install")
-        if method == .accessHeaders {
-            old.connectionHeaders = ["CF-Access-Client-Id": "old-client", "CF-Access-Client-Secret": "old-secret"]
-        }
-        if method == .native || method == .nativeBasicToPassword {
-            old.password = ""
-            old.nativeCredential = .init(refreshToken: "old-token", provider: method == .native ? "oidc" : "basic")
-        }
-        var candidate = ConnectionConfiguration(serverURL: URL(string: "https://HERMES.example:443/")!,
-                                                username: "alice", password: "new-password")
-        if method == .accessHeaders {
-            candidate.password = old.password
-            candidate.connectionHeaders = ["CF-Access-Client-Id": "new-client", "CF-Access-Client-Secret": "new-secret"]
-        } else if method == .native || method == .passwordToNativeBasic {
-            candidate.password = ""
-            candidate.installID = "test-install"
-            candidate.nativeCredential = .init(refreshToken: "fresh-token", provider: method == .native ? "oidc" : "basic")
-        }
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let bot = BotProfile(id: "milo", name: "Milo")
-        let serverPinned = BotProfile(id: "scout", name: "Scout", isPinned: true)
-        service.profiles = [bot, serverPinned]
-        service.chat.messages = [.init(id: "reply", role: .assistant, text: "Readable history")]
-        service.chat.pendingRequests = [.init(id: "approval", kind: .approval, title: "Run command?")]
-        service.chat.isWorking = true
-        let store = AppStore(service: service, persistence: storage.persistence)
-        #expect(await store.connect(old))
-        await store.open(bot)
-        let destination = try #require(store.testImport(bot.id))
-        await store.testUpload(Data("file".utf8), filename: "notes.txt", mimeType: "text/plain", intent: destination)
-        #expect(!store.attachments(for: bot.id).isEmpty)
-        await store.testEdit("Unsaved thought", for: bot.id)
-        store.togglePin(bot)
-        store.togglePin(serverPinned)
-        let seen = try store.history.fixtureRecord(bot.id)?.seen?.observedAt
-
-        #expect(await store.connect(candidate))
-        #expect(service.connectedConfigurations.last == candidate)
-        #expect(store.configuration?.id == candidate.id)
-        #expect(storage.saved?.id == candidate.id)
-        #expect(storage.saved?.password == candidate.password)
-        #expect(storage.saved?.nativeCredential == candidate.nativeCredential)
-        #expect(storage.saved?.connectionHeaders == candidate.connectionHeaders)
-        #expect(store.draft(for: bot.id) == "Unsaved thought")
-        #expect(store.isPinned(bot))
-        #expect(!store.isPinned(serverPinned))
-        #expect(try store.history.fixtureRecord(bot.id)?.seen?.observedAt == seen)
-        #expect(store.conversation(for: bot.id)?.messages.first?.text == "Readable history")
-        #expect(store.conversation(for: bot.id)?.pendingRequests.isEmpty == true)
-        #expect(store.conversation(for: bot.id)?.isWorking == false)
-        #expect(store.attachments(for: bot.id).isEmpty)
-        #expect(store.selectedBotID == nil)
-
-        // No explicit flush: the replacement must commit its cache with the new credential.
-        let restarted = AppStore(service: StoreTestService(), persistence: storage.persistence)
-        #expect(restarted.draft(for: bot.id) == "Unsaved thought")
-        #expect(restarted.isPinned(bot))
-        #expect(!restarted.isPinned(serverPinned))
-        #expect(try restarted.history.fixtureRecord(bot.id)?.seen?.observedAt == seen)
-        #expect(restarted.conversation(for: bot.id)?.messages.first?.text == "Readable history")
-        #expect(restarted.conversation(for: bot.id)?.pendingRequests.isEmpty == true)
-        #expect(restarted.attachments(for: bot.id).isEmpty)
-    }
-
-    enum IdentityMismatch: CaseIterable {
-        case origin, port, scheme, installation, account, provider
-        case missingOldInstall, emptyOldInstall, missingConfirmedInstall, emptyConfirmedInstall
-        case missingOldAccount, missingNewAccount, missingBothAccounts, blankAccounts, emptyProvider
-    }
-
-    @Test(arguments: IdentityMismatch.allCases)
-    func freshSignInNeverMigratesHistoryWithoutTheSameVerifiedIdentity(_ mismatch: IdentityMismatch) async throws {
-        var old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          installID: "test-install", nativeCredential: .init(refreshToken: "old-token", provider: "oidc"))
-        var candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice",
-                                                nativeCredential: .init(refreshToken: "new-token", provider: "oidc"))
-        let service = StoreTestService()
-        switch mismatch {
-        case .origin: candidate.serverURL = URL(string: "https://other.example")!
-        case .port: candidate.serverURL = URL(string: "https://hermes.example:8443")!
-        case .scheme:
-            old.serverURL = URL(string: "https://localhost")!
-            candidate.serverURL = URL(string: "http://localhost")!
-        case .installation: service.info.installID = "different-install"
-        case .account: candidate.username = "bob"
-        case .provider: candidate.nativeCredential?.provider = "other-oidc"
-        case .missingOldInstall: old.installID = nil
-        case .emptyOldInstall: old.installID = ""
-        case .missingConfirmedInstall:
-            candidate.installID = old.installID
-            service.info.installID = nil
-        case .emptyConfirmedInstall: service.info.installID = ""
-        case .missingOldAccount: old.username = ""
-        case .missingNewAccount: candidate.username = ""
-        case .missingBothAccounts: old.username = ""; candidate.username = ""
-        case .blankAccounts: old.username = " "; candidate.username = " "
-        case .emptyProvider: old.nativeCredential?.provider = ""; candidate.nativeCredential?.provider = ""
-        }
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        var cached = LocalHistory()
-        let bot = BotProfile(id: "milo", name: "Milo")
-        cached.bots = [bot]
-        try cached.fixtureDraft("Private old thought", profile: bot.id)
-        cached.pinned = [try ExactID(bot.id)]
-        try cached.fixtureConversation(.init(id: "old-runtime", storedID: "old-stored", profileID: bot.id,
-                                             messages: [.init(id: "old-reply", role: .assistant, text: "Private old history")]), profile: bot.id)
-        try cached.save(for: old.id)
-        let storage = MemoryConnectionStorage(saved: old)
-        let store = AppStore(service: service, persistence: storage.persistence)
-
-        #expect(await store.connect(candidate))
-        #expect(store.configuration?.id == candidate.id)
-        #expect(store.draft(for: bot.id).isEmpty)
-        #expect(!store.isPinned(bot))
-        #expect(store.conversation(for: bot.id) == nil)
-        let restarted = AppStore(service: StoreTestService(), persistence: storage.persistence)
-        #expect(restarted.draft(for: bot.id).isEmpty)
-        #expect(restarted.conversation(for: bot.id) == nil)
-        #expect(try LocalHistory.load(for: old.id).book.records.allSatisfy({ $0.draft.text.isEmpty }))
-    }
-
-    @Test(arguments: [true, false])
-    func failedSameAccountReplacementDoesNotMigrateOrCommitHistory(authenticationFails: Bool) async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          password: "old-password", installID: "test-install")
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new-password")
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: storage.persistence)
-        await store.testEdit("Keep until replacement succeeds", for: "milo")
-        store.flush()
-        service.connectError = authenticationFails ? HermesServiceError.authentication : nil
-        storage.failSave = !authenticationFails
-
-        #expect(!(await store.connect(candidate)))
-        #expect(store.configuration == old)
-        #expect(storage.saved == old)
-        #expect(store.draft(for: "milo") == "Keep until replacement succeeds")
-        #expect(try LocalHistory.load(for: candidate.id).book.records.allSatisfy({ $0.draft.text.isEmpty }))
-        #expect(AppStore(service: StoreTestService(), persistence: storage.persistence).draft(for: "milo") == "Keep until replacement succeeds")
-
-        service.connectError = nil; storage.failSave = false
-        #expect(await store.connect(candidate))
-        #expect(store.draft(for: "milo") == "Keep until replacement succeeds")
-        #expect(try LocalHistory.load(for: candidate.id).fixtureRecord("milo")?.draft.text == "Keep until replacement succeeds")
-    }
-
-    @Test func retiredNativeRotationCannotOverrideFreshSignInOrItsNextReconnect() async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, username: "alice",
-                                          installID: "test-install", nativeCredential: .init(refreshToken: "old-token", provider: "basic"))
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", installID: old.installID,
-                                                nativeCredential: .init(refreshToken: "fresh-token", provider: "basic"))
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: storage.persistence)
-        #expect(await store.connect(old))
-        let oldCallback = service.onEvent
-        await store.testEdit("Preserve through rotation", for: "milo")
-        var retiredRotation = old
-        retiredRotation.nativeCredential?.refreshToken = "retired-rotated-token"
-        var freshRotation = candidate
-        freshRotation.nativeCredential?.refreshToken = "fresh-rotated-token"
-        service.duringConnect = { _ in
-            oldCallback?(.configuration(retiredRotation))
-            #expect(storage.saved == retiredRotation)
-            service.onEvent?(.configuration(freshRotation))
-        }
-
-        #expect(await store.connect(candidate))
-        #expect(storage.saved == freshRotation)
-        #expect(store.configuration == freshRotation)
-        #expect(store.draft(for: "milo") == "Preserve through rotation")
-        retiredRotation.nativeCredential?.refreshToken = "later-retired-token"
-        oldCallback?(.configuration(retiredRotation))
-        #expect(storage.saved == freshRotation)
-        #expect(store.configuration == freshRotation)
-        service.duringConnect = nil
-        #expect(await store.connect(candidate))
-        #expect(service.connectedConfigurations.last == freshRotation)
-        #expect(storage.saved == freshRotation)
-    }
-
     @Test func pendingProviderReadCannotUploadToReplacementWithIdenticalChatIDs() async throws {
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
         let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
         defer { LocalHistory.remove(for: original.id); LocalHistory.remove(for: replacement.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(original))
@@ -882,7 +529,7 @@ import BottoCore
     @Test func currentAttachmentDestinationUploadsAndStagesTheReturnedFile() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -905,7 +552,7 @@ import BottoCore
     func pendingProviderReadRejectsRetiredDestinations(_ change: DestinationChange) async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -955,7 +602,7 @@ import BottoCore
         let original = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
         let replacement = ConnectionConfiguration(serverURL: URL(string: "https://replacement.example")!)
         defer { LocalHistory.remove(for: original.id); LocalHistory.remove(for: replacement.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo"), .init(id: "scout", name: "Scout")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(original))
@@ -995,7 +642,7 @@ import BottoCore
     @Test func retiredUploadCannotClearARecoveredConnectionsCurrentUpload() async throws {
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://current.example")!)
         defer { LocalHistory.remove(for: connection.id) }
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let bot = BotProfile(id: "milo", name: "Milo")
         #expect(await store.connect(connection))
@@ -1034,7 +681,7 @@ import BottoCore
     @Test func failedFirstSignInDoesNotEnterTheInboxOrSaveCredentials() async throws {
         let storage = MemoryConnectionStorage()
         let service = StoreTestService()
-        service.connectError = HermesServiceError.authentication
+        service.connectError = ConversationServiceError.authentication
         let store = AppStore(service: service, persistence: storage.persistence)
         let result = await store.connect(.init(serverURL: URL(string: "https://wrong.example")!, password: "test-only"))
         #expect(!result)
@@ -1045,9 +692,12 @@ import BottoCore
 
     @Test func failedReplacementPreservesTheSavedConnectionAndDraft() async throws {
         let old = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
+        var offlineRoster = LocalHistory()
+        offlineRoster.bots = [.init(id: "milo", name: "Milo")]
+        try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let service = StoreTestService()
-        service.connectError = HermesServiceError.authentication
+        service.connectError = ConversationServiceError.authentication
         let store = AppStore(service: service, persistence: storage.persistence)
         await store.testEdit("A thought for the original host", for: "milo")
         let result = await store.connect(.init(serverURL: URL(string: "https://replacement.example")!))
@@ -1069,7 +719,7 @@ import BottoCore
         try cached.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let service = StoreTestService()
-        service.connectError = HermesServiceError.timeout
+        service.connectError = ConversationServiceError.timeout
         var queuedCallback: ((BotServiceEvent) -> Void)?
         service.duringConnect = { _ in
             queuedCallback = service.onEvent
@@ -1096,112 +746,6 @@ import BottoCore
         #expect(try LocalHistory.load(for: candidate.id).bots.isEmpty)
     }
 
-    @Test func reconnectSavesRotatedRefreshCredentialBeforeContinuing() async throws {
-        var old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!)
-        old.nativeCredential = NativeCredential(refreshToken: "old-test-token", provider: "basic")
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        service.duringConnect = { configuration in
-            var updated = configuration
-            updated.nativeCredential = NativeCredential(refreshToken: "rotated-test-token", provider: "basic")
-            service.onEvent?(.configuration(updated))
-            #expect(storage.saved?.nativeCredential?.refreshToken == "rotated-test-token")
-        }
-        let store = AppStore(service: service, persistence: storage.persistence)
-        #expect(await store.connect(old))
-        #expect(store.configuration?.nativeCredential?.refreshToken == "rotated-test-token")
-        LocalHistory.remove(for: old.id)
-    }
-
-    @Test func refreshRotationStillSavesAfterBackgroundRetiresTheScreen() async throws {
-        var old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!)
-        old.nativeCredential = .init(refreshToken: "old-test-token", provider: "basic")
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: storage.persistence)
-        #expect(await store.connect(old))
-        let lateEvent = service.onEvent
-        await store.setActive(false)
-        var updated = old
-        updated.nativeCredential = .init(refreshToken: "late-rotated-test-token", provider: "basic")
-        lateEvent?(.configuration(updated))
-        #expect(storage.saved?.nativeCredential?.refreshToken == "late-rotated-test-token")
-        #expect(store.link == .connecting)
-        LocalHistory.remove(for: old.id)
-    }
-
-    @Test(arguments: [true, false])
-    func backgroundRotationWaitsForSecureStorageBeforeForegroundReconnect(failLoad: Bool) async throws {
-        var old = ConnectionConfiguration(serverURL: URL(string: "https://hermes.example")!, installID: "test-install")
-        old.nativeCredential = .init(refreshToken: "consumed-test-token", provider: "basic")
-        defer { LocalHistory.remove(for: old.id) }
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: storage.persistence)
-        await store.start()
-        await store.testEdit("Keep this cache identity", for: "milo")
-        let lateEvent = service.onEvent
-        await store.setActive(false)
-        storage.failLoad = failLoad
-        storage.failSave = !failLoad
-        var rotated = old
-        rotated.nativeCredential = .init(refreshToken: "rotated-while-locked", provider: "basic")
-        lateEvent?(.configuration(rotated))
-
-        #expect(store.configuration == rotated)
-        #expect(storage.saved == old)
-        await store.setActive(true)
-        #expect(store.link == .offline)
-        #expect(service.connectedConfigurations == [old])
-        #expect(!(await store.connect(old)))
-        #expect(service.connectedConfigurations == [old])
-
-        storage.failLoad = false; storage.failSave = false
-        service.duringConnect = { supplied in
-            #expect(supplied == rotated)
-            #expect(storage.saved == rotated)
-        }
-        await store.setActive(true)
-        #expect(store.link == .online)
-        #expect(service.connectedConfigurations == [old, rotated])
-        #expect(storage.saved == rotated)
-        #expect(store.draft(for: "milo") == "Keep this cache identity")
-        store.flush()
-        #expect(try LocalHistory.load(for: old.id).fixtureRecord("milo")?.draft.text == "Keep this cache identity")
-    }
-
-    @Test(arguments: [true, false])
-    func failedInitialNativeCommitRetainsRotatedTokenWithoutReplacingOldWorkspace(failLoad: Bool) async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://original.example")!)
-        var candidate = ConnectionConfiguration(serverURL: URL(string: "https://native.example")!)
-        candidate.nativeCredential = .init(refreshToken: "browser-issued-token", provider: "basic")
-        defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
-        let storage = MemoryConnectionStorage(saved: old)
-        let service = StoreTestService()
-        let store = AppStore(service: service, persistence: storage.persistence)
-        await store.testEdit("Old workspace draft", for: "milo")
-        service.duringConnect = { supplied in
-            var rotated = supplied
-            rotated.nativeCredential = .init(refreshToken: "rotated-browser-token", provider: "basic")
-            storage.failLoad = failLoad; storage.failSave = !failLoad
-            service.onEvent?(.configuration(rotated))
-        }
-
-        #expect(!(await store.connect(candidate)))
-        #expect(store.configuration == old)
-        #expect(storage.saved == old)
-        #expect(store.draft(for: "milo") == "Old workspace draft")
-        storage.failLoad = false; storage.failSave = false
-        service.duringConnect = { supplied in
-            #expect(supplied.nativeCredential?.refreshToken == "rotated-browser-token")
-            #expect(storage.saved == old)
-        }
-        #expect(await store.connect(candidate))
-        #expect(store.configuration?.id == candidate.id)
-        #expect(storage.saved?.nativeCredential?.refreshToken == "rotated-browser-token")
-        #expect(store.draft(for: "milo").isEmpty)
-    }
-
     @Test func offlineHistoryNeverRestoresActionableRequestsOrLiveStatus() throws {
         let connectionID = UUID()
         defer { LocalHistory.remove(for: connectionID) }
@@ -1219,10 +763,10 @@ import BottoCore
     }
 
     @Test func demoPreservesConnectedSetupAndJustEditedDraft() async throws {
-        let real = ConnectionConfiguration(serverURL: URL(string: "https://my-hermes.example")!)
+        let real = ConnectionConfiguration(serverURL: URL(string: "https://my-mac.example")!)
         defer { LocalHistory.remove(for: real.id) }
         let storage = MemoryConnectionStorage()
-        let service = StoreTestService()
+        let service = StoreTestService(profiles: [.init(id: "milo", name: "Milo")])
         let store = AppStore(service: service, persistence: storage.persistence)
         #expect(await store.connect(real))
         await store.testEdit("  Keep my latest draft  ", for: "milo")
@@ -1247,9 +791,9 @@ import BottoCore
         await store.enterDemo()
         #expect(store.isDemo)
         #expect(store.isConnected)
-        #expect(store.bots.contains { $0.id == "canvas" && $0.isPinned })
-        let milo = try #require(store.bots.first { $0.id == "milo" })
-        await store.open(milo)
+        #expect(store.t3Channels.contains { $0.id == "canvas" && $0.isPinned })
+        let main = try #require(store.t3Channels.first { $0.isMain })
+        #expect(await store.openT3Channel(main))
         let request = try #require(store.conversation(for: "milo")?.pendingRequests.first)
         let workspace = store.chats
         let row = try #require(workspace.screen(profile: try ExactID("milo"))?.requests.first { $0.request == request })
@@ -1258,26 +802,25 @@ import BottoCore
         #expect(store.conversation(for: "milo")?.messages.last?.text.contains("nothing is sent") == true)
     }
 
-    @Test func draftsArePerBotAndSurviveNavigation() async throws {
-        let store = AppStore(persistence: .init(load: { nil }, save: { _ in }, remove: {}))
+    @Test func demoDraftsArePerSpaceAndSurviveNavigation() async throws {
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
         await store.enterDemo()
-        await store.testEdit("Keep this thought", for: "milo")
-        let scout = try #require(store.bots.first { $0.id == "scout" })
-        await store.open(scout)
-        await store.testEdit("A second thought", for: "scout")
-        #expect(store.draft(for: "milo") == "Keep this thought")
-        #expect(store.draft(for: "scout") == "A second thought")
-    }
-
-    @Test func localPinOverrideCanUnpinAServerPinnedBot() async throws {
-        let store = AppStore(persistence: .init(load: { nil }, save: { _ in }, remove: {}))
-        await store.enterDemo()
-        let bot = try #require(store.bots.first { $0.id == "milo" })
-        #expect(store.isPinned(bot))
-        store.togglePin(bot)
-        #expect(!store.isPinned(bot))
-        store.togglePin(bot)
-        #expect(store.isPinned(bot))
+        let main = try #require(store.t3Channels.first { $0.isMain })
+        let sibling = try #require(store.t3Channels.first { $0.id == "scout" })
+        #expect(sibling.isUnread)
+        let profile = try ExactID("milo")
+        #expect(await store.openT3Channel(main))
+        let mainOwner = try #require(store.chats.screen(profile: profile)?.owner)
+        store.chats.editDraft("Keep this thought", owner: mainOwner)
+        #expect(await store.openT3Channel(sibling))
+        #expect(store.t3Channels.first { $0.id == sibling.id }?.isUnread == false)
+        #expect(store.t3Channels.first { $0.id == "canvas" }?.isUnread == true)
+        let siblingOwner = try #require(store.chats.screen(profile: profile)?.owner)
+        store.chats.editDraft("A second thought", owner: siblingOwner)
+        #expect(await store.openT3Channel(main))
+        #expect(store.chats.screen(profile: profile).map { store.chats.draft($0.owner) } == "Keep this thought")
+        #expect(await store.openT3Channel(sibling))
+        #expect(store.chats.screen(profile: profile).map { store.chats.draft($0.owner) } == "A second thought")
     }
 
     @Test func demoReturnsFromBackgroundWithoutTryingARealHost() async throws {
@@ -1319,7 +862,7 @@ import BottoCore
         let service = StoreTestService()
         let store = AppStore(service: service, persistence: storage.persistence)
         await store.enterDemo()
-        let real = ConnectionConfiguration(serverURL: URL(string: "https://my-hermes.example")!)
+        let real = ConnectionConfiguration(serverURL: URL(string: "https://my-mac.example")!)
         #expect(await store.connect(real))
         #expect(!store.isDemo)
         #expect(service.connectCount == 1)

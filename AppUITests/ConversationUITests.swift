@@ -4,48 +4,19 @@ import UniformTypeIdentifiers
 import Vision
 
 final class ConversationUITests: XCTestCase {
-    @MainActor func testForegroundReturnKeepsCachedAvatarsNeutralWhileReconnecting() throws {
+    @MainActor func testForegroundReturnRestoresTheSelectedSpace() throws {
         continueAfterFailure = false
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
-        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
-        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
-        let milo = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        milo.tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
+        let header = app.buttons["t3-chat-header"]
+        XCTAssertTrue(header.label.hasPrefix("Weekend research"))
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(header.waitForExistence(timeout: 8))
+        XCTAssertTrue(header.label.hasPrefix("Weekend research"))
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 5))
-        app.buttons["Back"].tap()
-
-        for cycle in 1...3 {
-            try Data().write(to: directory.appendingPathComponent("connect.hold"))
-            let started = directory.appendingPathComponent("connect.started")
-            try? FileManager.default.removeItem(at: started)
-            XCUIDevice.shared.press(.home)
-            XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
-            app.activate()
-            let reconnecting = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                FileManager.default.fileExists(atPath: started.path)
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [reconnecting], timeout: 5), .completed)
-            XCTAssertTrue(milo.exists)
-            XCTAssertEqual(milo.value as? String, "")
-            XCTAssertFalse(app.staticTexts["You’re offline"].exists)
-            let capture = XCTAttachment(screenshot: app.screenshot())
-            capture.name = "Foreground cycle \(cycle), cached avatars while reconnecting"
-            capture.lifetime = .keepAlways
-            add(capture)
-            milo.tap()
-            XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 5))
-            let profile = app.buttons["bot-profile-button"]
-            XCTAssertTrue(profile.exists)
-            XCTAssertEqual(profile.value as? String, "")
-            try FileManager.default.removeItem(at: directory.appendingPathComponent("connect.hold"))
-            app.buttons["Back"].tap()
-            XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        }
     }
 
     @MainActor func testGlassComposerOverlaysTranscriptAndKeepsLatestRequestAboveMultilineInput() {
@@ -54,8 +25,7 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let milo = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5)); milo.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let composer = app.textViews["chat-composer"]
         let transcript = app.collectionViews["chat-transcript"]
         let keepDraft = app.buttons["Keep draft"]
@@ -82,8 +52,7 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-iris", in: app)
-        app.buttons["bot-row-iris"].tap()
+        WorkspaceNavigation.openSpace("iris", in: app)
         let opening = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Here’s a lighter opening:")).firstMatch
         XCTAssertTrue(opening.waitForExistence(timeout: 5))
         opening.press(forDuration: 1)
@@ -107,144 +76,12 @@ final class ConversationUITests: XCTestCase {
         capture.lifetime = .keepAlways; add(capture)
     }
 
-    @MainActor func testPendingActivityKeepsInboxAndPickerQuiet() throws {
-        continueAfterFailure = false
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let hold = directory.appendingPathComponent("directory.hold")
-        try Data().write(to: hold)
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo"]
-        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
-        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
-        app.launch()
-        let row = app.buttons["bot-row-milo"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        let pending = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent("directory.started").path)
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: 5), .completed)
-        XCTAssertFalse(row.label.contains("Activity unavailable"))
-        XCTAssertFalse(app.staticTexts["Connecting to your Hermes…"].exists)
-        let inbox = XCTAttachment(screenshot: app.screenshot())
-        inbox.name = "Inbox while activity is pending"; inbox.lifetime = .keepAlways; add(inbox)
-        row.tap()
-        XCTAssertTrue(app.buttons["chat-picker-button"].waitForExistence(timeout: 5))
-        app.buttons["chat-picker-button"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Activity unavailable"].exists)
-        XCTAssertFalse(app.staticTexts["Updating…"].exists)
-        try FileManager.default.removeItem(at: hold)
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "chat-card-", "Weekend plan")).firstMatch.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "chat-card-", "Activity unavailable")).firstMatch.exists)
-    }
-
-    @MainActor func testHistoricalActivityIsQuietAndDoesNotCountAsLiveAttention() {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--demo-offline"]
-        app.launch()
-        let row = app.buttons["bot-row-milo"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        XCTAssertTrue(row.label.contains("Previously waiting"))
-        XCTAssertFalse(row.label.contains("Activity unavailable"))
-        XCTAssertFalse(row.label.contains("Needs you"))
-        row.tap()
-        XCTAssertTrue(app.buttons["chat-picker-button"].waitForExistence(timeout: 5))
-        app.buttons["chat-picker-button"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["chat-picker"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "chat-card-", "Previously waiting")).firstMatch.exists)
-        XCTAssertFalse(app.staticTexts["You’re offline"].exists)
-        let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Historical activity in cached picker"; capture.lifetime = .keepAlways; add(capture)
-    }
-
-    @MainActor func testInboxActivityIsKnownBeforeOpeningAnyBot() {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo"]
-        app.launch()
-        for profile in ["milo", "scout", "canvas"] {
-            let row = app.buttons["bot-row-\(profile)"]
-            XCTAssertTrue(row.waitForExistence(timeout: 5))
-            let knownActivity = NSPredicate(format: "NOT label CONTAINS %@", "Activity unavailable")
-            let observed = XCTNSPredicateExpectation(predicate: knownActivity, object: row)
-            XCTAssertEqual(XCTWaiter.wait(for: [observed], timeout: 5), .completed)
-        }
-        XCTAssertTrue(app.buttons["bot-row-milo"].label.contains("3 chats"))
-        XCTAssertTrue(app.buttons["bot-row-milo"].label.contains("Needs you"))
-        XCTAssertFalse(app.buttons["bot-profile-button"].exists)
-        XCTAssertFalse(app.buttons["chat-picker-button"].exists)
-        let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Inbox activity before opening a bot"
-        capture.lifetime = .keepAlways
-        add(capture)
-    }
-
-    @MainActor func testBotRowIdentitySurvivesUnpinning() {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--demo-offline"]
-        app.launch()
-        let pinned = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(pinned.waitForExistence(timeout: 5))
-        XCTAssertEqual(pinned.label, "Milo, pinned")
-        let row = app.buttons["bot-row-milo"]
-        XCTAssertTrue(row.waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons.matching(identifier: "bot-row-milo").count, 1)
-        row.press(forDuration: 1)
-        app.buttons["Unpin bot"].tap()
-        XCTAssertTrue(pinned.waitForNonExistence(timeout: 3))
-        WorkspaceNavigation.revealBot("bot-row-milo", in: app)
-        XCTAssertEqual(app.buttons.matching(identifier: "bot-row-milo").count, 1)
-        XCTAssertTrue(row.label.contains("Milo"))
-        XCTAssertFalse(row.label.contains("bot-row-"))
-        row.tap()
-        XCTAssertTrue(app.buttons["Profile for Milo"].waitForExistence(timeout: 5))
-    }
-
-    @MainActor func testDraftingWorksWhileInboxHistoryAttaches() throws {
-        continueAfterFailure = false
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data().write(to: directory.appendingPathComponent("open.hold"))
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo"]
-        app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
-        addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
-        app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 5))
-        let fetched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.buttons["bot-row-milo"].label.contains("I also drafted a note")
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [fetched], timeout: 10), .completed)
-        app.buttons["pinned-bot-milo"].tap()
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
-            "Take a look before it goes anywhere.")).firstMatch.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Opening your chat…"].exists)
-        let capture = XCTAttachment(screenshot: app.screenshot())
-        capture.name = "Chat avatar while attachment is pending"
-        capture.lifetime = .keepAlways
-        add(capture)
-        let composer = app.descendants(matching: .any)["chat-composer"]
-        XCTAssertTrue(composer.isEnabled)
-        composer.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        composer.typeText("A thought while history opens")
-        XCTAssertEqual(composer.value as? String, "A thought while history opens")
-        try FileManager.default.removeItem(at: directory.appendingPathComponent("open.hold"))
-        XCTAssertTrue(app.buttons["Keep draft"].waitForExistence(timeout: 5))
-        XCTAssertEqual(composer.value as? String, "A thought while history opens")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("send.started").path))
-    }
-
     @MainActor func testOfflineFileAndAttachmentActionsShowFeedbackWhenAttempted() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--demo-offline"]
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-canvas"].waitForExistence(timeout: 5))
-        app.buttons["pinned-bot-canvas"].tap()
+        WorkspaceNavigation.openSpace("canvas", in: app)
         let card = app.buttons["Open notes.txt"].firstMatch
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         for _ in 0..<8 {
@@ -273,8 +110,7 @@ final class ConversationUITests: XCTestCase {
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 5))
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         XCTAssertTrue(app.buttons["Keep draft"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.staticTexts["You’re offline"].exists)
         app.buttons["Keep draft"].tap()
@@ -298,19 +134,11 @@ final class ConversationUITests: XCTestCase {
         app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = directory.path
         addTeardownBlock { app.terminate(); try? FileManager.default.removeItem(at: directory) }
         app.launch()
-        let milo = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        XCTAssertEqual(milo.value as? String, "Offline")
-        let offlineRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label != %@",
-                                                        "Milo,", "Milo, pinned")).firstMatch
-        XCTAssertEqual(offlineRow.value as? String, "Offline")
-        XCTAssertFalse(app.staticTexts["You’re offline"].exists)
-        XCTAssertTrue(app.buttons["New bot"].isEnabled)
-        milo.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
+        XCTAssertTrue(app.buttons["t3-new-space"].isEnabled)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue(composer.isEnabled)
-        XCTAssertEqual(app.buttons["bot-profile-button"].value as? String, "Offline")
         XCTAssertFalse(app.staticTexts["You’re offline"].exists)
         composer.tap()
         composer.typeText("Keep this thought while offline")
@@ -325,7 +153,7 @@ final class ConversationUITests: XCTestCase {
         add(screenshot)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("send.started").path))
         app.buttons["Reconnect"].tap()
-        XCTAssertTrue(app.staticTexts["Connecting to your Hermes…"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Connecting to your Mac…"].waitForExistence(timeout: 3))
         XCTAssertEqual(composer.value as? String, "Keep this thought while offline")
         composer.tap(); composer.typeText(" and connecting")
         let connectingDraft = try XCTUnwrap(composer.value as? String)
@@ -333,8 +161,7 @@ final class ConversationUITests: XCTestCase {
         XCTAssertEqual(connectingDraft.replacingOccurrences(of: " and connecting", with: ""),
                        "Keep this thought while offline")
         try FileManager.default.removeItem(at: directory.appendingPathComponent("connect.hold"))
-        XCTAssertTrue(app.staticTexts["Connecting to your Hermes…"].waitForNonExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["bot-profile-button"].value as? String, "")
+        XCTAssertTrue(app.staticTexts["Connecting to your Mac…"].waitForNonExistence(timeout: 5))
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("send.started").path))
         XCTAssertEqual(composer.value as? String, connectingDraft)
         app.buttons["Send message"].tap()
@@ -383,130 +210,17 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
-        let milo = app.buttons["bot-row-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons.matching(identifier: "bot-row-milo").count, 1)
-        XCTAssertTrue(milo.label.contains("Milo"))
-        XCTAssertFalse(app.buttons["pinned-bot-milo"].exists, "The pinned rail is hidden at an accessibility text size.")
-        milo.tap()
-        let keep = app.buttons["Keep draft"]
-        XCTAssertTrue(keep.waitForExistence(timeout: 5))
+        WorkspaceNavigation.openSpace("milo", in: app)
         assertDecisionActionsVisible(in: app)
-        keep.tap()
+        app.buttons["Keep draft"].tap()
         XCTAssertTrue(app.staticTexts["Understood. I’ll keep the draft here."].waitForExistence(timeout: 3))
-    }
-
-    /// Opt in only against the disposable host and its deterministic BOTTO_QUESTION provider.
-    @MainActor func testLiveOversizedQuestionKeepsDraftUntilCorrectedSubmission() throws {
-        continueAfterFailure = false
-        guard let address = ProcessInfo.processInfo.environment["BOTTO_UI_TEST_HERMES_URL"],
-              let url = URL(string: address), url.scheme == "http",
-              ["127.0.0.1", "localhost"].contains(url.host ?? "") else {
-            throw XCTSkip("Set BOTTO_UI_TEST_HERMES_URL to the disposable loopback clarification host.")
-        }
-        let app = XCUIApplication()
-        app.launchArguments = ["--fixture-server", address]
-        app.launch()
-        XCTAssertTrue(app.buttons["New bot"].waitForExistence(timeout: 15))
-        app.buttons["New bot"].tap()
-        let name = app.textFields["What shall we call them?"]
-        XCTAssertTrue(name.waitForExistence(timeout: 3))
-        name.tap(); name.typeText("Botto answer " + String(UUID().uuidString.prefix(8)))
-        let create = app.buttons["Create bot"]
-        for _ in 0..<6 where !create.isHittable {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
-        }
-        XCTAssertTrue(create.isHittable); create.tap()
-        let composer = app.descendants(matching: .any)["chat-composer"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 65))
-        composer.tap(); composer.typeText("BOTTO_QUESTION")
-        app.buttons["Send message"].tap()
-        let question = app.staticTexts["What should the note say?"]
-        XCTAssertTrue(question.waitForExistence(timeout: 60))
-        // The placeholder stops being the accessibility name once this field has text.
-        let answerFields = app.textFields.matching(NSPredicate(format: "identifier != %@", "chat-composer"))
-        let answer = answerFields.firstMatch
-        XCTAssertTrue(answer.waitForExistence(timeout: 3))
-        XCTAssertEqual(answerFields.count, 1)
-        let oversized = String(repeating: "a", count: 16_385)
-        UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: oversized]],
-                                     options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(300)])
-        answer.tap(); answer.typeKey("v", modifierFlags: .command)
-        let allowPaste = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow Paste"]
-        if allowPaste.waitForExistence(timeout: 1) { allowPaste.tap() }
-        XCTAssertEqual(answer.value as? String, oversized)
-        let error = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "This answer is too long.")).firstMatch
-        XCTAssertFalse(error.exists, "Drafting must stay quiet until Submit is attempted.")
-        app.buttons["Submit answer"].tap()
-        XCTAssertTrue(error.waitForExistence(timeout: 5))
-        XCTAssertTrue(error.label.contains("16,384"))
-        XCTAssertTrue(error.label.contains("Nothing was sent."))
-        XCTAssertTrue(question.exists)
-        XCTAssertEqual(answer.value as? String, oversized)
-        let rejected = XCTAttachment(screenshot: app.screenshot())
-        rejected.name = "Oversized answer rejected with draft and question retained"
-        rejected.lifetime = .keepAlways; add(rejected)
-        answer.tap(); answer.typeKey("a", modifierFlags: .command)
-        answer.typeText("A short note")
-        XCTAssertEqual(answer.value as? String, "A short note")
-        app.buttons["Submit answer"].tap()
-        XCTAssertTrue(question.waitForNonExistence(timeout: 15))
-        // Streaming can publish the completion marker before its answer bytes.
-        let completed = app.staticTexts.containing(NSPredicate(
-            format: "label CONTAINS %@ AND label CONTAINS %@", "BOTTO_TOOL_DONE", "A short note")).firstMatch
-        XCTAssertTrue(completed.waitForExistence(timeout: 30))
-        XCTAssertTrue(completed.label.contains("A short note"))
-        let corrected = XCTAttachment(screenshot: app.screenshot())
-        corrected.name = "Corrected answer returned by Hermes"
-        corrected.lifetime = .keepAlways; add(corrected)
-    }
-
-    /// Opt in only against the disposable host: creates a profile and executes its harmless probe.
-    @MainActor func testLiveApprovalArrivingWhileTypingStaysAboveComposer() throws {
-        continueAfterFailure = false
-        guard let address = ProcessInfo.processInfo.environment["BOTTO_UI_TEST_HERMES_URL"] else {
-            throw XCTSkip("Set BOTTO_UI_TEST_HERMES_URL on the test runner to use a disposable host.")
-        }
-        let app = XCUIApplication()
-        app.launchArguments = ["--fixture-server", address]
-        app.launch()
-        XCTAssertTrue(app.buttons["New bot"].waitForExistence(timeout: 10))
-        app.buttons["New bot"].tap()
-        let name = app.textFields["What shall we call them?"]
-        XCTAssertTrue(name.waitForExistence(timeout: 3))
-        name.tap()
-        name.typeText("Botto UI " + String(UUID().uuidString.prefix(8)))
-        let create = app.buttons["Create bot"]
-        for _ in 0..<6 where !create.isHittable {
-            // Keep the gesture in the visible form above the software keyboard.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
-        }
-        XCTAssertTrue(create.isHittable)
-        create.tap()
-        let composer = app.descendants(matching: .any)["chat-composer"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 65))
-        composer.tap()
-        composer.typeText("BOTTO_APPROVAL")
-        app.buttons["Send message"].tap()
-        let allow = app.buttons["Allow once"], lastChoice = app.buttons["Always allow"], add = app.buttons["Add attachment"]
-        XCTAssertTrue(allow.waitForExistence(timeout: 60))
-        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            allow.exists && lastChoice.exists && add.exists && lastChoice.frame.maxY <= add.frame.minY && allow.frame.minY > 100
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 3), .completed)
-        allow.tap()
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "BOTTO_TOOL_DONE"))
-            .firstMatch.waitForExistence(timeout: 60))
     }
 
     @MainActor func testDecisionActionsStayAboveComposerWhenKeyboardOpens() {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.buttons["pinned-bot-milo"].waitForExistence(timeout: 5))
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         composer.tap()
@@ -521,15 +235,13 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let bot = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 5))
-        bot.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let keep = app.buttons["Keep draft"]
         XCTAssertTrue(keep.waitForExistence(timeout: 5))
         assertDecisionActionsVisible(in: app)
         XCTAssertTrue(keep.isHittable,
                       "The newest decision must be reachable without scrolling on first load.")
-        let profile = app.buttons["bot-profile-button"]
+        let profile = app.buttons["t3-chat-header"]
         XCTAssertTrue(profile.exists && profile.isHittable)
         captureReadingState(app, name: "Initial Milo history beneath the floating header with reachable approval actions")
         keep.tap()
@@ -542,9 +254,7 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let milo = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        milo.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let keep = app.buttons["Keep draft"]
         XCTAssertTrue(keep.waitForExistence(timeout: 5))
         keep.tap()
@@ -665,7 +375,8 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--performance-demo", "--reduce-motion"]
         app.launch()
-        let scout = app.buttons["pinned-bot-scout"]
+        WorkspaceNavigation.openDrawer(in: app)
+        let scout = WorkspaceNavigation.space("scout", in: app)
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
         let start = ContinuousClock.now
         let deadline = start + .seconds(10)
@@ -678,7 +389,7 @@ final class ConversationUITests: XCTestCase {
             // can spend the budget on the observer: read one snapshot per poll and OCR only the end.
             guard let tree = try? app.snapshot(),
                   let composerSnapshot = tree.first(where: { $0.identifier == "chat-composer" }), composerSnapshot.isEnabled,
-                  tree.first(where: { $0.identifier == "bot-profile-button" })?.label == "Profile for Scout",
+                  tree.first(where: { $0.identifier == "t3-chat-header" })?.label == "Weekend research",
                   let message = tree.first(where: { $0.identifier == "transcript-message-performance-399" }),
                   let paragraph = message.first(where: { $0.elementType == .staticText && $0.label.contains("Paragraph 7.") }),
                   let viewport = tree.first(where: { $0.identifier == "chat-transcript" })?.frame,
@@ -731,12 +442,10 @@ final class ConversationUITests: XCTestCase {
         }
         app.launchArguments = ["--demo", "--performance-demo", "--reduce-motion"]
         app.launch()
-        let scout = app.buttons["pinned-bot-scout"]
-        XCTAssertTrue(scout.waitForExistence(timeout: 10))
-        scout.tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
-        XCTAssertEqual(app.buttons["bot-profile-button"].label, "Profile for Scout")
+        XCTAssertEqual(app.buttons["t3-chat-header"].label, "Weekend research")
         let finalHistoryMessage = app.descendants(matching: .any)["transcript-message-performance-399"]
         XCTAssertTrue(finalHistoryMessage.waitForExistence(timeout: 10))
         XCTAssertTrue(finalHistoryMessage.isHittable)
@@ -914,22 +623,18 @@ final class ConversationUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Draft while following")
     }
 
-    @MainActor func testTypedDraftSurvivesSwitchingBots() {
+    @MainActor func testTypedDraftSurvivesSwitchingSpaces() {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let milo = app.buttons["pinned-bot-milo"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        milo.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         composer.tap()
         composer.typeText("A thought to keep")
-        WorkspaceNavigation.browseBots(in: app)
-        app.buttons["pinned-bot-scout"].tap()
+        WorkspaceNavigation.openSpace("scout", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 3))
-        WorkspaceNavigation.browseBots(in: app)
-        app.buttons["pinned-bot-milo"].tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         XCTAssertEqual(app.descendants(matching: .any)["chat-composer"].value as? String, "A thought to keep")
     }
     @MainActor private func captureReadingState(_ app: XCUIApplication, name: String) {

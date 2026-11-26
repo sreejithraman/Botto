@@ -53,22 +53,18 @@ struct ChatSenderAvatar: View {
 extension AppStore {
     func avatarPresentation(for bot: BotProfile, scope: BotAvatarScope = .profile) -> BotAvatarPresentation {
         if link == .offline { return .offline }
-        if isT3Workspace {
-            let value = (try? ExactID(bot.id)).map { chats.avatarPresentation(profile: $0, scope: scope) }
-            if let value, value.activity != .unavailable { return value }
-            if scope == .profile {
-                if t3Channels.contains(where: { !$0.isArchived && $0.needsYou }) {
-                    return .init(activity: .waiting, enteredAt: .now)
-                }
-                if t3Channels.contains(where: { !$0.isArchived && $0.status == .working }) {
-                    return .init(activity: .working, enteredAt: .now)
-                }
+        if let profile = try? ExactID(bot.id) {
+            let value = chats.avatarPresentation(profile: profile, scope: scope)
+            if value.activity != .unavailable { return value }
+        }
+        if scope == .profile {
+            if t3Channels.contains(where: \.needsYou) {
+                return .init(activity: .waiting, enteredAt: .now)
             }
-            return .idle
+            if t3Channels.contains(where: { !$0.isArchived && $0.status == .working }) {
+                return .init(activity: .working, enteredAt: .now)
+            }
         }
-        guard let profile = try? ExactID(bot.id) else {
-            return .init(activity: .unavailable, enteredAt: .distantPast)
-        }
-        return chats.avatarPresentation(profile: profile, scope: scope)
+        return .idle
     }
 }

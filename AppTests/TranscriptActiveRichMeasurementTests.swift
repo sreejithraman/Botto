@@ -37,7 +37,7 @@ enum ActiveRichMeasurementRecord {
         let demo = DemoBotService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://active-rich-measurement.invalid")!)
         _ = try await demo.connect(configuration: configuration)
-        let opened = try await demo.openChat(.canonical(profile: ExactID("canvas"), expectedRoot: nil))
+        let opened = try await demo.openChat(.stored(demoSpaceIdentity("canvas")))
         let rich = try #require(opened.snapshot.messages.first { ReplyContent(message: $0).blocks.contains { $0.filePreview?.isHTML == true } })
         let file = try #require(ReplyContent(message: rich).blocks.first { $0.filePreview?.isHTML == true })
         let bytes = try await demo.downloadArtifact(try #require(file.filePreview?.attachment), access: opened.access)
@@ -158,7 +158,7 @@ enum ActiveRichMeasurementRecord {
         let demo = DemoBotService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://corpus-invariance.invalid")!)
         _ = try await demo.connect(configuration: configuration)
-        let opened = try await demo.openChat(.canonical(profile: ExactID("canvas"), expectedRoot: nil))
+        let opened = try await demo.openChat(.stored(demoSpaceIdentity("canvas")))
         defer { demo.disconnect() }
         let rich = try #require(opened.snapshot.messages.first { ReplyContent(message: $0).blocks.contains { $0.filePreview?.isHTML == true } })
         let messages = TranscriptMeasurementFixture.messages(count: 100, rich: rich)

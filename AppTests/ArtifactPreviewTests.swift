@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
     @Test func connectionFeedbackFollowsTheCurrentReadAndClearsAfterRetry() async throws {
         let model = ArtifactPreviewModel()
         defer { model.cancel() }
-        await model.load { throw HermesServiceError.disconnected }
+        await model.load { throw ConversationServiceError.disconnected }
         #expect(model.requiresConnection)
         #expect(model.errorMessage != nil)
 
@@ -281,11 +281,12 @@ import UniformTypeIdentifiers
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://demo.botto.local")!)
         let rich = DemoBotService()
         _ = try await rich.connect(configuration: connection)
-        #expect(try await rich.bots().map(\.id) == ["milo", "scout", "iris", "atlas", "canvas"])
-        let canvas = try #require(try await rich.bots().first { $0.id == "canvas" })
-        #expect(canvas.name == "Canvas")
+        #expect(try await rich.bots().map(\.id) == ["milo"])
+        let canvas = try #require(rich.currentT3Channels.first { $0.id == "canvas" })
+        #expect(canvas.displayTitle == "Project update")
         #expect(canvas.isPinned)
-        let opened = try await rich.openChat(.canonical(profile: try ExactID(canvas.id), expectedRoot: nil))
+        let identity = try demoSpaceIdentity(canvas.id)
+        let opened = try await rich.openChat(.stored(identity))
         let chat = opened.snapshot
         let text = try #require(chat.messages.last?.text)
         #expect(text.contains("Before the dashboard"))
@@ -294,7 +295,7 @@ import UniformTypeIdentifiers
         #expect(text.contains("```svg"))
         #expect(text.contains("```swift"))
         for name in ["report.pdf", "notes.txt", "chart.png", "report.html"] {
-            let opened = try await rich.openChat(.canonical(profile: try ExactID(canvas.id), expectedRoot: nil))
+            let opened = try await rich.openChat(.stored(identity))
             let attachment = ChatAttachment(name: name, path: "/demo/canvas/" + name)
             let first = try await rich.downloadArtifact(attachment, access: opened.access)
             let second = try await rich.downloadArtifact(attachment, access: opened.access)
@@ -315,7 +316,7 @@ import UniformTypeIdentifiers
             }
             if name == "notes.txt" { #expect(String(data: first.data, encoding: .utf8)?.contains("Canvas demo") == true) }
             if name == "report.html" { #expect(String(data: first.data, encoding: .utf8)?.contains("<!doctype html>") == true) }
-            let other = try await rich.openChat(.canonical(profile: try ExactID("scout"), expectedRoot: nil))
+            let other = try await rich.openChat(.stored(demoSpaceIdentity("scout")))
             await #expect(throws: (any Error).self) { _ = try await rich.downloadArtifact(attachment, access: other.access) }
         }
     }
@@ -536,7 +537,7 @@ import UniformTypeIdentifiers
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     let profiles = [BotProfile(id: "canvas", name: "Canvas"), BotProfile(id: "other", name: "Other")]
@@ -555,7 +556,7 @@ import UniformTypeIdentifiers
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
-        throw HermesServiceError.invalidAttachment
+        throw ConversationServiceError.invalidAttachment
     }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         downloads.append((attachment, try authority.resolve(access)))

@@ -11,32 +11,17 @@ struct ChatView: View {
     let importPaneVisible: Bool
     let rootCovered: Bool
     let onLocalModalPresentation: (Bool) -> Void
-    var toolbarVisible = true
     var canPresentToolbar: () -> Bool = { true }
     var canContinueEditing: () -> Bool = { true }
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.workspaceNativeDetail) private var nativeDetail
     @Environment(\.composerEditing) private var providedEditing
     @State private var localEditing = ComposerEditingHandle()
     private var editing: ComposerEditingHandle { providedEditing ?? localEditing }
     @State private var connectionRequested = false
-    @State private var tabPreviews = ChatTabPreviews()
-    @State private var transcriptPreview = NativeTranscriptPreview()
     @State private var composerHeight: CGFloat = 0
-    @State private var headerOverlap: CGFloat = 44
     @State private var paneWidth: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var textSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showsProfile = false
-    @State private var profileDestination: AppStore.AvatarDestination?
-    @State private var showsOverview = false
-    @State private var overviewCovered = false
-    @State private var overviewTransition = ChatOverviewTransition()
-    @State private var overviewSelectionID: ChatID?
-    @State private var overviewCreationSource: ChatID?
-    @State private var closeNotice: ChatCloseNotice?
-    @State private var profileEditor: AppStore.AvatarDestination?
     @State private var showsAttachmentPicker = false
     @State private var childModals: Set<UUID> = []
     @State private var importPresentationRevision = UUID()
@@ -52,50 +37,32 @@ struct ChatView: View {
         return workspace.selection(profile: profile)?.owner
     }
     private var chatUncoveredByPresentation: Bool {
-        !showsProfile && !overviewCovered && !showsAttachmentPicker && childModals.isEmpty && !rootCovered &&
+        !showsAttachmentPicker && childModals.isEmpty && !rootCovered &&
             !store.showsConnection && scenePhase == .active
     }
-    private var transcriptVisible: Bool { isExposed && chatUncoveredByPresentation && (nativeDetail?.readable ?? true) }
+    private var transcriptVisible: Bool { isExposed && chatUncoveredByPresentation }
     private var inputAvailable: Bool {
-        isEditingExposed && chatUncoveredByPresentation && (nativeDetail?.inputVisible ?? true) && !presentation.isBrowsingBots
+        isEditingExposed && chatUncoveredByPresentation
     }
 
     private var localModalPresented: Bool {
-        showsProfile || showsAttachmentPicker || !childModals.isEmpty
+        showsAttachmentPicker || !childModals.isEmpty
     }
 
     var body: some View {
         readerLifecycle
-        .task(id: closeNotice?.id) {
-            guard let notice = closeNotice else { return }
-            do { try await Task.sleep(for: .seconds(UIAccessibility.isVoiceOverRunning || textSize.isAccessibilitySize ? 12 : 6)) }
-            catch { return }
-            if closeNotice?.id == notice.id { closeNotice = nil }
-        }
         .onChange(of: store.showsConnection) { _, shown in
-            if shown { showsProfile = false; dismissOverviewImmediately(); discardPreviews() }
+            if shown { coverTranscript(); importPresentationRevision = UUID() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
-                dismissOverviewImmediately()
-                discardPreviews()
                 importPresentationRevision = UUID()
             }
         }
         .onChange(of: rootCovered) { _, covered in
-            if covered { coverTranscript(); dismissOverviewImmediately(); importPresentationRevision = UUID() }
+            if covered { coverTranscript(); importPresentationRevision = UUID() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-            dismissOverviewImmediately()
-            discardPreviews()
-        }
-        .onDisappear {
-            closeNotice = nil
-            dismissOverviewImmediately()
-            transcriptPreview.didCapture = nil
-            transcriptPreview.invalidate()
-            hiddenTranscript()()
-        }
+        .onDisappear { hiddenTranscript()() }
     }
 
     private var messageDisplayRevision: [NativeTranscriptRowValue] {
@@ -110,26 +77,12 @@ struct ChatView: View {
         return chatPane(screen, toolbarRevision: toolbarRevision, toolbarOwner: toolbarOwner, editingRevision: editingRevision)
         .onChange(of: screen?.owner) { _, _ in presentation.reconcile(store: store) }
         .onChange(of: messageDisplayRevision) { _, _ in presentation.reconcile(store: store) }
-        .onChange(of: colorScheme) { _, _ in if overviewCovered { overviewTransition.allowsAnimation = false } }
-        .onChange(of: textSize) { _, _ in if overviewCovered { overviewTransition.allowsAnimation = false } }
         .onChange(of: store.isConnected) { _, _ in connectionRequested = false }
-        .onChange(of: screen?.selectedChatID) { _, selected in
-            if let selected, overviewSelectionID == selected ||
-                (overviewCreationSource != nil && overviewCreationSource != selected) {
-                if !showsProfile { closeOverview() }
-            }
-            connectionRequested = false
-        }
+        .onChange(of: screen?.selectedChatID) { _, _ in connectionRequested = false }
         .onChange(of: ObjectIdentifier(workspace)) { _, _ in
             editing.cancel()
-            discardPreviews()
-            configurePreviewCapture()
-            if profileDestination?.isCurrent(in: store) != true { showsProfile = false }
-            dismissOverviewImmediately(); childModals = []
+            childModals = []
             connectionRequested = false
-        }
-        .sheet(isPresented: $showsProfile) {
-            if let profileDestination { profileSheet(profileDestination, workspace: workspace) }
         }
         .task(id: screen?.isOpening == false ? screen?.owner : nil) {
             let workspace = workspace
@@ -139,32 +92,11 @@ struct ChatView: View {
         }
     }
 
-    private var openingRetry: some View {
-        HStack(spacing: 12) {
-            Text(store.isT3Workspace ? "This space didn’t open." : "This chat didn’t open.").font(.subheadline).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            Button(action: retryOpening) {
-                Label("Retry", systemImage: "arrow.clockwise")
-                    .frame(minHeight: 44).contentShape(.rect)
-            }
-                .font(.subheadline.weight(.semibold))
-                .accessibilityLabel(store.isT3Workspace ? "Retry opening this space" : "Retry opening this chat")
-                .accessibilityIdentifier("chat-opening-retry")
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func retryOpening() {
-        guard store.canRetryOpening(bot), let opening = store.prepareBotOpening(bot) else { return }
-        store.notice = nil
-        Task { await store.openBot(opening) }
-    }
-
     private var readerLifecycle: some View {
         let screen = self.screen
         return presentationContent
         .onChange(of: localModalPresented, initial: true) { _, shown in onLocalModalPresentation(shown) }
-        .onAppear { configurePreviewCapture(); markDisplayed() }
+        .onAppear { markDisplayed() }
         .onChange(of: screen?.snapshot) { _, _ in markDisplayed() }
         .onChange(of: screen?.isOpening) { _, _ in markDisplayed() }
         .onChange(of: screen?.isLoadingDirectory) { _, loading in
@@ -178,12 +110,7 @@ struct ChatView: View {
             editing.cancel()
             childModals = []
         }
-        .onChange(of: profileDestination.map { $0.isCurrent(in: store) }) { _, current in
-            if current == false { showsProfile = false }
-        }
-        .onChange(of: showsProfile) { _, shown in
-            if !shown { profileEditor = nil; profileDestination = nil }
-        }
+
     }
 
     private func chatPane(_ screen: ChatScreen?, toolbarRevision: UUID, toolbarOwner: PresentationOwner?,
@@ -192,25 +119,22 @@ struct ChatView: View {
             ChatTranscript(store: store, bot: bot, workspace: workspace, screen: screen,
                            messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
-                           preview: transcriptPreview, topContentInset: toolbarVisible ? headerClearance : 0,
                            bottomContentInset: composerHeight,
                            searchFocus: presentation.searchFocus.flatMap {
                                $0.owner == screen?.owner && $0.matches(workspace: workspace) ? $0 : nil
                            },
                            reportSearchFocus: { presentation.reportSearchFocus($0, result: $1) },
                            actionRevision: toolbarRevision, admitsAction: {
-                               presentation.revision == toolbarRevision && !presentation.isBrowsingBots && transcriptVisible && canPresentToolbar()
+                               presentation.revision == toolbarRevision && transcriptVisible && canPresentToolbar()
                            })
                 // Keep the reader's position across access refreshes in this chat.
                 .id(screen?.selectedChatID)
                 .ignoresSafeArea(.container, edges: .top)
-                .accessibilityHidden(overviewCovered)
-            if toolbarVisible {
-                // iOS 26 needs a backing to obscure transcript text in the status area.
-                if #unavailable(iOS 27) {
+            // Older layouts need a backing to obscure transcript text in the status area.
+            if #unavailable(iOS 27) {
                     GeometryReader { geometry in
                         Rectangle().fill(.regularMaterial)
-                            .frame(height: geometry.safeAreaInsets.top + headerClearance + 24)
+                            .frame(height: geometry.safeAreaInsets.top + 24)
                             .mask {
                                 VStack(spacing: 0) {
                                     Color.black
@@ -222,11 +146,7 @@ struct ChatView: View {
                     }
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
-                }
             }
-            overviewPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(overviewCovered)
             VStack(spacing: 10) {
                 if store.isDemo { DemoBanner() }
                 if connectionRequested && !store.isConnected {
@@ -235,18 +155,28 @@ struct ChatView: View {
                 if let notice = store.notice {
                     InlineNotice(message: notice) { store.notice = nil }.padding(.horizontal, 16)
                 }
+                if store.canRetryOpening(bot) {
+                    Button {
+                        guard canPresentToolbar(), let opening = store.prepareBotOpening(bot) else { return }
+                        store.notice = nil
+                        Task { await store.openBot(opening) }
+                    } label: {
+                        Label("Retry opening this space", systemImage: "arrow.clockwise")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("chat-opening-retry")
+                }
                 if let error = screen?.error {
                     Text(error).font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
                 if let error = presentation.searchError {
                     InlineNotice(message: error) { presentation.searchError = nil }.padding(.horizontal, 16)
                 }
-                if store.canRetryOpening(bot) { openingRetry }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
                              inputAvailable: inputAvailable,
-                             importsAllowed: importPaneVisible && (showsAttachmentPicker || nativeDetail?.inputVisible != false) &&
-                                !showsProfile && !overviewCovered && childModals.isEmpty && !rootCovered && !presentation.isBrowsingBots && scenePhase != .background,
+                             importsAllowed: importPaneVisible && childModals.isEmpty && !rootCovered && scenePhase != .background,
                              importPresentationRevision: importPresentationRevision,
                              editingRevision: editingRevision,
                              onPickerPresentation: { shown in
@@ -256,51 +186,20 @@ struct ChatView: View {
                                  let sameRevision = presentation.revision == editingRevision
                                  let exposed = inputAvailable
                                  let available = canContinueEditing()
-                                 return sameRevision && !presentation.isBrowsingBots && exposed && available
+                                 return sameRevision && exposed && available
                              }, editingHandle: editing, connectionRequested: $connectionRequested)
             }
             .padding(.top, 8)
             .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
-            .opacity(showsOverview ? 0 : 1)
-            .animation(.easeOut(duration: reduceMotion ? 0.10 : 0.16), value: showsOverview)
-            .allowsHitTesting(!overviewCovered)
-            .accessibilityHidden(overviewCovered)
             .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: { composerHeight = $0 }
         }
         .background(BottoTheme.paper)
         .toolbarColorScheme(colorScheme, for: .navigationBar)
-        .overlay(alignment: .top) {
-            if toolbarVisible, !store.isT3Workspace {
-                NativeTranscriptHeader(preview: transcriptPreview,
-                                       onActivate: profileActivation(screen, revision: toolbarRevision, owner: toolbarOwner)) {
-                    profileButton(screen, revision: toolbarRevision, owner: toolbarOwner)
-                }
-                .padding(.horizontal, headerSideClearance)
-                .onGeometryChange(for: CGFloat.self) { [headerReferenceHeight] in
-                    max(0, $0.size.height - headerReferenceHeight)
-                } action: { headerOverlap = $0 }
-                .offset(y: -headerReferenceHeight)
-            }
-        }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
         .environment(\.reportChatModal, modalReporter())
         .environment(\.composerEditing, editing)
         .toolbar {
-            if toolbarVisible, !store.isT3Workspace {
-                if #available(iOS 26, *) {
-                    ToolbarItem(placement: .principal) {
-                        Color.clear.frame(width: 72, height: 44).accessibilityHidden(true)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .principal) {
-                        Color.clear.frame(width: 72, height: 44).accessibilityHidden(true)
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    chatsButton(screen, revision: toolbarRevision, owner: toolbarOwner)
-                }
-            } else if toolbarVisible, let t3Chrome {
+            if let t3Chrome {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Spaces", systemImage: "line.3.horizontal") {
                         guard canPresentToolbar() else { return }
@@ -332,19 +231,6 @@ struct ChatView: View {
         }
     }
 
-    private var overviewPane: some View {
-        ChatOverviewContainer(isPresented: showsOverview, transition: overviewTransition,
-                              onDismiss: { overviewCovered = false; showsOverview = false }) {
-            if let screen, let profile = try? ExactID(bot.id) {
-                ChatPickerCards(workspace: workspace, profile: profile) { cards in
-                    picker(screen, cards: cards, workspace: workspace)
-                }
-                .environment(\.colorScheme, colorScheme)
-                .dynamicTypeSize(textSize)
-            }
-        }
-    }
-
     private func mayPresent(revision: UUID, owner: PresentationOwner?) -> Bool {
         guard canPresentToolbar(), presentation.revision == revision,
               store.selectedBotID?.utf8.elementsEqual(bot.id.utf8) == true,
@@ -353,103 +239,14 @@ struct ChatView: View {
     }
 
     private func presentProfile(revision: UUID, owner: PresentationOwner?) {
-        guard mayPresent(revision: revision, owner: owner) else { return }
-        if store.isT3Workspace, let t3Chrome {
-            editing.cancel()
-            t3Chrome.openBotto()
-            return
-        }
-        guard let destination = store.avatarDestination(for: bot) else { return }
-        coverTranscript()
-        importPresentationRevision = UUID()
-        profileDestination = destination
-        overviewSelectionID = nil; overviewCreationSource = nil
-        showsProfile = true
+        guard mayPresent(revision: revision, owner: owner), let t3Chrome else { return }
+        editing.cancel()
+        t3Chrome.openBotto()
     }
 
-    private func profileActivation(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> (@MainActor () -> Void)? {
-        guard screen != nil else { return nil }
-        return { presentProfile(revision: revision, owner: owner) }
-    }
+    /// The widest the bar’s title may be without reaching the buttons or leaving the center.
+    private var t3HeaderMaxWidth: CGFloat { max(120, paneWidth - 2 * (16 + 44 + 8 + 8)) }
 
-    private func presentOverview(revision: UUID, owner: PresentationOwner?) {
-        guard mayPresent(revision: revision, owner: owner) else { return }
-        overviewTransition.prepareOpening(id: screen?.selectedChatID.value.uuidString)
-        overviewTransition.selectedID = screen?.selectedChatID.value.uuidString
-        overviewTransition.allowsAnimation = true
-        coverTranscript()
-        importPresentationRevision = UUID()
-        overviewCovered = true
-        showsOverview = true
-        BottoHaptics.shared.play(.surface)
-    }
-
-    private func closeOverview() {
-        if let owner, let intent = workspace.captureActivation(owner) {
-            Task { await workspace.select(intent) }
-        }
-        overviewSelectionID = nil; overviewCreationSource = nil
-        overviewTransition.selectedID = screen?.selectedChatID.value.uuidString
-        showsOverview = false
-    }
-
-    private func dismissOverviewImmediately() {
-        overviewSelectionID = nil; overviewCreationSource = nil
-        overviewTransition.allowsAnimation = false
-        showsOverview = false
-        overviewTransition.finishImmediately()
-    }
-
-    /// Keep the mirrored profile target in the center region of the navigation bar.
-    private var headerSideClearance: CGFloat { 16 + 44 + 8 }
-
-    /// How far the header hangs below the bar. T3's header lives in the bar.
-    private var headerClearance: CGFloat { store.isT3Workspace ? 0 : headerOverlap }
-
-    /// The widest the bar's title may be without reaching the buttons or leaving the center.
-    private var t3HeaderMaxWidth: CGFloat { max(120, paneWidth - 2 * (headerSideClearance + 8)) }
-
-    private var headerReferenceHeight: CGFloat {
-        BotAvatarLayout(shape: .circle, size: 56).fittedHeight
-    }
-
-    private var shortAvatarHeaderLift: CGFloat {
-        let layout = BotAvatarLayout(shape: bot.face.shape, size: 56, imageSize: store.avatar(for: bot)?.size,
-                                     geometry: bot.appearance?.geometry)
-        return max(0, headerReferenceHeight - layout.fittedHeight)
-    }
-
-    private var profileNameLabel: some View {
-        Text(bot.name).font(.headline).lineLimit(textSize.isAccessibilitySize ? 2 : 1)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 18).frame(minHeight: 44)
-    }
-
-    private func profileButton(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> some View {
-        Button { presentProfile(revision: revision, owner: owner) } label: {
-            VStack(spacing: -8) {
-                AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 56, fitsBody: true)
-                    .zIndex(1)
-                let label = profileNameLabel.foregroundStyle(BottoTheme.ink)
-                if #available(iOS 26, *) {
-                    label.glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-                        .padding(.bottom, 8 + shortAvatarHeaderLift)
-                } else {
-                    label.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
-                        .padding(.bottom, 8 + shortAvatarHeaderLift)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Profile for \(bot.name)")
-        .accessibilityValue(store.avatarPresentation(for: bot, scope: .selectedChat).accessibilityStatus ?? "")
-        .accessibilityHint("View bot details or edit the profile.")
-        .accessibilityIdentifier("bot-profile-button")
-        .disabled(screen == nil)
-    }
-
-    /// A small live face, the space's own name, and what Botto is doing. Tapping it opens Botto.
     private func t3Header(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> some View {
         let activity = store.avatarPresentation(for: bot, scope: .selectedChat).activity
         let title = store.selectedT3ChannelTitle ?? T3ChannelSummary.untitledDisplayTitle
@@ -482,80 +279,6 @@ struct ChatView: View {
         .accessibilityHint("Open \(bot.name)’s page.")
         .accessibilityIdentifier("t3-chat-header")
         .disabled(screen == nil)
-    }
-
-    private func configurePreviewCapture() {
-        let store = store, workspace = workspace, cache = tabPreviews
-        let editing = editing
-        guard let profile = try? ExactID(bot.id) else { return }
-        overviewTransition.viewportProvider = { [weak preview = transcriptPreview] id in preview?.viewportView(for: id) }
-        transcriptPreview.viewportDidChange = { [weak transition = overviewTransition] in transition?.viewportDidChange?() }
-        transcriptPreview.canCapture = { [weak editing] in editing?.editor?.isFirstResponder != true }
-        transcriptPreview.didCapture = { owner, image, appearance, textSize in
-            guard store.chats === workspace, workspace.isCurrent(owner),
-                  workspace.screen(profile: profile)?.owner == owner else { return }
-            cache.capture(image, id: owner.chat.value.uuidString, colorScheme: appearance, textSize: textSize)
-        }
-    }
-
-    private func discardPreviews() {
-        transcriptPreview.invalidate()
-        tabPreviews.removeAll()
-    }
-
-    private func pickerItem(_ card: ChatCard, selected: ChatID, canClose: Bool = false) -> ChatPickerItem {
-        ChatPickerItem(id: card.id.value.uuidString, title: card.title,
-                       userPreview: card.userPreview, replyPreview: card.replyPreview,
-                       isMain: card.isMain, isSelected: card.id == selected,
-                       isPreferred: card.isPreferred, isUnread: card.unread,
-                       isAvailable: card.isAvailable, canClose: canClose, activity: card.activity)
-    }
-
-    private func chatsButton(_ screen: ChatScreen?, revision: UUID, owner: PresentationOwner?) -> some View {
-        Button {
-            if overviewCovered { closeOverview() }
-            else { presentOverview(revision: revision, owner: owner) }
-        } label: {
-            Image(systemName: "rectangle.on.rectangle")
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Chats with \(bot.name)")
-        .accessibilityValue(screen?.title ?? "Main")
-        .accessibilityHint(overviewCovered ? "Return to the current chat." : "Choose a chat or start a new one.")
-        .keyboardShortcut(overviewCovered && !localModalPresented ? KeyboardShortcut(.escape, modifiers: []) : nil)
-        .accessibilityIdentifier("chat-picker-button")
-        .disabled(screen == nil)
-    }
-
-    private func profileSheet(_ destination: AppStore.AvatarDestination, workspace: ConversationWorkspace) -> some View {
-        let revision = presentation.revision
-        return NavigationStack {
-            ScrollView {
-                BotProfileView(store: store, bot: bot, isCurrent: {
-                    showsProfile && !presentation.isBrowsingBots && store.chats === workspace &&
-                        destination.isCurrent(in: store) && presentation.revision == revision &&
-                        store.selectedBotID?.utf8.elementsEqual(bot.id.utf8) == true &&
-                        !rootCovered && !store.showsConnection && scenePhase == .active
-                }, editor: $profileEditor)
-                .padding(20)
-            }
-            .accessibilityIdentifier("bot-details-scroll")
-            .background(BottoTheme.paper)
-            .bottoNavigationChrome()
-            .navigationTitle(bot.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close profile", systemImage: "xmark") { showsProfile = false }
-                        .labelStyle(.iconOnly)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .accessibilityIdentifier("bot-profile-done")
-                }
-            }
-        }
-        .tint(BottoTheme.action)
-        .hapticSheet()
     }
 
     private func modalReporter() -> @MainActor (UUID, Bool) -> Void {
@@ -593,69 +316,9 @@ struct ChatView: View {
         workspace.setTranscriptVisible(transcriptVisible, owner: owner)
     }
 
-    private func picker(_ screen: ChatScreen, cards: [ChatCard], workspace: ConversationWorkspace) -> some View {
-        let owner = screen.owner
-        // Main is pinned; the workspace's stable sibling order is otherwise preserved.
-        let cards = cards.filter(\.isMain) + cards.filter { !$0.isMain }
-        let closed = (try? ExactID(bot.id)).map { workspace.closedChats(profile: $0) } ?? []
-        return ChatPickerView(bot: bot, items: cards.map {
-            pickerItem($0, selected: owner.chat, canClose: workspace.captureClose($0.id, owner: owner) != nil)
-        },
-                              previews: tabPreviews, transition: overviewTransition, onDone: closeOverview, headerClearance: headerOverlap + 12, isLoading: screen.isLoadingDirectory, isConnected: store.isConnected, isCreating: screen.isCreating,
-           canCreate: screen.canCreate || (!store.isConnected && screen.canEditDraft), error: screen.error,
-           connectionFeedback: ConnectionStatusView(store: store),
-           onSelect: { id in
-               guard let card = cards.first(where: { $0.id.value.uuidString == id }), card.isAvailable else { return }
-               overviewTransition.selectedID = id
-               if card.id == screen.selectedChatID { closeOverview(); return }
-               guard let intent = workspace.captureSelection(card.id, owner: owner) else { return }
-               overviewSelectionID = card.id
-               BottoHaptics.shared.play(.selection)
-               Task {
-                   await workspace.select(intent)
-                   if self.screen?.selectedChatID != card.id, overviewSelectionID == card.id { overviewSelectionID = nil }
-               }
-           }, onCreate: {
-               guard let intent = workspace.captureCreation(owner) else { return }
-               overviewCreationSource = owner.chat
-               Task {
-                   await workspace.create(intent)
-                   if self.screen?.selectedChatID == owner.chat { overviewCreationSource = nil }
-               }
-           }, onSetPreferred: { id in
-               let chat = id.flatMap { value in cards.first { $0.id.value.uuidString == value }?.id }
-               guard id == nil || chat != nil else { return }
-               workspace.preferOpening(chat, owner: owner)
-           }, onRefresh: {
-               guard workspace.isCurrent(owner) else { return }
-               Task { await workspace.refreshDirectory(owner) }
-           }, closedItems: closed.map { ChatPickerItem(id: $0.id.value.uuidString, title: $0.title) },
-           closeNotice: closeNotice,
-           onClose: { id in
-               guard overviewCovered, !showsProfile,
-                     let card = cards.first(where: { $0.id.value.uuidString == id }),
-                     let intent = workspace.captureClose(card.id, owner: owner) else { return }
-               if card.id == owner.chat { overviewSelectionID = nil; overviewCreationSource = nil }
-               if let closed = workspace.close(intent) { closeNotice = ChatCloseNotice(chatID: closed.id.value.uuidString) }
-           }, onReopen: { id in
-               guard overviewCovered, !showsProfile,
-                     let chat = closed.first(where: { $0.id.value.uuidString == id }),
-                     let intent = workspace.captureReopening(chat.id, owner: owner) else { return }
-               workspace.reopen(intent)
-               if closeNotice?.chatID == chat.id.value.uuidString { closeNotice = nil }
-           })
-        .task { await workspace.refreshDirectory(owner) }
-    }
 }
 
-private struct ChatPickerCards<Content: View>: View {
-    let workspace: ConversationWorkspace
-    let profile: ExactID
-    @ViewBuilder let content: ([ChatCard]) -> Content
-    var body: some View { content(workspace.cards(profile: profile)) }
-}
-
-private struct ChatTranscript: View {
+struct ChatTranscript: View {
     let store: AppStore
     let bot: BotProfile
     let workspace: ConversationWorkspace
@@ -664,8 +327,6 @@ private struct ChatTranscript: View {
     let messageDisplayRevision: [NativeTranscriptRowValue]
     let isExposed: Bool
     let onOpenArtifact: (AppStore.ArtifactDestination) -> Void
-    var preview: NativeTranscriptPreview? = nil
-    var topContentInset: CGFloat = 0
     var bottomContentInset: CGFloat = 0
     var searchFocus: SearchMessageFocus? = nil
     var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
@@ -717,8 +378,7 @@ private struct ChatTranscript: View {
             readerLifetime: screen?.selectedViewLifetime),
             snapshot: chat, rows: nativeRows, active: isExposed, currentTaskSnapshot: taskSnapshot(),
             currentReaderSnapshot: readerSnapshot(),
-            admitsAction: admitsAction, preview: preview, topContentInset: topContentInset,
-            bottomContentInset: bottomContentInset,
+            admitsAction: admitsAction, bottomContentInset: bottomContentInset,
             searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
     }
 
@@ -825,7 +485,6 @@ private struct ChatTranscript: View {
                 })
             }
         } else {
-            let isSpace = store.isT3Workspace
             let display = NativeTranscriptEmptyDisplay(profile: bot, image: store.avatar(for: bot),
                 opening: screen?.isOpening == true, connected: store.isConnected,
                 presentation: store.avatarPresentation(for: bot, scope: .selectedChat))
@@ -834,11 +493,11 @@ private struct ChatTranscript: View {
                     BotAvatar(profile: display.profile, image: display.image, size: display.opening ? 64 : 90,
                         presentation: display.presentation)
                     if display.opening {
-                        Text(isSpace ? "Opening your space…" : "Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
+                        Text("Opening your space…").font(.subheadline).foregroundStyle(.secondary)
                     } else {
                         Text("Hello, \(display.profile.name).").font(.title2.weight(.semibold))
                         Text(display.connected ? "A thought, a question, a little job.\nThis is a good place to start."
-                             : isSpace ? "No saved messages yet.\nReconnect to pick this space up." : "No saved messages yet.\nReconnect to start the chat.")
+                             : "No saved messages yet.\nReconnect to pick this space up.")
                             .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
                 }.frame(maxWidth: .infinity).padding(.vertical, 44))
@@ -1013,7 +672,7 @@ private struct ChatTranscript: View {
         } else if screen?.isOpening == true {
             VStack(spacing: 16) {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 64)
-                Text(store.isT3Workspace ? "Opening your space…" : "Opening your chat…").font(.subheadline).foregroundStyle(.secondary)
+                Text("Opening your space…").font(.subheadline).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
         } else {
             requestRows
@@ -1021,7 +680,7 @@ private struct ChatTranscript: View {
                 AppBotAvatar(store: store, bot: bot, scope: .selectedChat, size: 90)
                 Text("Hello, \(bot.name).").font(.title2.weight(.semibold))
                 Text(store.isConnected ? "A thought, a question, a little job.\nThis is a good place to start."
-                     : store.isT3Workspace ? "No saved messages yet.\nReconnect to pick this space up." : "No saved messages yet.\nReconnect to start the chat.")
+                     : "No saved messages yet.\nReconnect to pick this space up.")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }.frame(maxWidth: .infinity).padding(.vertical, 44)
         }

@@ -427,7 +427,7 @@ struct RichContentRendererTests {
 
     @Test func previewCannotSeeSharedCookies() async throws {
         let cookie = try #require(HTTPCookie(properties: [
-            .domain: "botto-renderer-test.invalid", .path: "/", .name: "hermes-test-\(UUID())", .value: "credential-sentinel"
+            .domain: "botto-renderer-test.invalid", .path: "/", .name: "storage-test-\(UUID())", .value: "credential-sentinel"
         ]))
         let shared = WKWebsiteDataStore.default().httpCookieStore
         await shared.setCookie(cookie)
@@ -724,7 +724,7 @@ struct RichContentRendererTests {
         attempt('bridge', () => typeof window.webkit);
         attempt('parentBridge', () => typeof parent.webkit);
         attempt('cookie', () => document.cookie);
-        attempt('storage', () => localStorage.getItem('Hermes'));
+        attempt('storage', () => localStorage.getItem('session'));
         attempt('rtc', () => typeof RTCPeerConnection);
         attempt('worker', () => typeof Worker);
         attempt('camera', () => typeof navigator.mediaDevices);

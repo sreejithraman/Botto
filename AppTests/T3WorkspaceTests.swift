@@ -1,11 +1,12 @@
 import Foundation
+import Security
 import SwiftUI
 import Testing
 import UIKit
 @testable import Botto
 @testable import BottoCore
 
-@MainActor @Suite(.timeLimit(.minutes(3))) struct T3WorkspaceTests {
+@MainActor @Suite(.serialized, .timeLimit(.minutes(3))) struct T3WorkspaceTests {
     @Test func mountsTheBotAndOpensTheExactStoredChannel() async throws {
         let service = T3WorkspaceService()
         let configuration = t3Configuration()
@@ -15,7 +16,6 @@ import UIKit
 
         await store.start()
 
-        #expect(store.isT3Workspace)
         #expect(store.serverName == "Studio")
         #expect(store.primaryT3Bot?.id == "bot-project")
         #expect(store.t3Channels.map(\.title) == ["#general", "Release"])
@@ -119,22 +119,112 @@ import UIKit
                                            key: invite.previewKey)
         var tampered = envelope
         tampered.eventID = String(repeating: "c", count: 64)
-        await store.openPushNotification(tampered)
-        #expect(store.notificationNavigationRevision == revision)
+        func verifyTap() async throws {
+            await store.openPushNotification(tampered)
+            #expect(store.notificationNavigationRevision == revision)
+            #expect(store.showsConnection == !cold)
 
-        let profile = try ExactID("bot-project")
-        if let screen = store.chats.screen(profile: profile) {
+            let profile = try ExactID("bot-project")
+            if let screen = store.chats.screen(profile: profile) {
+                store.chats.setTranscriptVisible(true, owner: screen.owner)
+            }
+            #expect(store.shouldPresentPush(envelope))
+            await store.openPushNotification(envelope)
+            #expect(service.openedStoredThreads == initialOpens + ["release"])
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(!store.showsConnection)
+            #expect(store.notificationNavigationRevision != revision)
+            #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
+            let screen = try #require(store.chats.screen(profile: profile))
             store.chats.setTranscriptVisible(true, owner: screen.owner)
+            #expect(!store.shouldPresentPush(envelope))
         }
-        #expect(store.shouldPresentPush(envelope))
-        await store.openPushNotification(envelope)
-        #expect(service.openedStoredThreads == initialOpens + ["release"])
-        #expect(store.selectedT3ChannelID == "release")
-        #expect(store.notificationNavigationRevision != revision)
-        #expect(store.conversation(for: "bot-project")?.messages.map(\.text) == ["Chat in release"])
-        let screen = try #require(store.chats.screen(profile: profile))
-        store.chats.setTranscriptVisible(true, owner: screen.owner)
-        #expect(!store.shouldPresentPush(envelope))
+        if cold {
+            try await verifyTap()
+        } else {
+            try NativeAccessibilityRuntime.enable()
+            store.showsConnection = true
+            try await withHosted(RootView(store: store)) { window in
+                _ = try await labels(in: window, cover: ("connection-cover-opening", store)) {
+                    $0.contains("Find Botto on your Mac")
+                }
+                try await verifyTap()
+                _ = try await labels(in: window, cover: ("release-after-notification-tap", store)) {
+                    !$0.contains("Find Botto on your Mac") && $0.contains { $0.contains("Chat in release") }
+                }
+                #expect(window.rootViewController?.presentedViewController == nil)
+            }
+        }
+    }
+
+    @Test func retiresOnlyTheOriginalNotificationKeyAfterUnlock() throws {
+        var accounts: Set<String> = ["pairing-v1", "t3-pairing-v1"]
+        var locked = true
+        func delete(_ query: [String: Any]) -> OSStatus {
+            #expect(query[kSecClass as String] as? String == kSecClassGenericPassword as String)
+            #expect(query[kSecAttrService as String] as? String == "com.sree.botto.push")
+            guard let account = query[kSecAttrAccount as String] as? String else {
+                Issue.record("Keychain deletion needs an exact account")
+                return errSecParam
+            }
+            #expect(account == "pairing-v1")
+            if locked { return errSecInteractionNotAllowed }
+            return accounts.remove(account) == nil ? errSecItemNotFound : errSecSuccess
+        }
+
+        #expect(throws: PushError.unavailableStorage) { try PushPairingVault.retireLegacyPairing(delete: delete) }
+        #expect(accounts == ["pairing-v1", "t3-pairing-v1"])
+        locked = false
+        try PushPairingVault.retireLegacyPairing(delete: delete)
+        try PushPairingVault.retireLegacyPairing(delete: delete)
+        #expect(accounts == ["t3-pairing-v1"])
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func forgettingFromWelcomeRetiresKnownT3Notifications(savedSetupUnreadable: Bool, removeFails: Bool) async throws {
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invitation = pushInvitation(host: "192.0.2.5", scope: scope, digit: "c")
+        let installation = String(repeating: "a", count: 64)
+        var pairings: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { pairings }, save: { pairings = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, _ in
+                if request.target == nil { throw T3PushRegistrationError.bridgeUnavailable }
+                return .init(.registered, installationID: installation)
+            })
+        await push.enable(code: try invitation.code(), scope: scope)
+        try #require(push.pairing(scope) != nil)
+
+        let saved = savedSetupUnreadable ? t3Configuration() : ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        var savedSetup: ConnectionConfiguration? = saved
+        let removalError = CocoaError(.fileWriteNoPermission)
+        let storage = ConnectionPersistence(load: {
+            if savedSetupUnreadable, savedSetup != nil { throw PushError.unavailableStorage }
+            return savedSetup
+        }, save: { savedSetup = $0 }, remove: {
+            if removeFails { throw removalError }
+            savedSetup = nil
+        })
+        let store = AppStore(persistence: storage, t3Push: push)
+        #expect(store.configuration == nil)
+        #expect(store.savedSetupLoadFailed == savedSetupUnreadable)
+        #expect(store.hasOlderSavedSetup == !savedSetupUnreadable)
+
+        await store.forgetConnectionWithPush()
+
+        #expect(push.pairing(scope) == nil)
+        #expect(pairings.count == 1 && pairings.first?.registration.target == nil)
+        if removeFails {
+            #expect(savedSetup == saved)
+            #expect(store.savedSetupLoadFailed == savedSetupUnreadable)
+            #expect(store.hasOlderSavedSetup == !savedSetupUnreadable)
+            #expect(store.notice == removalError.localizedDescription)
+        } else {
+            #expect(savedSetup == nil)
+            #expect(!store.savedSetupLoadFailed)
+            #expect(!store.hasOlderSavedSetup)
+            #expect(push.notice != nil && store.notice == push.notice)
+        }
     }
 
     @Test(arguments: [false, true])
@@ -286,23 +376,28 @@ import UIKit
     }
 
     @Test func failedT3ReplacementKeepsTheSavedWorkspaceAndLiveService() async throws {
-        let original = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "original")
-        let candidate = t3Configuration()
+        let original = t3Configuration()
+        var candidate = t3Configuration()
+        candidate.t3?.environmentID = "different-studio"
+        let candidateID = candidate.id
         defer {
             LocalHistory.remove(for: original.id)
-            LocalHistory.remove(for: candidate.id)
+            LocalHistory.remove(for: candidateID)
         }
         let storage = MemoryConnectionStorage(saved: original)
-        let originalService = try WorkspaceTestService()
+        let originalService = T3WorkspaceService()
         let candidateService = T3WorkspaceService()
-        candidateService.connectError = T3ServiceError.differentEnvironment
+        candidateService.connectError = .differentEnvironment
         let store = AppStore(persistence: storage.persistence, makeService: { configuration in
-            if configuration?.t3 != nil { return candidateService }
-            return originalService
+            configuration?.id == candidateID ? candidateService : originalService
         })
         await store.start()
-        await store.testEdit("Keep this draft", for: "milo")
+        let release = try #require(store.t3Channels.first { $0.id == "release" })
+        try #require(await store.openT3Channel(release))
+        let profile = try ExactID("bot-project")
         let workspace = store.chats
+        let owner = try #require(workspace.screen(profile: profile)?.owner)
+        workspace.editDraft("Keep this draft", owner: owner)
 
         #expect(!(await store.connect(candidate)))
 
@@ -311,11 +406,9 @@ import UIKit
         #expect(storage.saved == original)
         #expect(store.chats === workspace)
         #expect(store.isConnected)
-        #expect(!store.isT3Workspace)
-        #expect(store.draft(for: "milo") == "Keep this draft")
-        await store.open(try #require(store.bot(withID: "milo")))
-        #expect(originalService.opens.last?.profile.text == "milo")
-        #expect(store.chats.screen(profile: originalService.profile)?.canAct == true)
+        #expect(workspace.draft(owner) == "Keep this draft")
+        #expect(await store.openT3Channel(release))
+        #expect(originalService.openedStoredThreads.last == "release")
     }
 
     @Test func foregroundReconnectKeepsDraftAndReattachmentWarning() async throws {
@@ -383,6 +476,55 @@ import UIKit
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
     }
 
+    enum Replacement: CaseIterable {
+        case sameWorkspace, differentAddress, differentEnvironment, differentProject, failedSave
+    }
+
+    @Test(arguments: Replacement.allCases)
+    func replacingSetupOnlyCarriesDraftsToTheSameT3Workspace(_ replacement: Replacement) async throws {
+        var original = t3Configuration()
+        original.t3?.workspaceRoot = "/host/.botto/bots/main"
+        var candidate = t3Configuration()
+        candidate.t3?.workspaceRoot = original.t3?.workspaceRoot
+        candidate.t3?.accessToken = "rotated-fixture-token"
+        switch replacement {
+        case .differentAddress: candidate.serverURL = try #require(URL(string: "https://other.example"))
+        case .differentEnvironment: candidate.t3?.environmentID = "other-environment"
+        case .differentProject: candidate.t3?.projectID = "other-project"
+        case .sameWorkspace, .failedSave: break
+        }
+        defer {
+            LocalHistory.remove(for: original.id)
+            LocalHistory.remove(for: candidate.id)
+        }
+        let storage = MemoryConnectionStorage(saved: original)
+        let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
+        await store.start()
+        let general = try #require(store.t3Channels.first { $0.isMain })
+        try #require(await store.openT3Channel(general))
+        let profile = try ExactID("bot-project")
+        let owner = try #require(store.chats.screen(profile: profile)?.owner)
+        let draft = "Keep the original Space draft"
+        store.chats.editDraft(draft, owner: owner)
+        storage.failSave = replacement == .failedSave
+
+        let replaced = await store.connect(candidate)
+
+        if replacement == .failedSave {
+            let candidateCache = try LocalHistory.file(for: candidate.id)
+            #expect(!replaced)
+            #expect(storage.saved == original)
+            #expect(store.chats.draft(owner) == draft)
+            #expect(!FileManager.default.fileExists(atPath: candidateCache.path))
+        } else {
+            try #require(replaced)
+            #expect(storage.saved?.id == candidate.id)
+            try #require(await store.openT3Channel(general))
+            let current = try #require(store.chats.screen(profile: profile)?.owner)
+            #expect(store.chats.draft(current) == (replacement == .sameWorkspace ? draft : ""))
+        }
+    }
+
     @Test func loadsAndSavesBotBrainThroughTheMountedService() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
@@ -417,8 +559,8 @@ import UIKit
 
     @Test func cacheScopesDistinguishBackendsEnvironmentsAndProjectsOnTheSameAddress() {
         let t3 = t3Configuration()
-        var hermes = t3
-        hermes.t3 = nil
+        var older = t3
+        older.t3 = nil
         var otherEnvironment = t3
         otherEnvironment.t3?.environmentID = "other-environment"
         var otherProject = t3
@@ -426,8 +568,8 @@ import UIKit
         var rotatedToken = t3
         rotatedToken.t3?.accessToken = "replacement"
 
-        #expect(Set([hermes, t3, otherEnvironment, otherProject].map(AppStore.artifactScope)).count == 4)
-        #expect(Set([hermes, t3, otherEnvironment, otherProject].map(AppStore.richReplyAccount)).count == 4)
+        #expect(Set([older, t3, otherEnvironment, otherProject].map(AppStore.artifactScope)).count == 4)
+        #expect(Set([older, t3, otherEnvironment, otherProject].map(AppStore.richReplyAccount)).count == 4)
         #expect(AppStore.artifactScope(rotatedToken) == AppStore.artifactScope(t3))
         #expect(AppStore.richReplyAccount(rotatedToken) == AppStore.richReplyAccount(t3))
     }
@@ -435,12 +577,73 @@ import UIKit
     @Test func loadsTheBackendForSavedSetupWithoutAnInjectedService() {
         let t3 = t3Configuration()
         let store = AppStore(persistence: MemoryConnectionStorage(saved: t3).persistence)
-        #expect(store.t3BrainService is T3BotService)
-        var hermes = t3
-        hermes.t3 = nil
-        let prior = AppStore(persistence: MemoryConnectionStorage(saved: hermes).persistence)
-        #expect(!prior.isT3Workspace)
-        #expect(prior.t3BrainService == nil)
+        #expect(store.configuration == t3)
+        var older = t3
+        older.t3 = nil
+        let storage = MemoryConnectionStorage(saved: older)
+        let prior = AppStore(persistence: storage.persistence)
+        #expect(prior.configuration == nil)
+        #expect(prior.link == .unconfigured)
+        #expect(storage.saved == older)
+    }
+
+    @Test func retryingAnOlderSavedSetupAllowsT3Pairing() async throws {
+        let candidate = t3Configuration()
+        let older = ConnectionConfiguration(serverURL: candidate.serverURL)
+        defer { LocalHistory.remove(for: candidate.id) }
+        let storage = MemoryConnectionStorage(saved: older)
+        storage.failLoad = true
+        let store = AppStore(persistence: storage.persistence, makeService: { _ in T3WorkspaceService() })
+        #expect(store.savedSetupLoadFailed)
+
+        storage.failLoad = false
+        try #require(store.retrySavedSetup())
+
+        #expect(!store.savedSetupLoadFailed)
+        #expect(store.configuration == nil)
+        #expect(store.hasOlderSavedSetup)
+        #expect(storage.saved == older)
+        try #require(await store.connect(candidate))
+        #expect(store.configuration == candidate)
+        #expect(storage.saved == candidate)
+        #expect(!store.hasOlderSavedSetup)
+    }
+
+    @Test func olderSavedSetupCanBeForgottenWithoutConnecting() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        defer { LocalHistory.remove(for: older.id) }
+        var history = LocalHistory()
+        try history.fixtureDraft("An older draft", profile: "milo")
+        try history.save(for: older.id)
+        let cache = try LocalHistory.file(for: older.id)
+        let storage = MemoryConnectionStorage(saved: older)
+        let push = T3PushCoordinator(load: { throw PushError.unavailableStorage }, save: { _ in
+            Issue.record("A setup without active notification pairings should not write push storage")
+        })
+        let store = AppStore(persistence: storage.persistence, t3Push: push)
+
+        try await withHosted(RootView(store: store)) { window in
+            let options = try await labels(in: window) { $0.contains("Forget saved setup") }
+            #expect(options.contains("Pair with your Mac"))
+            #expect(options.contains("Explore the demo"))
+        }
+        await store.forgetConnectionWithPush()
+
+        #expect(storage.saved == nil)
+        #expect(!store.hasOlderSavedSetup)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
+    @Test func embeddedDemoOpensItsMainSpaceWithoutNotificationStartup() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        await store.enterDemo()
+        #expect(!store.hasStarted)
+        try await withHosted(RootView(store: store, onExitDemoPreview: {})) { window in
+            _ = try await labels(in: window) { $0.contains("Main Space") && store.selectedT3ChannelID != nil }
+            #expect(store.t3Channels.first(where: \.isMain)?.id == store.selectedT3ChannelID)
+        }
     }
 
     @Test func passesOutputsThroughTheMountedService() async throws {
@@ -506,12 +709,11 @@ import UIKit
         #expect(store.selectedT3ChannelID == "release")
     }
 
-    @Test func t3PassthroughsRefuseHermesAndDisconnectedWorkspaces() async throws {
-        let hermes = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "hermes")
-        defer { LocalHistory.remove(for: hermes.id) }
-        let store = AppStore(service: try WorkspaceTestService(), persistence: MemoryConnectionStorage(saved: hermes).persistence)
+    @Test func t3PassthroughsRequireAConnectedT3Service() async throws {
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "older")
+        defer { LocalHistory.remove(for: older.id) }
+        let store = AppStore(service: try WorkspaceTestService(), persistence: MemoryConnectionStorage(saved: older).persistence)
         await store.start()
-        #expect(!store.isT3Workspace)
         await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Outputs() }
         await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Routines() }
         await #expect(throws: T3ServiceError.unsupported) {
@@ -584,6 +786,49 @@ import UIKit
         let (longBar, longTitle) = try await header(in: window)
         #expect(store.selectedT3ChannelTitle?.hasPrefix("A very long") == true)
         try checkHeader(longTitle, in: longBar)
+    }
+
+    @Test func opensTheInitialSpaceAfterPairingDismisses() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let service = T3WorkspaceService()
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        store.showsConnection = true
+
+        try await withHosted(RootView(store: store)) { window in
+            _ = try await labels(in: window) { $0.contains("Scan the code") }
+            #expect(service.openedStoredThreads.isEmpty)
+
+            store.showsConnection = false
+            _ = try await header(in: window)
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(service.openedStoredThreads == ["release"])
+        }
+    }
+
+    @Test func aResolvedProjectChangeReopensTheInitialSpaceWithTheSameSetupID() async throws {
+        let original = t3Configuration()
+        var replacement = original
+        replacement.t3?.projectID = "another-project"
+        defer { LocalHistory.remove(for: original.id) }
+        let first = T3WorkspaceService(), next = T3WorkspaceService()
+        let store = AppStore(persistence: MemoryConnectionStorage(saved: original).persistence, makeService: { configuration in
+            configuration?.t3?.projectID == "another-project" ? next : first
+        })
+        await store.start()
+
+        try await withHosted(RootView(store: store)) { window in
+            _ = try await header(in: window)
+            #expect(first.openedStoredThreads == ["release"])
+            try #require(await store.connect(replacement))
+            _ = try await header(in: window)
+            #expect(store.configuration?.id == original.id)
+            #expect(store.configuration?.t3?.projectID == "another-project")
+            #expect(store.selectedT3ChannelID == "release")
+            #expect(next.openedStoredThreads == ["release"])
+        }
     }
 
     private func header(in window: UIWindow) async throws -> (UINavigationBar, UIView) {
@@ -756,7 +1001,7 @@ import UIKit
         #expect(await store.openT3Channel(release))
         gate.release()
 
-        await #expect(throws: HermesServiceError.staleConversation) { try await starting.value }
+        await #expect(throws: ConversationServiceError.staleConversation) { try await starting.value }
         #expect(store.selectedT3ChannelID == release.id)
         #expect(service.createdThreads.count == 1)
         #expect(service.sent.isEmpty)
@@ -895,23 +1140,7 @@ import UIKit
 
     // MARK: First run
 
-    @Test func everyNewConnectionStartsWithPairingAMac() throws {
-        let t3 = t3Configuration()
-        var hermes = t3
-        hermes.t3 = nil
-        // A fresh install, a paired workspace and the demo all pair with a Mac.
-        #expect(ConnectionBackend.initial(input: "", saved: nil, isDemo: false) == .t3)
-        #expect(ConnectionBackend.initial(input: "", saved: t3, isDemo: false) == .t3)
-        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: true) == .t3)
-        #expect(ConnectionBackend.initial(input: "http://192.168.1.10:3774/pair#token=A", saved: hermes, isDemo: false) == .t3)
-        // Someone already on Hermes, or opening a Hermes link, still gets that page.
-        #expect(ConnectionBackend.initial(input: "", saved: hermes, isDemo: false) == .hermes)
-        #expect(ConnectionBackend.initial(input: "botto://hermes/connect?url=https%3A%2F%2Fhost.example", saved: nil, isDemo: false) == .hermes)
-        #expect(ConnectionBackend.named(by: "https://host.example") == nil)
-        #expect(ConnectionBackend.named(by: "hermes://connect?url=https%3A%2F%2Fhost.example") == .hermes)
-    }
-
-    @Test func freshInstallOpensOnBottoAndPairsWithoutNamingHermes() async throws {
+    @Test func freshInstallOpensOnBottoAndPairsWithAMac() async throws {
         try NativeAccessibilityRuntime.enable()
         let store = AppStore(persistence: MemoryConnectionStorage().persistence)
         await store.start()
@@ -919,12 +1148,25 @@ import UIKit
         try await withHosted(RootView(store: store)) { window in
             let welcome = try await labels(in: window) { $0.contains("Pair with your Mac") }
             #expect(welcome.contains("Explore the demo"))
-            #expect(!welcome.contains { $0.localizedCaseInsensitiveContains("Hermes") || $0.contains("T3") })
+            #expect(!welcome.contains { $0.contains("T3 Code") })
         }
         try await withHosted(ConnectionView(store: store)) { window in
             let pairing = try await labels(in: window) { $0.contains("Scan the code") }
             #expect(pairing.contains("Find Botto on your Mac"))
-            #expect(!pairing.contains { $0.contains("T3 Code") || $0.localizedCaseInsensitiveContains("connect your hermes") })
+            #expect(!pairing.contains { $0.contains("T3 Code") || $0.contains("Use a server") })
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func addressReviewWarnsOnlyWhenAnOlderSetupExists(olderSetup: Bool) async throws {
+        try NativeAccessibilityRuntime.enable()
+        let older = ConnectionConfiguration(serverURL: URL(string: "https://older.example")!)
+        let storage = MemoryConnectionStorage(saved: olderSetup ? older : nil)
+        let store = AppStore(persistence: storage.persistence)
+
+        try await withHosted(ConnectionView(store: store, input: "https://mac.example/pair#token=fixture-only")) { window in
+            let review = try await labels(in: window) { $0.contains("Is this your Mac?") && $0.contains("Connect") }
+            #expect(review.contains("Pairing removes the older setup and its saved messages from this device.") == olderSetup)
         }
     }
 
@@ -967,7 +1209,7 @@ import UIKit
 
             // A failed rename keeps the page, so it can simply be tried again. The choices are already safe.
             service.failsRename = true
-            await #expect(throws: HermesServiceError.uncertain) {
+            await #expect(throws: ConversationServiceError.uncertain) {
                 try await store.setUpT3Bot(name: "Miso", face: BotFace(shape: .cloud, color: "#f97316"))
             }
             #expect(service.manifest.displayName == "Miso")
@@ -1023,7 +1265,6 @@ import UIKit
         defer { LocalHistory.remove(for: configuration.id) }
         let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
-        #expect(store.isT3Workspace)
         #expect(!store.needsT3BotSetup)
     }
 
@@ -1039,7 +1280,8 @@ import UIKit
     }
 
     /// Everything the hosted view reads out, once it satisfies `ready`.
-    private func labels(in window: UIWindow, until ready: (Set<String>) -> Bool) async throws -> Set<String> {
+    private func labels(in window: UIWindow, cover: (wait: String, store: AppStore)? = nil,
+                        until ready: (Set<String>) -> Bool) async throws -> Set<String> {
         func walk(_ object: NSObject, into found: inout Set<String>, seen: inout Set<ObjectIdentifier>) {
             guard seen.insert(ObjectIdentifier(object)).inserted else { return }
             if let label = object.accessibilityLabel, !label.isEmpty { found.insert(label) }
@@ -1050,17 +1292,34 @@ import UIKit
             for child in children { walk(child, into: &found, seen: &seen) }
         }
         var found: Set<String> = []
-        let settled = try await waitWhile("The hosted view settled", diagnostics: { "\(found.sorted())" }) {
+        var readyOnLastPoll = false
+        let settled = try await waitWhile(cover?.wait ?? "The hosted view settled", diagnostics: {
+            guard let cover, !readyOnLastPoll, !Task.isCancelled else { return "\(found.sorted())" }
+            let presented = window.rootViewController?.presentedViewController
+            let presentedType = presented.map { String(reflecting: type(of: $0)) } ?? "nil"
+            let choice = Mirror(reflecting: cover.store).children.first { $0.label == "connectionChoice" }?.value as? UUID
+            let scene = window.windowScene
+            let keyWindow = scene?.windows.first(where: \.isKeyWindow)
+            let key = keyWindow == nil ? "none" : (keyWindow === window ? "fixture" : "other")
+            return """
+                presentedViewController=\(presentedType)
+                showsConnection=\(cover.store.showsConnection) connectionChoice=\(choice?.uuidString ?? "unavailable")
+                sceneActivation=\(scene.map { String(describing: $0.activationState) } ?? "nil") keyWindow=\(key)
+                labels=\(found.sorted())
+                """
+        }) {
             window.layoutIfNeeded()
             found = []
             var seen: Set<ObjectIdentifier> = []
             walk(window, into: &found, seen: &seen)
-            if !found.isEmpty, ready(found) { return false }
+            readyOnLastPoll = !found.isEmpty && ready(found)
+            if readyOnLastPoll { return false }
             try await Task.sleep(for: .milliseconds(50))
             return true
         }
         if settled { return found }
-        Issue.record("The hosted view never settled: \(found.sorted())")
+        let wait = cover.map { "\($0.wait): " } ?? ""
+        Issue.record("\(wait)The hosted view never settled: \(found.sorted())")
         return found
     }
 
@@ -1241,7 +1500,7 @@ import UIKit
         return try await bots()[0]
     }
     func renameChannel(threadID: String, title: String) async throws {
-        if failsRename { throw HermesServiceError.uncertain }
+        if failsRename { throw ConversationServiceError.uncertain }
         renames[threadID] = title
         currentT3Channels = currentT3Channels.map { space in
             guard space.id == threadID else { return space }

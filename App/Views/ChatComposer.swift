@@ -135,7 +135,7 @@ struct ChatComposer: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22)
             }
             Group {
-                if store.isT3Workspace { t3Field } else { field }
+                field
             }
             .composerGlassGroup()
             .padding(.horizontal, 12).padding(.bottom, 8)
@@ -192,22 +192,8 @@ struct ChatComposer: View {
         }
     }
 
-    private var field: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            attachMenu {
-                Image(systemName: "plus").font(.system(size: 20)).frame(width: 48, height: 48)
-                    .controlGlass(in: Circle())
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                editor
-                actionButton(prominentStop: false).padding(3)
-            }
-            .controlGlass(in: RoundedRectangle(cornerRadius: 26))
-        }
-    }
-
     /// One calm box: the message on top, then attach, this chat's model, and Send or Stop.
-    private var t3Field: some View {
+    private var field: some View {
         VStack(alignment: .leading, spacing: 2) {
             editor.padding(.horizontal, 6)
             HStack(spacing: 6) {
@@ -216,11 +202,11 @@ struct ChatComposer: View {
                         .background(BottoTheme.paper, in: Circle())
                         .frame(width: 44, height: 44).contentShape(Circle())
                 }
-                if let channel = store.selectedT3Channel, screen != nil {
+                if !store.isDemo, let channel = store.selectedT3Channel, screen != nil {
                     T3ModelChip(store: store, chat: channel)
                 }
                 Spacer(minLength: 0)
-                actionButton(prominentStop: true)
+                actionButton
             }
         }
         .padding(6)
@@ -234,7 +220,7 @@ struct ChatComposer: View {
         NativeComposerEditor(text: draft,
             identity: screen.map { .init(owner: $0.owner, viewLifetime: $0.selectedViewLifetime, revision: editingRevision) },
             enabled: inputAvailable && screen?.canEditDraft == true,
-            placeholder: store.isT3Workspace ? "Reply to \(bot.name)" : "Message \(bot.name)",
+            placeholder: "Reply to \(bot.name)",
             accessibilityLabel: "Message to \(bot.name)",
             editing: editingHandle, canEdit: {
                 guard canContinueEditing(), let screen else { return false }
@@ -252,8 +238,8 @@ struct ChatComposer: View {
         .accessibilityLabel("Add attachment").disabled(!canCompose || uploading || sending)
     }
 
-    private func actionButton(prominentStop: Bool) -> some View {
-        let stopStyle = prominentStop && (offersStop || stopping != nil)
+    private var actionButton: some View {
+        let stopStyle = offersStop || stopping != nil
         let fill: Color = !actionEnabled ? .clear : stopStyle ? BottoTheme.ink : BottoTheme.action
         let glyph: Color = !actionEnabled ? BottoTheme.disabledForeground : stopStyle ? BottoTheme.paper : BottoTheme.onAction
         return Button {
@@ -375,8 +361,8 @@ struct ChatComposer: View {
             return false
         }
         guard canCompose else {
-            attachmentError = .pasteGuidance(screen?.isOpening == true ? (store.isT3Workspace ? "The space is opening. Paste again when it’s ready." : "The chat is opening. Paste again when it’s ready.") :
-                store.isT3Workspace ? "The space isn’t ready for attachments. Reopen it, then paste again." : "The chat isn’t ready for attachments. Reopen it, then paste again.")
+            attachmentError = .pasteGuidance(screen?.isOpening == true ? "The space is opening. Paste again when it’s ready." :
+                "The space isn’t ready for attachments. Reopen it, then paste again.")
             return false
         }
         guard !sending, !uploading else {

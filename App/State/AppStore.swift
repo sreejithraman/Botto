@@ -204,7 +204,6 @@ import BottoCore
     private var pinned: Set<ExactID> = []
     private var unpinned: Set<ExactID> = []
     private(set) var chats: ConversationWorkspace
-    let push: PushCoordinator
     let t3Push: T3PushCoordinator
     var t3PushScope: T3PushScope? {
         guard !isDemo, let t3 = configuration?.t3, !t3.environmentID.isEmpty, let project = t3.projectID else { return nil }
@@ -212,20 +211,18 @@ import BottoCore
     }
 
     func shouldPresentPush(_ envelope: PushEnvelope) -> Bool {
-        if let scope = t3PushScope { return t3Push.shouldPresent(envelope, scope: scope,
-                                        visible: chats.visibleChatIdentity.map(PushDestination.init)) }
-        return push.shouldPresent(envelope)
+        guard let scope = t3PushScope else { return false }
+        return t3Push.shouldPresent(envelope, scope: scope,
+                                    visible: chats.visibleChatIdentity.map(PushDestination.init))
     }
     private(set) var notificationNavigationRevision = UUID()
-    /// A scene's receipt for presenting accepted notifications. Only the receipt keeps it alive,
-    /// so a replaced scene can drop its own without detaching its successor.
+    /// The mounted scene retains the receipt that lets an accepted tap dismiss its cover.
     @MainActor final class NotificationPresentation {
         fileprivate let present: @MainActor () -> Void
         fileprivate init(present: @escaping @MainActor () -> Void) { self.present = present }
     }
     @ObservationIgnored private weak var notificationPresentation: NotificationPresentation?
-    /// `present` runs in the actor turn that accepts a tap. A compact column changed later
-    /// from `onChange` can miss the native split view and leave the chat behind the Inbox.
+    /// Dismiss the root cover in the same actor turn that commits the notification destination.
     func bindNotificationPresentation(_ present: @escaping @MainActor () -> Void) -> NotificationPresentation {
         let presentation = NotificationPresentation(present: present)
         notificationPresentation = presentation
@@ -264,7 +261,6 @@ import BottoCore
     var selectedBotID: String? {
         get { access(keyPath: \.selectedBotID); return selectedBotStorage }
         set {
-            // A direct write is the newest selection intent, so a retained tap cannot navigate over it later.
             pendingPushNotification = nil
             selectBotID(newValue)
         }
@@ -283,7 +279,6 @@ import BottoCore
             guard selectionRevision == attempt, isCurrent() else { return false }
             let workspace = chats
             selectedBotStorage = value
-            settleOpeningInterruption()
             retireArtifactPresentation()
             guard selectionRevision == attempt, isCurrent() else { return false }
             switch presentation {
@@ -347,34 +342,29 @@ import BottoCore
     @ObservationIgnored private let artifactCache: ArtifactCache
     private var mountedArtifactScope: ArtifactCacheScope?
     @ObservationIgnored private let persistence: ConnectionPersistence
+    private var olderSavedSetupID: UUID?
+    var hasOlderSavedSetup: Bool { olderSavedSetupID != nil }
     @ObservationIgnored private let cleanupHistory: (UUID?) throws -> Void
     @ObservationIgnored private var richReplies: RichReplyPresentations?
     private var generation: UUID { connection.generation }
     private var avatarWorkspaceGeneration = UUID()
     private var attachmentRecoveryGeneration: UUID { connection.recoveryGeneration }
     private(set) var hasStarted = false
-    #if DEBUG
-    @ObservationIgnored private var interruptsFirstOpening = ProcessInfo.processInfo.arguments.contains("--interrupted-opening-demo")
-    #endif
     @ObservationIgnored private var active = true
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
-    // Refresh consumes the previous token, even if secure storage is temporarily locked.
-    // Retain the replacement independently of the visible workspace and socket owner.
-    @ObservationIgnored private var rotatedConfigurations: [UUID: ConnectionConfiguration] = [:]
     private var botRefresh: BotRefresh?
     @ObservationIgnored private var botInvalidationRefresh: BotInvalidationRefresh?
     @ObservationIgnored private let waitForBotInvalidationInterval: @MainActor () async throws -> Void
     private let avatars: BotAvatarStore
     @ObservationIgnored private var avatarSaves: [String: UUID] = [:]
 
-    init(service: (any BotService)? = nil, persistence: ConnectionPersistence? = nil, push: PushCoordinator? = nil,
+    init(service: (any BotService)? = nil, persistence: ConnectionPersistence? = nil,
          t3Push: T3PushCoordinator? = nil,
          cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init,
          waitForBotInvalidationInterval: @escaping @MainActor () async throws -> Void = {
              try await Task.sleep(for: .seconds(5))
          }, makeService: @escaping @MainActor (ConnectionConfiguration?) -> any BotService = {
-             if $0?.t3 != nil { return T3BotService() }
-             return HermesBotService()
+             _ in T3BotService()
          }) {
         let liveService = service ?? makeService(nil)
         self.artifactCache = artifactCache ?? (persistence == nil ? .shared : ArtifactCache(root: nil))
@@ -387,27 +377,29 @@ import BottoCore
             book: .init(), service: liveService, onDirty: {})
         self.persistence = persistence ?? .keychain
         self.waitForBotInvalidationInterval = waitForBotInvalidationInterval
-        if let push { self.push = push }
-        else if persistence != nil {
-            var savedPush = PushSavedState()
-            self.push = PushCoordinator(persistence: .init(load: { savedPush }, save: { savedPush = $0 }),
-                authorization: .init(requestPermission: { false }, deviceToken: { throw PushError.tokenUnavailable }))
-        } else { self.push = PushCoordinator() }
         self.t3Push = t3Push ?? (persistence == nil ? T3PushCoordinator() : T3PushCoordinator(load: { [] }, save: { _ in }))
         self.avatars = BotAvatarStore(now: avatarNow)
         // Injected vaults need not own the app's one production cache directory.
         self.cleanupHistory = cleanupHistory ?? (persistence == nil ? { try LocalHistory.removeUnreachable(keeping: $0) } : { _ in })
         if loadSavedSetup(), configuration != nil { connection.awaitStartup() }
-        bindPushNotifications()
     }
 
     @discardableResult private func loadSavedSetup() -> Bool {
-        do { configuration = try persistence.load() }
+        do {
+            let saved = try persistence.load()
+            savedSetupLoadFailed = false
+            configuration = saved.flatMap { $0.t3 != nil || injectedService != nil ? $0 : nil }
+            olderSavedSetupID = configuration == nil ? saved?.id : nil
+            // Leave older setup and cache alone until the user successfully pairs a Mac.
+            if saved != nil, configuration == nil {
+                connection.restore(hasSavedSetup: false)
+                return true
+            }
+        }
         catch {
             savedSetupLoadFailed = true; connection.savedSetupFailed(error)
             return false
         }
-        savedSetupLoadFailed = false
         liveService = injectedService ?? makeService(configuration)
         service = liveService
         artifactCache.prune(reachableConfigurationIDs: Set(configuration.map { [$0.id] } ?? []))
@@ -427,7 +419,7 @@ import BottoCore
     }
 
     private nonisolated static func backendAccount(_ configuration: ConnectionConfiguration) -> [Data?] {
-        guard let t3 = configuration.t3 else { return [Data("hermes".utf8)] }
+        guard let t3 = configuration.t3 else { return [] }
         return [Data("t3".utf8), Data(t3.environmentID.utf8), t3.projectID.map { Data($0.utf8) }]
     }
 
@@ -438,7 +430,12 @@ import BottoCore
             backend: configuration.t3.map { _ in backendAccount(configuration) })
     }
 
+    var connectionScope: ArtifactCacheScope? {
+        configuration.map(Self.artifactScope)
+    }
+
     private func mount(_ history: LocalHistory, configuration: ConnectionConfiguration?) {
+        settleOpeningInterruption()
         historySaveFailure = nil
         t3Models = []
         t3ModelsGeneration = nil
@@ -452,7 +449,7 @@ import BottoCore
         library.setOnline(isConnected)
         Task { [library] in await library.restore() }
         cachedBots = history.bots; pinned = history.pinned; unpinned = history.unpinned
-        t3Channels = configuration?.t3 == nil ? [] : history.t3Channels ?? []
+        t3Channels = history.t3Channels ?? []
         let scope = WorkspaceScope(cacheID: configuration?.id ?? UUID(),
             exactAccount: configuration.map(Self.richReplyAccount) ?? [], incarnation: UUID())
         chats = ConversationWorkspace(scope: scope, book: history.book, service: service,
@@ -466,8 +463,7 @@ import BottoCore
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
         var chatWasVisible = false
-        chats.onVisibleChatChange = { [weak self] identity in
-            self?.push.updateVisibility(destination: identity.map(PushDestination.init))
+        chats.onVisibleChatChange = { identity in
             // Repeated hidden publications must not cancel feedback in a covering sheet.
             if chatWasVisible, identity == nil { BottoHaptics.shared.cancel() }
             chatWasVisible = identity != nil
@@ -517,25 +513,19 @@ import BottoCore
         let identity = Data(selectedBotID.utf8)
         return cachedBots.first { Data($0.id.utf8) == identity }
     }
-    var needsYou: [BotProfile] { inbox.filter(\.needsAttention).map(\.bot) }
     var isConnected: Bool { link == .online }
     /// View-owned operations must also belong to the current connection lifetime.
     var connectionGeneration: UUID { generation }
     var serverName: String {
         if isDemo { return "Demo workspace" }
-        if let t3 = configuration?.t3 { return t3.label ?? configuration?.serverURL.host ?? "Your server" }
-        return configuration?.serverURL.host ?? "Your Hermes"
+        return configuration?.t3?.label ?? configuration?.serverURL.host ?? "Your Mac"
     }
 
-    var isT3Workspace: Bool { !isDemo && (configuration?.t3 != nil || service is any T3BotBrainControlling) }
-    var t3BrainService: (any T3BotBrainControlling)? {
-        guard isT3Workspace else { return nil }
-        return service as? any T3BotBrainControlling
-    }
-    var primaryT3Bot: BotProfile? { isT3Workspace ? cachedBots.first : nil }
+    private var t3BrainService: (any T3BotBrainControlling)? { service as? any T3BotBrainControlling }
+    var primaryT3Bot: BotProfile? { cachedBots.first }
 
     var selectedT3ChannelTitle: String? {
-        guard isT3Workspace, let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
+        guard let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
         return t3Channels.first { Data($0.id.utf8) == identity.stored.bytes }?.displayTitle
             ?? chatScreen(for: selectedBotID)?.title
     }
@@ -551,7 +541,7 @@ import BottoCore
     @ObservationIgnored private var t3ModelsGeneration: UUID?
 
     func loadT3ModelsIfNeeded() async {
-        guard isT3Workspace, isConnected, t3ModelsGeneration != generation else { return }
+        guard isConnected, t3ModelsGeneration != generation else { return }
         let owner = generation
         guard let models = try? await availableT3Models(), generation == owner else { return }
         t3Models = models
@@ -587,7 +577,12 @@ import BottoCore
         let identity = SessionIdentity(profile: profile, root: thread, stored: thread, aliases: [])
         let summary = SessionSummary(identity: identity, title: current.displayTitle, isCanonical: false, persistence: .durable,
                                      preview: current.preview.isEmpty ? nil : current.preview, updatedAt: current.updatedAt)
-        return await authority.workspace.openStoredChat(summary, claim: authority.claim)
+        let opened = await authority.workspace.openStoredChat(summary, claim: authority.claim)
+        if opened, isCurrentLifetime(authority) {
+            settleOpeningInterruption()
+            publishT3Channels()
+        }
+        return opened
     }
 
     /// A space without a title is named by T3 from its first message.
@@ -607,7 +602,7 @@ import BottoCore
         let identity = try await createT3Space(title: title.isEmpty ? nil : title).summary.identity
         onCreated(identity)
         let threadID = identity.stored.text
-        guard ownsBotNavigation(authority) else { throw HermesServiceError.staleConversation }
+        guard ownsBotNavigation(authority) else { throw ConversationServiceError.staleConversation }
         guard primaryT3Bot.map({ Data($0.id.utf8) }) == identity.profile.bytes,
               let channel = t3Channels.first(where: { Data($0.id.utf8) == identity.stored.bytes }) else {
             throw T3ServiceError.missingChannel
@@ -621,7 +616,7 @@ import BottoCore
         let workspace = authority.workspace
         guard !Task.isCancelled, isCurrentConnection(authority),
               let selection = workspace.selection(profile: identity.profile), selection.matches(identity),
-              workspace.canEditDraft(selection.owner) else { throw HermesServiceError.staleConversation }
+              workspace.canEditDraft(selection.owner) else { throw ConversationServiceError.staleConversation }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return identity }
         workspace.editDraft(text, owner: selection.owner)
         if send, let intent = workspace.captureSend(selection.owner) { await workspace.send(intent) }
@@ -667,7 +662,7 @@ import BottoCore
     /// The bot still waits for someone to name it and pick its face. Setup that stopped partway counts, so it can
     /// be tried again.
     var needsT3BotSetup: Bool {
-        guard let bot = primaryT3Bot else { return false }
+        guard !isDemo, let bot = primaryT3Bot else { return false }
         return settingUpT3Bot == configuration?.id || T3FirstRun.needsBotSetup(bot, spaces: t3Channels)
     }
     /// The workspace whose setup started and hasn't finished.
@@ -698,7 +693,7 @@ import BottoCore
 
     /// The stored thread of the channel shown in the selected T3 chat.
     var selectedT3ChannelID: String? {
-        guard isT3Workspace, let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
+        guard let selectedBotID, let identity = chatSelection(for: selectedBotID)?.identity else { return nil }
         return t3Channels.first { Data($0.id.utf8) == identity.stored.bytes }?.id
     }
 
@@ -790,7 +785,7 @@ import BottoCore
         let owner = generation, recovery = attachmentRecoveryGeneration
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
         let id = destination.profile.id
-        guard avatarSaves[id] == nil else { throw HermesServiceError.avatarConflict }
+        guard avatarSaves[id] == nil else { throw ConversationServiceError.avatarConflict }
         let attempt = UUID()
         avatarSaves[id] = attempt
         defer { if avatarSaves[id] == attempt { avatarSaves[id] = nil } }
@@ -800,7 +795,7 @@ import BottoCore
         // Use the existing publication fence: an older inbox read cannot erase a saved face.
         let published = await refreshBots()
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        guard published else { throw HermesServiceError.avatarRefresh }
+        guard published else { throw ConversationServiceError.avatarRefresh }
         if let id = configuration?.id {
             avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [destination.profile.id])
         }
@@ -812,49 +807,17 @@ import BottoCore
         let published = await refreshBots()
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
         guard published, let bot = cachedBots.first(where: { $0.id == destination.profile.id }),
-              let updated = avatarDestination(for: bot) else { throw HermesServiceError.avatarReload }
+              let updated = avatarDestination(for: bot) else { throw ConversationServiceError.avatarReload }
         if let id = configuration?.id {
             avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [bot.id])
         }
         return updated
     }
 
-    func saveProfile(_ edit: BotProfileEdit, avatar: BotAvatarChoice?, to destination: AvatarDestination) async throws {
-        let owner = generation, recovery = attachmentRecoveryGeneration
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        let id = destination.profile.id
-        guard avatarSaves[id] == nil else { throw HermesServiceError.profileConflict }
-        let attempt = UUID()
-        avatarSaves[id] = attempt
-        defer { if avatarSaves[id] == attempt { avatarSaves[id] = nil } }
-        let changesMetadata = edit.name != nil || edit.description != nil
-        var metadataSaved = false
-        do {
-            if changesMetadata {
-                _ = try await service.updateProfile(edit, for: destination.profile)
-                metadataSaved = true
-                try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-            }
-            if let avatar {
-                _ = try await service.setAvatar(avatar, for: destination.profile)
-                try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-            }
-        } catch {
-            if metadataSaved { throw HermesServiceError.partialProfile }
-            throw error
-        }
-        let published = await refreshBots()
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        guard published else { throw HermesServiceError.partialProfile }
-        if avatar != nil, let id = configuration?.id {
-            avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [destination.profile.id])
-        }
-    }
-
     private func validateAvatarDestination(_ destination: AvatarDestination, connection: UUID, recovery: UUID) throws {
         guard isConnected, !Task.isCancelled, generation == connection,
               attachmentRecoveryGeneration == recovery,
-              destination.isCurrent(in: self) else { throw HermesServiceError.disconnected }
+              destination.isCurrent(in: self) else { throw ConversationServiceError.disconnected }
     }
 
     private func retireAvatarWorkspace(ifReplacingWith next: ConnectionConfiguration?) {
@@ -906,15 +869,10 @@ import BottoCore
         if arguments.contains("--demo") {
             await enterDemo()
             if arguments.contains("--demo-offline") {
-                for bot in bots { await open(bot) }
-                selectedBotID = nil
+                for channel in t3Channels where !channel.isMain { await openT3Channel(channel) }
+                if let main = t3Channels.first(where: \.isMain) { await openT3Channel(main) }
                 receive(.disconnected("The sample workspace is offline."))
             }
-            return
-        }
-        if let index = arguments.firstIndex(of: "--fixture-server"), arguments.indices.contains(index + 1),
-           let url = URL(string: arguments[index + 1]), ["127.0.0.1", "localhost"].contains(url.host ?? "") {
-            await connect(ConnectionConfiguration(serverURL: url, username: "botto-test", password: "botto-test"))
             return
         }
         #endif
@@ -925,12 +883,10 @@ import BottoCore
     @discardableResult func connect(_ candidate: ConnectionConfiguration,
                                    onConnected: (@MainActor () -> Void)? = nil,
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
+        guard candidate.t3 != nil || injectedService != nil else { return false }
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
-        let candidate = rotatedConfigurations[candidate.id].flatMap {
-            $0.serverURL == candidate.serverURL && Self.backendAccount($0) == Self.backendAccount(candidate) ? $0 : nil
-        } ?? candidate
         discardPendingService()
         let staged: PendingService?
         let owner: UUID
@@ -951,9 +907,6 @@ import BottoCore
                 guard let attempt, self?.pendingService === attempt else { return }
                 if case .configuration(let updated) = event, updated.id == candidate.id {
                     attempt.configuration = updated
-                    if updated.t3 == nil, updated.id != self?.configuration?.id {
-                        self?.rotatedConfigurations[updated.id] = updated
-                    }
                 }
             }
         } else {
@@ -964,7 +917,6 @@ import BottoCore
             bindServiceEvents(owner: owner)
         }
         do {
-            if !isDemo { try persistSavedRotation() }
             let info = try await withTaskCancellationHandler {
                 try await connectingService.connect(configuration: candidate)
             } onCancel: {
@@ -1004,7 +956,6 @@ import BottoCore
                     throw error
                 }
             }
-            if rotatedConfigurations[saved.id] != nil { rotatedConfigurations[saved.id] = saved }
             let connectedOwner: UUID
             if let staged {
                 pendingService = nil
@@ -1027,6 +978,7 @@ import BottoCore
             chats.setOnline(true)
             reconcileArtifactPresentation()
             if !isDemo {
+                olderSavedSetupID = nil
                 if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) { LocalHistory.remove(for: previousID) }
                 cleanHistory(keeping: saved.id)
             }
@@ -1036,16 +988,11 @@ import BottoCore
             }
             await refresh()
             guard generation == connectedOwner else { return false }
-            bindPushNotifications()
-            Task { [weak self] in
-                guard let self, self.generation == connectedOwner else { return }
-                if self.configuration?.t3 == nil {
-                    await self.push.refresh()
-                    guard self.generation == connectedOwner else { return }
-                    await self.push.resume()
+            if !isDemo {
+                Task { [weak self] in
+                    guard let self, self.generation == connectedOwner else { return }
+                    await self.t3Push.resume(scope: self.t3PushScope)
                 }
-                guard self.generation == connectedOwner else { return }
-                await self.t3Push.resume(scope: self.t3PushScope)
             }
             onConnected?()
             if connectionChoice == closesConnection { showsConnection = false }
@@ -1060,7 +1007,7 @@ import BottoCore
             if !cancelled { onFailure?(error) }
             cancelConnection(owner: owner, failure: error)
             if !cancelled, !isConnected,
-               candidate.id == configuration?.id, case .t3 = pendingPushNotification?.intent.source {
+               candidate.id == configuration?.id, pendingPushNotification != nil {
                 notice = notice ?? Self.t3PushReconnectNotice
             }
             return false
@@ -1074,7 +1021,6 @@ import BottoCore
             retireArtifactPresentation()
         }
         avatars.reset()
-        push.retireConnection()
         service.disconnect()
         chats.retireConnection()
         cacheTask?.cancel()
@@ -1083,13 +1029,8 @@ import BottoCore
 
     private func bindServiceEvents(owner: UUID) {
         service.onEvent = { [weak self] event in
-            guard let self else { return }
-            // A retired Hermes refresh can still consume its saved token.
-            if case .configuration(let updated) = event, updated.t3 == nil {
-                self.receive(event)
-            } else if self.generation == owner {
-                self.receive(event)
-            }
+            guard let self, self.generation == owner else { return }
+            self.receive(event)
         }
     }
 
@@ -1105,26 +1046,19 @@ import BottoCore
     }
 
     private func canPreserveHistory(for candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
-        guard !isDemo, let previous = configuration,
+        guard !isDemo, let previous = configuration, previous.t3 != nil,
               Self.backendAccount(previous) == Self.backendAccount(candidate),
               let installID = info.installID, !installID.isEmpty, previous.installID == installID,
               let oldOrigin = try? PairingAddress.parse(previous.serverURL.absoluteString, allowInsecureHTTP: true),
               let newOrigin = try? PairingAddress.parse(candidate.serverURL.absoluteString, allowInsecureHTTP: true),
               oldOrigin.scheme == newOrigin.scheme, oldOrigin.host == newOrigin.host,
               (oldOrigin.port ?? (oldOrigin.scheme == "https" ? 443 : 80))
-                == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)) else { return false }
-        if let paired = previous.t3, let verified = candidate.t3 {
-            guard paired.environmentID == installID, verified.environmentID == installID,
-                  let project = paired.projectID, !project.isEmpty,
-                  let oldRoot = paired.workspaceRoot, !oldRoot.isEmpty, let newRoot = verified.workspaceRoot else { return false }
-            return oldRoot.utf8.elementsEqual(newRoot.utf8)
-        }
-        // Both password login and native basic verify this account through /api/auth/me.
-        guard !previous.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              previous.username == candidate.username else { return false }
-        let provider = previous.nativeCredential?.provider ?? "basic"
-        return !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && provider == (candidate.nativeCredential?.provider ?? "basic")
+                == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)),
+              let paired = previous.t3, let verified = candidate.t3,
+              paired.environmentID == installID, verified.environmentID == installID,
+              let project = paired.projectID, !project.isEmpty,
+              let oldRoot = paired.workspaceRoot, !oldRoot.isEmpty, let newRoot = verified.workspaceRoot else { return false }
+        return oldRoot.utf8.elementsEqual(newRoot.utf8)
     }
 
     private func cancelConnection(owner: UUID, failure: (any Error)? = nil) {
@@ -1282,7 +1216,6 @@ import BottoCore
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
                 publishT3Channels()
-                bindPushNotifications()
                 if let id = configuration?.id { avatars.refresh(profiles, connectionID: id, using: service) }
                 await chats.refreshActivityDirectories(for: profiles)
                 guard generation == owner, botRefresh === refresh else { return }
@@ -1321,24 +1254,8 @@ import BottoCore
     }
 
     func open(_ bot: BotProfile) async {
-        guard let opening = prepareBotOpening(bot, attention: false, requirement: .explicit) else { return }
+        guard let opening = prepareBotOpening(bot) else { return }
         await openBot(opening)
-    }
-
-    private func bindPushNotifications() {
-        let chosenProfile = cachedBots.first { bot in
-            push.selectedProfileID.map { Data($0.utf8) } == Data(bot.id.utf8)
-        }?.id ?? selectedBotID ?? cachedBots.first?.id
-        push.bind(service: service, configuration: configuration, isDemo: isDemo,
-                  profileID: chosenProfile)
-        push.configureProfiles(cachedBots)
-    }
-
-    var notificationTestDestination: PushDestination? {
-        guard let profileID = push.selectedProfileID, let profile = try? ExactID(profileID),
-              let selection = chats.selection(profile: profile), !selection.isUnverified,
-              let identity = selection.identity else { return nil }
-        return .init(identity: identity)
     }
 
     func openPushNotification(_ envelope: PushEnvelope) async {
@@ -1347,24 +1264,16 @@ import BottoCore
     }
 
     func admitPushNotification(_ envelope: PushEnvelope) -> Bool {
-        guard !isDemo, let configuration else {
-            notice = isDemo ? "Leave demo to open this notification." : "Connect to your Hermes host to open this notification."
+        guard !isDemo, configuration != nil else {
+            notice = isDemo ? "Leave demo to open this notification." : "Connect to your Mac to open this notification."
             return false
         }
-        let isT3 = configuration.t3 != nil
-        let intent: PushNavigationIntent?
-        if isT3 {
-            intent = t3PushScope.flatMap { t3Push.navigationIntent(envelope, scope: $0) }
-        } else {
-            bindPushNotifications()
-            intent = push.navigationIntent(envelope)
-        }
-        guard let intent else {
-            notice = isT3 ? Self.unverifiedT3Notification : Self.unverifiedHermesNotification
+        guard let scope = t3PushScope, let intent = t3Push.navigationIntent(envelope, scope: scope) else {
+            notice = Self.unverifiedT3Notification
             return false
         }
-        // A tap takes its navigation order when admitted, before any reconnect, roster or pairing await.
-        if case .t3(let scope) = intent.source { t3NotificationLaunchScope = scope }
+        // Order the tap before awaiting a reconnect, roster read or attachment.
+        t3NotificationLaunchScope = scope
         let supersededOpening = pendingPushNotification?.supersededOpening == true || hasUnsettledOpening
         pendingPushNotification = .init(intent: intent, claim: chats.captureNavigationClaim(), supersededOpening: supersededOpening)
         return true
@@ -1379,25 +1288,16 @@ import BottoCore
         return pending.claim
     }
     private func authorizesPushNavigation(_ intent: PushNavigationIntent) -> Bool {
-        switch intent.source {
-        case .t3: t3Push.authorizes(intent, scope: t3PushScope)
-        case .hermes: push.authorizesNavigation(intent)
-        }
+        t3Push.authorizes(intent, scope: t3PushScope)
     }
 
     private static let unverifiedT3Notification = "This notification no longer has a verified destination."
-    private static let unverifiedHermesNotification =
-        "This notification no longer has a verified chat destination. Open your bot's chats to continue."
     private static let t3PushReconnectNotice = "Reconnect to your Mac to open the notification’s Space."
 
     func resumePushNavigation() async {
         guard active, notificationRouting == nil, let intent = pendingPushNotification?.intent,
               !isDemo, let configuration else { return }
         let attempt = UUID(); notificationRouting = attempt
-        let isT3 = if case .t3 = intent.source { true } else { false }
-        let reconnectNotice = isT3
-            ? Self.t3PushReconnectNotice
-            : "Reconnect to your Hermes host to open the notification's chat."
         defer {
             if notificationRouting == attempt {
                 notificationRouting = nil
@@ -1408,38 +1308,30 @@ import BottoCore
             }
         }
         if !isConnected {
-            if isT3, pendingService != nil || connection.candidate != nil { return }
+            if pendingService != nil || connection.candidate != nil { return }
             guard await connect(configuration) else {
-                if pendingPushNotification?.intent.id == intent.id { notice = reconnectNotice }
+                if pendingPushNotification?.intent.id == intent.id { notice = Self.t3PushReconnectNotice }
                 return
             }
         }
         guard await refreshBots() else {
-            if pendingPushNotification?.intent.id == intent.id { notice = reconnectNotice }
+            if pendingPushNotification?.intent.id == intent.id { notice = Self.t3PushReconnectNotice }
             return
         }
-        let readiness: PushNavigationIntent.Readiness
-        if isT3 {
-            readiness = authorizesPushNavigation(intent) ? .current : .retired
-        } else {
-            bindPushNotifications()
-            readiness = await push.navigationReadiness(intent)
-        }
         guard !isDemo, self.configuration?.id == configuration.id, pendingPushNotification?.intent.id == intent.id else { return }
-        if readiness == .unavailable { notice = reconnectNotice; return }
         let destination = intent.destination
-        if isT3, !t3Channels.contains(where: { $0.id.utf8.elementsEqual(destination.storedID.utf8) }) {
+        if !t3Channels.contains(where: { $0.id.utf8.elementsEqual(destination.storedID.utf8) }) {
             interruptSupersededOpening()
             pendingPushNotification = nil
             notice = "This notification’s Space is no longer available."
             return
         }
-        guard readiness == .current, authorizesPushNavigation(intent), bot(withID: destination.profileID) != nil,
+        guard authorizesPushNavigation(intent), bot(withID: destination.profileID) != nil,
               let profile = try? ExactID(destination.profileID),
               let root = try? ExactID(destination.rootID), let stored = try? ExactID(destination.storedID) else {
             interruptSupersededOpening()
             pendingPushNotification = nil
-            notice = isT3 ? Self.unverifiedT3Notification : Self.unverifiedHermesNotification
+            notice = Self.unverifiedT3Notification
             return
         }
         let workspace = chats
@@ -1450,7 +1342,7 @@ import BottoCore
             pendingPushNotification?.intent.id == intent.id && authorizesPushNavigation(intent) && !isDemo
         }
         let requested = SessionIdentity(profile: profile, root: root, stored: stored, aliases: [])
-        let opened = await workspace.openNotificationChat(requested, claim: claim, exact: isT3,
+        let opened = await workspace.openNotificationChat(requested, claim: claim, exact: true,
                                                            isCurrent: ownsTap) { [self] _ in
             commitAttachedSelection(profile, authority: authority, while: ownsTap)
         }
@@ -1459,8 +1351,7 @@ import BottoCore
             pendingPushNotification = nil; notice = nil; settleOpeningInterruption()
             presentAcceptedNotification()
         } else {
-            notice = isT3 ? "Botto couldn’t open this notification’s Space. Reconnect and try again."
-                          : "Botto couldn’t open this notification's chat. Reconnect and try again."
+            notice = "Botto couldn’t open this notification’s Space. Reconnect and try again."
         }
     }
 
@@ -1473,10 +1364,10 @@ import BottoCore
     }
     /// A newer navigation choice outranks a held notification.
     func retireHeldNotification() {
-        guard let pending = pendingPushNotification else { return }
+        guard pendingPushNotification != nil else { return }
         interruptSupersededOpening()
         pendingPushNotification = nil
-        if case .t3 = pending.intent.source, notice == Self.t3PushReconnectNotice { notice = nil }
+        if notice == Self.t3PushReconnectNotice { notice = nil }
     }
 
     private var hasUnsettledOpening: Bool {
@@ -1506,33 +1397,22 @@ import BottoCore
 
     func forgetConnectionWithPush() async {
         guard !isDemo else { return }
+        // Setup recovery can proceed without consulting unavailable push storage when
+        // there is no mounted T3 setup or known active notification pairing.
+        guard configuration != nil || t3Push.hasOtherPairings(than: nil) || t3Push.isBusy else {
+            forgetConnection()
+            return
+        }
         let owner = generation
         let connectionID = configuration?.id
         let account = configuration.map(Self.richReplyAccount)
-        let isT3 = isT3Workspace
-        if isT3 || t3Push.hasOtherPairings(than: nil) {
-            guard await t3Push.disablePairings(matching: { _ in true }) else {
-                notice = t3Push.notice ?? "Finish updating notifications before forgetting this connection."
-                return
-            }
-            guard generation == owner, configuration?.id == connectionID,
-                  configuration.map(Self.richReplyAccount) == account else { return }
-            if isT3 {
-                forgetConnection()
-                if configuration == nil { notice = t3Push.notice }
-                return
-            }
-        }
-        let removed = await push.prepareToForget()
-        guard generation == owner, !isDemo, configuration?.id == connectionID,
-              configuration.map(Self.richReplyAccount) == account else { return }
-        guard removed else {
-            notice = push.notice ?? "Botto couldn’t remove notification pairings. Check Notifications, then try again."
+        guard await t3Push.disablePairings(matching: { _ in true }) else {
+            notice = t3Push.notice ?? "Finish updating notifications before forgetting this connection."
             return
         }
-        let pushNotice = push.notice ?? t3Push.notice
-        forgetConnection()
-        if configuration == nil, let pushNotice { notice = pushNotice }
+        guard generation == owner, !isDemo, configuration?.id == connectionID,
+              configuration.map(Self.richReplyAccount) == account else { return }
+        if forgetConnection() { notice = notice ?? t3Push.notice }
     }
 
     func artifactDestination(for attachment: ChatAttachment, botID: String, producingMessage: ChatMessage? = nil) -> ArtifactDestination? {
@@ -1595,33 +1475,33 @@ import BottoCore
     }
     func downloadArtifact(_ destination: ArtifactDestination, force: Bool = false) async throws -> DownloadedArtifact {
         guard isAuthorizedArtifactPresentation(destination), destination.library === library else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         let key = await WorkspaceLibrary.originalKey(identity: destination.identity, attachment: destination.attachment,
             messages: destination.conversation.messages, producingMessage: destination.producingMessage)
-        guard isAuthorizedArtifactPresentation(destination) else { throw HermesServiceError.staleConversation }
+        guard isAuthorizedArtifactPresentation(destination) else { throw ConversationServiceError.staleConversation }
         let download: @MainActor () async throws -> DownloadedArtifact = { [weak self] in
             guard let self, self.isAuthorizedArtifactPresentation(destination) else {
-                throw HermesServiceError.staleConversation
+                throw ConversationServiceError.staleConversation
             }
-            guard self.isConnected else { throw HermesServiceError.disconnected }
+            guard self.isConnected else { throw ConversationServiceError.disconnected }
             guard self.isCurrentArtifactDestination(destination), let intent = destination.intent else {
-                throw HermesServiceError.staleConversation
+                throw ConversationServiceError.staleConversation
             }
             let artifact = try await destination.workspace.download(intent)
-            guard self.isCurrentArtifactDestination(destination) else { throw HermesServiceError.staleConversation }
+            guard self.isCurrentArtifactDestination(destination) else { throw ConversationServiceError.staleConversation }
             return artifact
         }
         let artifact: DownloadedArtifact
         if let key {
             artifact = try await destination.library.original(for: key, force: force, validateNetwork: { [weak self] in
-                guard let self, self.isCurrentArtifactDestination(destination) else { throw HermesServiceError.staleConversation }
+                guard let self, self.isCurrentArtifactDestination(destination) else { throw ConversationServiceError.staleConversation }
             }, download: download)
         } else {
             // A valid selected capability may read a file without a retained producing occurrence.
             artifact = try await download()
         }
-        guard isAuthorizedArtifactPresentation(destination) else { throw HermesServiceError.staleConversation }
+        guard isAuthorizedArtifactPresentation(destination) else { throw ConversationServiceError.staleConversation }
         return artifact
     }
     func finishArtifact(_ destination: ArtifactDestination) {
@@ -1641,18 +1521,12 @@ import BottoCore
         let recovery: UUID
         let claim: NavigationClaim
     }
-    struct BotCreationResult: Sendable {
-        let bot: BotProfile
-        fileprivate let authority: BotNavigationAuthority
-    }
-    fileprivate enum BotProfileRequirement: Sendable { case listed, explicit }
     struct BotOpening: Sendable {
-        fileprivate let requirement: BotProfileRequirement
         fileprivate let authority: BotNavigationAuthority
         fileprivate let profile: ExactID
         fileprivate let intent: OpeningIntent
     }
-    /// A newer bot intent supersedes older navigation, including a retained notification tap.
+    /// A newer space selection supersedes earlier opens.
     private func captureBotAuthority() -> BotNavigationAuthority? {
         let workspace = chats
         guard !showsConnection, pendingConnectionInput == nil,
@@ -1669,49 +1543,32 @@ import BottoCore
     private func ownsBotNavigation(_ authority: BotNavigationAuthority) -> Bool {
         isCurrentConnection(authority) && authority.workspace.ownsNavigation(authority.claim)
     }
-    /// Library and notification attachments settle app selection inside their workspace commit,
+    /// Library attachments settle app selection inside their workspace commit,
     /// before the workspace publishes the chat, its saved selection or its grant.
     private func commitAttachedSelection(_ profile: ExactID, authority: BotNavigationAuthority,
                                          while isCurrent: () -> Bool) -> Bool {
         selectBotID(profile.text, presentation: .attachmentCommit) {
             isCurrentLifetime(authority) && authority.workspace.ownsNavigation(authority.claim) &&
-                acceptsProfile(profile, requirement: .listed) && isCurrent()
+                bot(withID: profile.text) != nil && isCurrent()
         }
     }
-    private func acceptsProfile(_ profile: ExactID, requirement: BotProfileRequirement) -> Bool {
-        if case .explicit = requirement { return true }
-        return bot(withID: profile.text) != nil
-    }
     func prepareBotOpening(_ bot: BotProfile, attention: Bool = false) -> BotOpening? {
-        prepareBotOpening(bot, attention: attention, requirement: .listed)
-    }
-    private func prepareBotOpening(_ bot: BotProfile, attention: Bool, requirement: BotProfileRequirement) -> BotOpening? {
-        guard let profile = try? ExactID(bot.id), acceptsProfile(profile, requirement: requirement),
-              let authority = captureBotAuthority() else { return nil }
-        return prepareBotOpening(bot, authority: authority, attention: attention, requirement: requirement)
-    }
-    func prepareCreatedBotOpening(_ creation: BotCreationResult) -> BotOpening? {
-        guard active, isConnected else { return nil }
-        return prepareBotOpening(creation.bot, authority: creation.authority, attention: false, requirement: .listed)
-    }
-    private func prepareBotOpening(_ bot: BotProfile, authority: BotNavigationAuthority, attention: Bool, requirement: BotProfileRequirement) -> BotOpening? {
-        guard ownsBotNavigation(authority), let profile = try? ExactID(bot.id), acceptsProfile(profile, requirement: requirement),
+        guard let profile = try? ExactID(bot.id), self.bot(withID: bot.id) != nil,
+              let authority = captureBotAuthority(),
               selectBotID(profile.text, presentation: .preserveNavigation(authority.claim), while: {
-                  ownsBotNavigation(authority) && acceptsProfile(profile, requirement: requirement)
+                  ownsBotNavigation(authority) && self.bot(withID: bot.id) != nil
               }), let intent = authority.workspace.captureOpening(profile: profile, attention: attention, claim: authority.claim) else { return nil }
-        let opening = BotOpening(requirement: requirement, authority: authority, profile: profile, intent: intent)
+        let opening = BotOpening(authority: authority, profile: profile, intent: intent)
         return canOpenBot(opening) ? opening : nil
     }
+
     func canOpenBot(_ opening: BotOpening) -> Bool {
-        ownsBotNavigation(opening.authority) && acceptsProfile(opening.profile, requirement: opening.requirement) &&
+        ownsBotNavigation(opening.authority) && bot(withID: opening.profile.text) != nil &&
             selectedBotID.map({ Data($0.utf8) }) == opening.profile.bytes
     }
     func openBot(_ opening: BotOpening) async {
-        #if DEBUG
-        interruptOpeningForUITest(opening)
-        #endif
         guard canOpenBot(opening) else { return }
-        if isT3Workspace, let space = T3ChatShelf.initialSpace(t3Channels) {
+        if let space = T3ChatShelf.initialSpace(t3Channels) {
             let opened = await openT3Channel(space, authority: opening.authority)
             if !opened, !Task.isCancelled, isCurrentConnection(opening.authority), selectedT3ChannelID == nil {
                 notice = String(localized: "That space didn’t open. Select Botto to try again.")
@@ -1720,45 +1577,6 @@ import BottoCore
             await opening.authority.workspace.open(opening.intent)
         }
         settleInterruptedOpening()
-    }
-    #if DEBUG
-    /// Demo mode can't receive a tap, so the first opening loses its order to one that attaches nothing.
-    /// The tap is simulated; the opening's selection, rejection and native presentation are real.
-    private func interruptOpeningForUITest(_ opening: BotOpening) {
-        guard interruptsFirstOpening else { return }
-        interruptsFirstOpening = false
-        let interrupt = { [self] in
-            _ = chats.captureNavigationClaim()
-            openingInterrupted = true
-        }
-        if ProcessInfo.processInfo.arguments.contains("--interrupt-before-attachment") { interrupt() }
-        else { Task { interrupt() } } // Runs once the opening suspends at its service read.
-    }
-    #endif
-
-    func create(_ draft: BotDraft, onFailure: (@MainActor (any Error) -> Void)? = nil) async -> BotCreationResult? {
-        guard isConnected, !Task.isCancelled else { return nil }
-        guard let authority = captureBotAuthority() else { return nil }
-        let owner = authority.connection
-        guard isCurrentConnection(authority), isConnected, !Task.isCancelled else { return nil }
-        do {
-            let bot = try await service.createBot(draft)
-            guard generation == owner, !Task.isCancelled else { return nil }
-            let published = await refreshBots()
-            guard generation == owner, !Task.isCancelled else { return nil }
-            guard published, cachedBots.contains(where: { $0.id == bot.id }) else {
-                notice = "Your bot was created, but Botto couldn’t load it in the inbox. Refresh the inbox before creating another bot."
-                onFailure?(HermesServiceError.partialCreation)
-                return nil
-            }
-            return .init(bot: bot, authority: authority)
-        } catch {
-            if generation == owner, !Task.isCancelled {
-                notice = error.localizedDescription
-                if !(error is CancellationError) { onFailure?(error) }
-            }
-            return nil
-        }
     }
 
     func setActive(_ value: Bool) async {
@@ -1771,7 +1589,6 @@ import BottoCore
         #endif
         if !value {
             discardPendingService()
-            push.deactivate()
             flush()
             service.disconnect()
             chats.retireConnection()
@@ -1787,16 +1604,18 @@ import BottoCore
         }
     }
 
-    func forgetConnection() {
+    @discardableResult func forgetConnection() -> Bool {
         do {
             try persistence.remove()
             guard try persistence.load() == nil else {
                 notice = "Botto couldn’t confirm that saved setup was removed. Try again."
-                return
+                return false
             }
         }
-        catch { notice = error.localizedDescription; return }
-        let oldID = configuration?.id
+        catch { notice = error.localizedDescription; return false }
+        notice = nil
+        let oldID = configuration?.id ?? olderSavedSetupID
+        olderSavedSetupID = nil
         pendingPushNotification = nil; notificationRouting = nil
         t3NotificationLaunchScope = nil
         if let oldID { artifactCache.discard(configurationID: oldID) }
@@ -1814,22 +1633,21 @@ import BottoCore
         liveService = injectedService ?? makeService(nil)
         service = liveService
         configuration = nil; mount(.init(), configuration: nil); selectedBotID = nil
-        rotatedConfigurations = [:]
         isDemo = false; savedSetupLoadFailed = false
         if let oldID, !protectedCaches.contains(oldID) { LocalHistory.remove(for: oldID) }
         cleanHistory(keeping: nil)
         demoConnectionID = nil
-        bindPushNotifications()
+        return true
     }
 
     func enterDemo() async {
         guard flush() else { return }
         discardPendingService()
-        push.deactivate()
         retireAvatarWorkspace(ifReplacingWith: nil)
         service.disconnect(); service = DemoBotService()
         isDemo = true
-        let demo = ConnectionConfiguration(serverURL: URL(string: "https://demo.botto.local")!)
+        let demo = ConnectionConfiguration(serverURL: URL(string: "https://demo.botto.local")!,
+            t3: T3Connection(environmentID: "demo", accessToken: "", projectID: DemoBotService.profileID))
         demoConnectionID = demo.id
         await connect(demo)
     }
@@ -1844,7 +1662,6 @@ import BottoCore
         avatars.reset()
         selectedBotID = nil
         loadSavedSetup()
-        bindPushNotifications()
     }
 
     private func receive(_ event: BotServiceEvent) {
@@ -1866,24 +1683,21 @@ import BottoCore
             library.invalidateRevalidation()
             refreshFromBotInvalidation()
         case .configuration(let updated):
-            if let configuration, updated.id == configuration.id, updated.t3 == nil, configuration.t3 != nil { return }
-            rotatedConfigurations[updated.id] = updated
-            connection.updateCandidate(updated)
-            if updated.id == configuration?.id {
-                retireAvatarWorkspace(ifReplacingWith: updated)
-                if configuration.map(Self.richReplyAccount) != Self.richReplyAccount(updated) {
-                    push.retireConnection()
-                    retireArtifactPresentation()
-                    chats.retireConnection()
-                }
-                if updated.serverURL == configuration?.serverURL { configuration = updated }
+            if connection.candidate != nil {
+                connection.updateCandidate(updated)
+                return
             }
-            do {
-                // A retired refresh can still consume its old token. Update that saved
-                // connection even while a different workspace or the demo is visible.
-                try persistSavedRotation()
-            } catch {
-                connection.credentialStorageFailed(error, hasSavedSetup: configuration != nil)
+            guard !isDemo, let configuration, updated.id == configuration.id else { return }
+            retireAvatarWorkspace(ifReplacingWith: updated)
+            if Self.richReplyAccount(configuration) != Self.richReplyAccount(updated) {
+                retireArtifactPresentation()
+                chats.retireConnection()
+            }
+            guard updated.serverURL == configuration.serverURL else { return }
+            self.configuration = updated
+            do { try persistence.save(updated) }
+            catch {
+                connection.credentialStorageFailed(error, hasSavedSetup: true)
                 service.disconnect(); chats.retireConnection(); retireRefresh()
                 notice = error.localizedDescription
             }
@@ -1896,16 +1710,6 @@ import BottoCore
             guard active, connection.recovered(info) else { return }
             chats.setOnline(true)
             Task { await refresh() }
-        }
-    }
-
-    private func persistSavedRotation() throws {
-        guard !rotatedConfigurations.isEmpty else { return }
-        // New candidates remain transactional: commit them only after connect succeeds.
-        // Their retained token still replaces any stale caller input on a later attempt.
-        if let saved = try persistence.load(), let rotated = rotatedConfigurations[saved.id],
-           saved.serverURL == rotated.serverURL, saved != rotated {
-            try persistence.save(rotated)
         }
     }
 
@@ -1993,7 +1797,7 @@ extension AppStore {
               let message = conversation(for: String(decoding: destination.profile, as: UTF8.self))?.messages.first(where: { Data($0.id.utf8) == messageID }),
               let file = artifactDestination(for: reference.attachment,
                   botID: String(decoding: destination.profile, as: UTF8.self), producingMessage: message) else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         let artifact = try await downloadArtifact(file, force: force)
         return ReplyFileDownload(artifact: artifact, destination: file)

@@ -25,10 +25,7 @@ final class ArtifactExportUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        WorkspaceNavigation.revealBot("bot-row-canvas", in: app)
-        let canvas = app.buttons["bot-row-canvas"]
-        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
-        canvas.tap()
+        WorkspaceNavigation.openSpace("canvas", in: app)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         let cards = app.buttons.matching(NSPredicate(format: "label == %@", "Open " + filename))
@@ -163,7 +160,7 @@ final class ArtifactExportUITests: XCTestCase {
         #endif
     }
 
-    @MainActor func testLibrarySaveToFilesAndReopenSavedOriginal() throws {
+    @MainActor func testSpaceAttachmentSaveToFilesAndReopenSavedOriginal() throws {
         #if !targetEnvironment(simulator)
         throw XCTSkip("The durable export fixture writes only to an owned CI simulator.")
         #else
@@ -174,7 +171,7 @@ final class ArtifactExportUITests: XCTestCase {
         identity.lifetime = .keepAlways
         add(identity)
 
-        let app = openLibraryReference("notes.txt")
+        let app = openArtifact("notes.txt")
         tapOutput("artifact-save", label: "Save to Files", in: app)
         let picker = readyFilesPicker(in: app, captureName: "Files picker before default-name Save")
         let save = picker.buttons["Save"]
@@ -188,16 +185,16 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
         XCTAssertFalse(app.alerts["Export Failed"].exists)
         let preview = app.descendants(matching: .any).matching(identifier: "artifact-preview").firstMatch
-        let library = app.scrollViews["artifact-library"]
+        let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         let close = app.buttons["artifact-done"]
         XCTAssertTrue(close.waitForExistence(timeout: 5) && close.isEnabled)
         close.tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated { !preview.exists && library.exists && library.isHittable }
+            MainActor.assumeIsolated { !preview.exists && transcript.exists && transcript.isHittable }
         }, object: nil)
         let dismissedReader = XCTWaiter.wait(for: [closed], timeout: 5)
         capture("Closed preview after Files Save", app: app)
-        XCTAssertEqual(dismissedReader, .completed, "Close must dismiss the reader and restore the usable library.")
+        XCTAssertEqual(dismissedReader, .completed, "Close must return to the Space transcript.")
         app.terminate()
         reopenSavedOriginalInFiles(stem: stem)
         // The runner proves absence before Save and reads these provider bytes afterward.
@@ -219,24 +216,6 @@ final class ArtifactExportUITests: XCTestCase {
               checked <= Date().timeIntervalSince1970 else {
             throw XCTSkip("Run through check.sh with verified absence for this exact owned Simulator.")
         }
-    }
-
-    @MainActor private func openLibraryReference(_ filename: String) -> XCUIApplication {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--reduce-motion"]
-        app.launch()
-        XCTAssertTrue(app.scrollViews["bot-inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Artifacts"].tap()
-        let list = app.scrollViews["artifact-library"]
-        XCTAssertTrue(list.waitForExistence(timeout: 10))
-        app.buttons["library-filters"].tap()
-        outputAction("Include references", label: "Include references", in: app).tap()
-        let reference = app.buttons["library-artifact-\(filename)"]
-        for _ in 0..<5 where !reference.isHittable { list.swipeUp() }
-        XCTAssertTrue(reference.isHittable)
-        reference.tap()
-        return app
     }
 
     /// Files hosts this alert out of process, where `app.buttons` doesn't reach it.
@@ -366,8 +345,8 @@ final class ArtifactExportUITests: XCTestCase {
     @MainActor private func assertConnectionReplacement(in app: XCUIApplication) {
         // Open through the system in the existing scene, not app.open/launch.
         XCUIDevice.shared.system.open(URL(string:
-            "botto://hermes/connect?url=https%3A%2F%2Freplacement.example")!)
-        let replaced = app.navigationBars["Connect Hermes"].waitForExistence(timeout: 8)
+            "t3code://pair?url=https%3A%2F%2Freplacement.example&token=demo")!)
+        let replaced = app.navigationBars["Pair with your Mac"].waitForExistence(timeout: 8)
         capture("Connection review replaces preview and native children", app: app)
         XCTAssertTrue(replaced)
         XCTAssertFalse(app.buttons["artifact-save"].exists)
@@ -375,13 +354,6 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(filesPicker(in: app).exists)
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
         XCTAssertFalse(app.cells["Copy"].exists, "Connection replacement must retire native Share too.")
-        let review = app.buttons["Review destination"]
-        for _ in 0..<8 {
-            if review.exists && review.isHittable { break }
-            app.swipeUp()
-        }
-        XCTAssertTrue(review.exists && review.isHittable)
-        review.tap()
         let reviewed = app.staticTexts["https://replacement.example"].waitForExistence(timeout: 5)
         capture("Connection replaces artifact presentation", app: app)
         XCTAssertTrue(reviewed)

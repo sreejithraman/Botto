@@ -31,6 +31,7 @@ struct BottoPage: View {
     @State private var openedOutput: T3OutputFile?
     @FocusState private var editingName: Bool
     private let workspace: ConversationWorkspace
+    private let scope: ArtifactCacheScope?
 
     private struct BrainLoad: Equatable { let online: Bool; let retry: Int }
 
@@ -42,9 +43,10 @@ struct BottoPage: View {
         self.onOpenChat = onOpenChat
         self.onSettings = onSettings
         workspace = store.chats
+        scope = store.connectionScope
     }
 
-    private var isCurrent: Bool { store.isT3Workspace && store.chats === workspace }
+    private var isCurrent: Bool { store.chats === workspace && store.connectionScope == scope }
 
     var body: some View {
         NavigationStack {
@@ -92,6 +94,7 @@ struct BottoPage: View {
         .onChange(of: store.primaryT3Bot?.name) { _, value in
             if !editingName, drafts.submittedName == nil, drafts.nameError == nil, let value { drafts.name = value }
         }
+        .onChange(of: store.connectionScope) { _, _ in if !isCurrent { dismiss() } }
     }
 
     // MARK: Hero
@@ -141,7 +144,9 @@ struct BottoPage: View {
         VStack(spacing: 0) {
             row(.personality, title: "Personality", detail: T3BrainText.personalitySummary(drafts.soul), loaded: drafts.soulAutosave != nil)
             row(.memory, title: "What Botto remembers", detail: T3BrainText.memorySummary(drafts.memory), loaded: drafts.memoryAutosave != nil)
-            row(.routines, title: "Routines", detail: routineSummary, loaded: true)
+            if !store.isDemo {
+                row(.routines, title: "Routines", detail: routineSummary, loaded: true)
+            }
             row(.skills, title: "Skills", detail: skillsSummary, loaded: brain != nil, last: true)
         }
     }
@@ -1015,23 +1020,25 @@ struct T3AdvancedView: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker("Default model", selection: selection) {
-                    Text("Automatic").tag("")
-                    if let model = brain?.manifest.model,
-                       !store.t3Models.contains(where: { $0.modelID == model && $0.providerInstanceID == brain?.manifest.providerInstanceID }) {
-                        Text("\(model) (unavailable)").tag("saved:\(model)")
+            if !store.isDemo {
+                Section {
+                    Picker("Default model", selection: selection) {
+                        Text("Automatic").tag("")
+                        if let model = brain?.manifest.model,
+                           !store.t3Models.contains(where: { $0.modelID == model && $0.providerInstanceID == brain?.manifest.providerInstanceID }) {
+                            Text("\(model) (unavailable)").tag("saved:\(model)")
+                        }
+                        ForEach(store.t3Models) { option in
+                            Text("\(option.label) · \(option.providerName)").tag(option.id)
+                        }
                     }
-                    ForEach(store.t3Models) { option in
-                        Text("\(option.label) · \(option.providerName)").tag(option.id)
-                    }
+                    .disabled(saving || brain == nil)
+                    .accessibilityIdentifier("botto-default-model")
+                } footer: {
+                    Text("New spaces start with this. Switch any space’s model from its composer.")
                 }
-                .disabled(saving || brain == nil)
-                .accessibilityIdentifier("botto-default-model")
-            } footer: {
-                Text("New spaces start with this. Switch any space’s model from its composer.")
             }
-            if let root = brain?.workspaceRoot {
+            if let root = brain?.workspaceRoot, !root.isEmpty {
                 Section {
                     LabeledContent("Folder") {
                         Text(root).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
@@ -1099,6 +1106,16 @@ struct T3FaceEditor: View {
                 BotAvatar(profile: preview, size: 110)
                     .frame(maxWidth: .infinity)
                     .accessibilityLabel("Preview of \(preview.name)’s look")
+                if store.isDemo {
+                    Button {
+                        let appearance = preview.appearance
+                        let color = appearance?.color.map(BotAvatarEdit.Color.value) ?? .automatic
+                        selection = .geometry(DemoBotService.sampleCharacter, color: color)
+                    } label: {
+                        Text("Preview sample character").frame(minHeight: 44)
+                    }
+                    .disabled(saving)
+                }
                 BotAvatarPicker(profileID: preview.id, current: destination.profile.appearance ?? BotAppearance(),
                                 selection: $selection)
                 if !store.isConnected { ConnectionStatusView(store: store) }

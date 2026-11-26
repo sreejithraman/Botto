@@ -81,7 +81,7 @@ struct T3FreshPage: View {
             Button { focused = nil; chrome?.openBotto() } label: { face }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(store.primaryT3Bot?.name ?? "Botto")’s page")
-                .accessibilityHint("Personality, memory, routines and files.")
+                .accessibilityHint(store.isDemo ? "Personality, memory and files." : "Personality, memory, routines and files.")
                 .accessibilityIdentifier("t3-fresh-face")
                 .padding(.bottom, 16)
             Text(T3ChatShelf.greeting().localized)
@@ -193,8 +193,10 @@ struct T3FreshPage: View {
                     .buttonStyle(.plain)
                     .disabled(!form.canStart || !isExposed)
                     .accessibilityLabel("Add attachment")
-                    T3ModelChip(store: store, pending: $form.model)
-                        .disabled(!form.canStart)
+                    if !store.isDemo {
+                        T3ModelChip(store: store, pending: $form.model)
+                            .disabled(!form.canStart)
+                    }
                     Spacer(minLength: 0)
                     Button(action: send) {
                         Group {

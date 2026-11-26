@@ -9,8 +9,8 @@ struct SettingsView: View {
     @AppStorage("botto.appearance") private var appearance = "system"
     @Bindable private var haptics = BottoHaptics.shared
     @State private var confirmsForget = false
-    @State private var showsLicenses = false
     @State private var isForgetting = false
+    @State private var showsLicenses = false
     var body: some View {
         NavigationStack {
             Form {
@@ -18,7 +18,7 @@ struct SettingsView: View {
                     Section {
                         Label("Demo workspace", systemImage: "sparkles")
                             .foregroundStyle(.secondary)
-                            .accessibilityLabel("Demo workspace. Sample bots only; no real actions are performed.")
+                            .accessibilityLabel("Demo workspace. Sample spaces only.")
                             .listRowBackground(Color.clear)
                     }
                 } else {
@@ -26,7 +26,7 @@ struct SettingsView: View {
                         LabeledContent("Server", value: store.serverName)
                         LabeledContent("Status", value: store.isConnected ? "Connected" : store.link == .connecting ? "Connecting…" : "Offline")
                         if let version = store.serverInfo?.version, !version.isEmpty {
-                            LabeledContent(store.isT3Workspace ? "T3 Code" : "Hermes", value: version)
+                            LabeledContent("T3 Code", value: version)
                         }
                         Button("Reconnect", systemImage: "arrow.clockwise") {
                             if let configuration = store.configuration { Task { await store.connect(configuration) } }
@@ -62,12 +62,7 @@ struct SettingsView: View {
                 if !store.isDemo {
                     Section {
                         NavigationLink {
-                            if store.isT3Workspace {
-                                T3PushSettingsView(store: store)
-                            } else {
-                                PushSettingsView(coordinator: store.push,
-                                    testDestination: store.notificationTestDestination)
-                            }
+                            T3PushSettingsView(store: store)
                         } label: {
                             Label("Notifications", systemImage: "bell.badge")
                         }
@@ -103,7 +98,7 @@ struct SettingsView: View {
                             }
                         }
                     } footer: {
-                        Text("Explore sample bots. Your saved connection and chats stay on this device.")
+                        Text("Explore sample spaces. Your saved connection and chats stay on this device.")
                     }
                 }
                 Section("About Botto") {
@@ -111,18 +106,6 @@ struct SettingsView: View {
                         .padding(.vertical, 12)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Link("Hermes by Nous Research", destination: URL(string: "https://github.com/NousResearch/hermes-agent")!)
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            .contentShape(Rectangle())
-                        Link("Inspired by Hermex · Uzair Ansar", destination: URL(string: "https://github.com/uzairansaruzi/hermex")!)
-                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .font(.subheadline)
-                    .buttonStyle(.plain).foregroundStyle(BottoTheme.action)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
                     Button("Open-source licenses") { showsLicenses = true }
                         .listRowBackground(Color.clear)
                 }
@@ -141,11 +124,11 @@ struct SettingsView: View {
                             .disabled(isForgetting)
                     }
                 } footer: {
-                    Text(store.isDemo
-                         ? (onLeaveDemo == nil ? "Return to your own Hermes connection." : "Return to the playground.")
-                         : store.isT3Workspace
-                            ? "Removes saved pairing details, drafts, cached spaces, and notification pairings from this device. Botto’s memory and spaces stay on the host."
-                            : "Removes saved sign-in details, drafts, cached chats, and notification pairings from this device. Your bots and chats stay on Hermes.")
+                    if store.isDemo {
+                        Text(onLeaveDemo == nil ? "Return to your own workspace." : "Return to the playground.")
+                    } else {
+                        Text("Removes saved pairing details, drafts, cached spaces, and notification pairings from this device. Botto’s memory and spaces stay on the Mac.")
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -171,9 +154,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(store.isT3Workspace
-                     ? "Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the host."
-                     : "Saved sign-in details, drafts, and cached messages will be removed locally. Botto also removes this device's notification pairings. Your bots and chats stay on Hermes.")
+                Text("Saved pairing details, drafts, cached messages, and notifications will be removed from this device. Botto’s memory and spaces stay on the Mac.")
             }
         }.tint(BottoTheme.action)
     }

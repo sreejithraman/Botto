@@ -61,7 +61,7 @@ struct QueuedMessageEdit: Identifiable {
         do {
             let receipt = try await perform(edit.message, edit.text, operation)
             guard receipt.operationID == operation, sameSource(receipt.source, source),
-                  receipt.admissionID != nil else { throw HermesServiceError.uncertain }
+                  receipt.admissionID != nil else { throw ConversationServiceError.uncertain }
             if edits[chat]?.id == edit.id { edits[chat] = nil }
             return receipt
         } catch {
@@ -69,7 +69,7 @@ struct QueuedMessageEdit: Identifiable {
             edits[chat]?.error = error.localizedDescription
             // An unconfirmed replacement may already have moved to a new admission.
             // Never issue a second replacement automatically or encourage a blind retry.
-            edits[chat]?.isUncertain = error as? HermesServiceError == .uncertain
+            edits[chat]?.isUncertain = error as? ConversationServiceError == .uncertain
             return nil
         }
     }

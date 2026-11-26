@@ -6,7 +6,8 @@ import BottoCore
 @MainActor struct WorkspaceLaunchTests {
     #if targetEnvironment(simulator)
     @Test func isolatedLaunchLeavesSavedConnectionUntouchedAcrossDemo() async throws {
-        let saved = ConnectionConfiguration(serverURL: URL(string: "https://saved.example")!)
+        let saved = ConnectionConfiguration(serverURL: URL(string: "https://saved.example")!,
+            t3: .init(environmentID: "saved", accessToken: "fixture-only", projectID: "bot-project"))
         var reads = 0, writes = 0, removals = 0
         let persistence = ConnectionPersistence(load: { reads += 1; return saved },
             save: { _ in writes += 1 }, remove: { removals += 1 })
@@ -25,7 +26,8 @@ import BottoCore
     #endif
 
     @Test func ordinaryLaunchLoadsItsSavedConnection() {
-        let saved = ConnectionConfiguration(serverURL: URL(string: "https://saved.example")!)
+        let saved = ConnectionConfiguration(serverURL: URL(string: "https://saved.example")!,
+            t3: .init(environmentID: "saved", accessToken: "fixture-only", projectID: "bot-project"))
         var reads = 0
         let persistence = ConnectionPersistence(load: { reads += 1; return saved },
             save: { _ in }, remove: {})

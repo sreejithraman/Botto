@@ -8,7 +8,6 @@ import VisionKit
 
 /// Delivers address text once. The parent validates it, fills its review form, and dismisses.
 @MainActor struct PairingScannerView: View {
-    var isT3: Bool
     let onScan: (String) -> Void
 
     @Environment(\.openURL) private var openURL
@@ -21,11 +20,6 @@ import VisionKit
     @State private var readingPhoto = false
     @State private var importMessage: String?
     @State private var delivered = false
-
-    init(isT3: Bool = false, onScan: @escaping (String) -> Void) {
-        self.isT3 = isT3
-        self.onScan = onScan
-    }
 
     var body: some View {
         NavigationStack {
@@ -47,12 +41,11 @@ import VisionKit
                         }
                     }
                 } footer: {
-                    Text(isT3 ? "Point at the code in Botto’s Pair Phone window on your Mac. You’ll review the address before connecting."
-                              : "Scan a Hermes server address. You’ll review it before connecting.")
+                    Text("Point at the code in Botto’s Pair Phone window on your Mac. You’ll review the address before connecting.")
                 }
 
-                Section(isT3 ? "Paste or enter a pairing link" : "Paste or enter a connection code") {
-                    TextField(isT3 ? "Pairing link" : "HTTPS address or connection code", text: $input, axis: .vertical)
+                Section("Paste or enter a pairing link") {
+                    TextField("Pairing link", text: $input, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .privacySensitive()
@@ -72,7 +65,7 @@ import VisionKit
                     if let importMessage { Text(importMessage).foregroundStyle(.secondary) }
                 }
             }
-            .navigationTitle(isT3 ? "Scan your Mac’s code" : "Connect to Hermes")
+            .navigationTitle("Scan your Mac’s code")
             .task { await prepareCamera() }
             .task(id: selectedPhoto) { await readPhoto() }
             .onChange(of: scenePhase) { _, phase in

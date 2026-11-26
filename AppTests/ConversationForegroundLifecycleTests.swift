@@ -66,7 +66,7 @@ import BottoCore
         #expect(ticket.finishCapture(nil, height: 200) == nil)
         #expect(!context.permits(block))
         #expect(store.richReplyContext(for: service.profile.text, messageID: "diagram").permits(block))
-        await #expect(throws: HermesServiceError.staleConversation) { try await store.downloadArtifact(destination) }
+        await #expect(throws: ConversationServiceError.staleConversation) { try await store.downloadArtifact(destination) }
         workspace.setTranscriptVisible(true, owner: installed.owner)
         #expect(workspace.persisted().record(initial.selectedChatID)?.isUnread == false)
     }
@@ -77,7 +77,7 @@ import BottoCore
         defer { LocalHistory.remove(for: configuration.id) }
         let workspace = store.chats
         workspace.editDraft("kept failure draft", owner: initial.owner)
-        if failure == "failure" { service.openError = HermesServiceError.timeout }
+        if failure == "failure" { service.openError = ConversationServiceError.timeout }
         else {
             service.openResult = { result in
                 var snapshot = result.snapshot
@@ -199,7 +199,7 @@ import BottoCore
         let (store, service, initial, configuration) = try await fixture()
         defer { LocalHistory.remove(for: configuration.id) }
         let workspace = store.chats
-        service.openError = HermesServiceError.timeout
+        service.openError = ConversationServiceError.timeout
         workspace.setTranscriptVisible(true, owner: initial.owner)
         _ = try await settled(workspace, service)
         #expect(workspace.screen(profile: service.profile)?.canAct == false)

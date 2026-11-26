@@ -159,7 +159,7 @@ struct RequestCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if request.kind == .unsupported {
-                Text("Open Hermes Desktop to handle this request. Botto can’t safely complete it here.")
+                Text("Open T3 Code on your Mac to handle this request. Botto can’t safely complete it here.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else {
                 ForEach(request.choices) { choice in
@@ -209,7 +209,7 @@ struct RequestCard: View {
                 if connectionRequested && !store.isConnected { ConnectionStatusView(store: store) }
                 if lifetime.busy { Text("Sending your answer…").font(.footnote).foregroundStyle(.secondary) }
                 if request.kind == .approval && request.choices.isEmpty {
-                    Text("This request has no supported mobile choices. Open Hermes Desktop to respond.")
+                    Text("This request has no supported mobile choices. Open T3 Code on your Mac to respond.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             }
@@ -234,7 +234,7 @@ struct RequestCard: View {
             }
             Button("Cancel", role: .cancel) { lifetime.dismissConfirmation() }
         } message: {
-            Text("This choice can let Hermes run matching actions again without asking you. Only continue if you trust the scope described in this request.")
+            Text("This choice can let your bot run matching actions again without asking you. Only continue if you trust the scope described in this request.")
         }
     }
     private func requireConnection() -> Bool {

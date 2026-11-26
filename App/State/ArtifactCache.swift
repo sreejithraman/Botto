@@ -137,7 +137,7 @@ nonisolated struct ArtifactCacheScope: Hashable, Codable, Sendable {
         let fields = [Data(configurationID.uuidString.utf8), serverURL,
             installationID.map { Data([1]) + $0 } ?? Data([0]), username,
             provider.map { Data([1]) + $0 } ?? Data([0])]
-        // A nil backend is the existing Hermes namespace.
+        // A nil backend is the older cache namespace.
         return artifactCacheFields(fields + (backend ?? []).map { $0.map { Data([1]) + $0 } ?? Data([0]) })
     }
 }

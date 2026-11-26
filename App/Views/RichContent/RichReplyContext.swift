@@ -85,18 +85,18 @@ enum RichReplyContext: Sendable {
     @MainActor func loadFile(_ block: ReplyContent.Block) async throws -> PendingReplyFile {
         guard case .chat(let message) = self, let message, message.fileBinding == nil,
               block.filePreview?.isHTML == true, message.permits(block) else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         let task = Task { try await message.scope.downloadFile(block, messageID: message.messageID) }
         guard let ticket = message.scope.fileGrant(block, messageID: message.messageID, onRevoke: { task.cancel() }) else {
-            task.cancel(); throw HermesServiceError.staleConversation
+            task.cancel(); throw ConversationServiceError.staleConversation
         }
         var transferred = false
         defer { if !transferred { ticket.cancel() } }
         let download = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         defer { if !transferred { download.finishInstallation() } }
         try Task.checkCancellation()
-        guard !task.isCancelled, ticket.isCurrent else { throw HermesServiceError.staleConversation }
+        guard !task.isCancelled, ticket.isCurrent else { throw ConversationServiceError.staleConversation }
         guard let resolved = block.resolvingFile(download.artifact) else { throw ReplyFileFailure.invalidHTML }
         let binding = RichReplyMessage.FileBinding(origin: block, resolved: ExactReplyBlock(resolved), grant: ticket)
         transferred = true
@@ -240,7 +240,7 @@ extension EnvironmentValues {
     }
     func downloadFile(_ block: ReplyContent.Block, messageID: Data) async throws -> AppStore.ReplyFileDownload {
         guard let destination, let owner, permits(ExactReplyBlock(block), messageID: messageID) else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         let key = FileKey(messageID: messageID, block: ExactReplyBlock(block))
         let revision = settledWorkRevision

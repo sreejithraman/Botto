@@ -13,11 +13,11 @@ import BottoCore
     init(saved: ConnectionConfiguration? = nil) { self.saved = saved }
     var persistence: ConnectionPersistence {
         .init(load: {
-            if self.failLoad { throw HermesServiceError.disconnected }
+            if self.failLoad { throw ConversationServiceError.disconnected }
             return self.saved
         }, save: {
             self.beforeSave?($0)
-            if self.failSave { throw HermesServiceError.disconnected }
+            if self.failSave { throw ConversationServiceError.disconnected }
             self.saved = $0
         }, remove: { self.saved = nil })
     }
@@ -27,8 +27,8 @@ import BottoCore
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: (any Error)?
@@ -36,7 +36,7 @@ import BottoCore
     var connectBarrier: StoreTestBarrier?
     var connectCount = 0
     var connectedConfigurations: [ConnectionConfiguration] = []
-    var profiles: [BotProfile] = []
+    var profiles: [BotProfile]
     var botsBarrier: StoreTestBarrier?
     var createdBot: BotProfile?
     var avatarGenerator: ((String, BotProfile) async throws -> BotAvatarGeometry)?
@@ -50,6 +50,9 @@ import BottoCore
     private var recovery: Task<Void, Never>?
     private var releaseRecovery: (() -> Void)?
     private(set) var recovered = false
+
+    init(profiles: [BotProfile] = []) { self.profiles = profiles }
+
     func scheduleRecovery() {
         onEvent?(.disconnected("Transient handshake failure"))
         let (stream, continuation) = AsyncStream<Void>.makeStream()
@@ -79,7 +82,7 @@ import BottoCore
     func bots() async throws -> [BotProfile] { await botsBarrier?.wait(); return profiles }
     func createBot(_ draft: BotDraft) async throws -> BotProfile {
         createCount += 1
-        guard let createdBot else { throw HermesServiceError.disconnected }
+        guard let createdBot else { throw ConversationServiceError.disconnected }
         return createdBot
     }
     func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {

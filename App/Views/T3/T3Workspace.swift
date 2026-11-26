@@ -147,7 +147,7 @@ struct T3Workspace: View {
                      onLocalModalPresentation: { [renderedBotID = bot.id] covered in
                          guard store.selectedBotID == renderedBotID else { return }
                          chatCovered = covered
-                     }, toolbarVisible: true,
+                     },
                      canPresentToolbar: { chatActionsAvailable }, canContinueEditing: { chatActionsAvailable })
                 .id(bot.id)
                 .bottoNavigationChrome()
@@ -248,7 +248,7 @@ struct T3Workspace: View {
     private enum LaunchMode { case waiting, automatic, notification }
 
     private var launchMode: LaunchMode {
-        guard store.hasStarted else { return .waiting }
+        guard store.hasStarted || store.isDemo else { return .waiting }
         if store.t3NotificationOwnsLaunch { return .notification }
         return launchReady ? .automatic : .waiting
     }
@@ -311,7 +311,7 @@ struct T3Workspace: View {
     private func routeFromBotto() {
         guard let pending = pendingBottoDestination else { return }
         pendingBottoDestination = nil
-        guard pending.workspace == ObjectIdentifier(store.chats), !rootCovered else { return }
+        guard pending.workspace == ObjectIdentifier(store.chats), !rootCovered, !store.showsConnection else { return }
         switch pending.destination {
         case .space(let channel): open(channel)
         case .settings: onSettings()

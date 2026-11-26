@@ -2,6 +2,15 @@ import BottoCore
 import Foundation
 import Observation
 
+struct PushNavigationIntent: Equatable, Sendable {
+    let id = UUID()
+    var recoveryRevision = UUID()
+    let scope: T3PushScope
+    let installationID: String
+    let deviceID: String
+    let destination: PushDestination
+}
+
 @MainActor @Observable final class T3PushCoordinator {
     private(set) var pairings: [T3PushPairing] = []
     private(set) var isBusy = false
@@ -146,12 +155,12 @@ import Observation
 
     func navigationIntent(_ envelope: PushEnvelope, scope: T3PushScope) -> PushNavigationIntent? {
         guard let pairing = pairing(scope), let preview = pairing.preview(envelope) else { return nil }
-        return .init(t3: scope, installationID: envelope.installationID, deviceID: envelope.deviceID,
+        return .init(scope: scope, installationID: envelope.installationID, deviceID: envelope.deviceID,
                      destination: preview.destination)
     }
 
     func authorizes(_ intent: PushNavigationIntent, scope: T3PushScope?) -> Bool {
-        guard case .t3(let original) = intent.source, original == scope, let pairing = pairing(scope) else { return false }
+        guard intent.scope == scope, let pairing = pairing(scope) else { return false }
         return pairing.installationID == intent.installationID
             && pairing.invitation.deviceID == intent.deviceID
     }

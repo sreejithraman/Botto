@@ -27,6 +27,7 @@ struct T3ChatsDrawer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if store.isDemo { DemoBanner() }
             search.padding(.horizontal, 16).padding(.top, 8)
             Button { searching = false; onNewSpace() } label: {
                 Label("New space", systemImage: "square.and.pencil")
@@ -322,7 +323,8 @@ struct T3ChatsDrawer: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(store.primaryT3Bot?.name ?? "Botto").font(.bottoRounded(.body, weight: .bold))
                             .foregroundStyle(BottoTheme.ink)
-                        Text("Personality, memory, routines").font(.caption).foregroundStyle(.secondary)
+                        Text(store.isDemo ? "Personality and memory" : "Personality, memory, routines")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }

@@ -12,8 +12,6 @@
     <key>ITSAppUsesNonExemptEncryption</key><false/>
     <key>BottoPushKeychainGroup</key><string>$(BOTTO_PUSH_KEYCHAIN_GROUP)</string>
     <key>BottoPushEnvironment</key><string>$(BOTTO_PUSH_ENVIRONMENT)</string>
-    <key>BottoPushPluginSource</key><string>$(BOTTO_PUSH_PLUGIN_SOURCE)</string>
-    <key>BottoPushPluginRef</key><string>$(BOTTO_PUSH_PLUGIN_REF)</string>
     <key>UILaunchScreen</key><dict/>
     <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
     <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
@@ -28,7 +26,6 @@
         </dict>
     </dict>
     <key>CFBundleURLTypes</key><array>
-        <dict><key>CFBundleURLName</key><string>com.sree.botto.connect</string><key>CFBundleURLSchemes</key><array><string>botto</string></array></dict>
-        <dict><key>CFBundleURLName</key><string>com.sree.botto.signin</string><key>CFBundleURLSchemes</key><array><string>botto-signin</string></array></dict>
+        <dict><key>CFBundleURLName</key><string>com.sree.botto.connect</string><key>CFBundleURLSchemes</key><array><string>t3code</string></array></dict>
     </array>
 </dict></plist>

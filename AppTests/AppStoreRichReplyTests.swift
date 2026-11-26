@@ -272,7 +272,7 @@ import WebKit
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
         service.chat.isWorking = false
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
-        service.downloadError = HermesServiceError.disconnected
+        service.downloadError = ConversationServiceError.disconnected
         await #expect(throws: (any Error).self) { _ = try await context.loadFile(block) }
         #expect(!first.resolved.context.permits(first.resolved.block))
         let attachment = try #require(block.filePreview?.attachment)
@@ -359,14 +359,14 @@ import WebKit
         let model = ReplyFilePreviewModel()
         let automaticGate = RichReplyFileGate()
         service.downloadGate = automaticGate
-        service.downloadError = HermesServiceError.disconnected
+        service.downloadError = ConversationServiceError.disconnected
         let automatic = Task { await model.load(block, context: context) }
         await automaticGate.entered()
         #expect(model.feedback == .quiet)
         #expect(!model.canRetry)
         automaticGate.release()
         await automatic.value
-        #expect(model.feedback == .failed(HermesServiceError.disconnected.localizedDescription))
+        #expect(model.feedback == .failed(ConversationServiceError.disconnected.localizedDescription))
         #expect(model.canRetry)
 
         let retryGate = RichReplyFileGate()
@@ -386,7 +386,7 @@ import WebKit
 
         service.downloadGate = nil
         await model.load(block, context: context)
-        #expect(model.feedback == .failed(HermesServiceError.disconnected.localizedDescription))
+        #expect(model.feedback == .failed(ConversationServiceError.disconnected.localizedDescription))
         #expect(model.canRetry)
         service.downloadError = nil
         await model.load(block, context: context, isRetry: true)
@@ -446,7 +446,7 @@ import WebKit
         let reloadContext = event == "message"
             ? store.richReplyContext(for: service.bot.id, messageID: "m1") : context
         #expect((model.resolved(for: block, context: reloadContext) != nil) == (event == "unchanged"))
-        service.downloadError = HermesServiceError.disconnected
+        service.downloadError = ConversationServiceError.disconnected
         if event == "message" {
             let gate = RichReplyFileGate()
             service.downloadGate = gate
@@ -488,7 +488,7 @@ import WebKit
         service.chat.isWorking = false
         service.onEvent?(.conversation(try service.authority.opened(service.chat)))
         let model = ReplyFilePreviewModel()
-        service.downloadError = HermesServiceError.invalidAttachment
+        service.downloadError = ConversationServiceError.invalidAttachment
         await model.load(block, context: context)
         #expect(model.resolved == nil)
         #expect(model.errorMessage != nil)
@@ -530,7 +530,7 @@ import WebKit
         var saved: ConnectionConfiguration?
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://epoch.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { saved }, save: { saved = $0 }, remove: {
-            if event == "failed-forget" { throw HermesServiceError.disconnected }
+            if event == "failed-forget" { throw ConversationServiceError.disconnected }
             saved = nil
         }))
         defer { LocalHistory.remove(for: configuration.id) }
@@ -595,7 +595,7 @@ import WebKit
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw HermesServiceError.rejected(-32601) }
+    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     let bot = BotProfile(id: "cache-bot", name: "Cache")
@@ -621,7 +621,7 @@ import WebKit
         return try authority.opened(chat)
     }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
-    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw HermesServiceError.disconnected }
+    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.disconnected }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }
 }

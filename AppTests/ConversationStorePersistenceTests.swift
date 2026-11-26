@@ -6,8 +6,8 @@ import BottoCore
 @MainActor struct ConversationStorePersistenceTests {
     @Test(arguments: [false, true])
     func unreadableCacheKeepsSavedConnectionUsableAndNeverAutosavesOrPrunes(future: Bool) async throws {
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://saved.invalid")!, username: "alice", installID: "test-install")
-        let replacement = ConnectionConfiguration(serverURL: configuration.serverURL, username: "alice")
+        let configuration = t3Setup()
+        let replacement = t3Setup(token: "replacement")
         let url = try LocalHistory.file(for: configuration.id)
         let raw = Data((future ? "{\"version\":999,\"keep\":\"original\"}" : "{broken cache bytes").utf8)
         try raw.write(to: url)
@@ -67,8 +67,8 @@ import BottoCore
     }
 
     @Test func verifiedReauthenticationMovesAllChatUUIDsAndPreferencesBeforeKeychainCommit() async throws {
-        let old = ConnectionConfiguration(serverURL: URL(string: "https://saved.invalid")!, username: "alice", installID: "test-install")
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL, username: "alice", password: "new")
+        let old = t3Setup()
+        let candidate = t3Setup(token: "replacement")
         defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
         let profile = try ExactID("milo")
         var history = LocalHistory()
@@ -106,5 +106,11 @@ import BottoCore
         let reopened = AppStore(service: StoreTestService(), persistence: storage.persistence)
         #expect(reopened.chats.persisted().preference(profile)?.preferred == b)
         #expect(Set(reopened.chats.persisted().records.map(\.id)) == [a, b])
+    }
+
+    private func t3Setup(token: String = "original") -> ConnectionConfiguration {
+        .init(serverURL: URL(string: "https://saved.invalid")!, installID: "test-install",
+              t3: .init(environmentID: "test-install", accessToken: token, projectID: "milo",
+                        workspaceRoot: "/host/.botto/bots/milo"))
     }
 }

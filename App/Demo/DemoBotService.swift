@@ -2,9 +2,19 @@ import Foundation
 import BottoCore
 
 /// A separate, labeled workspace. It never connects to a host or performs work.
-@MainActor final class DemoBotService: BotService {
+@MainActor final class DemoBotService: T3BotBrainControlling {
+    static let profileID = "milo"
     var onEvent: ((BotServiceEvent) -> Void)?
-    private var profiles: [BotProfile] = []
+    private var bot = BotProfile(id: "milo", name: "Milo",
+        description: "Turns loose ends into a clear next step.",
+        appearance: BotAvatarChoice.face(.init(shape: .squircle, color: "#f97316")).appearance)
+    private let mainID = "milo"
+    private var soul = "I turn loose ends into a clear next step."
+    private var memory = "This workspace contains sample projects."
+    private var manifest = T3BotManifest(displayName: "Milo", mainThreadID: "milo")
+    private var pinned: Set<String> = []
+    private var archived: Set<String> = []
+    private var visited: [String: Date] = [:]
     private var chats: [Data: Conversation] = [:]
     private var artifacts: [Data: [String: DownloadedArtifact]] = [:]
     #if DEBUG
@@ -54,9 +64,9 @@ import BottoCore
         connectionCount += 1
         if connectionCount > 1 { try await waitForUITestFixture("connect") }
         #endif
-        guard connection == epoch else { throw HermesServiceError.staleConversation }
+        guard connection == epoch else { throw ConversationServiceError.staleConversation }
         connected = true
-        if profiles.isEmpty {
+        if chats.isEmpty {
             seed()
             #if DEBUG
             if performanceFixture { seedPerformanceDemo() }
@@ -66,7 +76,7 @@ import BottoCore
             if ProcessInfo.processInfo.arguments.contains("--attribution-demo") { seedAttributionDemo() }
             if ProcessInfo.processInfo.arguments.contains("--search-navigation-proof") { seedSearchNavigationProof() }
             #endif
-            for bot in profiles { registerMain(profile: bot.id) }
+            registerSpace(mainID, title: "Main Space")
             seedSideChats()
         }
         return ServerInfo(version: "Demo")
@@ -76,81 +86,158 @@ import BottoCore
         uploads = [:]
     }
     func bots() async throws -> [BotProfile] {
-        guard connected else { throw HermesServiceError.disconnected }
+        guard connected else { throw ConversationServiceError.disconnected }
         let epoch = connection
-        #if DEBUG
-        if fixtureCalls["create", default: 0] > 0 { try await waitForUITestFixture("refresh") }
-        #endif
-        guard connected, connection == epoch else { throw HermesServiceError.staleConversation }
-        // A roster refresh also samples local sibling activity without attaching,
-        // changing selection, or claiming that a transcript has been read.
-        var keysByProfile: [ExactID: [Data]] = [:]
-        for key in order {
-            if let identity = identities[key] { keysByProfile[identity.profile, default: []].append(key) }
-        }
-        let updates = try profiles.map { bot in
-            let profile = try ExactID(bot.id)
-            return ProfileActivityUpdate(profile: profile, observations: observations(profile, keys: keysByProfile[profile] ?? []))
-        }
-        onEvent?(.activityBatch(updates))
-        guard connected, connection == epoch else { throw HermesServiceError.staleConversation }
-        return profiles
-    }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile {
-        #if DEBUG
-        try await waitForUITestFixture("create")
-        #endif
-        let id = draft.profileID.isEmpty || profiles.contains(where: { $0.id == draft.profileID }) ? UUID().uuidString : draft.profileID
-        let profile = BotProfile(id: id, name: draft.name, description: draft.instructions,
-                                 preview: "Ready when you are.", updatedAt: .now, appearance: draft.avatar.appearance)
-        profiles.append(profile)
-        chats[Data(profile.id.utf8)] = Conversation(id: "demo-" + profile.id, storedID: profile.id, profileID: profile.id,
-            messages: [ChatMessage(id: UUID().uuidString, role: .assistant,
-                text: "Hi, I’m \(draft.name). What would you like to work on?", timestamp: .now)])
-        registerMain(profile: profile.id)
-        return profile
-    }
-    func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
-        guard connected else { throw HermesServiceError.disconnected }
-        guard let index = profiles.firstIndex(where: { $0.id.utf8.elementsEqual(bot.id.utf8) }) else {
-            throw HermesServiceError.profileUnavailable
-        }
-        guard edit.name == nil || profiles[index].name.utf8.elementsEqual(bot.name.utf8),
-              edit.description == nil || profiles[index].description.utf8.elementsEqual(bot.description.utf8) else {
-            throw HermesServiceError.profileConflict
-        }
-        if let name = edit.name { profiles[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines) }
-        if let description = edit.description { profiles[index].description = description.trimmingCharacters(in: .whitespacesAndNewlines) }
-        onEvent?(.botsChanged)
-        return profiles[index]
+        let profile = try ExactID(bot.id)
+        onEvent?(.activityBatch([.init(profile: profile, observations: observations(profile))]))
+        guard connected, connection == epoch else { throw ConversationServiceError.staleConversation }
+        return [bot]
     }
 
-    func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
+    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw T3ServiceError.unsupported }
+
+    func updateProfile(_ edit: BotProfileEdit, for profile: BotProfile) async throws -> BotProfile {
+        try requireProfile(ExactID(profile.id))
+        if let name = edit.name {
+            bot.name = name
+            manifest.displayName = name
+        }
+        onEvent?(.botsChanged)
+        return bot
+    }
+
+    func setAvatar(_ choice: BotAvatarChoice, for profile: BotProfile) async throws -> BotProfile {
+        let epoch = connection
         #if DEBUG
         try await waitForUITestFixture("avatar")
         #endif
-        guard let index = profiles.firstIndex(where: { $0.id == bot.id }) else { throw HermesServiceError.profileUnavailable }
-        profiles[index].appearance = choice.applying(to: profiles[index].appearance ?? BotAppearance())
-        profiles[index].hasAvatar = false
-        profiles[index].lookRevision = (profiles[index].lookRevision ?? 0) + 1
-        return profiles[index]
+        guard connection == epoch else { throw ConversationServiceError.staleConversation }
+        try requireProfile(ExactID(profile.id))
+        bot.appearance = choice.applying(to: bot.appearance ?? BotAppearance())
+        bot.hasAvatar = false
+        bot.lookRevision = (bot.lookRevision ?? 0) + 1
+        manifest.avatar = bot.appearance
+        return bot
+    }
+
+    var currentBotWorkspaceRoot: String? { nil }
+
+    var currentT3Channels: [T3ChannelSummary] {
+        order.compactMap { key in
+            guard let chat = chats[key] else { return nil }
+            let id = chat.storedID
+            let updatedAt = chat.messages.last?.timestamp
+            return T3ChannelSummary(id: id, title: titles[key] ?? "", isMain: id == mainID,
+                isPinned: pinned.contains(id), isArchived: archived.contains(id),
+                isUnread: updatedAt.map { $0 > (visited[id] ?? .distantPast) } ?? false,
+                status: status(chat), preview: chat.messages.last?.text ?? "", updatedAt: updatedAt,
+                hasMessages: !chat.messages.isEmpty)
+        }
+    }
+
+    func loadBotBrain() async throws -> T3BotBrainSnapshot {
+        try requireProfile(ExactID(bot.id))
+        return .init(manifest: manifest, soulMarkdown: soul, memoryMarkdown: memory, skills: [], workspaceRoot: "")
+    }
+
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws {
+        try requireProfile(ExactID(bot.id))
+        if let expected, !soul.utf8.elementsEqual(expected.utf8) { throw T3ServiceError.proseChanged }
+        soul = markdown
+    }
+
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws {
+        try requireProfile(ExactID(bot.id))
+        if let expected, !memory.utf8.elementsEqual(expected.utf8) { throw T3ServiceError.proseChanged }
+        memory = markdown
+    }
+
+    func saveManifest(_ manifest: T3BotManifest) async throws {
+        try requireProfile(ExactID(bot.id))
+        self.manifest = manifest
+    }
+
+    func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest {
+        try requireProfile(ExactID(bot.id))
+        guard option == nil else { throw T3ServiceError.unsupported }
+        manifest.providerInstanceID = nil
+        manifest.model = nil
+        bot.model = nil
+        return manifest
+    }
+
+    func createChat(title: String?) async throws -> CreatedSession {
+        try await createConversation(profile: ExactID(bot.id), operationID: UUID(), title: title)
+    }
+
+    func renameChannel(threadID: String, title: String) async throws {
+        let key = try spaceKey(threadID)
+        titles[key] = title
+    }
+
+    func setChannelPinned(threadID: String, pinned: Bool) async throws {
+        _ = try spaceKey(threadID)
+        if pinned { self.pinned.insert(threadID) } else { self.pinned.remove(threadID) }
+    }
+
+    func archiveChannel(threadID: String, archived: Bool) async throws {
+        _ = try spaceKey(threadID)
+        guard threadID != mainID else { throw T3ServiceError.unsupported }
+        if archived { self.archived.insert(threadID) } else { self.archived.remove(threadID) }
+    }
+
+    func markChannelVisited(threadID: String) async throws {
+        _ = try spaceKey(threadID)
+        visited[threadID] = .now
+    }
+
+    func availableModels() async throws -> [T3ModelOption] { [] }
+
+    func readProjectFile(relativePath: String) async throws -> String {
+        switch relativePath {
+        case "SOUL.md": return soul
+        case "MEMORY.md": return memory
+        default: throw T3ServiceError.unsupported
+        }
+    }
+
+    func listOutputs() async throws -> [T3OutputFile] {
+        sampleFiles.keys.sorted().compactMap { path in
+            sampleFiles[path].map { T3OutputFile(name: $0.filename, relativePath: path, mimeType: $0.mimeType) }
+        }
+    }
+
+    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact {
+        guard let file = sampleFiles[output.relativePath] else { throw ConversationServiceError.invalidAttachment }
+        return file
+    }
+
+    private var sampleFiles: [String: DownloadedArtifact] { artifacts[Data("canvas".utf8)] ?? [:] }
+
+    private func spaceKey(_ id: String) throws -> Data {
+        try requireProfile(ExactID(bot.id))
+        let key = Data(id.utf8)
+        guard chats[key] != nil else { throw T3ServiceError.missingChannel }
+        return key
     }
 
     func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
 
+    static let sampleCharacter = try! BotAvatarGeometry(json: #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18 30 L18 14 Q18 10 24 14 L34 24 L66 24 L76 14 Q82 10 82 18 L82 72 Q82 86 68 86 L32 86 Q18 86 18 72 Z"},"eyes":{"x":50,"y":48,"spacing":16,"scale":1}}"#)
+
     func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
-        guard connected else { throw HermesServiceError.disconnected }
-        guard profiles.contains(where: { $0.id.utf8.elementsEqual(bot.id.utf8) }) else {
-            throw HermesServiceError.profileUnavailable
+        guard connected else { throw ConversationServiceError.disconnected }
+        guard self.bot.id.utf8.elementsEqual(bot.id.utf8) else {
+            throw ConversationServiceError.profileUnavailable
         }
         try Task.checkCancellation()
-        return try BotAvatarGeometry(json: #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18 30 L18 14 Q18 10 24 14 L34 24 L66 24 L76 14 Q82 10 82 18 L82 72 Q82 86 68 86 L32 86 Q18 86 18 72 Z"},"eyes":{"x":50,"y":48,"spacing":16,"scale":1}}"#)
+        return Self.sampleCharacter
     }
 
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,
-              let chat = chats[identity.root.bytes] else { throw HermesServiceError.wrongConversation }
+              let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
         let ids = Set(chat.messages.map { Data($0.id.utf8) })
         let proof = !chat.hasEarlierMessages && (chat.unavailableMessageIDs ?? []).isEmpty
             && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
@@ -162,7 +249,7 @@ import BottoCore
         try Task.checkCancellation()
         try requireProfile(identity.profile)
         guard offset >= 0, offset.isMultiple(of: 100), identities[identity.root.bytes] == identity,
-              let chat = chats[identity.root.bytes] else { throw HermesServiceError.wrongConversation }
+              let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
         let end = max(0, chat.messages.count - offset)
         let start = max(0, end - 100)
         let messages = Array(chat.messages[start..<end])
@@ -184,24 +271,28 @@ import BottoCore
         if let gateDirectory, FileManager.default.fileExists(atPath: gateDirectory.appendingPathComponent("directory.fail").path) {
             throw CocoaError(.fileReadUnknown)
         }
-        guard connected, connection == epoch else { throw HermesServiceError.staleConversation }
+        guard connected, connection == epoch else { throw ConversationServiceError.staleConversation }
         #endif
         let keys = order.filter { identities[$0]?.profile == profile }
         return ConversationDirectory(summaries: keys.compactMap(summary), activity: observations(profile), isComplete: true)
     }
 
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession {
+        try await createConversation(profile: profile, operationID: operationID, title: nil)
+    }
+
+    private func createConversation(profile: ExactID, operationID: UUID, title: String?) async throws -> CreatedSession {
         try requireProfile(profile)
         try claim(operationID)
         let epoch = connection
         #if DEBUG
         try await waitForUITestFixture("create-chat")
         #endif
-        guard connected, epoch == connection else { throw HermesServiceError.staleConversation }
+        guard connected, epoch == connection else { throw ConversationServiceError.staleConversation }
         let key = "demo-session-" + UUID().uuidString
         let root = try ExactID(key)
-        identities[root.bytes] = SessionIdentity(profile: profile, root: root, stored: root, aliases: [root])
-        titles[root.bytes] = ""; order.append(root.bytes)
+        identities[root.bytes] = SessionIdentity(profile: profile, root: root, stored: root, aliases: [])
+        titles[root.bytes] = title ?? T3ChannelSummary.untitledWireTitle; order.append(root.bytes)
         chats[root.bytes] = Conversation(id: key, storedID: key, profileID: profile.text)
         onEvent?(.botsChanged)
         return CreatedSession(operationID: operationID, summary: summary(root.bytes)!)
@@ -216,23 +307,24 @@ import BottoCore
         #if DEBUG
         try await waitForUITestFixture("open")
         #endif
-        guard connected, epoch == connection, opening == request else { throw HermesServiceError.staleConversation }
+        guard connected, epoch == connection, opening == request else { throw ConversationServiceError.staleConversation }
         let identity: SessionIdentity
         switch target {
         case .canonical(let profile, let expectedRoot):
             try requireProfile(profile)
             guard let main = identities[profile.bytes], expectedRoot == nil || expectedRoot == main.root else {
-                throw HermesServiceError.wrongConversation
+                throw ConversationServiceError.wrongConversation
             }
             identity = main
         case .stored(let requested):
             try requireProfile(requested.profile)
-            guard identities[requested.root.bytes] == requested else { throw HermesServiceError.wrongConversation }
+            guard identities[requested.root.bytes] == requested else { throw ConversationServiceError.wrongConversation }
             identity = requested
         }
-        guard let chat = chats[identity.root.bytes] else { throw HermesServiceError.missingChat }
+        guard let chat = chats[identity.root.bytes] else { throw ConversationServiceError.missingChat }
         let evidence = summary(identity.root.bytes).map(ConversationReadEvidence.init)
         let access = try issuer.issue(identity)
+        visited[identity.stored.text] = .now
         selected = (identity, access)
         activity = ConversationActivity(lineage: UUID(), phase: nil, workStartedAt: nil, phaseStartedAt: nil)
         #if DEBUG
@@ -252,32 +344,35 @@ import BottoCore
         try await waitForUITestFixture("send")
         #endif
         guard try issuer.resolve(access) == source, var chat = chats[source.root.bytes] else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         if delivery == .steer {
             guard chat.isWorking, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw HermesServiceError.steeringUnavailable
+                throw ConversationServiceError.steeringUnavailable
             }
-            guard attachments.isEmpty else { throw HermesServiceError.steeringAttachments }
+            guard attachments.isEmpty else { throw ConversationServiceError.steeringAttachments }
             chat.messages.append(ChatMessage(id: "steer:" + operationID.uuidString, role: .user,
                                              text: text, timestamp: .now))
             publish(chat, source: source)
             return receipt(source, operationID)
         }
-        guard attachments.count <= AttachmentLimits.count else { throw HermesServiceError.attachmentLimit }
+        guard attachments.count <= AttachmentLimits.count else { throw ConversationServiceError.attachmentLimit }
         let files = try attachments.map { attachment -> UploadGrant in
             guard let token = attachment.stagingID, let file = uploads[token],
-                  file.source == source, file.attachment == attachment else { throw HermesServiceError.invalidAttachment }
+                  file.source == source, file.attachment == attachment else { throw ConversationServiceError.invalidAttachment }
             return file
         }
-        guard files.reduce(0, { $0 + $1.bytes }) <= AttachmentLimits.totalBytes else { throw HermesServiceError.attachmentLimit }
+        guard files.reduce(0, { $0 + $1.bytes }) <= AttachmentLimits.totalBytes else { throw ConversationServiceError.attachmentLimit }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty else {
-            throw HermesServiceError.invalidResponse
+            throw ConversationServiceError.invalidResponse
         }
         for attachment in attachments { if let token = attachment.stagingID { uploads[token] = nil } }
         chat.messages.append(ChatMessage(id: "submission:" + operationID.uuidString, role: .user, text: text,
                                          timestamp: .now, attachments: attachments))
         let key = source.root.bytes
+        if titles[key] == T3ChannelSummary.untitledWireTitle, !text.isEmpty {
+            titles[key] = String(text.prefix(56))
+        }
         let wasWorking = chat.isWorking
         if wasWorking {
             chat.queuedMessages.append(QueuedMessage(id: operationID.uuidString, text: text,
@@ -301,21 +396,21 @@ import BottoCore
         let source = try issuer.resolve(access)
         try claim(operationID)
         guard let original = chats[source.root.bytes], editableQueueIndex(message, in: original) != nil else {
-            throw HermesServiceError.queuedMessageUnavailable
+            throw ConversationServiceError.queuedMessageUnavailable
         }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw HermesServiceError.invalidResponse
+            throw ConversationServiceError.invalidResponse
         }
         #if DEBUG
         try await waitForUITestFixture("replace-queued")
         #endif
         guard try issuer.resolve(access) == source, var chat = chats[source.root.bytes] else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         // The active reply may have finished while Save was in flight. A started
         // or replaced admission must never turn this edit into another send.
         guard let index = editableQueueIndex(message, in: chat) else {
-            throw HermesServiceError.queuedMessageUnavailable
+            throw ConversationServiceError.queuedMessageUnavailable
         }
         chat.queuedMessages.remove(at: index)
         if let submission = message.submissionID {
@@ -357,7 +452,7 @@ import BottoCore
             } catch { return }
             guard let self, var latest = self.chats[key], !Task.isCancelled else { return }
             latest.messages.append(ChatMessage(id: UUID().uuidString, role: .assistant,
-                text: "You’ve got the idea. In your connected workspace, this message goes straight to your Hermes bot, with its own tools, memory, and model.\n\nThis demo stays on your phone and doesn’t perform any work.", timestamp: .now))
+                text: "You’ve got the idea. In your connected workspace, this message goes straight to the bot running on your Mac, with its own tools, memory, and model.\n\nThis demo stays on your phone and doesn’t perform any work.", timestamp: .now))
             self.completeReply(latest, key: key, source: source, lineage: lineage, succeeded: true)
         }
     }
@@ -397,7 +492,7 @@ import BottoCore
         let source = try issuer.resolve(access)
         try claim(operationID)
         tasks[source.root.bytes]?.cancel(); tasks[source.root.bytes] = nil
-        guard let chat = chats[source.root.bytes] else { throw HermesServiceError.missingChat }
+        guard let chat = chats[source.root.bytes] else { throw ConversationServiceError.missingChat }
         completeReply(chat, key: source.root.bytes, source: source,
                       lineage: selected?.identity == source ? activity?.lineage : nil, succeeded: false)
         return receipt(source, operationID)
@@ -411,14 +506,14 @@ import BottoCore
         try await waitForUITestFixture("answer")
         #endif
         guard try issuer.resolve(access) == source, var chat = chats[source.root.bytes],
-              chat.pendingRequests.contains(request) else { throw HermesServiceError.staleConversation }
-        guard request.kind != .unsupported else { throw HermesServiceError.unsupportedRequest }
+              chat.pendingRequests.contains(request) else { throw ConversationServiceError.staleConversation }
+        guard request.kind != .unsupported else { throw ConversationServiceError.unsupportedRequest }
         switch response {
         case .choice(let choice):
-            guard request.choices.contains(where: { $0.id == choice }) else { throw HermesServiceError.invalidResponse }
+            guard request.choices.contains(where: { $0.id == choice }) else { throw ConversationServiceError.invalidResponse }
         case .text(let text):
             guard request.kind == .question, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw HermesServiceError.invalidResponse
+                throw ConversationServiceError.invalidResponse
             }
         }
         chat.pendingRequests.removeAll { $0.id == request.id }
@@ -436,12 +531,12 @@ import BottoCore
 
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
         let source = try issuer.resolve(access)
-        guard data.count <= AttachmentLimits.fileBytes else { throw HermesServiceError.attachmentLimit }
+        guard data.count <= AttachmentLimits.fileBytes else { throw ConversationServiceError.attachmentLimit }
         #if DEBUG
         try await waitForUITestFixture("upload")
         if ProcessInfo.processInfo.arguments.contains("--slow-upload-demo") { try await Task.sleep(for: .seconds(3)) }
         #endif
-        guard try issuer.resolve(access) == source else { throw HermesServiceError.staleConversation }
+        guard try issuer.resolve(access) == source else { throw ConversationServiceError.staleConversation }
         let token = UUID()
         let attachment = ChatAttachment(name: filename, path: "/demo/" + UUID().uuidString + "/" + filename,
                                         mimeType: mimeType, byteCount: data.count, stagingID: token)
@@ -456,37 +551,37 @@ import BottoCore
         #if DEBUG
         try await waitForUITestFixture("download")
         #endif
-        guard try issuer.resolve(access) == source else { throw HermesServiceError.staleConversation }
+        guard try issuer.resolve(access) == source else { throw ConversationServiceError.staleConversation }
         var path = attachment.path
         if let url = URL(string: path), url.scheme == "file", url.host == nil || url.host == "" || url.host == "localhost" {
             path = url.path
         }
-        guard let artifact = artifacts[source.root.bytes]?[path] else { throw HermesServiceError.invalidAttachment }
+        guard let artifact = artifacts[source.root.bytes]?[path] else { throw ConversationServiceError.invalidAttachment }
         return artifact
     }
 
     func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
         try Task.checkCancellation()
         try requireProfile(identity.profile)
-        guard identities[identity.root.bytes] == identity else { throw HermesServiceError.wrongConversation }
+        guard identities[identity.root.bytes] == identity else { throw ConversationServiceError.wrongConversation }
         let epoch = connection
         #if DEBUG
         try await waitForUITestFixture("download")
         #endif
         try Task.checkCancellation()
         guard connected, connection == epoch, identities[identity.root.bytes] == identity else {
-            throw HermesServiceError.staleConversation
+            throw ConversationServiceError.staleConversation
         }
         var path = attachment.path
         if let url = URL(string: path), url.scheme == "file", url.host == nil || url.host == "" || url.host == "localhost" {
             path = url.path
         }
-        guard let artifact = artifacts[identity.root.bytes]?[path] else { throw HermesServiceError.invalidAttachment }
+        guard let artifact = artifacts[identity.root.bytes]?[path] else { throw ConversationServiceError.invalidAttachment }
         return artifact
     }
 
     private func claim(_ operation: UUID) throws {
-        guard operations.insert(operation).inserted else { throw HermesServiceError.staleConversation }
+        guard operations.insert(operation).inserted else { throw ConversationServiceError.staleConversation }
     }
 
     private func receipt(_ source: SessionIdentity, _ operation: UUID) -> MutationReceipt {
@@ -494,8 +589,8 @@ import BottoCore
     }
 
     private func requireProfile(_ profile: ExactID) throws {
-        guard connected else { throw HermesServiceError.disconnected }
-        guard profiles.contains(where: { Data($0.id.utf8) == profile.bytes }) else { throw HermesServiceError.profileUnavailable }
+        guard connected else { throw ConversationServiceError.disconnected }
+        guard Data(bot.id.utf8) == profile.bytes else { throw ConversationServiceError.profileUnavailable }
     }
 
     private func status(_ chat: Conversation) -> BotStatus {
@@ -519,10 +614,11 @@ import BottoCore
                               updatedAt: chat.messages.last?.timestamp, messageCount: chat.messages.count)
     }
 
-    private func registerMain(profile: String) {
-        guard let exact = try? ExactID(profile) else { return }
-        identities[exact.bytes] = SessionIdentity(profile: exact, root: exact, stored: exact, aliases: [exact])
-        titles[exact.bytes] = "Bot Chat"; order.append(exact.bytes)
+    private func registerSpace(_ id: String, title: String) {
+        guard let root = try? ExactID(id), let profile = try? ExactID(bot.id) else { return }
+        identities[root.bytes] = SessionIdentity(profile: profile, root: root, stored: root, aliases: [])
+        titles[root.bytes] = title
+        order.append(root.bytes)
     }
 
     private func seedSideChats() {
@@ -531,10 +627,8 @@ import BottoCore
             ("research", "Research notes", "A separate place to gather sources and follow up on ideas.")
         ] {
             let key = "demo-milo-" + suffix
-            let root = try! ExactID(key)
-            identities[root.bytes] = SessionIdentity(profile: try! ExactID("milo"), root: root, stored: root, aliases: [root])
-            titles[root.bytes] = title; order.append(root.bytes)
-            chats[root.bytes] = Conversation(id: key, storedID: key, profileID: "milo", messages: [
+            registerSpace(key, title: title)
+            chats[Data(key.utf8)] = Conversation(id: key, storedID: key, profileID: "milo", messages: [
                 ChatMessage(id: key + "-welcome", role: .assistant, text: text, timestamp: .now)
             ])
         }
@@ -583,13 +677,6 @@ import BottoCore
 
     private func publish(_ chat: Conversation, source: SessionIdentity) {
         chats[source.root.bytes] = chat
-        if let index = profiles.firstIndex(where: { Data($0.id.utf8) == source.profile.bytes }) {
-            let siblings = identities.filter { $0.value.profile == source.profile }.keys.compactMap { chats[$0] }
-            profiles[index].status = siblings.contains { !$0.pendingRequests.isEmpty } ? .waiting :
-                siblings.contains { $0.isWorking } ? .working : .idle
-            profiles[index].preview = chat.messages.last?.text ?? ""
-            profiles[index].updatedAt = .now
-        }
         guard connected else { return }
         if let selected, selected.identity == source {
             var access = selected.access
@@ -618,19 +705,6 @@ import BottoCore
 
     private func seed() {
         let now = Date.now
-        profiles = [
-            BotProfile(id: "milo", name: "Milo", description: "Your chief of staff. Turns loose ends into a clear next step.",
-                       preview: "Your morning brief is ready. One thing needs a yes.", updatedAt: now.addingTimeInterval(-180), status: .waiting, isPinned: true),
-            BotProfile(id: "scout", name: "Scout", description: "A curious researcher. Finds the source, then gets to the point.",
-                       preview: "Found three places worth a closer look.", updatedAt: now.addingTimeInterval(-1200), isPinned: true),
-            BotProfile(id: "iris", name: "Iris", description: "Your writing partner. Makes the first draft easier.",
-                       preview: "A shorter version, with a little more you in it.", updatedAt: now.addingTimeInterval(-3600), isPinned: true),
-            BotProfile(id: "atlas", name: "Atlas", description: "Plans the details so you can enjoy the day.",
-                       preview: "Saturday’s plan has room to wander.", updatedAt: now.addingTimeInterval(-8000))
-        ]
-        let faces: [BotFace] = [.init(shape: .squircle, color: "#f97316"), .init(shape: .circle, color: "#38bdf8"),
-                               .init(shape: .cloud, color: "#ec4899"), .init(shape: .drop, color: "#22c55e")]
-        for index in profiles.indices { profiles[index].appearance = BotAvatarChoice.face(faces[index]).appearance }
         chats[Data("milo".utf8)] = Conversation(id: "demo-milo", storedID: "milo", profileID: "milo", messages: [
             ChatMessage(id: "m1", role: .user, text: "Help me get a handle on tomorrow.", timestamp: now.addingTimeInterval(-900)),
             ChatMessage(id: "m2", role: .assistant, text: "A little breathing room for tomorrow.\n\nYour first meeting is at 10. I’d keep the hour before it for the proposal. It’s the one thing that will make the rest of the day easier.", timestamp: now.addingTimeInterval(-850)),
@@ -638,27 +712,26 @@ import BottoCore
         ], pendingRequests: [PendingRequest(id: "demo-approval", kind: .approval, title: "Send the check-in note?",
             detail: "To: Jordan\n\nCould we move our check-in to Thursday at 2? That gives us time to finish the proposal first.",
             choices: [.init(id: "once", label: "Allow once"), .init(id: "deny", label: "Keep draft")], queueID: "demo-queue")])
-        chats[Data("scout".utf8)] = Conversation(id: "demo-scout", storedID: "scout", profileID: "scout", messages: [
+        chats[Data("scout".utf8)] = Conversation(id: "demo-scout", storedID: "scout", profileID: Self.profileID, messages: [
             .init(id: "s1", role: .user, text: "Find a quiet spot for a long weekend. Somewhere with good walks.", timestamp: now.addingTimeInterval(-1800)),
             .init(id: "s2", role: .tool, text: "Compared trails, train routes, and places to stay.", timestamp: now.addingTimeInterval(-1500), toolName: "Research"),
             .init(id: "s3", role: .assistant, text: "Three directions I’d explore:\n\n**Hudson**: easy train, small galleries, a slow morning by the river.\n\n**Cold Spring**: best for a real hike without a car.\n\n**Beacon**: a good mix of art, walks, and coffee.\n\nI’d start with Cold Spring if being outside is the point.", timestamp: now.addingTimeInterval(-1200))
         ])
-        chats[Data("iris".utf8)] = Conversation(id: "demo-iris", storedID: "iris", profileID: "iris", messages: [
+        chats[Data("iris".utf8)] = Conversation(id: "demo-iris", storedID: "iris", profileID: Self.profileID, messages: [
             .init(id: "i1", role: .user, text: "Can you make this introduction sound less formal?", timestamp: now.addingTimeInterval(-4000)),
             .init(id: "i2", role: .assistant, text: "Here’s a lighter opening:\n\n“We’ve been thinking about a simpler way to do this. Here’s what we tried, what surprised us, and where we’re going next.”\n\nIt gets to the idea sooner and gives people a reason to keep reading.", timestamp: now.addingTimeInterval(-3600))
         ])
-        chats[Data("atlas".utf8)] = Conversation(id: "demo-atlas", storedID: "atlas", profileID: "atlas", messages: [
+        chats[Data("atlas".utf8)] = Conversation(id: "demo-atlas", storedID: "atlas", profileID: Self.profileID, messages: [
             .init(id: "a1", role: .assistant, text: "Saturday, without overplanning it.\n\nStart at the market around 9. Walk along the water after coffee. Lunch is a short walk away, and the afternoon is yours.\n\nWant me to find a rainy-day alternative?", timestamp: now.addingTimeInterval(-8000))
         ])
+        registerSpace("scout", title: "Weekend research")
+        registerSpace("iris", title: "Writing desk")
+        registerSpace("atlas", title: "Saturday plans")
         seedRichDemo(now: now)
     }
 
     #if DEBUG
     private func seedAttributionDemo() {
-        profiles.append(.init(id: "hermes", name: "Gustavo", description: "A teammate in the sample workspace.",
-            appearance: .init(shape: .cloud, color: "#8b5cf6")))
-        chats[Data("hermes".utf8)] = .init(id: "demo-hermes", storedID: "hermes", profileID: "hermes",
-            messages: [.init(id: "gustavo-intro", role: .assistant, text: "I’m coordinating the sample service check with Milo.")])
         chats[Data("milo".utf8)] = Conversation(id: "demo-milo", storedID: "milo", profileID: "milo", messages: [
             .init(id: "authored", role: .user, text: "Check the service and coordinate with Gustavo."),
             .init(id: "assistant-intro", role: .assistant, text: "I’ll check the service and follow up."),
@@ -670,7 +743,7 @@ import BottoCore
             .init(id: "process-result", role: .user,
                   text: "[IMPORTANT: Background process proc_demo completed normally (exit code 0).]\nCommand: /usr/bin/python3 health_check.py\n{\"status\":\"healthy\"}",
                   displayKind: "process_complete", displayText: "Background Process Finished: /usr/bin/python3 health_check.py"),
-            .init(id: "gustavo", role: .user, text: "Message from 🤖 Gustavo (@hermes): The service has recovered. Please own the follow-up.",
+            .init(id: "gustavo", role: .user, text: "Message from 🤖 Gustavo (@gustavo): The service has recovered. Please own the follow-up.",
                   displayKind: "internal_notification"),
             .init(id: "assistant-followup", role: .assistant, text: "I’ll own the follow-up and keep you posted."),
             .init(id: "human-hi", role: .user, text: "Hi"),
@@ -734,7 +807,7 @@ import BottoCore
             timestamp: now.addingTimeInterval(-212))
         messages.append(ChatMessage(id: "search-history-tail", role: .assistant,
             text: "Newest history tail sentinel.", timestamp: now))
-        chats[Data("canvas".utf8)] = Conversation(id: "demo-canvas", storedID: "canvas", profileID: "canvas", messages: messages)
+        chats[Data("canvas".utf8)] = Conversation(id: "demo-canvas", storedID: "canvas", profileID: Self.profileID, messages: messages)
     }
 
     /// Opt-in, deterministic stress data. Ordinary Demo keeps its small sample workspace.
@@ -801,9 +874,8 @@ import BottoCore
         }
         for index in 0..<200 {
             let id = "performance-bot-\(index)"
-            profiles.append(BotProfile(id: id, name: "Helper \(index)", description: "A searchable performance fixture.",
-                preview: "Ready for **work** with a readable preview.", updatedAt: now))
-            chats[Data(id.utf8)] = Conversation(id: "demo-" + id, storedID: id, profileID: id,
+            registerSpace(id, title: "Helper \(index)")
+            chats[Data(id.utf8)] = Conversation(id: "demo-" + id, storedID: id, profileID: Self.profileID,
                 messages: [.init(id: "hello-" + id, role: .assistant, text: "Hello from Helper \(index).")])
         }
     }
@@ -849,8 +921,8 @@ import BottoCore
 
     /// The ordinary demo includes a local showcase of rich replies and files.
     private func seedRichDemo(now: Date) {
-        profiles.append(BotProfile(id: "canvas", name: "Canvas", description: "Rich content demo. Local examples with downloadable files.",
-                                   preview: "Rich content demo: dashboard, diagram, and original files.", updatedAt: now, isPinned: true))
+        registerSpace("canvas", title: "Project update")
+        pinned.insert("canvas")
         let pdf = Self.samplePDF()
         let notes = Data("Canvas demo\n\nDraft, review, then publish. All sample files stay on this device.\n".utf8)
         let html = Data(Self.sampleHTML.utf8)
@@ -863,7 +935,7 @@ import BottoCore
             "/demo/canvas/report.html": DownloadedArtifact(data: html, filename: "report.html", mimeType: "text/html"),
             "/demo/canvas/inline-visual-test.html": DownloadedArtifact(data: Data(Self.previewFileHTML.utf8), filename: "inline-visual-test.html", mimeType: "text/html")
         ]
-        chats[Data("canvas".utf8)] = Conversation(id: "demo-canvas", storedID: "canvas", profileID: "canvas", messages: [
+        chats[Data("canvas".utf8)] = Conversation(id: "demo-canvas", storedID: "canvas", profileID: Self.profileID, messages: [
             ChatMessage(id: "canvas-request", role: .user, text: "Build a small project update with a dashboard, a diagram, and files I can keep.",
                         timestamp: now.addingTimeInterval(-60), attachments: [ChatAttachment(name: "notes.txt", path: "/demo/canvas/notes.txt", mimeType: "text/plain", byteCount: notes.count)]),
             ChatMessage(id: "canvas-rich-reply", role: .assistant, text: Self.richReply, timestamp: now)
@@ -874,10 +946,6 @@ import BottoCore
                 ChatAttachment(name: "report.pdf", path: "/demo/canvas/report.pdf", mimeType: "application/pdf", byteCount: pdf.count),
                 ChatAttachment(name: "chart.png", path: "/demo/canvas/chart.png", mimeType: "image/png", byteCount: png.count)
             ]))
-        }
-        if ProcessInfo.processInfo.arguments.contains("--rich-inbox-demo"),
-           let index = profiles.firstIndex(where: { $0.id == "canvas" }) {
-            profiles[index].preview = Self.richReply
         }
         if ProcessInfo.processInfo.arguments.contains("--diagram-cache-demo") {
             chats[Data("canvas".utf8)]?.messages = (0..<24).map { index in

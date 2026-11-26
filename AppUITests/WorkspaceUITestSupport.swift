@@ -139,48 +139,39 @@ import Vision
 }
 
 @MainActor enum WorkspaceNavigation {
-    static func revealBot(_ identifier: String, in app: XCUIApplication, maximumSwipes: Int = 8,
-                          file: StaticString = #filePath, line: UInt = #line) {
-        let list = app.scrollViews["bot-inbox"]
-        XCTAssertTrue(list.waitForExistence(timeout: 10), file: file, line: line)
-        let row = app.buttons[identifier]
-        for _ in 0..<maximumSwipes where !row.isHittable { list.swipeUp() }
-        XCTAssertTrue(row.exists && row.isHittable, file: file, line: line)
+    static func openDrawer(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let search = app.textFields["t3-drawer-search"]
+        if search.exists && search.isHittable { return }
+        let open = app.buttons["t3-open-drawer"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10), file: file, line: line)
+        open.tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5), file: file, line: line)
     }
 
-    static func displaysChat(_ title: String, in app: XCUIApplication) -> Bool {
-        let header = app.buttons["chat-picker-button"]
-        let overview = app.descendants(matching: .any).matching(identifier: "chat-picker").firstMatch
-        return !overview.exists && header.exists && header.isHittable && header.isEnabled && header.value as? String == title
+    static func space(_ id: String, in app: XCUIApplication) -> XCUIElement {
+        app.buttons[id == "milo" ? "t3-main-space" : "t3-space-\(id)"]
     }
 
-    /// The toolbar's Bots control, or the same action in the Actions menu of a full-width file.
-    static func botsControl(in app: XCUIApplication) -> XCUIElement {
-        let toolbar = app.descendants(matching: .any).matching(identifier: "workspace-browse-bots").firstMatch
-        let actions = app.buttons["artifact-actions"].firstMatch
-        if toolbar.exists || !actions.exists || !actions.isHittable { return toolbar }
-        actions.tap()
-        let menuItem = ArtifactOutputActions.action("workspace-browse-bots", label: "Bots", in: app)
-        return menuItem.waitForExistence(timeout: 5) ? menuItem : toolbar
-    }
-
-    static func browseBots(in app: XCUIApplication, expectedBotRow: String? = nil,
-                           file: StaticString = #filePath, line: UInt = #line) {
-        let explicit = botsControl(in: app)
-        if explicit.exists && explicit.isHittable {
-            explicit.tap()
-        } else {
-            XCTAssertFalse(app.descendants(matching: .any)["artifact-preview"].exists,
-                           "A file uses its explicit Bots control.", file: file, line: line)
-            let predicate = NSPredicate(format: "identifier == %@ OR label == %@", "BackButton", "Back")
-            // Native navigation can place Back in its reserved toolbar rail.
-            let native = app.descendants(matching: .any).matching(predicate).firstMatch
-            XCTAssertTrue(native.exists && native.isHittable && native.isEnabled,
-                          "Chat-only navigation must offer native Back.", file: file, line: line)
-            native.tap()
+    static func openSpace(_ id: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        openDrawer(in: app, file: file, line: line)
+        let row = space(id, in: app)
+        let search = app.textFields["t3-drawer-search"]
+        if !row.isHittable {
+            for _ in 0..<5 where !row.isHittable {
+                search.swipeUp()
+            }
         }
-        let destination = expectedBotRow.map { app.buttons[$0] } ?? app.scrollViews["bot-inbox"]
-        XCTAssertTrue(destination.waitForExistence(timeout: 5),
-                      "Browsing must reach the actual Bots list.", file: file, line: line)
+        XCTAssertTrue(row.waitForExistence(timeout: 5) && row.isHittable, file: file, line: line)
+        row.tap()
+        let header = app.buttons["t3-chat-header"]
+        XCTAssertTrue(header.waitForExistence(timeout: 6), file: file, line: line)
+    }
+
+    static func openSettings(in app: XCUIApplication) {
+        openDrawer(in: app)
+        let settings = app.buttons["t3-drawer-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
     }
 }
