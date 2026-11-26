@@ -157,6 +157,51 @@ import UIKit
         }
     }
 
+    @Test(arguments: [PushEventKind.approval, .reply])
+    func expiredNotificationTapOpensTheStillPairedSpace(kind: PushEventKind) async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let scope = T3PushScope(environmentID: "studio-id", projectID: "bot-project")
+        let invite = pushInvitation(host: "127.0.0.1", scope: scope, digit: "a")
+        let installation = String(repeating: "a", count: 64)
+        var saved: [T3PushPairing] = []
+        let push = T3PushCoordinator(load: { saved }, save: { saved = $0 },
+            authorization: .init(requestPermission: { true }, deviceToken: { String(repeating: "12", count: 32) }),
+            send: { request, _ in
+                .init(request.target == nil ? .removed : .registered, installationID: installation)
+            })
+        await push.enable(code: try invite.code(), scope: scope)
+        let service = T3WorkspaceService()
+        let storage = MemoryConnectionStorage(saved: configuration)
+        let store = AppStore(service: service, persistence: storage.persistence, t3Push: push)
+        await store.start()
+        let general = try #require(store.t3Channels.first { $0.id == "general" })
+        try #require(await store.openT3Channel(general))
+
+        let envelope = try PushEnvelope(installationID: installation, deviceID: invite.deviceID, generation: 1,
+            eventID: String(repeating: "b", count: 64), kind: kind,
+            expiresAt: Int(Date.now.timeIntervalSince1970) - 1, sealed: "")
+            .encrypting(.init(title: "Release", body: "Activity", destination: scope.destination(spaceID: "release")),
+                        key: invite.previewKey)
+        #expect(!store.shouldPresentPush(envelope))
+
+        var tampered = envelope
+        tampered.eventID = String(repeating: "c", count: 64)
+        await store.openPushNotification(tampered)
+        #expect(service.openedStoredThreads == ["general"])
+        #expect(store.notice == "This notification no longer has a verified destination.")
+
+        await store.openPushNotification(envelope)
+        #expect(service.openedStoredThreads == ["general", "release"])
+        #expect(store.selectedT3ChannelID == "release")
+        #expect(store.notice == nil)
+
+        #expect(await push.disable(scope: scope))
+        await store.openPushNotification(envelope)
+        #expect(service.openedStoredThreads == ["general", "release"])
+        #expect(store.notice == "This notification no longer has a verified destination.")
+    }
+
     @Test func retiresOnlyTheOriginalNotificationKeyAfterUnlock() throws {
         var accounts: Set<String> = ["pairing-v1", "t3-pairing-v1"]
         var locked = true
