@@ -13,51 +13,15 @@ nonisolated private func artifactCacheFields(_ fields: [Data]) -> Data {
     return result
 }
 
+/// The consumers still waiting on one original read. Its bytes are published only while one remains.
 nonisolated final class ArtifactCaptureAdmission: @unchecked Sendable {
-    enum PublicationError: Error { case pending }
     private let lock = NSLock()
-    private var consumers: [UUID: Bool] = [:]
-    private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    private func update(_ mutation: (inout [UUID: Bool]) -> Void) {
-        let ready: ([CheckedContinuation<Void, any Error>], Bool)? = lock.withLock {
-            mutation(&consumers)
-            guard consumers.isEmpty || consumers.values.contains(true) else { return nil }
-            let pending = Array(waiters.values); waiters = [:]
-            return (pending, !consumers.isEmpty)
-        }
-        if let (pending, admitted) = ready {
-            for waiter in pending {
-                if admitted { waiter.resume() } else { waiter.resume(throwing: CancellationError()) }
-            }
-        }
-    }
-    func register(_ id: UUID, ready: Bool = true) { update { $0[id] = ready } }
-    func setReady(_ ready: Bool, for id: UUID) { update { if $0[id] != nil { $0[id] = ready } } }
-    func revoke(_ id: UUID) { update { $0[id] = nil } }
-    func revokeAll() { update { $0 = [:] } }
-    func waitUntilReady() async throws {
-        let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let ready: Bool? = lock.withLock {
-                    if Task.isCancelled || consumers.isEmpty { return false }
-                    if consumers.values.contains(true) { return true }
-                    waiters[id] = continuation; return nil
-                }
-                if let ready {
-                    if ready { continuation.resume() } else { continuation.resume(throwing: CancellationError()) }
-                }
-            }
-        } onCancel: {
-            let pending = self.lock.withLock { self.waiters.removeValue(forKey: id) }
-            pending?.resume(throwing: CancellationError())
-        }
-    }
+    private var consumers = Set<UUID>()
+    func register(_ id: UUID) { lock.withLock { _ = consumers.insert(id) } }
+    func revoke(_ id: UUID) { lock.withLock { _ = consumers.remove(id) } }
+    func revokeAll() { lock.withLock { consumers.removeAll() } }
     func claimPublication() throws {
-        try lock.withLock {
-            guard !consumers.isEmpty else { throw CancellationError() }
-            guard consumers.values.contains(true) else { throw PublicationError.pending }
-        }
+        try lock.withLock { guard !consumers.isEmpty else { throw CancellationError() } }
     }
 }
 
@@ -109,14 +73,18 @@ nonisolated struct CachedArtifactOriginal: Sendable {
 
 @MainActor fileprivate final class ArtifactCacheMaintenance {
     private let operation: @MainActor () async throws -> Void
+    /// A failed purge of a forgotten setup stays failed, so its namespace stays fenced until an explicit discard.
+    private let retryable: Bool
     private var attempt = UUID()
     private var task: Task<Void, Error>
-    init(operation: @escaping @MainActor () async throws -> Void) {
-        self.operation = operation
+    init(retryable: Bool, operation: @escaping @MainActor () async throws -> Void) {
+        self.operation = operation; self.retryable = retryable
         task = Task { try await operation() }
     }
     func wait() async throws { try await task.value }
+    /// Waits for the latest attempt and, if it failed, starts one more; concurrent callers share that attempt.
     func retry() async throws {
+        guard retryable else { return try await wait() }
         let previous = attempt
         do { try await task.value; return } catch {}
         if attempt == previous {
@@ -151,7 +119,7 @@ nonisolated struct CachedArtifactOriginal: Sendable {
     func discard(configurationID: UUID) {
         for item in sessions where item.configurationID == configurationID { item.value?.retire() }
         let previous = maintenance, backend = backend
-        maintenance = ArtifactCacheMaintenance {
+        maintenance = ArtifactCacheMaintenance(retryable: false) {
             _ = try? await previous?.wait()
             try await backend.discard(configurationID)
         }
@@ -159,7 +127,8 @@ nonisolated struct CachedArtifactOriginal: Sendable {
     func prune(reachableConfigurationIDs: Set<UUID>) {
         for item in sessions where !reachableConfigurationIDs.contains(item.configurationID) { item.value?.retire() }
         let previous = maintenance, backend = backend
-        maintenance = ArtifactCacheMaintenance {
+        // Startup pruning also opens and upgrades the database. A new session retries it once if it failed.
+        maintenance = ArtifactCacheMaintenance(retryable: true) {
             _ = try? await previous?.wait()
             try await backend.prune(reachableConfigurationIDs)
         }
@@ -181,7 +150,7 @@ nonisolated struct CachedArtifactOriginal: Sendable {
         self.backend = backend
         let lease = lease, state = leaseState
         acquisition = Task {
-            try await barrier?.wait()
+            try await barrier?.retry()
             try await backend.acquire(lease, scope: scope, state: state)
         }
     }
@@ -217,15 +186,13 @@ nonisolated struct CachedArtifactOriginal: Sendable {
     }
     @discardableResult func retainOriginal(_ artifact: DownloadedArtifact, for key: ArtifactOriginalKey,
                                          admission: ArtifactCaptureAdmission? = nil) async throws -> Data? {
-        while true {
-            try await admission?.waitUntilReady()
-            try await ready()
-            do { return try accepted(try await backend.retainOriginal(artifact, for: key, lease: lease, admission: admission)) }
-            catch ArtifactCaptureAdmission.PublicationError.pending { continue }
-        }
+        try admission?.claimPublication()
+        try await ready()
+        return try accepted(try await backend.retainOriginal(artifact, for: key, lease: lease, admission: admission))
     }
 }
 enum ArtifactCacheError: Error { case unavailable, retired, unsupportedSchema, quota }
+nonisolated private struct PhysicalPressure: Error {}
 
 fileprivate actor ArtifactCacheBackend {
     private let root: URL
@@ -339,22 +306,43 @@ fileprivate actor ArtifactCacheBackend {
         let digest = hash(artifact.data)
         guard artifact.data.count <= limits.singleOriginalBytes, artifact.data.count <= limits.originalBytes else { return nil }
         let name = filename(scope: scope, digest: digest, kind: 1)
-        try writeBlob(artifact.data, name: name)
         let payload = try encoder.encode(OriginalMetadata(filename: artifact.filename, mimeType: artifact.mimeType, digest: digest))
-        try database.transaction {
-            try insert(scope: scope, kind: 1, key: originalKey(key), payload: payload, blob: name, size: artifact.data.count)
-            try insert(scope: scope, kind: 3, key: originalKey(key), payload: digest, size: digest.count)
-            try enforceLimits(reclaimStorage: false)
-            guard try row(scope: scope, kind: 1, key: originalKey(key))?.first?.data == payload,
-                  try row(scope: scope, kind: 3, key: originalKey(key))?.first?.data == digest else { throw ArtifactCacheError.quota }
-            beforeCaptureCommit?()
-            try Task.checkCancellation()
-            // Claim publication immediately before COMMIT; later presentation
-            // retirement cannot undo bytes admitted while a consumer was valid.
-            try admission?.claimPublication()
-            _ = try self.scope(lease)
+        var evict = false
+        while true {
+            // Reclaiming removes files no row names, including this one after a rollback.
+            try writeBlob(artifact.data, name: name)
+            do {
+                try database.transaction {
+                    try insert(scope: scope, kind: 1, key: originalKey(key), payload: payload, blob: name, size: artifact.data.count)
+                    try insert(scope: scope, kind: 3, key: originalKey(key), payload: digest, size: digest.count)
+                    try enforceLimits()
+                    guard try row(scope: scope, kind: 1, key: originalKey(key))?.first?.data == payload,
+                          try row(scope: scope, kind: 3, key: originalKey(key))?.first?.data == digest else { throw ArtifactCacheError.quota }
+                    beforeCaptureCommit?()
+                    try Task.checkCancellation()
+                    // Claim publication immediately before COMMIT; later presentation
+                    // retirement cannot undo bytes admitted while a consumer was valid.
+                    try admission?.claimPublication()
+                    _ = try self.scope(lease)
+                }
+                return digest
+            } catch is PhysicalPressure {
+                try reclaimPages(evicting: evict)
+                evict = true
+            }
         }
-        return digest
+    }
+    /// The file outgrew its page budget. Outside a transaction, first compact free pages,
+    /// then on later attempts evict the oldest tenth of rows and compact again.
+    private func reclaimPages(evicting: Bool) throws {
+        guard let database else { throw ArtifactCacheError.unavailable }
+        try Task.checkCancellation()
+        if evicting {
+            let target = try rowBytes() * 9 / 10
+            repeat { try evictOldest() } while try rowBytes() > target
+            try cleanup()
+        }
+        try database.execute("VACUUM")
     }
     private func readBlob(_ name: String, maximumBytes: Int) -> Data? {
         guard !name.contains("/"), !name.hasPrefix(".") else { return nil }
@@ -395,12 +383,9 @@ fileprivate actor ArtifactCacheBackend {
             if !names.contains(name) { try FileManager.default.removeItem(at: url) }
         }
     }
-    private func databaseBytes() throws -> Int {
-        try ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm", "index.sqlite-journal"].reduce(0) { total, name in
-            let url = root.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: url.path) else { return total }
-            return total + (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-        }
+    private func rowBytes() throws -> Int {
+        // Include mapping keys, scope bytes and response metadata in admission.
+        try database?.rows("SELECT COALESCE(SUM(length(payload)+length(key)+length(scope)+length(configuration)+128),0) FROM entries").first?[0].integer ?? 0
     }
     private func evictOldest(kind: Int? = nil) throws {
         guard let database else { throw ArtifactCacheError.unavailable }
@@ -409,35 +394,20 @@ fileprivate actor ArtifactCacheBackend {
         guard let id = rows.first?.first?.integer else { throw ArtifactCacheError.quota }
         try database.execute("DELETE FROM entries WHERE rowid=?", [.integer(id)])
     }
-    private func enforceLimits(reclaimStorage: Bool = true) throws {
+    /// Runs inside a capture's transaction. Physical pressure is reclaimed by the caller after rollback.
+    private func enforceLimits() throws {
         guard let database else { return }
-        var removed = false
         while (try database.rows("SELECT COALESCE(SUM(size),0) FROM (SELECT blob,MAX(size) AS size FROM entries WHERE kind=1 GROUP BY blob)").first?[0].integer ?? 0) > max(0, limits.originalBytes) {
             try evictOldest(kind: 1)
-            removed = true
         }
-        // Include mapping keys, scope bytes and response metadata in admission.
-        while (try database.rows("SELECT COALESCE(SUM(length(payload)+length(key)+length(scope)+length(configuration)+128),0) FROM entries").first?[0].integer ?? 0) > max(0, limits.indexBytes) {
-            try evictOldest()
-            removed = true
-        }
+        while try rowBytes() > max(0, limits.indexBytes) { try evictOldest() }
         // SQLite pages and indexes also consume the index allowance. Small
         // injected budgets retain the minimum schema pages (64 KiB).
         let physicalBudget = max(64 * 1024, limits.indexBytes)
-        if !reclaimStorage {
-            let pages = try database.rows("PRAGMA page_count").first?.first?.integer ?? 0
-            let pageBytes = try database.rows("PRAGMA page_size").first?.first?.integer ?? 0
-            guard pageBytes > 0, pages <= physicalBudget / pageBytes else { throw ArtifactCacheError.quota }
-            return
-        }
-        try cleanup()
-        if removed { try database.execute("VACUUM") }
-        while try databaseBytes() > physicalBudget {
-            guard !(try database.rows("SELECT rowid FROM entries LIMIT 1")).isEmpty else { break }
-            try evictOldest()
-            try cleanup()
-            try database.execute("VACUUM")
-        }
+        let pages = try database.rows("PRAGMA page_count").first?.first?.integer ?? 0
+        let pageBytes = try database.rows("PRAGMA page_size").first?.first?.integer ?? 0
+        guard pageBytes > 0 else { throw ArtifactCacheError.quota }
+        guard pages <= physicalBudget / pageBytes else { throw PhysicalPressure() }
     }
 }
 

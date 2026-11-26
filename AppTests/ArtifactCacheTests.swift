@@ -6,32 +6,81 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct ArtifactCacheTests {
+    /// A capture paused before COMMIT publishes only if one of its consumers is still registered when it resumes.
     @Test(arguments: [false, true])
-    func pendingPublicationReleasesTheBackendAndEitherResumesOrCancelsAcrossReopen(cancel: Bool) async throws {
+    func aPausedCaptureCommitsOnlyWhileAConsumerRemains(survivingPeer: Bool) async throws {
         try await withCacheRoot { root, own in
             let gate = CaptureCommitGate()
             defer { gate.release() }
             let (_, scope, key) = try fixture()
             let cache = own(ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }))
-            let session = cache.session(scope: scope), admission = ArtifactCaptureAdmission(), consumer = UUID()
+            let session = cache.session(scope: scope), admission = ArtifactCaptureAdmission()
+            let consumer = UUID(), peer = UUID()
             admission.register(consumer)
+            if survivingPeer { admission.register(peer) }
             gate.arm()
             let saving = Task { try await session.retainOriginal(bytes, for: key, admission: admission) }
             defer { saving.cancel(); admission.revokeAll() }
             await waitWhile { !gate.isEntered }
             try #require(gate.isEntered)
-            admission.setReady(false, for: consumer); gate.release()
-            #expect(try await session.original(for: key) == nil, "Pending publication must rollback and release the cache actor.")
-            if cancel {
-                saving.cancel()
-                await #expect(throws: (any Error).self) { _ = try await saving.value }
-            } else {
-                admission.setReady(true, for: consumer)
+            admission.revoke(consumer); gate.release()
+            if survivingPeer {
                 #expect(try await saving.value != nil)
+            } else {
+                await #expect(throws: CancellationError.self) { _ = try await saving.value }
             }
+            #expect(try await session.original(for: key)?.artifact.data == (survivingPeer ? bytes.data : nil),
+                "A rolled-back capture must also release the cache actor")
             await cache.close()
             let reopened = own(ArtifactCache(root: root)).session(scope: scope)
-            #expect(try await reopened.original(for: key)?.artifact.data == (cancel ? nil : bytes.data))
+            #expect(try await reopened.original(for: key)?.artifact.data == (survivingPeer ? bytes.data : nil))
+        }
+    }
+
+    /// Pages and indexes count against the index allowance as well as row bytes. A cache at that limit evicts
+    /// its oldest captures and compacts, instead of refusing every later capture.
+    @Test func capturesPastThePageBudgetEvictTheOldestAndKeepSucceeding() async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.indexBytes = 40_000
+            let (_, scope, _) = try fixture()
+            let session = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
+            let identity = SessionIdentity(profile: try ExactID("bot"), root: try ExactID("chat"), stored: try ExactID("chat"), aliases: [])
+            func key(_ index: Int) -> ArtifactOriginalKey {
+                .init(identity: identity, messageID: Data("message-\(index)".utf8),
+                    path: Data(("/outputs/" + String(repeating: "long-folder/", count: 20) + "report-\(index).txt").utf8),
+                    sourceRevision: Data(SHA256.hash(data: Data("\(index)".utf8))))
+            }
+            let count = 300
+            for index in 0..<count {
+                let artifact = DownloadedArtifact(data: Data("report \(index)".utf8), filename: "report-\(index).txt", mimeType: "text/plain")
+                #expect(try await session.retainOriginal(artifact, for: key(index)) != nil, "Capture \(index) was refused")
+            }
+            #expect(try await session.original(for: key(count - 1))?.artifact.data == Data("report \(count - 1)".utf8))
+            #expect(try await session.original(for: key(0)) == nil, "The oldest capture makes room")
+            let database = root.appendingPathComponent("index.sqlite")
+            let size = try #require(try database.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+            #expect(size <= 64 * 1024)
+        }
+    }
+
+    /// Startup pruning also opens and upgrades the cache. A lock at launch must not leave the cache unavailable
+    /// for the rest of the run: the next workspace mount retries it once.
+    @Test func aStartupPruneThatFailsIsRetriedByALaterMount() async throws {
+        try await withCacheRoot { root, own in
+            let (seed, scope, key) = try fixture(root: root)
+            _ = own(seed)
+            try await seed.session(scope: scope).retainOriginal(bytes, for: key)
+            await seed.close()
+            var handle: OpaquePointer?
+            try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+            defer { sqlite3_close(handle) }
+            try #require(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+            let cache = own(ArtifactCache(root: root))
+            cache.prune(reachableConfigurationIDs: [scope.configurationID])
+            await #expect(throws: (any Error).self) { try await cache.drainMaintenance() }
+            await #expect(throws: (any Error).self) { _ = try await cache.session(scope: scope).original(for: key) }
+            #expect(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
+            #expect(try await cache.session(scope: scope).original(for: key)?.artifact.data == bytes.data)
         }
     }
 

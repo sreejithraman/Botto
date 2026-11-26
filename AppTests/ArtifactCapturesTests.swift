@@ -515,6 +515,186 @@ import BottoCore
         await reopenedCache.close()
     }
 
+    @Test func retirementCancelsAnInFlightCaptureAndRejectsItsLateBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = Self.source("main"), scope = Self.scope()
+        let message = ChatMessage(id: "main:row:3", role: .assistant, text: "MEDIA:/report.txt")
+        let attachment = try Self.attachment(in: message)
+        let key = try #require(await ArtifactCaptures.originalKey(identity: source, attachment: attachment, messages: [message]))
+        let cache = ArtifactCache(root: root), captures = ArtifactCaptures(cache: cache.session(scope: scope))
+        captures.setOnline(true)
+        let network = StoreTestBarrier()
+        var readCancelled = false
+        let loading = Task {
+            try await captures.original(for: key) {
+                await network.wait()
+                readCancelled = Task.isCancelled
+                return DownloadedArtifact(data: Self.downloadedBytes, filename: attachment.name, mimeType: "text/plain")
+            }
+        }
+        defer { loading.cancel(); network.release() }
+        await network.waitUntilEntered()
+        captures.retire()
+        network.release()
+        await #expect(throws: (any Error).self) { _ = try await loading.value }
+        #expect(readCancelled, "Retirement cancels the read it started")
+        var restarted = false
+        await #expect(throws: (any Error).self) {
+            _ = try await captures.original(for: key) {
+                restarted = true
+                return DownloadedArtifact(data: Self.downloadedBytes, filename: attachment.name, mimeType: "text/plain")
+            }
+        }
+        #expect(!restarted)
+        await cache.close()
+        let reopened = ArtifactCache(root: root)
+        #expect(try await reopened.session(scope: scope).original(for: key) == nil, "Late bytes were never saved")
+        await reopened.close()
+    }
+
+    /// A save paused just before COMMIT publishes only if a file card still wants it when it resumes.
+    @Test(arguments: ["close", "connection"])
+    func captureCommitRequiresASurvivingConsumer(retirement: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = CaptureCommitGate()
+        defer { gate.release() }
+        let cache = ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() })
+        let service = CaptureTestService()
+        let message = try #require(service.messages[service.first]?.first)
+        let attachment = ChatAttachment(name: "report.txt", path: "/report.txt", mimeType: "text/plain")
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://capture-admission.invalid")!)
+        defer { LocalHistory.remove(for: configuration.id) }
+        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence, artifactCache: cache)
+        try #require(await store.connect(configuration)); await store.open(service.profiles[0])
+        let destination = try #require(store.artifactDestination(for: attachment, botID: "helper", producingMessage: message))
+        let key = try #require(await ArtifactCaptures.originalKey(identity: service.first, attachment: attachment,
+            messages: [message], producingMessage: message))
+        gate.arm()
+        let presentation = WorkspacePresentation()
+        var reader: ArtifactPreviewSession?
+        var loading: Task<DownloadedArtifact, Error>?
+        if retirement == "close" {
+            presentation.openArtifact(destination, store: store)
+            reader = try #require(presentation.artifact)
+        } else {
+            loading = Task { try await store.downloadArtifact(destination) }
+        }
+        defer { loading?.cancel(); if let reader { presentation.closeArtifact(id: reader.id) } }
+        await waitWhile { !gate.isEntered }
+        try #require(gate.isEntered)
+        if let reader {
+            presentation.closeArtifact(id: reader.id)
+            #expect(presentation.artifact == nil && !reader.isCurrent)
+        } else {
+            store.showsConnection = true
+        }
+        gate.release()
+        if let loading { await #expect(throws: (any Error).self) { _ = try await loading.value } }
+        #expect(service.downloadCount == 1)
+        // This queued read observes the held transaction after it settles.
+        let scope = AppStore.artifactScope(configuration)
+        #expect(try await cache.session(scope: scope).original(for: key) == nil, "No file card remained to publish the capture")
+        if let reader { #expect(reader.file == nil) }
+        store.captures.retire(); await cache.close()
+        let reopenedCache = ArtifactCache(root: root)
+        #expect(try await reopenedCache.session(scope: scope).original(for: key) == nil)
+        await reopenedCache.close()
+        store.forgetConnection()
+    }
+
+    @Test func forcedReloadReportsBytesTheCacheRefusesWhileOrdinaryReadStillReturnsThem() async throws {
+        var limits = ArtifactCache.Limits()
+        limits.singleOriginalBytes = 4
+        let captures = ArtifactCaptures(cache: ArtifactCache(root: nil, limits: limits).session(scope: Self.scope()))
+        defer { captures.retire() }
+        captures.setOnline(true)
+        let message = ChatMessage(id: "report", role: .assistant, text: "MEDIA:/report.txt")
+        let attachment = try Self.attachment(in: message)
+        let key = try #require(await ArtifactCaptures.originalKey(identity: Self.source("main"), attachment: attachment, messages: [message]))
+        let larger = Data("larger than the single original limit".utf8)
+        var downloads = 0
+        let download: @MainActor () async throws -> DownloadedArtifact = {
+            downloads += 1
+            return DownloadedArtifact(data: larger, filename: attachment.name, mimeType: "text/plain")
+        }
+        let failure = await #expect(throws: (any Error).self) { _ = try await captures.original(for: key, force: true, download: download) }
+        #expect(failure?.localizedDescription == "The refreshed file couldn’t be saved on this device. Try again.")
+        #expect(try await captures.original(for: key, download: download).data == larger)
+        #expect(downloads == 2, "The refused bytes were never cached")
+    }
+
+    /// Positional and legacy rows can be reused by a different message, so they never reach durable captures,
+    /// even when their row looks identical to the one that was captured.
+    @Test func legacyPositionalRowsCannotReuseDurableCapturesAfterIdenticalReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = Self.source("main"), scope = Self.scope()
+        let message = ChatMessage(id: "main:index:0", role: .assistant, text: "MEDIA:/mutable.html")
+        let attachment = try Self.attachment(in: message)
+        #expect(await ArtifactCaptures.originalKey(identity: source, attachment: attachment, messages: [message]) == nil)
+        let key = ArtifactOriginalKey(identity: source, messageID: Data(message.id.utf8), path: Data(attachment.path.utf8),
+            sourceRevision: Data("an older build's revision".utf8))
+        let cache = ArtifactCache(root: root)
+        try await cache.session(scope: scope).retainOriginal(.init(data: Data("old bytes".utf8), filename: attachment.name, mimeType: "text/html"), for: key)
+        await cache.close()
+        let reopenedCache = ArtifactCache(root: root), session = reopenedCache.session(scope: scope)
+        let captures = ArtifactCaptures(cache: session)
+        await #expect(throws: (any Error).self) {
+            _ = try await captures.original(for: key) { throw ConversationServiceError.disconnected }
+        }
+        #expect(try await session.original(for: key)?.artifact.data == Data("old bytes".utf8), "The old row stays, unreachable")
+        captures.retire(); await reopenedCache.close()
+    }
+
+    @Test func failedSecureForgetPreservesCaptureAndSuccessfulForgetPurgesColdReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = MemoryConnectionStorage()
+        var removalFails = true
+        let persistence = ConnectionPersistence(load: { vault.saved }, save: { vault.saved = $0 }, remove: {
+            if removalFails { throw ConversationServiceError.disconnected }
+            vault.saved = nil
+        })
+        let cache = ArtifactCache(root: root), service = CaptureTestService()
+        let message = try #require(service.messages[service.first]?.first)
+        let attachment = ChatAttachment(name: "report.txt", path: "/report.txt", mimeType: "text/plain")
+        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://forget.invalid")!)
+        defer { LocalHistory.remove(for: configuration.id) }
+        let store = AppStore(service: service, persistence: persistence, artifactCache: cache)
+        #expect(await store.connect(configuration))
+        await store.open(service.profiles[0])
+        let destination = try #require(store.artifactDestination(for: attachment, botID: "helper", producingMessage: message))
+        #expect(try await store.downloadArtifact(destination).data == Data("main".utf8))
+        store.finishArtifact(destination)
+        let captures = store.captures
+        let key = try #require(await ArtifactCaptures.originalKey(identity: service.first, attachment: attachment, messages: [message]))
+
+        #expect(!store.forgetConnection())
+        #expect(store.configuration?.id == configuration.id)
+        #expect(store.captures === captures && !captures.isRetired)
+        service.onEvent?(.disconnected("Forget failure fixture"))
+        let offline = try #require(store.artifactDestination(for: attachment, botID: "helper", producingMessage: message))
+        #expect(try await store.downloadArtifact(offline).data == Data("main".utf8))
+        store.finishArtifact(offline)
+        #expect(service.downloadCount == 1, "The capture survived the failed forget")
+
+        removalFails = false
+        #expect(store.forgetConnection())
+        #expect(captures.isRetired)
+        try await cache.drainMaintenance()
+        vault.saved = configuration
+        let reopenedCache = ArtifactCache(root: root)
+        let reopened = AppStore(service: service, persistence: vault.persistence, artifactCache: reopenedCache)
+        await #expect(throws: (any Error).self) {
+            _ = try await reopened.captures.original(for: key) { throw ConversationServiceError.disconnected }
+        }
+        #expect(try await reopenedCache.session(scope: AppStore.artifactScope(configuration)).original(for: key) == nil)
+        reopened.forgetConnection(); try await reopenedCache.drainMaintenance()
+        await cache.close(); await reopenedCache.close()
+    }
+
     @Test func retirementEndsItsCacheSession() {
         let session = ArtifactCache(root: nil).session(scope: Self.scope())
         let captures = ArtifactCaptures(cache: session)

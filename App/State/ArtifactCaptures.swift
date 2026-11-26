@@ -162,7 +162,8 @@ private final class OriginalReadCancellation: @unchecked Sendable {
                         // An unsaved ordinary capture still serves the bytes that were read.
                         if force { throw ArtifactCaptureFailure.notRetained }
                     }
-                    try await admission.waitUntilReady()
+                    // Every consumer may have left while the bytes were being saved.
+                    try admission.claimPublication()
                     guard accepts(owner), let current = flights[key], current.id == flightID,
                           current.consumers.values.contains(where: { $0.isCurrent() }) else { throw ConversationServiceError.staleConversation }
                     originals = [key: result]
