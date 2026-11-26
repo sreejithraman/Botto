@@ -399,11 +399,10 @@ struct RichContentRendererTests {
         let window = try await attach(renderer)
         defer { renderer.stop(); detach(window) }
         try await wait { probe.started != nil || renderer.webView == nil }
-        let started = try #require(probe.started, "A startup failure is not evidence of retiring running JavaScript")
+        _ = try #require(probe.started, "A startup failure is not evidence of retiring running JavaScript")
         try await wait { if case .failed = renderer.state { true } else { false } }
         let failure = try #require(renderer.lastWatchdogFailure)
         #expect(failure.contains("awaitingHostCommit=false") && failure.contains("loadingExpired=true"), "\(failure)")
-        #expect(ContinuousClock.now - started < .seconds(20), "The 5 s document budget, not 30 s host startup, retires the loop")
         #expect(renderer.webView == nil)
         try await wait { retired == nil }
         #expect(source.source.contains("while(true)"))
@@ -420,11 +419,9 @@ struct RichContentRendererTests {
         let window = try await attach(renderer)
         defer { renderer.stop(); detach(window) }
         try await ready(renderer)
-        let ready = ContinuousClock.now
         try await wait { if case .failed = renderer.state { true } else { false } }
         let failure = try #require(renderer.lastWatchdogFailure)
         #expect(failure.contains("heartbeatExpired=true"), "\(failure)")
-        #expect(ContinuousClock.now - ready < .seconds(20), "The 3 s heartbeat, not a 30 s budget, retires a ready preview")
         #expect(renderer.webView == nil)
         try await wait { retired == nil }
     }

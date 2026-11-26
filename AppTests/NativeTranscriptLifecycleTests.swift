@@ -491,8 +491,9 @@ import BottoCore
             let details = try scope(0)
             details.present(details: .init(title: "Work details", messages: [fixture.original]), report: report)
         default:
-            requestConfirmation = try #require(requestScope.requestActions?.choose(choice))
-            requestScope.presentRequestConfirmation?(try #require(requestConfirmation), report)
+            let confirmation = try #require(requestScope.requestActions?.choose(choice))
+            requestConfirmation = confirmation
+            requestScope.presentRequestConfirmation?(confirmation, report)
         }
         try await wait("exactly the reserved native owner is presented") { fixture.controller.presentedViewController != nil }
         #expect(fixture.reports.map(\.1) == [true])
