@@ -154,7 +154,7 @@ struct PushNavigationIntent: Equatable, Sendable {
     }
 
     func navigationIntent(_ envelope: PushEnvelope, scope: T3PushScope) -> PushNavigationIntent? {
-        guard let pairing = pairing(scope), let preview = pairing.preview(envelope) else { return nil }
+        guard let pairing = pairing(scope), let preview = pairing.preview(envelope, allowExpired: true) else { return nil }
         return .init(scope: scope, installationID: envelope.installationID, deviceID: envelope.deviceID,
                      destination: preview.destination)
     }

@@ -62,9 +62,10 @@ public struct PushEnvelope: Codable, Equatable, Sendable {
         return result
     }
 
-    public func decrypt(key: Data, now: Date = .now) throws -> PushPreview {
+    public func decrypt(key: Data, now: Date = .now, allowExpired: Bool = false) throws -> PushPreview {
         guard v == 1, Self.validHex(installationID, count: 64), Self.validHex(deviceID, count: 32),
-              Self.validHex(eventID, count: 64), generation > 0, expiresAt > Int(now.timeIntervalSince1970),
+              Self.validHex(eventID, count: 64), generation > 0,
+              allowExpired || expiresAt > Int(now.timeIntervalSince1970),
               key.count == 32, let combined = Data(base64Encoded: sealed), combined.count >= 28, combined.count <= 3_072
         else { throw PushError.invalidPayload }
         let clear = try AES.GCM.open(AES.GCM.SealedBox(combined: combined), using: SymmetricKey(data: key), authenticating: authenticatedData)
