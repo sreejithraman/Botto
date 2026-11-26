@@ -7,45 +7,16 @@ struct MessageView: View {
     var isStreaming = false
     var rendersRichContent = true
     var filePreviewsAreSettled = true
-    var senderProfile: BotProfile?
     var onOpenAttachment: ((ChatAttachment) -> Void)?
     var thumbnails: AttachmentThumbnails?
-    private let rawRevision: Data?
-    private var outgoing: Bool { message.isOutgoingUserMessage }
-
-    init(message: ChatMessage, isStreaming: Bool = false, rendersRichContent: Bool = true, filePreviewsAreSettled: Bool = true,
-         senderProfile: BotProfile? = nil,
-         onOpenAttachment: ((ChatAttachment) -> Void)? = nil, thumbnails: AttachmentThumbnails? = nil) {
-        self.message = message; self.isStreaming = isStreaming; self.rendersRichContent = rendersRichContent
-        self.filePreviewsAreSettled = filePreviewsAreSettled
-        self.senderProfile = senderProfile
-        self.onOpenAttachment = onOpenAttachment; self.thumbnails = thumbnails
-        rawRevision = message.notificationPresentation == nil ? nil : Data(message.text.utf8)
-    }
+    private var outgoing: Bool { message.role == .user }
 
     private func showsStack(_ attachments: [ChatAttachment], _ thumbnails: AttachmentThumbnails) -> Bool {
         attachments.count > 1 || attachments.first.map { thumbnails.image(for: $0) != nil } == true
     }
 
     var body: some View {
-        if !message.isVisible {
-            EmptyView()
-        } else if let notification = message.notificationPresentation {
-            WorkDetailsRow(title: notification.title, systemImage: notification.systemImage,
-                accessibilityLabel: message.scheduledJobName.map { "Show details for scheduled check, \($0)" } ?? "Show details for \(notification.title)",
-                identifier: (message.scheduledJobName == nil ? "notification-details-" : "scheduled-details-") + message.id,
-                messages: [message])
-        } else if let sender = message.botSender {
-            incomingBotMessage(sender)
-        } else if message.role == .system && isImportantSystemNote {
-            Label {
-                Text(message.text).textSelection(.enabled)
-            } icon: {
-                Image(systemName: "exclamationmark.circle")
-            }
-            .font(.subheadline).foregroundStyle(BottoTheme.error)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else if message.role == .tool || message.role == .system {
+        if message.role == .tool || message.role == .system {
             WorkDetailsRow(title: message.toolName ?? "Work details",
                 systemImage: message.role == .tool ? "wrench.and.screwdriver" : "info.circle",
                 identifier: "message-details-" + message.id, messages: [message])
@@ -89,37 +60,9 @@ struct MessageView: View {
             .accessibilityElement(children: .contain)
         }
     }
-
-    // These app-authored notes report failed or uncertain work and must stay visible.
-    private var isImportantSystemNote: Bool {
-        ["error:", "outcome:", "uncertain:"].contains { message.id.hasPrefix($0) }
-    }
-
-    private func incomingBotMessage(_ sender: ChatMessage.MessageSender) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            ChatSenderAvatar(sender: sender, profile: senderProfile)
-            VStack(alignment: .leading, spacing: 7) {
-                Text("\(sender.name) · @\(sender.handle)")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    .accessibilityLabel(sender.label)
-                    .accessibilityIdentifier("message-sender-" + message.id)
-                Text(message.attributedText).font(.body).lineSpacing(3).textSelection(.enabled)
-                ForEach(message.attachments) { attachment in
-                    ArtifactCard(attachment: attachment, outgoing: false,
-                        open: onOpenAttachment.map { action in { action(attachment) } })
-                }
-            }
-            .padding(.horizontal, 14).padding(.vertical, 12)
-            .foregroundStyle(BottoTheme.ink)
-            .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 20))
-            .accessibilityElement(children: .contain)
-            Spacer(minLength: 24)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 }
 
-/// One row and reader treatment for tools, background work, and routine chat notes.
+/// One row and reader treatment for tool work and chat notes.
 struct WorkDetailsRow: View {
     let title: String
     let systemImage: String
@@ -236,7 +179,7 @@ struct WorkDetailsSheet: View {
                                     if value { expanded.insert(id) } else { expanded.remove(id) }
                                 }), isCurrent: isCurrent)
                         } else {
-                            let title = message.toolName ?? message.notificationPresentation?.title ?? message.botSender?.label
+                            let title = message.toolName
                             VStack(alignment: .leading, spacing: 12) {
                                 if document.messages.count > 1 || title.map({ $0 != document.title }) == true {
                                     HStack(alignment: .firstTextBaseline, spacing: 8) {

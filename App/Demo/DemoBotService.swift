@@ -22,7 +22,6 @@ import BottoCore
     private var connectionCount = 0
     private let gateDirectory: URL?
     private var performanceReplyNumber = 0
-    private var automationHandoff: ChatMessage?
     private let performanceFixture: Bool
     private let performanceChunkDelay: Duration
     private let rotatesChatAccess = ProcessInfo.processInfo.arguments.contains("--rotate-chat-access-demo")
@@ -70,10 +69,7 @@ import BottoCore
             seed()
             #if DEBUG
             if performanceFixture { seedPerformanceDemo() }
-            if ProcessInfo.processInfo.arguments.contains("--automation-demo") || ProcessInfo.processInfo.arguments.contains("--automation-live-demo") { seedAutomationDemo() }
-            #endif
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--attribution-demo") { seedAttributionDemo() }
+            if ProcessInfo.processInfo.arguments.contains("--work-details-demo") { seedWorkDetailsDemo() }
             #endif
             registerSpace(mainID, title: "Main Space")
             seedSideChats()
@@ -297,11 +293,6 @@ import BottoCore
         visited[identity.stored.text] = .now
         selected = (identity, access)
         activity = ConversationActivity(lineage: UUID(), phase: nil, workStartedAt: nil, phaseStartedAt: nil)
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--automation-live-demo"), identity.profile.text == "milo", tasks[identity.root.bytes] == nil {
-            startAutomationFixture(identity)
-        }
-        #endif
         return OpenedConversation(identity: identity, snapshot: chat, access: access, readEvidence: evidence, activity: activity,
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
@@ -680,67 +671,15 @@ import BottoCore
     }
 
     #if DEBUG
-    private func seedAttributionDemo() {
+    /// Tool rows for the work-details sheet UI test.
+    private func seedWorkDetailsDemo() {
         chats[Data("milo".utf8)] = Conversation(id: "demo-milo", storedID: "milo", profileID: "milo", messages: [
-            .init(id: "authored", role: .user, text: "Check the service and coordinate with Gustavo."),
+            .init(id: "authored", role: .user, text: "Check the service."),
             .init(id: "assistant-intro", role: .assistant, text: "I’ll check the service and follow up."),
             .init(id: "work-one", role: .tool, text: "{\"content\":\"## Service check\\n\\nThe service is healthy.\",\"exit_code\":0}", toolName: "terminal"),
             .init(id: "work-two", role: .tool, text: "The scheduled check is active.", toolName: "cronjob_manage"),
-            .init(id: "background", role: .user,
-                  text: "[ASYNC DELEGATION BATCH COMPLETE — deleg_sample]\nThe background check finished successfully.",
-                  displayKind: "async_delegation_complete", displayText: "Background check finished"),
-            .init(id: "process-result", role: .user,
-                  text: "[IMPORTANT: Background process proc_demo completed normally (exit code 0).]\nCommand: /usr/bin/python3 health_check.py\n{\"status\":\"healthy\"}",
-                  displayKind: "process_complete", displayText: "Background Process Finished: /usr/bin/python3 health_check.py"),
-            .init(id: "gustavo", role: .user, text: "Message from 🤖 Gustavo (@gustavo): The service has recovered. Please own the follow-up.",
-                  displayKind: "internal_notification"),
-            .init(id: "assistant-followup", role: .assistant, text: "I’ll own the follow-up and keep you posted."),
-            .init(id: "human-hi", role: .user, text: "Hi"),
-            .init(id: "human-hi-control", role: .assistant, text: "[SILENT]", isSilent: false)
-        ], queuedMessages: [
-            .init(id: "sample-process", text: "[IMPORTANT: Background process proc_sample completed normally (exit code 0).]\nSample diagnostic output.",
-                  submissionID: "[\"completion\",\"proc_sample\",100]")
+            .init(id: "assistant-followup", role: .assistant, text: "I’ll keep you posted.")
         ])
-    }
-
-    private func seedAutomationDemo() {
-        let now = Date(timeIntervalSince1970: 1_792_872_000)
-        let wrapper = "[Cronjob \"Mac service incident diagnosis\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\n"
-        let payload = wrapper + "{\"service\":\"local sample\",\"status\":\"recovered\",\"ack\":\"inspection only\"}\n" +
-            String(repeating: "Diagnostic sample: health check passed. No command was executed.\n", count: 2000)
-        chats[Data("milo".utf8)]?.messages = [
-            .init(id: "monitoring-request", role: .user, text: "Keep an eye on the Mac service.", timestamp: now.addingTimeInterval(-300)),
-            .init(id: "scheduled-check", role: .user, text: payload, timestamp: now, displayKind: "internal_notification"),
-            .init(id: "service-response", role: .assistant, text: "The service recovered and is healthy. No restart is needed. I’ll keep monitoring it.", timestamp: now.addingTimeInterval(5)),
-            .init(id: "silent-result", role: .assistant, text: "[SILENT]", timestamp: now.addingTimeInterval(10), isSilent: true)
-        ]
-        automationHandoff = chats[Data("milo".utf8)]?.messages[1]
-        if ProcessInfo.processInfo.arguments.contains("--automation-live-demo") {
-            chats[Data("milo".utf8)]?.pendingRequests = []
-            chats[Data("milo".utf8)]?.messages = (0..<24).map { index in
-                .init(id: "history-\(index)", role: .assistant,
-                      text: "Monitoring history \(index). " + String(repeating: "The service was healthy. ", count: 8))
-            }
-        }
-    }
-
-    private func startAutomationFixture(_ source: SessionIdentity) {
-        let epoch = connection
-        tasks[source.root.bytes] = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await waitForUITestFixture("automation")
-                guard connected, connection == epoch, let handoff = automationHandoff, var chat = chats[source.root.bytes] else { return }
-                chat.messages.append(handoff)
-                chat.messages.append(.init(id: "silent-check", role: .assistant, text: "[SILENT]", isSilent: true))
-                publish(chat, source: source)
-                if let gateDirectory { try Data().write(to: gateDirectory.appendingPathComponent("automation.delivered")) }
-                try await waitForUITestFixture("automation-reply")
-                guard connected, connection == epoch, var latest = chats[source.root.bytes] else { return }
-                latest.messages.append(.init(id: "useful-check-response", role: .assistant, text: "The service needs your attention."))
-                publish(latest, source: source)
-            } catch { return }
-        }
     }
 
     /// Opt-in, deterministic stress data. Ordinary Demo keeps its small sample workspace.

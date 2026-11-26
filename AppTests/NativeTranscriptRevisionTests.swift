@@ -8,17 +8,17 @@ import BottoCore
     @Test func expandedRawDetailsCopyTheCurrentExactBytesAfterEquivalentUnicodeRevision() async throws {
         let service = try WorkspaceTestService(), session = service.summaries[0].identity
         let oldText = "RAW é", newText = "RAW e\u{301}"
-        var message = ChatMessage(id: "exact-raw", role: .user, text: oldText, displayKind: "process_complete")
+        var message = ChatMessage(id: "exact-raw", role: .system, text: oldText)
         service.snapshots[session.root]?.messages = [message]
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-exact-raw.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot))
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await revisionWait("raw event disclosure is available") {
-            revisionElement("Show details for Background process finished", in: fixture.host.view) != nil
+        try await revisionWait("raw note disclosure is available") {
+            revisionElement("Work details", in: fixture.host.view) != nil
         }
-        #expect(try #require(revisionElement("Show details for Background process finished", in: fixture.host.view)).accessibilityActivate())
+        #expect(try #require(revisionElement("Work details", in: fixture.host.view)).accessibilityActivate())
         let controller = try #require(revisionController(fixture.host))
         try await revisionWait("original exact raw text is visible in the sheet") {
             controller.presentedViewController.map { revisionElement(oldText, in: $0.view) != nil } == true
@@ -36,7 +36,7 @@ import BottoCore
             return scope !== oldScope && scope.canPresent && controller.presentedViewController == nil
         }
         let currentCell = try #require(controller.collection.cellForItem(at: IndexPath(item: 0, section: 0)))
-        #expect(try #require(revisionElement("Show details for Background process finished", in: currentCell)).accessibilityActivate())
+        #expect(try #require(revisionElement("Work details", in: currentCell)).accessibilityActivate())
         try await revisionWait("current raw details expose an enabled copy action") {
             controller.presentedViewController.map { revisionElement("Copy original", in: $0.view).map { !$0.accessibilityTraits.contains(.notEnabled) } == true } == true
         }
@@ -48,21 +48,17 @@ import BottoCore
         }
     }
 
-    @Test func routineSystemNotesUseWorkDetailsWhileFailuresRemainVisible() async throws {
+    @Test func systemNotesUseWorkDetails() async throws {
         let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        service.snapshots[session.root]?.messages = [
-            .init(id: "routine", role: .system, text: "ROUTINE-GATEWAY-DETAIL"),
-            .init(id: "error:current-turn", role: .system, text: "The turn failed. Check the host.")
-        ]
+        service.snapshots[session.root]?.messages = [.init(id: "routine", role: .system, text: "ROUTINE-GATEWAY-DETAIL")]
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-system-details.invalid")!)
         let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let fixture = try Window(store: store, bot: try #require(store.selectedBot))
         defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await revisionWait("routine details collapse while the failure stays visible") {
+        try await revisionWait("routine details collapse") {
             revisionElement("Work details", in: fixture.host.view) != nil &&
-                revisionElement("ROUTINE-GATEWAY-DETAIL", in: fixture.host.view) == nil &&
-                revisionElement("The turn failed. Check the host.", in: fixture.host.view) != nil
+                revisionElement("ROUTINE-GATEWAY-DETAIL", in: fixture.host.view) == nil
         }
         let details = try #require(revisionElement("Work details", in: fixture.host.view))
         #expect(details.accessibilityActivate())
@@ -71,46 +67,6 @@ import BottoCore
             controller.presentedViewController.map { revisionElement("ROUTINE-GATEWAY-DETAIL", in: $0.view) != nil } == true
         }
         #expect(controller.presentedViewController?.sheetPresentationController != nil)
-    }
-
-    @Test func backgroundAndBotRowsUseTheirSourceAndMetadataOnlyUpdatesReachTheNativeView() async throws {
-        let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        let payload = "[ASYNC DELEGATION BATCH COMPLETE — deleg_example]\nPRIVATE-RAW-BACKGROUND-RESULT"
-        let background = ChatMessage(id: "background", role: .user, text: payload,
-            displayKind: "async_delegation_complete", displayText: "Background review finished")
-        let sender = ChatMessage(id: "gustavo", role: .user,
-            text: "Message from 🤖 Gustavo (@gustavo): Please own this follow-up.", displayKind: "internal_notification")
-        service.snapshots[session.root]?.messages = [background, sender]
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-attribution.invalid")!)
-        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
-        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
-        let fixture = try Window(store: store, bot: try #require(store.selectedBot))
-        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await revisionWait("compact event and attributed sender render") {
-            revisionElement("Show details for Background review finished", in: fixture.host.view) != nil &&
-                revisionElement("From Gustavo · @gustavo", in: fixture.host.view) != nil &&
-                revisionElement("Please own this follow-up.", in: fixture.host.view) != nil
-        }
-        #expect(revisionElement(payload, in: fixture.host.view) == nil)
-        let controller = try #require(revisionController(fixture.host))
-        let details = try #require(revisionElement("Show details for Background review finished", in: fixture.host.view))
-        #expect(details.accessibilityActivate())
-        try await revisionWait("background event opens the details sheet") {
-            controller.presentedViewController.map { revisionElement("PRIVATE-RAW-BACKGROUND-RESULT", in: $0.view) != nil } == true
-        }
-        let sheet = try #require(controller.presentedViewController)
-        try await revisionWait("raw reader exposes the bounded payload sections") {
-            revisionElement("[ASYNC DELEGATION BATCH COMPLETE — deleg_example]", in: sheet.view) != nil &&
-                revisionElement("PRIVATE-RAW-BACKGROUND-RESULT", in: sheet.view) != nil
-        }
-        var changed = background; changed.displayText = "Background review failed"
-        service.snapshots[session.root]?.messages = [changed, sender]
-        let access = try #require(service.completedOpens.last).access
-        service.onEvent?(.conversation(.init(identity: session, snapshot: try #require(service.snapshots[session.root]), access: access)))
-        try await revisionWait("metadata-only update retires details and changes event title") {
-            controller.presentedViewController == nil &&
-                revisionElement("Show details for Background review failed", in: fixture.host.view) != nil
-        }
     }
 
     @Test func sameWorkingPublicationFinalizesFormerTailRichFenceWithoutFinalNewline() async throws {
@@ -142,67 +98,6 @@ import BottoCore
             revisionController(fixture.host) === controller && revisionElement("Show HTML source", in: fixture.host.view) != nil
         }
         #expect(!old.isCurrent, "the stale streaming host must be replaced without retiring message foreground authority")
-    }
-
-    @Test func cachedWrapperReclassifiesOnFreshMetadataThenTimestampAndVisibilityThroughBothRenderGates() async throws {
-        let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        let payload = "[Cronjob \"Daily review\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\nRAW-SCHEDULED-BODY"
-        let encoded = try JSONEncoder().encode(ChatMessage(id: "metadata-only", role: .user, text: payload, timestamp: Date(timeIntervalSince1970: 10)))
-        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        object.removeValue(forKey: "displayKind"); object.removeValue(forKey: "isSilent")
-        let cached = try JSONDecoder().decode(ChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
-        #expect(cached.scheduledJobName == nil && cached.isVisible)
-        service.snapshots[session.root]?.messages = [cached]
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-cached-metadata.invalid")!)
-        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
-        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
-        let fixture = try Window(store: store, bot: try #require(store.selectedBot))
-        defer { fixture.close(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        try await revisionWait("cached wrapper really renders as ordinary text") { revisionElement(payload, in: fixture.host.view) != nil }
-        let controller = try #require(revisionController(fixture.host))
-        let access = try #require(service.completedOpens.last).access
-        var fresh = cached; fresh.displayKind = "internal_notification"
-        func publish(_ message: ChatMessage) throws {
-            service.snapshots[session.root]?.messages = [message]
-            let snapshot = try #require(service.snapshots[session.root])
-            service.onEvent?(.conversation(.init(identity: session, snapshot: snapshot, access: access)))
-        }
-        try publish(fresh)
-        try await revisionWait("scheduled row mounted before suspension") {
-            revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view) != nil &&
-                (controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure?.canPresent == true
-        }
-        let rowScope = try #require((controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure)
-        rowScope.setActive(false)
-        try await revisionWait("scheduled Details button disabled while its row is suspended") {
-            revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view)?.accessibilityTraits.contains(.notEnabled) == true
-        }
-        rowScope.setActive(true)
-        try await revisionWait("metadata-only update reaches compact scheduled branch in same controller") {
-            guard let details = revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view),
-                  !details.accessibilityTraits.contains(.notEnabled) else { return false }
-            return revisionController(fixture.host) === controller &&
-                revisionElement(payload, in: fixture.host.view) == nil && !controller.collection.hasUncommittedUpdates &&
-                (controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)?.exposure?.canPresent == true
-        }
-        let details = try #require(revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view))
-        try #require(details.accessibilityActivate())
-        try await revisionWait("fresh metadata opens the details sheet") {
-            controller.presentedViewController.map { revisionElement("RAW-SCHEDULED-BODY", in: $0.view) != nil } == true
-        }
-        let scheduledCell = try #require(controller.collection.cellForItem(at: IndexPath(item: 1, section: 0)) as? NativeTranscriptCell)
-        let firstScope = try #require(scheduledCell.exposure)
-        fresh.timestamp = Date(timeIntervalSince1970: 20)
-        try publish(fresh)
-        try await revisionWait("timestamp-only revision replaces hosted row and retires Details") { !firstScope.isCurrent && controller.presentedViewController == nil }
-        fresh.displayKind = nil; try publish(fresh)
-        try await revisionWait("reverse provenance restores ordinary body") {
-            revisionElement(payload, in: fixture.host.view) != nil && revisionElement("Show details for scheduled check, Daily review", in: fixture.host.view) == nil
-        }
-        fresh.isSilent = true; try publish(fresh)
-        try await revisionWait("visibility-only revision removes body while retaining raw date semantics") {
-            controller.collection.numberOfItems(inSection: 0) == 2 && revisionElement(payload, in: fixture.host.view) == nil
-        }
     }
 
     @Test func sameOwnerRosterRefreshUpdatesActualEmptyGreetingAndFaceWithoutAuthorityRetirement() async throws {

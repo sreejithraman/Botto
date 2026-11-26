@@ -96,19 +96,18 @@ import BottoCore
         #expect(store.configuration?.id == (socketRecovery ? fixture.configuration.id : replacement.id))
     }
 
-    @Test func inboxPreviewKeepsTheLastReadableMessageAfterSilentAutomation() async throws {
+    @Test func inboxPreviewKeepsTheNewestNonEmptyMessage() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let replyAt = Date(timeIntervalSince1970: 100)
         let messages: [ChatMessage] = [
             .init(id: "question", role: .user, text: "How is the service?"),
             .init(id: "reply", role: .assistant, text: "The service is healthy.", timestamp: replyAt),
-            .init(id: "process", role: .user, text: "[IMPORTANT: Background process proc_example completed normally.]",
-                  displayKind: "process_complete"),
-            .init(id: "quiet", role: .assistant, text: "[SILENT]", isSilent: true)
+            .init(id: "check", role: .tool, text: "uptime\nup 3 days", toolName: "Command"),
+            .init(id: "empty", role: .assistant, text: "")
         ]
         service.snapshots[identity.root]?.messages = messages
         service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: "[SILENT]", updatedAt: Date(timeIntervalSince1970: 200), messageCount: messages.count)
+            preview: "", updatedAt: Date(timeIntervalSince1970: 200), messageCount: messages.count)
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://inbox-preview.invalid")!)
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }

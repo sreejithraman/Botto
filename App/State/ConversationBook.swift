@@ -27,7 +27,7 @@ struct ChatContentEvidence: Codable, Equatable, Sendable {
     let latestMessageAt: Date?
     var hasContent: Bool { messageID != nil || messageCount != 0 || !preview.isEmpty || latestMessageAt != nil }
     init(_ snapshot: Conversation) {
-        let messages = snapshot.attentionMessages
+        let messages = snapshot.messages
         let last = messages.last { $0.role == .assistant || $0.role == .user }
         messageID = last.flatMap { try? ExactID($0.id) }
         preview = last.map { Data($0.text.utf8) } ?? Data()
@@ -87,8 +87,8 @@ struct ChatRecord: Codable, Sendable {
     var updatedAt: Date?
     var summary: ChatSummaryEvidence? = nil
     var lastKnownActivity: ActivityObservation? = nil
-    // A full read proved this inventory change added only quiet automation.
-    // This does not acknowledge a meaningful reply or replace the user's seen cursor.
+    // Earlier builds saved this when a full read proved an inventory change added only quiet
+    // automation rows. Nothing writes it now; a saved value still keeps that change read.
     var quietSummary: ChatSummaryEvidence? = nil
     // An empty replacement/display cannot erase actual previously returned content.
     var hasContentHistory: Bool? = nil
@@ -138,24 +138,13 @@ extension ChatRecord {
     // Keep transcript predicates on the record's value interface. Running them in
     // a workspace closure otherwise checks the main executor for every message.
     var userPreview: String {
-        transcript?.messages.last(where: { $0.isOutgoingUserMessage && $0.requiresAttention })?.text ?? ""
+        transcript?.messages.last(where: { $0.role == .user })?.text ?? ""
     }
     var replyPreview: String {
-        if let summary, !summary.preview.isEmpty, hasUnseenSummary, !isQuietPreview(summary.preview) {
+        if let summary, !summary.preview.isEmpty, hasUnseenSummary {
             return String(decoding: summary.preview, as: UTF8.self)
         }
-        if let transcript {
-            if let reply = transcript.messages.last(where: { $0.role == .assistant && $0.requiresAttention }) { return reply.text }
-            if !transcript.messages.isEmpty, transcript.attentionMessages.isEmpty { return "" }
-        }
-        return isQuietPreview(Data(preview.utf8)) ? "" : preview
-    }
-    private func isQuietPreview(_ bytes: Data) -> Bool {
-        guard !bytes.isEmpty else { return false }
-        if let last = transcript?.messages.last(where: { Data($0.text.utf8).starts(with: bytes) }) {
-            return !last.requiresAttention
-        }
-        return !ChatMessage(id: "preview", role: .assistant, text: String(decoding: bytes, as: UTF8.self)).isVisible
+        return transcript?.messages.last(where: { $0.role == .assistant })?.text ?? preview
     }
     mutating func displayed(_ snapshot: Conversation, acknowledging observation: ChatSummaryEvidence?, at now: Date) {
         let content = ChatContentEvidence(snapshot), previous = seen
@@ -335,7 +324,7 @@ struct ConversationBook: Codable, Sendable {
     }
     @discardableResult mutating func cache(_ publication: OpenedConversation, for id: ChatID) -> OpenedConversation {
         let accepted = reconciled(publication, for: id)
-        cache(accepted.snapshot, for: id, readEvidence: accepted.readEvidence)
+        cache(accepted.snapshot, for: id)
         return accepted
     }
     private static func reconciled(_ incoming: Conversation, previous: Conversation?,
@@ -349,30 +338,14 @@ struct ConversationBook: Codable, Sendable {
         if retainEarlierMessages { snapshot.hasEarlierMessages = snapshot.hasEarlierMessages || previous.hasEarlierMessages }
         return snapshot
     }
-    mutating func cache(_ incoming: Conversation, for id: ChatID, readEvidence: ConversationReadEvidence? = nil) {
+    mutating func cache(_ incoming: Conversation, for id: ChatID) {
         update(id) { record in
             let snapshot = Self.reconciled(incoming, previous: record.transcript,
                 resolvingMessageIDs: incoming.hasEarlierMessages ? [] : Set(incoming.messages.map { Data($0.id.utf8) }),
                 retainEarlierMessages: incoming.hasEarlierMessages)
-            if let observed = readEvidence?.summaryObservedBeforeRead,
-               let identity = record.binding.identity,
-               observed.identity.profile == identity.profile, observed.identity.root == identity.root,
-               observed.identity.stored == identity.stored,
-               Data(snapshot.profileID.utf8) == identity.profile.bytes,
-               Data(snapshot.storedID.utf8) == identity.stored.bytes,
-               let previous = record.transcript, snapshot.pendingRequests.isEmpty,
-               let baselineCount = record.seen?.rawMessageCount, baselineCount >= 0,
-               snapshot.messages.count > baselineCount,
-               snapshot.messages.starts(with: previous.messages, by: {
-                   $0 == $1 && TranscriptContentRevision.sameMessage($0, $1)
-               }),
-               snapshot.messages.dropFirst(baselineCount).allSatisfy({ !$0.requiresAttention }),
-               record.seen?.content == ChatContentEvidence(snapshot) {
-                record.quietSummary = ChatSummaryEvidence(observed)
-            }
             if !snapshot.messages.isEmpty || record.transcript?.messages.isEmpty == false { record.hasContentHistory = true }
             record.transcript = Self.inert(snapshot)
-            if record.summary == nil, let last = snapshot.messages.last(where: { ($0.role == .user || $0.role == .assistant) && $0.requiresAttention }) {
+            if record.summary == nil, let last = snapshot.messages.last(where: { $0.role == .user || $0.role == .assistant }) {
                 record.preview = last.text
                 record.updatedAt = last.timestamp ?? record.updatedAt
             }

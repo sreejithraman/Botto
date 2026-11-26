@@ -84,38 +84,6 @@ import BottoCore
         }
     }
 
-    @Test func chatSenderAvatarUsesAnExactLocalProfileBeforeDisplayName() throws {
-        let message = ChatMessage(id: "sender", role: .user, text: "Message from 🤖 Gustavo (@gustavo): Hello", displayKind: "internal_notification")
-        let sender = try #require(message.botSender)
-        let exact = BotProfile(id: "gustavo", name: "Renamed Gustavo", appearance: .init(shape: .sun, color: "#8b5cf6"))
-        let sameName = BotProfile(id: "other", name: "Gustavo")
-        #expect(ChatSenderAvatar.profile(for: sender, among: [sameName, exact]) == exact)
-        #expect(ChatSenderAvatar.profile(for: sender, among: [sameName]) == sameName)
-    }
-
-    @Test func chatSenderAvatarDoesNotBorrowAmbiguousOrRemoteIdentity() throws {
-        let local = try #require(ChatMessage(id: "local", role: .user,
-            text: "Message from 🤖 Gustavo (@gustavo): Hello", displayKind: "internal_notification").botSender)
-        let one = BotProfile(id: "one", name: "Gustavo"), two = BotProfile(id: "two", name: "Gustavo")
-        #expect(ChatSenderAvatar.profile(for: local, among: [one, two]) == nil)
-        #expect(ChatSenderAvatar.profile(for: local, among: [.init(id: "gustavo", name: "One"), .init(id: "gustavo", name: "Two")]) == nil)
-        let remote = try #require(ChatMessage(id: "remote", role: .user,
-            text: "Message from 🤖 Gustavo (@home/gustavo): Hello", displayKind: "internal_notification").botSender)
-        #expect(ChatSenderAvatar.profile(for: remote, among: [one, .init(id: "home/gustavo", name: "Gustavo")]) == nil)
-        let qualified = try #require(ChatMessage(id: "qualified", role: .user,
-            text: "Message from 🤖 Gustavo (@gustavo@home): Hello", displayKind: "internal_notification").botSender)
-        #expect(ChatSenderAvatar.profile(for: qualified, among: [one, .init(id: "gustavo", name: "Gustavo")]) == nil)
-        #expect(ChatSenderAvatar.profile(for: local, among: [.init(id: "unknown", name: "Different")]) == nil)
-    }
-
-    @Test func chatSenderAvatarKeepsWireDistinctNamesSeparate() throws {
-        let sender = try #require(ChatMessage(id: "accented", role: .user,
-            text: "Message from 🤖 é (@sender): Hello", displayKind: "internal_notification").botSender)
-        let canonical = BotProfile(id: "one", name: "é"), decomposed = BotProfile(id: "two", name: "e\u{301}")
-        #expect(ChatSenderAvatar.profile(for: sender, among: [canonical, decomposed]) == canonical)
-        #expect(ChatSenderAvatar.profile(for: sender, among: [decomposed]) == nil)
-    }
-
     @Test func disconnectSleepsWithOfflineCueAndRecoveryClearsItForEveryAvatarScope() async throws {
         let service = StoreTestService()
         service.profiles = [.init(id: "milo", name: "Milo")]

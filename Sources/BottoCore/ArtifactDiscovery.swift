@@ -52,8 +52,6 @@ public enum ArtifactDiscovery {
                 messageID: message.id, timestamp: message.timestamp, category: category, payload: .file(attachment))
         }
         for message in messages {
-            guard message.isVisible, message.displayKind != "hidden", message.isSilent != true,
-                  !MessagePresentation.isMachinery(message.displayKind) || message.botSender != nil else { continue }
             if message.role == .tool {
                 for attachment in generatedFiles(in: message) { add(attachment, from: message, category: .output) }
                 continue
@@ -61,13 +59,6 @@ public enum ArtifactDiscovery {
             guard message.role == .assistant || message.role == .user else { continue }
             for attachment in message.attachments {
                 add(attachment, from: message, category: message.role == .assistant ? .output : .reference, supplied: true)
-            }
-            if message.role == .user {
-                let suppliedPaths = Set(message.attachments.map { Data($0.path.utf8) })
-                for attachment in AttachmentPresentation.display(message).attachments
-                    where !suppliedPaths.contains(Data(attachment.path.utf8)) {
-                    add(attachment, from: message, category: .reference, supplied: true)
-                }
             }
             guard message.role == .assistant else { continue }
             for block in ReplyContent(message: message).blocks {

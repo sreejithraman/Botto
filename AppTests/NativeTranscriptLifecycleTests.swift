@@ -343,7 +343,7 @@ import BottoCore
         #expect(UIPasteboard.general.string == "closed-copy-sentinel")
     }
 
-    @Test(arguments: ["text", "provenance", "visibility", "duplicate", "removal", "task", "background"])
+    @Test(arguments: ["text", "duplicate", "removal", "task", "background"])
     func detailsReaderRetiresCopyWhenItsRawRowOrContextChanges(change: String) async throws {
         let fixture = try await TranscriptFixture()
         defer { fixture.close() }
@@ -357,17 +357,13 @@ import BottoCore
         var changed = fixture.original
         switch change {
         case "text": changed.text += "\nChanged payload"
-        case "provenance": changed.displayKind = nil
-        case "visibility": changed.isSilent = true
         default: break
         }
         if change == "task" { fixture.store.forgetConnection(); fixture.apply() }
         else if change == "background" { fixture.context.scenePhase = .background; fixture.apply() }
         else if change == "removal" { try fixture.publish([]) }
-        else if change == "duplicate" {
-            var hidden = fixture.original; hidden.isSilent = true
-            try fixture.publish([fixture.original, hidden])
-        } else { try fixture.publish([changed]) }
+        else if change == "duplicate" { try fixture.publish([fixture.original, fixture.original]) }
+        else { try fixture.publish([changed]) }
         try await wait("raw/context revision closes the old reader") { fixture.controller.presentedViewController == nil }
         UIPasteboard.general.string = "retired-copy-sentinel"
         _ = copy.accessibilityActivate()
@@ -417,9 +413,9 @@ import BottoCore
         let third = ChatMessage(id: "tool-three", role: .tool, text: "New work", toolName: "third")
         try fixture.publish([revised, second, third])
         #expect(fixture.controller.presentedViewController === sheet && fixture.reports.map(\.1) == [true])
-        let hidden = ChatMessage(id: "hidden-separator", role: .system, text: "hidden", isSilent: true)
+        let note = ChatMessage(id: "separator", role: .system, text: "A note between tools")
         let replacement: [ChatMessage] = switch change {
-        case "split": [revised, hidden, second, third]
+        case "split": [revised, note, second, third]
         case "removed": [revised, third]
         case "duplicate": [revised, second, third, revised]
         default: [revised, second, third, revised]
@@ -530,8 +526,8 @@ import BottoCore
         init() async throws {
             service = try WorkspaceTestService()
             let identity = service.summaries[0].identity
-            original = .init(id: "scheduled-owner", role: .user,
-                text: "[Cronjob \"Daily review\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\n" + String(repeating: "Exact e\u{301} raw payload.\n", count: 80), displayKind: "internal_notification")
+            original = .init(id: "note-owner", role: .system,
+                text: "Daily review\n\n" + String(repeating: "Exact e\u{301} raw payload.\n", count: 80))
             service.snapshots[identity.root]?.messages = [original]
             configuration = .init(serverURL: URL(string: "https://native-scheduled-lifetime.invalid")!)
             store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))

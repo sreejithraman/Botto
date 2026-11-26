@@ -13,8 +13,7 @@ nonisolated struct TranscriptScrollPolicy {
         switch (previous, current) {
         case (nil, nil): false
         case let (previous?, current?):
-            !previous.messages.lazy.filter(\.requiresAttention).elementsEqual(
-                current.messages.lazy.filter(\.requiresAttention), by: TranscriptContentRevision.samePresentation) ||
+            !previous.messages.elementsEqual(current.messages, by: TranscriptContentRevision.sameMessage) ||
                 !previous.pendingRequests.elementsEqual(current.pendingRequests, by: TranscriptContentRevision.sameRequest)
         default: true
         }
@@ -63,24 +62,19 @@ nonisolated struct TranscriptMessageIndex {
     }
 
     func matches(_ expected: ChatMessage) -> Bool {
-        guard let message = messages[Data(expected.id.utf8)], message.isVisible else { return false }
+        guard let message = messages[Data(expected.id.utf8)] else { return false }
         return TranscriptContentRevision.sameMessage(message, expected)
     }
 
-    func containsVisible(_ id: Data) -> Bool { messages[id]?.isVisible == true }
+    func contains(_ id: Data) -> Bool { messages[id] != nil }
 }
 
 /// Exact semantic revisions shared by display, foreground lifetime and attention.
 /// No content digest or second history is retained.
 nonisolated enum TranscriptContentRevision {
     static func sameMessage(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
-        samePresentation(a, b) && exact(a.canonicalText, b.canonicalText)
-    }
-    /// Canonical text is never rendered, so changing only it cannot claim reader attention.
-    static func samePresentation(_ a: ChatMessage, _ b: ChatMessage) -> Bool {
-        a.role == b.role && a.timestamp == b.timestamp && a.isSilent == b.isSilent && a.transientID == b.transientID &&
-        exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) &&
-        exact(a.displayKind, b.displayKind) && exact(a.displayText, b.displayText) && a.attachments.count == b.attachments.count &&
+        a.role == b.role && a.timestamp == b.timestamp && a.transientID == b.transientID &&
+        exact(a.id, b.id) && exact(a.text, b.text) && exact(a.toolName, b.toolName) && a.attachments.count == b.attachments.count &&
         zip(a.attachments, b.attachments).allSatisfy { first, second in
             first == second && exact(first.name, second.name) && exact(first.path, second.path) && exact(first.mimeType, second.mimeType)
         }
@@ -101,7 +95,7 @@ nonisolated enum TranscriptContentRevision {
         guard let snapshot, snapshot.unavailableMessageIDs?.contains(Data(expected.id.utf8)) != true else { return false }
         var found = false
         for message in snapshot.messages where exact(message.id, expected.id) {
-            guard !found, message.isVisible, sameMessage(message, expected) else { return false }
+            guard !found, sameMessage(message, expected) else { return false }
             found = true
         }
         return found

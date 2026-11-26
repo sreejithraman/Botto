@@ -594,17 +594,15 @@ private struct TranscriptMessage: View {
     let onOpenAttachment: ((ChatAttachment) -> Void)?
 
     var body: some View {
-        let senderProfile = message.botSender.flatMap { ChatSenderAvatar.profile(for: $0, among: store.bots) }
         let rendered = TranscriptMessageBody(message: message, isStreaming: isStreaming,
                               filePreviewsAreSettled: filePreviewsAreSettled,
                               actionOwner: actionOwner, actionGeneration: actionGeneration,
                               actionScope: actionScope, actionRevision: actionRevision,
                               canOpenAttachment: onOpenAttachment != nil,
-                              senderProfile: senderProfile,
                               onOpenAttachment: onOpenAttachment, thumbnails: store.chats.thumbnails)
             .equatable()
-            .environment(\.richReplyContext, message.isVisible && message.role == .assistant ? store.richReplyContext(for: botID, messageID: message.id) : .chat(nil))
-        if message.notificationPresentation == nil && message.role != .tool && message.role != .system {
+            .environment(\.richReplyContext, message.role == .assistant ? store.richReplyContext(for: botID, messageID: message.id) : .chat(nil))
+        if message.role != .tool && message.role != .system {
             rendered.accessibilityIdentifier("transcript-message-\(message.id)")
         } else {
             rendered
@@ -623,7 +621,6 @@ private struct TranscriptMessageBody: View, Equatable {
     let actionScope: ObjectIdentifier?
     let actionRevision: UUID?
     let canOpenAttachment: Bool
-    let senderProfile: BotProfile?
     let onOpenAttachment: ((ChatAttachment) -> Void)?
     let thumbnails: AttachmentThumbnails
 
@@ -633,24 +630,14 @@ private struct TranscriptMessageBody: View, Equatable {
               lhs.actionOwner == rhs.actionOwner, lhs.actionGeneration == rhs.actionGeneration,
               lhs.actionScope == rhs.actionScope, lhs.actionRevision == rhs.actionRevision,
               lhs.canOpenAttachment == rhs.canOpenAttachment,
-              sameSenderProfile(lhs.senderProfile, rhs.senderProfile),
               TranscriptContentRevision.sameMessage(lhs.message, rhs.message) else { return false }
         return true
-    }
-
-    nonisolated private static func sameSenderProfile(_ lhs: BotProfile?, _ rhs: BotProfile?) -> Bool {
-        guard lhs == rhs else { return false }
-        let first = [lhs?.id, lhs?.name, lhs?.appearance?.rawShape, lhs?.appearance?.color,
-                     lhs?.appearance?.expression]
-        let second = [rhs?.id, rhs?.name, rhs?.appearance?.rawShape, rhs?.appearance?.color,
-                      rhs?.appearance?.expression]
-        return first.map { $0.map { Data($0.utf8) } } == second.map { $0.map { Data($0.utf8) } }
     }
 
     var body: some View {
         MessageView(message: message, isStreaming: isStreaming,
                     filePreviewsAreSettled: filePreviewsAreSettled,
-                    senderProfile: senderProfile, onOpenAttachment: onOpenAttachment,
+                    onOpenAttachment: onOpenAttachment,
                     thumbnails: thumbnails)
     }
 }

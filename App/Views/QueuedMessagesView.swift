@@ -14,7 +14,6 @@ struct QueuedMessagesView: View {
 
     private var messages: [QueuedMessage] { screen?.snapshot?.queuedMessages ?? [] }
     private var visible: [QueuedMessage] { showsAll ? messages : Array(messages.prefix(2)) }
-    private var containsOnlyBackgroundEvents: Bool { !messages.isEmpty && messages.allSatisfy { $0.sourceMessage != nil } }
 
     var body: some View {
         Group {
@@ -22,15 +21,6 @@ struct QueuedMessagesView: View {
                 QueuedMessageEditorView(workspace: workspace, screen: screen, edit: edit,
                                         inputAvailable: inputAvailable, canAttemptSave: canAttemptSave, requireConnection: requireConnection)
                     .id(edit.id)
-            } else if let screen, containsOnlyBackgroundEvents {
-                WorkDetailsRow(title: "Pending updates", systemImage: "bell", count: messages.count,
-                    accessibilityLabel: messages.count == 1 ? "1 queued background event" : "\(messages.count) queued background events",
-                    identifier: "queued-messages-toggle", messages: messages.compactMap(\.sourceMessage),
-                    canOpen: inputAvailable, isCurrent: {
-                        queuedSnapshot(screen)?.queuedMessages.count == messages.count &&
-                            messages.allSatisfy { queuedDetailsAreCurrent($0, screen: screen) }
-                    })
-                    .padding(.horizontal, 14)
             } else if let screen, !messages.isEmpty {
                 VStack(spacing: 0) {
                     Button { isExpanded.toggle() } label: {
@@ -55,41 +45,30 @@ struct QueuedMessagesView: View {
                         ScrollView {
                             VStack(spacing: 0) {
                                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, message in
-                                    let source = message.sourceMessage
-                                    let summary = source?.botSender?.label ?? source?.notificationPresentation?.title
                                     let expanded = expandedMessages.contains(message.id)
                                     HStack(alignment: .top, spacing: 8) {
                                         Text("\(index + 1)")
                                             .font(.caption2).foregroundStyle(.secondary)
                                             .padding(.top, 14).frame(width: 16)
-                                        if let summary, let source {
-                                            WorkDetailsRow(title: summary,
-                                                systemImage: source.botSender != nil ? "bubble.left.and.bubble.right" : source.notificationPresentation?.systemImage ?? "bell",
-                                                accessibilityLabel: "Queued background event \(index + 1): \(summary)",
-                                                identifier: "queued-message-\(index + 1)",
-                                                messages: [source], canOpen: inputAvailable,
-                                                isCurrent: { queuedDetailsAreCurrent(message, screen: screen) })
-                                        } else {
-                                            Button {
-                                                if expanded { expandedMessages.remove(message.id) }
-                                                else { expandedMessages.insert(message.id) }
-                                            } label: {
-                                                VStack(alignment: .leading, spacing: 4) {
-                                                    Text(message.text).font(.subheadline)
-                                                        .lineLimit(expanded ? nil : 2)
-                                                        .multilineTextAlignment(.leading)
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                    Text(message.isSteering ? "Joining the current reply" : expanded ? "Show less" : "Tap to expand")
-                                                        .font(.caption2).foregroundStyle(.secondary)
-                                                }
-                                                .padding(.vertical, 10).frame(minHeight: 44)
-                                                .contentShape(Rectangle())
+                                        Button {
+                                            if expanded { expandedMessages.remove(message.id) }
+                                            else { expandedMessages.insert(message.id) }
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(message.text).font(.subheadline)
+                                                    .lineLimit(expanded ? nil : 2)
+                                                    .multilineTextAlignment(.leading)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                Text(message.isSteering ? "Joining the current reply" : expanded ? "Show less" : "Tap to expand")
+                                                    .font(.caption2).foregroundStyle(.secondary)
                                             }
-                                            .buttonStyle(.plain)
-                                            .accessibilityLabel("Queued message \(index + 1): \(message.text)")
-                                            .accessibilityIdentifier("queued-message-\(index + 1)")
+                                            .padding(.vertical, 10).frame(minHeight: 44)
+                                            .contentShape(Rectangle())
                                         }
-                                        if message.canEdit && !message.isSteering && source == nil {
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Queued message \(index + 1): \(message.text)")
+                                        .accessibilityIdentifier("queued-message-\(index + 1)")
+                                        if message.canEdit && !message.isSteering {
                                             Button { workspace.beginQueuedEdit(message, owner: screen.owner) } label: {
                                                 Image(systemName: "pencil").frame(width: 44, height: 44)
                                                     .contentShape(Rectangle())
@@ -131,21 +110,6 @@ struct QueuedMessagesView: View {
         .onChange(of: screen?.queuedEdit?.id) { old, new in
             if old != nil && new == nil { isExpanded = false }
         }
-    }
-
-    private func queuedDetailsAreCurrent(_ message: QueuedMessage, screen: ChatScreen) -> Bool {
-        guard let snapshot = queuedSnapshot(screen) else { return false }
-        let matches = snapshot.queuedMessages.filter { $0.id.utf8.elementsEqual(message.id.utf8) }
-        guard matches.count == 1, let current = matches.first else { return false }
-        return current.sourceMessage != nil && current.text.utf8.elementsEqual(message.text.utf8) &&
-            current.canEdit == message.canEdit && current.isSteering == message.isSteering &&
-            current.submissionID.map { Data($0.utf8) } == message.submissionID.map { Data($0.utf8) }
-    }
-
-    private func queuedSnapshot(_ screen: ChatScreen) -> Conversation? {
-        guard workspace.isCurrent(screen.owner),
-              let profileID = screen.snapshot?.profileID, let profile = try? ExactID(profileID) else { return nil }
-        return workspace.selection(profile: profile)?.snapshot
     }
 }
 
