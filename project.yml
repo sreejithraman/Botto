@@ -104,6 +104,7 @@ targets:
     platform: iOS
     sources:
       - path: AppUITests
+      - path: AppTests/ReadinessLimit.swift
     info:
       path: AppUITests/Info.plist
       properties:
