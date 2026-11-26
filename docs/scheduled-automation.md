@@ -20,7 +20,7 @@ Routine it installed before showing a run or answering a question. T3 v0.1.12
 grants read and answer permissions across the environment, so the pilot does
 not support shared multi-operator hosts.
 
-On Apple Silicon with Node.js 22.4 or newer and Python 3, run the proof from the
+On Apple Silicon with Node.js 22.4 or newer and Python 3.9 or newer, run the proof from the
 repository root:
 
 ```sh
@@ -29,17 +29,21 @@ node scripts/check-t3-routine-workflows.mjs
 
 The check uses the released v0.1.12 engine from Botto's bundle script. It
 starts T3 on loopback with a temporary home and UTC, then removes the engine
-data on exit. Allow two minutes for it to cross a real scheduled time. An
+data on exit. Allow up to four minutes for it to cross a real scheduled time. An
 approved fixture and an inert proposal have the same fixed time and weekday.
 The approved fixture starts once after the engine restarts. The proposal
 remains inert over its due time and is installed only when the check takes
-the explicit approval path. A deliberately discarded installation response
-is reconciled by reading back the approved source and registered version.
+the explicit approval path. The check waits for the scheduler to record the
+proposal's next date, then checks for an unexpected run. It discards the
+response to a committed installation and checks the source and registered
+version before considering the installation complete.
 Pausing replaces the schedule with a version that skips manual starts and
 keeps the outstanding run's version until it can finish.
 
 The check uses Botto's default pairing exchange for the owner. Installing a
-definition uses the existing `terminal:operate` permission. A session with
+definition uses the existing `terminal:operate` permission. Enabling
+Workflows uses `settings:write`. Reading back the installed source uses
+`filesystem:read`. The default pairing exchange already grants both. A session with
 `orchestration:read` can read a run. Answering uses
 `orchestration:operate`, the same permission used to act in ordinary
 threads. The check confirms that an orchestration operator can already send to
@@ -47,6 +51,8 @@ and rename threads in both test projects. Read-only access cannot answer, and
 the proof's Botto-side project filter rejects the other project's run. T3 still
 accepts that answer directly from an operator.
 
-This is a provider-free check of the T3 contract. The workflow returns a
-sample result after a durable question. Native proposal cards, message
-delivery and the existing scheduled Routine path have their own checks.
+The workflow returns a sample result after a durable question and uses no
+provider credentials. The ordinary-message check verifies admission only.
+Native proposal cards and workflow result delivery need separate proof
+when the pilot UI is built. This check does not exercise existing scheduled
+Routines.

@@ -15,11 +15,14 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const cancellation = new AbortController();
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.once(signal, () => cancellation.abort(new Error(`Interrupted by ${signal}`)));
+  // Keep handling subsequent signals until the owned engine and its home are gone.
+  process.on(signal, () => cancellation.abort(new Error(`Interrupted by ${signal}`)));
 }
 
 assert.equal(typeof WebSocket, "function", "Use Node.js with built-in WebSocket support");
-const { stdout: stage } = await execute(resolve(root, "scripts/bundle-t3-engine.sh"));
+const { stdout: stage } = await execute(resolve(root, "scripts/bundle-t3-engine.sh"), {
+  signal: cancellation.signal,
+});
 const stagePath = stage.trim().replace(/^T3 engine staged at /, "");
 const pin = JSON.parse(await readFile(join(stagePath, "pin.json"), "utf8"));
 assert.equal(pin.version, "0.1.12", "This probe verifies the v0.1.12 workflow contract");
@@ -56,15 +59,20 @@ async function start() {
   cancellation.signal.throwIfAborted();
   const supervisor = spawn("/usr/bin/python3", [resolve(root, "scripts/dev-process.py"), "run", "--grace", "5", "--",
     engine, "serve", "--host", "127.0.0.1", "--port", String(port), "--base-dir", engineHome],
-  { cwd: engineHome, env, stdio: "ignore" });
-  const exited = once(supervisor, "exit");
+  { cwd: engineHome, env, stdio: "ignore", detached: true });
+  let spawnError;
+  const exited = new Promise(resolveExit => {
+    supervisor.once("error", error => { spawnError = error; });
+    supervisor.once("close", resolveExit);
+  });
   const stop = async () => {
-    if (supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill();
+    if (supervisor.pid && supervisor.exitCode === null && supervisor.signalCode === null) supervisor.kill();
     await exited;
   };
   try {
     await until(async () => {
-      if (supervisor.exitCode !== null) throw Error("T3 exited during startup");
+      if (spawnError) throw new Error("T3 supervisor failed to spawn", { cause: spawnError });
+      if (supervisor.exitCode !== null || supervisor.signalCode !== null) throw Error("T3 exited during startup");
       try {
         return (await fetch(`${origin}/.well-known/t3/environment`, { signal: timeoutSignal(1500) })).ok;
       } catch { return false; }
@@ -161,9 +169,9 @@ async function rpc({ token }, method, payload = {}, { first = false, drop = fals
 
 const orchestration = ["orchestration:read", "orchestration:operate"];
 const gate = "confirm";
-const writer = "w18-approved";
-const shadow = "w18-draft";
-const foreign = "w18-other-project";
+const approvedRoutine = "w18-approved";
+const lateRoutine = "w18-draft";
+const otherRoutine = "w18-other-project";
 const issue = async (token, type, fields) => {
   return rpc(token, "orchestration.dispatchCommand", { type, commandId: randomUUID(), ...fields });
 };
@@ -224,23 +232,32 @@ try {
   const environmentId = await readEnvironment();
   assert.ok(environmentId);
   const owner = await pair("Disposable owner");
-  const peer = await pair("Disposable operator", orchestration);
+  const operator = await pair("Disposable operator", orchestration);
   const reader = await pair("Disposable reader", ["orchestration:read"]);
-  assert.ok(["filesystem:read", "terminal:operate", ...orchestration].every(scope => owner.scopes.includes(scope)));
-  assert.deepEqual([...peer.scopes].sort(), [...orchestration].sort());
+  assert.ok(["filesystem:read", "terminal:operate", "settings:write", ...orchestration].every(scope => owner.scopes.includes(scope)));
+  assert.deepEqual([...operator.scopes].sort(), [...orchestration].sort());
   assert.deepEqual(reader.scopes, ["orchestration:read"]);
   const settings = (await rpc(owner, "server.getConfig")).settings;
   assert.equal(settings.workflowsEnabled, false, "Workflows must default off");
-  await rpc(owner, "server.updateSettings", { patch: { workflowsEnabled: true } });
+  const disabledName = "w18-disabled";
+  const refused = await save(owner, disabledName, definition({ name: disabledName }));
+  assert.equal(refused.changed, false);
+  assert.match(refused.problems[0]?.message ?? "", /workflows are off/i);
+  const enableWorkflows = { patch: { workflowsEnabled: true } };
+  await assert.rejects(rpc(operator, "server.updateSettings", enableWorkflows), /settings:write/);
+  await assert.rejects(rpc(reader, "server.updateSettings", enableWorkflows), /settings:write/);
+  assert.equal((await rpc(owner, "server.getConfig")).settings.workflowsEnabled, false);
+  await rpc(owner, "server.updateSettings", enableWorkflows);
   assert.equal((await rpc(owner, "server.getConfig")).settings.workflowsEnabled, true);
-  console.log("PASS: Workflows default off and require a separate host-owner opt-in");
+  assert.deepEqual((await rpc(owner, "workflows.getDefinition")).files, []);
+  console.log("PASS: Workflows start off, reject installs while off, and need an existing settings grant to turn on");
 
   const owned = await projectSpace(owner, "Owned Space");
   const other = await projectSpace(owner, "Other Space");
   for (const { threadId } of [owned, other]) {
     const title = "Changed by the existing thread operation";
     await assert.rejects(issue(reader, "thread.metadata.update", { threadId, title }), /orchestration:operate/);
-    const change = await issue(peer, "thread.metadata.update", { threadId, title });
+    const change = await issue(operator, "thread.metadata.update", { threadId, title });
     assert.ok(Number.isInteger(change.sequence));
 
     const message = {
@@ -248,32 +265,33 @@ try {
       createdBy: "user", creationSource: "mobile", dispatchMode: { type: "start_immediately" },
     };
     await assert.rejects(issue(reader, "message.dispatch", message), /orchestration:operate/);
-    const admission = await issue(peer, "message.dispatch", message);
+    const admission = await issue(operator, "message.dispatch", message);
     assert.ok(Number.isInteger(admission.sequence));
   }
   console.log("PASS: an existing orchestration operator can send to and rename threads in both projects");
 
   // Two equal-time fixtures distinguish a draft at a real due time from a triggered run.
-  const due = new Date(Math.ceil((Date.now() + 35_000) / 60_000) * 60_000);
+  const due = new Date(Math.ceil((Date.now() + 60_000) / 60_000) * 60_000);
   const clock = { time: due.toISOString().slice(11, 16), day: due.getUTCDay() };
-  const draft = { name: shadow, ...clock, ...owned };
-  const active = { name: writer, ...clock, ...owned };
+  const draft = { name: lateRoutine, ...clock, ...owned };
+  const active = { name: approvedRoutine, ...clock, ...owned };
   const draftFile = join(engineHome, "proposal.json");
   await writeFile(draftFile, JSON.stringify(draft));
   const activeSource = definition(active);
-  await assert.rejects(save(peer, writer, activeSource), /terminal:operate/);
-  await assert.rejects(save(reader, writer, activeSource), /terminal:operate/);
+  await assert.rejects(save(operator, approvedRoutine, activeSource), /terminal:operate/);
+  await assert.rejects(save(reader, approvedRoutine, activeSource), /terminal:operate/);
   assert.deepEqual((await list(owner)).workflows, []);
+  assert.deepEqual((await rpc(owner, "workflows.getDefinition")).files, []);
   console.log(`PASS: a proposal is data, and a non-authoring session cannot install its definition (due ${due.toISOString()})`);
 
   // One explicit approval for the active fixture. The check discards the first response.
-  await assert.rejects(save(owner, writer, activeSource, { drop: true }), /Response dropped by fixture/);
+  await assert.rejects(save(owner, approvedRoutine, activeSource, { drop: true }), /Response dropped by fixture/);
   const files = await rpc(owner, "workflows.getDefinition");
-  const installed = files.files.find(file => file.name === writer + ".ts");
+  const installed = files.files.find(file => file.name === approvedRoutine + ".ts");
   assert.equal(installed?.source, activeSource);
-  assert.deepEqual(installed.workflows, [writer + "@1"]);
+  assert.deepEqual(installed.workflows, [approvedRoutine + "@1"]);
   assert.deepEqual(installed.problems, []);
-  await until(async () => (await list(owner)).workflows.some(workflow => workflow.name === writer), "active definition", 10);
+  await until(async () => (await list(owner)).workflows.some(workflow => workflow.name === approvedRoutine), "active definition", 10);
   console.log("PASS: reconnect readback found exactly the approved revision after the write response was lost");
 
   assert.ok(Date.now() < due.valueOf(), "the restart must happen before the due time");
@@ -283,31 +301,42 @@ try {
   assert.ok(Date.now() < due.valueOf(), "reconnection must happen before the due time");
   const snapshot = await until(async () => {
     const latest = await list(owner);
-    return latest.runs.some(run => run.workflow === writer && run.status === "waiting") && latest;
-  }, "exactly one scheduled run after restart", 120);
-  const runs = snapshot.runs.filter(run => run.workflow === writer);
+    return latest.runs.some(run => run.workflow === approvedRoutine && run.status === "waiting") && latest;
+  }, "exactly one scheduled run after restart", 150);
+  const runs = snapshot.runs.filter(run => run.workflow === approvedRoutine);
   assert.equal(runs.length, 1);
   assert.equal(runs[0].version, 1);
   assert.ok(Date.parse(runs[0].startedAt) >= due.valueOf());
-  assert.equal(snapshot.workflows.some(item => item.name === shadow), false);
-  assert.equal(snapshot.runs.some(run => run.workflow === shadow), false);
-  assert.equal((await rpc(owner, "workflows.getDefinition")).files.some(file => file.name === shadow + ".ts"), false);
+  assert.equal(snapshot.workflows.some(item => item.name === lateRoutine), false);
+  assert.equal(snapshot.runs.some(run => run.workflow === lateRoutine), false);
+  assert.equal((await rpc(owner, "workflows.getDefinition")).files.some(file => file.name === lateRoutine + ".ts"), false);
   assert.deepEqual(JSON.parse(await readFile(draftFile, "utf8")), draft);
   const runId = runs[0].runId;
   console.log("PASS: the approved fixture ran once after restart; the equal-time draft was still inert after its due time");
 
-  const shadowWrite = await save(owner, shadow, definition(draft));
+  const shadowWrite = await save(owner, lateRoutine, definition(draft));
   assert.deepEqual(shadowWrite, { changed: true, problems: [] });
-  assert.equal((await list(owner)).runs.some(run => run.workflow === shadow), false);
-  assert.deepEqual(await rpc(owner, "workflows.deleteDefinition", { name: shadow + ".ts" }), { changed: true, problems: [] });
+  // The RPC reply can win the race with the scheduler. Read its persisted next time
+  // from this disposable engine to prove it has considered the newly installed trigger.
+  const nextAt = await until(async () => {
+    const { stdout } = await execute("/usr/bin/sqlite3", [
+      "-readonly", "-json", join(engineHome, "userdata", "statev2.sqlite"),
+      "SELECT trigger_id, next_at FROM workflow_triggers;",
+    ], { signal: cancellation.signal, timeout: 5000, env });
+    const triggers = JSON.parse(stdout.trim() || "[]");
+    return triggers.find(trigger => trigger.trigger_id.startsWith(lateRoutine + "/"))?.next_at;
+  }, "late approval's next scheduled time", 35);
+  assert.equal(Date.parse(nextAt), due.valueOf() + 7 * 24 * 60 * 60 * 1000);
+  assert.equal((await list(owner)).runs.some(run => run.workflow === lateRoutine), false);
+  assert.deepEqual(await rpc(owner, "workflows.deleteDefinition", { name: lateRoutine + ".ts" }), { changed: true, problems: [] });
   console.log("PASS: explicitly turning on the original draft after its due time registered it without backfill");
 
-  assert.deepEqual(await save(owner, foreign, definition({ name: foreign, ...other })), { changed: true, problems: [] });
-  const foreignRunId = await manualStart(foreign, "other-project");
+  assert.deepEqual(await save(owner, otherRoutine, definition({ name: otherRoutine, ...other })), { changed: true, problems: [] });
+  const foreignRunId = await manualStart(otherRoutine, "other-project");
   await until(async () => (await list(owner)).questions.some(question => question.runId === foreignRunId), "other project's question", 15);
 
   // Model Botto's trusted installation lookup and validate the paired project before exposing run data.
-  const install = { environmentId, projectId: owned.projectId, workflow: writer };
+  const install = { environmentId, projectId: owned.projectId, workflow: approvedRoutine };
   async function ownedView(connection, caller) {
     if (connection.environmentId !== install.environmentId || connection.projectId !== install.projectId) {
       throw Error("Routine belongs to a different environment or project");
@@ -326,14 +355,19 @@ try {
   }
   await assert.rejects(ownedView({ ...install, projectId: other.projectId }, owner), /different/);
   await assert.rejects(ownedView({ ...install, environmentId: randomUUID() }, owner), /different/);
-  assert.deepEqual((await ownedView(install, owner)).questions.map(question => question.runId), [runId]);
+  for (const caller of [owner, reader]) {
+    const view = await ownedView(install, caller);
+    assert.deepEqual(view.runs.map(run => run.runId), [runId]);
+    assert.deepEqual(view.questions.map(question => question.runId), [runId]);
+    assert.equal(view.questions[0].request.data.threadId, owned.threadId);
+  }
   await assert.rejects(answerOwned(install, owner, { runId: foreignRunId, name: gate, choice: "Allow" }), /outside/);
   assert.equal((await get(owner, foreignRunId)).run.status, "waiting");
   const ownAnswer = { runId, name: gate, choice: "Allow" };
   await assert.rejects(answerOwned(install, reader, ownAnswer), /orchestration:operate/);
   assert.equal((await get(reader, runId)).run.status, "waiting");
-  assert.equal((await get(peer, runId)).run.status, "waiting");
-  await rpc(peer, "workflows.answer", { ...ownAnswer, runId: foreignRunId });
+  assert.equal((await get(operator, runId)).run.status, "waiting");
+  await rpc(operator, "workflows.answer", { ...ownAnswer, runId: foreignRunId });
   const otherDetail = await until(async () => {
     const detail = await get(owner, foreignRunId);
     return detail.run.status === "completed" && detail;
@@ -342,19 +376,19 @@ try {
   console.log("PASS: Botto-style project filtering hides the other run and refuses its answer; read-only cannot answer");
   console.log("LIMIT: raw T3 orchestration operators retain environment-wide read and answer authority");
 
-  const replaced = await save(owner, writer, activeSource + pausedDefinition(writer));
+  const replaced = await save(owner, approvedRoutine, activeSource + pausedDefinition(approvedRoutine));
   assert.deepEqual(replaced, { changed: true, problems: [] });
-  const paused = (await list(owner)).workflows.find(workflow => workflow.name === writer);
+  const paused = (await list(owner)).workflows.find(workflow => workflow.name === approvedRoutine);
   assert.equal(paused.version, 2);
   assert.deepEqual(paused.triggers, []);
   const waiting = await get(owner, runId);
   assert.equal(waiting.run.version, 1);
   assert.equal(waiting.run.status, "waiting");
-  const deleteWhileWaiting = await rpc(owner, "workflows.deleteDefinition", { name: writer + ".ts" });
+  const deleteWhileWaiting = await rpc(owner, "workflows.deleteDefinition", { name: approvedRoutine + ".ts" });
   assert.equal(deleteWhileWaiting.changed, false);
   console.log("PASS: a paused revision removed future triggers and preserved the waiting run");
 
-  const manualId = await manualStart(writer, "paused-manual");
+  const manualId = await manualStart(approvedRoutine, "paused-manual");
   const skipped = await until(async () => {
     const detail = await get(owner, manualId);
     return detail.run.status === "skipped" && detail;
@@ -369,13 +403,13 @@ try {
   assert.equal(completed.run.result, "Allow");
   assert.equal(completed.steps.find(step => step.name === gate).result.answeredBy, "Disposable owner");
   await assert.rejects(answerOwned(install, owner, ownAnswer), /no longer open/);
-  const history = (await list(owner)).runs.filter(run => run.workflow === writer);
+  const history = (await list(owner)).runs.filter(run => run.workflow === approvedRoutine);
   assert.deepEqual(new Set(history.map(run => run.runId)), new Set([runId, manualId]));
-  assert.deepEqual(await rpc(owner, "workflows.deleteDefinition", { name: writer + ".ts" }), { changed: true, problems: [] });
+  assert.deepEqual(await rpc(owner, "workflows.deleteDefinition", { name: approvedRoutine + ".ts" }), { changed: true, problems: [] });
   assert.equal((await get(owner, runId)).run.result, "Allow");
   console.log("PASS: pause skipped a manual start; the in-progress run finished once, and deleting kept its history");
 } finally {
   if (stop) await stop();
   await rm(engineHome, { recursive: true, force: true });
+  console.log("Stopped the disposable engine and removed its home.");
 }
-console.log("Stopped the disposable engine and removed its home.");
