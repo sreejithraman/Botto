@@ -28,6 +28,8 @@ Botto supports macOS 15, iOS 18, and iPadOS 18 or later. See
 [setup and signing](docs/setup.md) for prerequisites and connection recovery,
 and [rich replies and files](docs/rich-content.md) for supported previews.
 
+See [Routines](docs/scheduled-automation.md) to schedule work on iPhone, iPad, or Mac.
+
 Optional [encrypted Space notifications](docs/push-notifications.md) use
 an owner-operated relay and Apple signing.
 
