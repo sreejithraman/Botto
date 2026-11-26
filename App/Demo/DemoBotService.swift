@@ -789,47 +789,10 @@ import BottoCore
             "Paragraph \(index). **Native text** keeps a readable history with [a source](https://example.com). " +
                 String(repeating: "A conversation should stay responsive while new words arrive. ", count: 5)
         }.joined(separator: "\n\n")
-        if ProcessInfo.processInfo.arguments.contains("--heavy-history-performance-demo") {
-            let text = (0..<48).map { index in
-                "Section \(index). **Measured history** with [a source](https://example.com). " +
-                    String(repeating: "Keep the complete text readable while moving through older messages. ", count: 4)
-            }.joined(separator: "\n\n")
-            chats[Data("scout".utf8)]?.messages = (0..<30).flatMap { group -> [ChatMessage] in
-                let prefix = "heavy-\(group)-"
-                let date = now.addingTimeInterval(Double(group))
-                return [.init(id: prefix + "question", role: .user,
-                              text: "Heavy history question \(group).\n\n" + text, timestamp: date)] +
-                    (0..<8).map { tool in
-                        ChatMessage(id: prefix + "tool-\(tool)", role: .tool,
-                                    text: "Tool result \(group).\(tool).\n\n" + text, timestamp: date)
-                    } + [.init(id: prefix + "reply", role: .assistant,
-                               text: "Heavy history landmark \(group).\n\n" + text, timestamp: date)]
-            }
-        } else if ProcessInfo.processInfo.arguments.contains("--mixed-history-performance-demo") {
-            let toolOutput = "**Sample work output**\n\n" + String(repeating: "Checked a **local sample**. No action was performed.\n\n", count: 64)
-            chats[Data("scout".utf8)]?.messages = (0..<50).flatMap { group -> [ChatMessage] in
-                let prefix = "mixed-\(group)-"
-                let date = now.addingTimeInterval(Double(group * 8))
-                let wrapper = "[Cronjob \"Routine sample check\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\n"
-                return [
-                    .init(id: prefix + "question", role: .user, text: "Review the sample updates for item \(group).", timestamp: date),
-                    .init(id: prefix + "tool-1", role: .tool, text: toolOutput, timestamp: date),
-                    .init(id: prefix + "tool-2", role: .tool, text: "Compared local sample records.", timestamp: date),
-                    .init(id: prefix + "tool-3", role: .tool, text: "Prepared a sample summary.", timestamp: date),
-                    .init(id: prefix + "scheduled", role: .user, text: wrapper + "The sample service is healthy.", timestamp: date,
-                          displayKind: "internal_notification"),
-                    .init(id: prefix + "reply", role: .assistant,
-                          text: "Mixed history landmark \(group).\n\n" + (group.isMultiple(of: 5) ? paragraphs : "The sample updates are ready.\n\n**Next step:** inspect the [sample source](https://example.com). No changes were made."), timestamp: date),
-                    .init(id: prefix + "raw", role: .user, text: wrapper + "A reference-only sample result.\n\nNo user action is requested.", timestamp: date),
-                    .init(id: prefix + "summary", role: .assistant, text: "Sample check \(group) complete. No action is needed.", timestamp: date)
-                ]
-            }
-        } else {
-            chats[Data("scout".utf8)]?.messages = (0..<400).map { index in
-                ChatMessage(id: "performance-\(index)", role: index.isMultiple(of: 4) ? .user : .assistant,
-                            text: "History landmark \(index).\n\n" + paragraphs,
-                            timestamp: now.addingTimeInterval(Double(index)))
-            }
+        chats[Data("scout".utf8)]?.messages = (0..<400).map { index in
+            ChatMessage(id: "performance-\(index)", role: index.isMultiple(of: 4) ? .user : .assistant,
+                        text: "History landmark \(index).\n\n" + paragraphs,
+                        timestamp: now.addingTimeInterval(Double(index)))
         }
         for index in 0..<200 {
             let id = "performance-bot-\(index)"

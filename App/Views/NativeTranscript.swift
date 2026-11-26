@@ -151,7 +151,7 @@ private struct NativeTranscriptHostedRow: View {
     }
 }
 
-@MainActor class NativeTranscriptCollectionView: UICollectionView {
+@MainActor final class NativeTranscriptCollectionView: UICollectionView {
     override func layoutSubviews() {
         super.layoutSubviews()
         for case let cell as NativeTranscriptCell in visibleCells {
@@ -165,10 +165,6 @@ private struct NativeTranscriptHostedRow: View {
     var isDisplayed = false
     var committedFittingSize: CGSize?
     private var fittingPassCount = 0
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-    }
-    required init?(coder: NSCoder) { super.init(coder: coder) }
     override func prepareForReuse() {
         isDisplayed = false; committedFittingSize = nil; fittingPassCount = 0
         exposure?.invalidate(); exposure = nil; contentConfiguration = nil
