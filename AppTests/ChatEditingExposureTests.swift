@@ -124,16 +124,18 @@ import BottoCore
         try #require(cancel.accessibilityActivate())
         try await ready("Cancel All shows its notice") { self.accessibilityNode(notice, in: f.host.view) != nil }
         #expect(f.store.chats.screen(profile: f.service.profile)?.isUploading == duringUpload)
-        f.state.rootCovered = true
-        try await ready { f.editor?.isEditable == false }
-        f.state.rootCovered = false
-        try await ready("the notice outlasts a cover") { self.accessibilityNode(notice, in: f.host.view) != nil }
+        // Release the held import before any cover: a cover also stops imports, so only
+        // checking afterwards could not tell Cancel All apart from the cover.
         f.service.uploadGate = nil
         gate.release()
         try await Task.sleep(for: .milliseconds(150))
         try await ready { f.store.chats.screen(profile: f.service.profile)?.isUploading == false }
         #expect(f.store.chats.screen(profile: f.service.profile)?.attachments.isEmpty == true)
         #expect(f.service.uploads.count == (duringUpload ? 1 : 0))
+        f.state.rootCovered = true
+        try await ready { f.editor?.isEditable == false }
+        f.state.rootCovered = false
+        try await ready("the notice outlasts a cover") { self.accessibilityNode(notice, in: f.host.view) != nil }
         try await ready { f.editor?.isEditable == true }
         let current = try #require(f.store.chats.screen(profile: f.service.profile))
         f.editor?.pasteAttachments?(current.owner, [item("retry.png", held: false)])
