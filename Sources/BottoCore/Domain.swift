@@ -240,7 +240,6 @@ public enum MessageDelivery: Equatable, Sendable {
     func bots() async throws -> [BotProfile]
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
-    func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset?
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
     func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage
@@ -282,10 +281,6 @@ public extension BotService {
     func send(text: String, attachments: [ChatAttachment], access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt {
         try await send(text: text, attachments: attachments, delivery: .queue, access: access, operationID: operationID)
-    }
-
-    func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
-        throw ConversationServiceError.rejected(-32601)
     }
 
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {

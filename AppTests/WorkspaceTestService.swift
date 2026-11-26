@@ -92,7 +92,6 @@ import BottoCore
         return rosterProfiles ?? [rosterBot ?? .init(id: profile.text, name: "Milo", status: rosterStatus)]
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
-    func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCalls += 1
         let captured = directoryResult

@@ -31,7 +31,6 @@ Adapted source areas:
 - `Models/MessageAttachment.swift` and `HermesMobileTests/HermesChatAttachmentTests.swift`:
   read-only transcript reference extraction, display names and presentation fixtures.
 - `Features/Bots/BotProfileAppearance.swift`: shared palette, profile-ID defaults and adaptive color contrast.
-- `Features/Bots/BotAvatarStore.swift`: bounded thumbnails and the desktop face-copy rule.
 - `Features/Bots/BotProfileEditor.swift`: merge/CAS and explicit image-clear contracts.
 
 Botto's corresponding files are under `Sources/BottoCore`, `App/Design`, and

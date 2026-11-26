@@ -174,7 +174,7 @@ private struct SearchChatAvatar: View {
     var body: some View {
         Group {
             if let bot = store.bot(withID: chat.botID) {
-                BotAvatar(profile: bot, image: store.avatar(for: bot), size: size, motion: .still)
+                BotAvatar(profile: bot, size: size, motion: .still)
             } else {
                 Text(String(chat.botName.prefix(1)).uppercased())
                     .font(.headline).foregroundStyle(BottoTheme.action)

@@ -1,10 +1,9 @@
 import SwiftUI
 import BottoCore
 
-/// All bot surfaces share the server image and the same profile-ID-derived fallback.
+/// All bot surfaces share the same profile-ID-derived fallback.
 struct BotAvatar: View {
     let profile: BotProfile
-    var image: UIImage?
     var size: CGFloat = 56
     var motion: BotFaceMotion = .idle
     var presentation: BotAvatarPresentation? = nil
@@ -26,22 +25,11 @@ struct BotAvatar: View {
     }
 
     var body: some View {
-        let layout = fitsBody ? BotAvatarLayout(shape: profile.face.shape, size: size, imageSize: image?.size,
+        let layout = fitsBody ? BotAvatarLayout(shape: profile.face.shape, size: size,
             geometry: profile.appearance?.geometry) : nil
         let minimumCueTop = layout.map { Double($0.bodyBounds.minY / size) - 0.5 - 0.14 }
-        Group {
-            if let image {
-                Image(uiImage: image).resizable().scaledToFit().frame(width: size, height: size)
-                    .overlay {
-                        if resolvedPresentation.activity == .offline {
-                            BotAvatarActivityCue(shape: .squircle, size: size, activity: .offline, minimumCueTop: minimumCueTop)
-                        }
-                    }
-            } else {
-                BotAvatarMotion(profile: profile, size: size, presentation: resolvedPresentation,
-                                still: still || motion == .still, minimumCueTop: minimumCueTop)
-            }
-        }
+        BotAvatarMotion(profile: profile, size: size, presentation: resolvedPresentation,
+                        still: still || motion == .still, minimumCueTop: minimumCueTop)
         .frame(width: size, height: size)
         .offset(y: layout?.fittedVerticalOffset ?? 0)
         .frame(width: size, height: layout?.fittedHeight ?? size)

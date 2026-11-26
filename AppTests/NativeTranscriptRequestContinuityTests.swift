@@ -431,7 +431,6 @@ import BottoCore
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { try await base.connect(configuration: configuration) }
     func disconnect() { base.disconnect() }
     func bots() async throws -> [BotProfile] { [profile] }
-    func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? { nil }
     func conversations(profile: ExactID) async throws -> ConversationDirectory { try await base.conversations(profile: profile) }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { try await base.createConversation(profile: profile, operationID: operationID) }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation { try await base.openChat(target) }

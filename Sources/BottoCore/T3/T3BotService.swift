@@ -283,11 +283,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return profile(session)
     }
 
-    public func avatarAsset(for bot: BotProfile) async throws -> BotAvatarAsset? {
-        _ = try requireSession(profile: ExactID(bot.id))
-        return nil
-    }
-
     public func loadBotBrain() async throws -> T3BotBrainSnapshot {
         let session = try requireSession()
         let manifest = try await readManifest(session)

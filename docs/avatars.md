@@ -24,10 +24,8 @@ conversation activity. A long operation can move among thinking, tool use, and
 replying. Work cues follow the current Space. Reduce Motion keeps a still
 presentation with the appropriate cue.
 
-A cached image takes precedence over a drawn face when it is a deliberate
-photo. The asset fingerprint recognizes a static preview of the same drawn
-face, so the native renderer can continue drawing it. iOS demo supports
-sample avatar and activity scenarios without a real host.
+T3 hosts serve no avatar images, so every bot shows its drawn face. iOS demo
+supports sample avatar and activity scenarios without a real host.
 
 ## Developer playground
 

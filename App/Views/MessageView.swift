@@ -8,18 +8,17 @@ struct MessageView: View {
     var rendersRichContent = true
     var filePreviewsAreSettled = true
     var senderProfile: BotProfile?
-    var senderImage: UIImage?
     var onOpenAttachment: ((ChatAttachment) -> Void)?
     var thumbnails: AttachmentThumbnails?
     private let rawRevision: Data?
     private var outgoing: Bool { message.isOutgoingUserMessage }
 
     init(message: ChatMessage, isStreaming: Bool = false, rendersRichContent: Bool = true, filePreviewsAreSettled: Bool = true,
-         senderProfile: BotProfile? = nil, senderImage: UIImage? = nil,
+         senderProfile: BotProfile? = nil,
          onOpenAttachment: ((ChatAttachment) -> Void)? = nil, thumbnails: AttachmentThumbnails? = nil) {
         self.message = message; self.isStreaming = isStreaming; self.rendersRichContent = rendersRichContent
         self.filePreviewsAreSettled = filePreviewsAreSettled
-        self.senderProfile = senderProfile; self.senderImage = senderImage
+        self.senderProfile = senderProfile
         self.onOpenAttachment = onOpenAttachment; self.thumbnails = thumbnails
         rawRevision = message.notificationPresentation == nil ? nil : Data(message.text.utf8)
     }
@@ -98,7 +97,7 @@ struct MessageView: View {
 
     private func incomingBotMessage(_ sender: ChatMessage.MessageSender) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            ChatSenderAvatar(sender: sender, profile: senderProfile, image: senderImage)
+            ChatSenderAvatar(sender: sender, profile: senderProfile)
             VStack(alignment: .leading, spacing: 7) {
                 Text("\(sender.name) · @\(sender.handle)")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)

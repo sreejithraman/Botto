@@ -6,7 +6,6 @@ struct BotAvatarPicker: View {
     let profileID: String
     let current: BotAppearance
     @Binding var selection: BotAvatarChoice?
-    var hasImage = false
     @State private var retainedCustomChoice: BotAvatarChoice?
     @State private var hasRetainedCustomChoice = false
     private enum Mode: String { case automatic = "Match the name", custom = "Custom" }
@@ -133,7 +132,7 @@ struct BotAvatarPicker: View {
     private var mode: Mode {
         if selection == .automatic { return .automatic }
         if selection != nil { return .custom }
-        return hasImage || current.custom || current.rawShape != nil || colorOverride != nil ? .custom : .automatic
+        return current.custom || current.rawShape != nil || colorOverride != nil ? .custom : .automatic
     }
 
     private func chooseMode(_ next: Mode) {

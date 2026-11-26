@@ -41,18 +41,16 @@ enum NativeTranscriptRowValue: Equatable {
     }
 
 }
-/// The empty row compares the same captured inputs that its renderer consumes,
-/// including a replacement thumbnail for an otherwise unchanged profile.
+/// The empty row compares the same captured inputs that its renderer consumes.
 struct NativeTranscriptEmptyDisplay: Equatable {
     let profile: BotProfile
-    let image: UIImage?
     let opening: Bool
     let connected: Bool
     var presentation: BotAvatarPresentation? = nil
     static func == (lhs: Self, rhs: Self) -> Bool {
         let a = lhs.profile, b = rhs.profile
         func bytes(_ value: String?) -> Data? { value.map { Data($0.utf8) } }
-        return lhs.opening == rhs.opening && lhs.connected == rhs.connected && lhs.image === rhs.image &&
+        return lhs.opening == rhs.opening && lhs.connected == rhs.connected &&
             lhs.presentation == rhs.presentation && a == b &&
             [a.id, a.name, a.emoji, a.description, a.preview, a.model, a.appearance?.rawShape,
              a.appearance?.color, a.appearance?.imageKind, a.appearance?.expression].map(bytes) ==

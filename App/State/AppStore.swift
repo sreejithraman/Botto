@@ -355,12 +355,11 @@ import BottoCore
     private var botRefresh: BotRefresh?
     @ObservationIgnored private var botInvalidationRefresh: BotInvalidationRefresh?
     @ObservationIgnored private let waitForBotInvalidationInterval: @MainActor () async throws -> Void
-    private let avatars: BotAvatarStore
     @ObservationIgnored private var avatarSaves: [String: UUID] = [:]
 
     init(service: (any BotService)? = nil, persistence: ConnectionPersistence? = nil,
          t3Push: T3PushCoordinator? = nil,
-         cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil, avatarNow: @escaping () -> Date = Date.init,
+         cleanupHistory: ((UUID?) throws -> Void)? = nil, artifactCache: ArtifactCache? = nil,
          waitForBotInvalidationInterval: @escaping @MainActor () async throws -> Void = {
              try await Task.sleep(for: .seconds(5))
          }, makeService: @escaping @MainActor (ConnectionConfiguration?) -> any BotService = {
@@ -378,7 +377,6 @@ import BottoCore
         self.persistence = persistence ?? .keychain
         self.waitForBotInvalidationInterval = waitForBotInvalidationInterval
         self.t3Push = t3Push ?? (persistence == nil ? T3PushCoordinator() : T3PushCoordinator(load: { [] }, save: { _ in }))
-        self.avatars = BotAvatarStore(now: avatarNow)
         // Injected vaults need not own the app's one production cache directory.
         self.cleanupHistory = cleanupHistory ?? (persistence == nil ? { try LocalHistory.removeUnreachable(keeping: $0) } : { _ in })
         if loadSavedSetup(), configuration != nil { connection.awaitStartup() }
@@ -759,12 +757,6 @@ import BottoCore
         scheduleSave()
     }
 
-    func avatar(for bot: BotProfile) -> UIImage? { avatars.image(for: bot) }
-    func isLoadingAvatar(for bot: BotProfile) -> Bool { avatars.isLoading(bot) }
-    func hasSavedAvatarImage(for bot: BotProfile) -> Bool {
-        bot.hasAvatar == true && !avatars.isStaticPreview(for: bot)
-    }
-
     func avatarDestination(for bot: BotProfile) -> AvatarDestination? {
         guard let configuration, let current = cachedBots.first(where: { $0.id == bot.id }) else { return nil }
         return AvatarDestination(profile: current, workspaceGeneration: avatarWorkspaceGeneration,
@@ -788,22 +780,6 @@ import BottoCore
         let published = await refreshBots()
         try validateAvatarDestination(destination, connection: owner, recovery: recovery)
         guard published else { throw ConversationServiceError.avatarRefresh }
-        if let id = configuration?.id {
-            avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [destination.profile.id])
-        }
-    }
-
-    func reloadAvatar(_ destination: AvatarDestination) async throws -> AvatarDestination {
-        let owner = generation, recovery = attachmentRecoveryGeneration
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        let published = await refreshBots()
-        try validateAvatarDestination(destination, connection: owner, recovery: recovery)
-        guard published, let bot = cachedBots.first(where: { $0.id == destination.profile.id }),
-              let updated = avatarDestination(for: bot) else { throw ConversationServiceError.avatarReload }
-        if let id = configuration?.id {
-            avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: [bot.id])
-        }
-        return updated
     }
 
     private func validateAvatarDestination(_ destination: AvatarDestination, connection: UUID, recovery: UUID) throws {
@@ -1012,7 +988,6 @@ import BottoCore
             t3NotificationLaunchScope = nil
             retireArtifactPresentation()
         }
-        avatars.reset()
         service.disconnect()
         chats.retireConnection()
         cacheTask?.cancel()
@@ -1065,14 +1040,11 @@ import BottoCore
         chats.retireConnection(); retireRefresh()
     }
 
-    func refresh(revalidateAvatars: Bool = false) async {
-        let owner = generation, recovery = attachmentRecoveryGeneration
+    func refresh() async {
+        let owner = generation
         guard await refreshBots(), generation == owner, !Task.isCancelled, isConnected else { return }
         pendingPushNotification?.intent.recoveryRevision = UUID()
         await resumePushNavigation()
-        guard revalidateAvatars, !Task.isCancelled, isConnected,
-              generation == owner, attachmentRecoveryGeneration == recovery, let id = configuration?.id else { return }
-        avatars.refresh(cachedBots, connectionID: id, using: service, revalidate: Set(cachedBots.map(\.id)))
     }
 
     private func refreshFromBotInvalidation() {
@@ -1208,7 +1180,6 @@ import BottoCore
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
                 publishT3Channels()
-                if let id = configuration?.id { avatars.refresh(profiles, connectionID: id, using: service) }
                 await chats.refreshActivityDirectories(for: profiles)
                 guard generation == owner, botRefresh === refresh else { return }
                 chats.scheduleInboxHistory(for: profiles)
@@ -1235,7 +1206,6 @@ import BottoCore
         invalidation?.task?.cancel()
         retireArtifactDownloads()
         avatarSaves = [:]
-        avatars.cancel()
         guard let refresh = botRefresh else { return }
         // Recovery may retain the connection generation. Retire this read's identity
         // before cancellation so its late result cannot publish or clear a newer run.
@@ -1617,7 +1587,6 @@ import BottoCore
         connection.forget(); retireRefresh()
         service.onEvent = nil; service.disconnect()
         cacheTask?.cancel()
-        avatars.reset()
         liveService = injectedService ?? makeService(nil)
         service = liveService
         configuration = nil; mount(.init(), configuration: nil); selectedBotID = nil
@@ -1647,7 +1616,6 @@ import BottoCore
         connection.suspend(hasSavedSetup: false)
         retireRefresh(); isDemo = false; configuration = nil; mount(.init(), configuration: nil)
         demoConnectionID = nil
-        avatars.reset()
         selectedBotID = nil
         loadSavedSetup()
     }
