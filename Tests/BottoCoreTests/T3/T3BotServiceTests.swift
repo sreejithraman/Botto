@@ -635,7 +635,9 @@ import Testing
         let stopped = try await nextConversation(&published) { $0.activity?.signal?.kind == .stopped }
         #expect(!stopped.snapshot.isWorking)
 
-        #expect(try await service.recentConversationHistory(identity)?.hasEarlierMessages == true)
+        let latest = try #require(try await service.recentConversationHistory(identity))
+        #expect(latest.messages.map(\.text) == ["Latest"])
+        #expect(latest.hasEarlierMessages)
         let artifact = try await service.downloadArtifact(.init(name: "report.txt", path: "outputs/report.txt"), access: opened.access)
         #expect(artifact.data == Data("report".utf8))
 

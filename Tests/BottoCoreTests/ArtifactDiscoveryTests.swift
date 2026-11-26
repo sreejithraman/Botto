@@ -52,7 +52,10 @@ import Testing
     #expect(artifacts.allSatisfy { $0.category == .output })
     #expect(artifacts.filter { $0.attachment == nil }.count == 3)
     #expect(artifacts.compactMap(\.attachment).map(\.path) == ["./dashboard.html"])
-    let inline = try #require(artifacts.first { $0.attachment == nil })
+    let inline = try #require(artifacts.first {
+        guard case .inline(let block) = $0.payload else { return false }
+        return block.previewFormat == .html && block.source.contains("<h1>Quarterly report</h1>")
+    })
     let edited = ArtifactDiscovery.artifacts(in: [.init(id: "visuals", role: .assistant,
         text: "```html\n<h1>Revised report</h1>\n```")])
     #expect(edited.first?.id != inline.id)
