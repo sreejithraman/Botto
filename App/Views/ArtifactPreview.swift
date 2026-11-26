@@ -268,12 +268,6 @@ private struct ArtifactReaderPage: View {
             ContentUnavailableView("File Unavailable", systemImage: "network.slash",
                                    description: Text("This chat or connection changed. Reopen the file from its original chat."))
                 .accessibilityIdentifier("artifact-error")
-        } else if let block = session.previewBlock {
-            ScrollView {
-                RichReplyBlockView(block: block, initialHeight: 440)
-                    .padding()
-            }
-            .environment(\.richReplyContext, .isolated)
         } else if let file = session.file {
             if !file.data.isEmpty, ArtifactPlainText.supports(filename: file.filename, mimeType: file.mimeType) {
                 ArtifactTextReader(file: file).background(BottoTheme.paper)

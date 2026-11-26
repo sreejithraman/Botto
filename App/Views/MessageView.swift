@@ -39,7 +39,7 @@ struct MessageView: View {
             incomingBotMessage(sender)
         } else if message.role == .system && isImportantSystemNote {
             Label {
-                SearchMatchText(message.text).textSelection(.enabled)
+                Text(message.text).textSelection(.enabled)
             } icon: {
                 Image(systemName: "exclamationmark.circle")
             }
@@ -62,7 +62,7 @@ struct MessageView: View {
                         if outgoing { Spacer(minLength: 35) }
                         VStack(alignment: .leading, spacing: 10) {
                             if !presentation.text.isEmpty {
-                                if outgoing { SearchMatchText(presentation.text).textSelection(.enabled) }
+                                if outgoing { Text(presentation.text).textSelection(.enabled) }
                                 else if !rendersRichContent { MarkdownBody(text: presentation.text) }
                                 else { AssistantReplyBody(message: message, isStreaming: isStreaming,
                                                           filePreviewsAreSettled: filePreviewsAreSettled,
@@ -103,7 +103,7 @@ struct MessageView: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     .accessibilityLabel(sender.label)
                     .accessibilityIdentifier("message-sender-" + message.id)
-                SearchMatchText(message.attributedText).font(.body).lineSpacing(3).textSelection(.enabled)
+                Text(message.attributedText).font(.body).lineSpacing(3).textSelection(.enabled)
                 ForEach(message.attachments) { attachment in
                     ArtifactCard(attachment: attachment, outgoing: false,
                         open: onOpenAttachment.map { action in { action(attachment) } })
@@ -431,7 +431,7 @@ struct MarkdownBody: View {
             ForEach(blocks) { block in
                 if block.code {
                     ScrollView(.horizontal) {
-                        SearchMatchText(block.text)
+                        Text(block.text)
                             .font(.system(.callout, design: .monospaced))
                             .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
                             .padding(12)
@@ -439,7 +439,7 @@ struct MarkdownBody: View {
                     .background(isReply ? BottoTheme.surface : BottoTheme.paper, in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Code: \(block.text)")
                 } else {
-                    SearchMatchText(attributed(block.text))
+                    Text(attributed(block.text))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)

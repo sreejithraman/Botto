@@ -284,6 +284,26 @@ import BottoCore
         #expect(selected.file == nil, "An unselected page waits for a deliberate turn back")
     }
 
+    @Test func choosingAConversationClosesTheReaderAndItsPagesAndEndsBrowsing() async throws {
+        let (_, _, presentation, close) = try await pagedReader(["a.txt", "b.txt", "c.txt"], opening: 1)
+        defer { close() }
+        try await settled { [0, 1, 2].allSatisfy { presentation.artifactSession(atPage: $0)?.file != nil } }
+        let selected = try #require(presentation.artifact)
+        let before = try #require(presentation.artifactSession(atPage: 0))
+        let after = try #require(presentation.artifactSession(atPage: 2))
+        presentation.browseBots()
+        #expect(presentation.isBrowsingBots && presentation.artifact === selected)
+        let revision = presentation.revision
+
+        presentation.didChooseConversation()
+
+        #expect(!presentation.isBrowsingBots && presentation.artifact == nil)
+        #expect(presentation.revision != revision)
+        #expect(!selected.isCurrent && selected.file == nil, "The open reader gives up its read")
+        #expect(!before.isCurrent && !after.isCurrent, "Its loaded neighbor pages retire with it")
+        #expect(presentation.artifactSession(atPage: 0) == nil && presentation.artifactSession(atPage: 2) == nil)
+    }
+
     @Test func aPageCannotTurnWhileExportOwnsTheReader() async throws {
         let (store, _, presentation, close) = try await pagedReader(["a.txt", "b.txt"], opening: 0)
         defer { close() }

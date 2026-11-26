@@ -126,7 +126,7 @@ struct AssistantReplyBody: View {
                     paragraph(block.source)
                 case .code:
                     ScrollView(.horizontal) {
-                        SearchMatchText(block.source)
+                        Text(block.source)
                             .font(.system(.callout, design: .monospaced))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: true, vertical: false)

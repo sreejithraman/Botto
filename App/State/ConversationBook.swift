@@ -469,7 +469,7 @@ struct ConversationBook: Codable, Sendable {
         records.first { record in
             guard let transcript = record.transcript, transcript.unavailableMessageIDs?.isDisjoint(with: messageIDs) == false,
                   let identity = record.binding.identity else { return false }
-            return SearchMessageTarget.sameSource(identity, source)
+            return identity.profile == source.profile && identity.root == source.root && identity.stored == source.stored
                 && Data(transcript.profileID.utf8) == source.profile.bytes
                 && Data(transcript.storedID.utf8) == source.stored.bytes
         }?.id

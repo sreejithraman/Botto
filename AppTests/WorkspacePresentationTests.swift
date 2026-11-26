@@ -392,6 +392,51 @@ import BottoCore
         presentation.closeArtifact(id: session.id)
     }
 
+    @Test func reloadAndExportCannotReplaceEachOthersFile() async throws {
+        let (store, service, configuration) = try await fixture()
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let presentation = WorkspacePresentation()
+        let session = try openFile(presentation: presentation, store: store, service: service)
+        try await loaded(session)
+        let original = try #require(session.file)
+        let gate = WorkspaceGate(); service.downloadGate = gate
+        session.reload(); await gate.entered()
+        session.beginOutput(.save)
+        #expect(session.output == nil)
+        #expect(session.file === original)
+        gate.release()
+        await waitWhile { session.isLoading }
+        session.beginOutput(.share)
+        let output = try #require(session.output)
+        session.reload()
+        #expect(!session.isLoading && session.file === output.file)
+        session.endOutput(id: output.id)
+        presentation.closeArtifact(id: session.id)
+    }
+
+    @Test func failedReloadKeepsTheCapturedFileAvailableForExport() async throws {
+        let (store, service, configuration) = try await fixture()
+        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
+        let presentation = WorkspacePresentation()
+        let session = try openFile(presentation: presentation, store: store, service: service)
+        try await loaded(session)
+        let captured = try #require(session.file)
+        service.onEvent?(.disconnected("Offline"))
+        session.reload()
+        await waitWhile { session.errorMessage == nil || session.isLoading }
+        #expect(session.errorMessage != nil)
+        #expect(session.file === captured)
+        #expect(session.file?.data == Data("artifact".utf8))
+        session.beginOutput(.save)
+        let output = try #require(session.output)
+        #expect(output.file === captured)
+        session.endOutput(id: output.id)
+        session.beginOutput(.share)
+        #expect(session.output?.file === captured)
+        if let share = session.output { session.endOutput(id: share.id) }
+        presentation.closeArtifact(id: session.id)
+    }
+
     @Test func capturedUncachedDestinationCannotStartOrReplayAfterRecovery() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }

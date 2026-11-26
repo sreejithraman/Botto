@@ -34,3 +34,9 @@ Freshness describes presentation; authorization follows
 recovery follows [uncertain mutation handling](0005-uncertain-mutations.md).
 The [activity contract](../core-integration.md#cached-activity-presentation)
 defines the activity-specific states and labels.
+
+## Update, 26 November 2026
+
+The Artifacts and Search screens are retired, so no screen reads the maintained
+list described above. The Spaces drawer searches Space titles and workspace files.
+Whole-message search does not exist on T3; it would need to be rebuilt if wanted.

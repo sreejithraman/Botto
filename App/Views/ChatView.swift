@@ -120,10 +120,6 @@ struct ChatView: View {
                            messageDisplayRevision: messageDisplayRevision, isExposed: transcriptVisible,
                            onOpenArtifact: { presentation.openArtifact($0, store: store) },
                            bottomContentInset: composerHeight,
-                           searchFocus: presentation.searchFocus.flatMap {
-                               $0.owner == screen?.owner && $0.matches(workspace: workspace) ? $0 : nil
-                           },
-                           reportSearchFocus: { presentation.reportSearchFocus($0, result: $1) },
                            actionRevision: toolbarRevision, admitsAction: {
                                presentation.revision == toolbarRevision && transcriptVisible && canPresentToolbar()
                            })
@@ -169,9 +165,6 @@ struct ChatView: View {
                 }
                 if let error = screen?.error {
                     Text(error).font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 16)
-                }
-                if let error = presentation.searchError {
-                    InlineNotice(message: error) { presentation.searchError = nil }.padding(.horizontal, 16)
                 }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
@@ -328,8 +321,6 @@ struct ChatTranscript: View {
     let isExposed: Bool
     let onOpenArtifact: (AppStore.ArtifactDestination) -> Void
     var bottomContentInset: CGFloat = 0
-    var searchFocus: SearchMessageFocus? = nil
-    var reportSearchFocus: @MainActor (UUID, SearchFocusResult) -> Void = { _, _ in }
     var actionRevision: UUID? = nil
     var admitsAction: @MainActor () -> Bool = { true }
     @Environment(\.scenePhase) private var scenePhase
@@ -378,8 +369,7 @@ struct ChatTranscript: View {
             readerLifetime: screen?.selectedViewLifetime),
             snapshot: chat, rows: nativeRows, active: isExposed, currentTaskSnapshot: taskSnapshot(),
             currentReaderSnapshot: readerSnapshot(),
-            admitsAction: admitsAction, bottomContentInset: bottomContentInset,
-            searchFocus: searchFocus, reportSearchFocus: reportSearchFocus)
+            admitsAction: admitsAction, bottomContentInset: bottomContentInset)
     }
 
     /// Read cached state only. Coverage by this transcript's own reader does not
@@ -766,7 +756,6 @@ extension EnvironmentValues {
 /// Lazy row discovery must stay cheap. Resolving a rich-reply context validates
 /// canonical blocks, so defer that work until SwiftUI renders this message.
 private struct TranscriptMessage: View {
-    @Environment(\.nativeSearchMatch) private var searchMatch
     let store: AppStore
     let botID: String
     let message: ChatMessage
@@ -781,7 +770,6 @@ private struct TranscriptMessage: View {
     var body: some View {
         let senderProfile = message.botSender.flatMap { ChatSenderAvatar.profile(for: $0, among: store.bots) }
         let rendered = TranscriptMessageBody(message: message, isStreaming: isStreaming,
-                              searchMatch: searchMatch,
                               filePreviewsAreSettled: filePreviewsAreSettled,
                               actionOwner: actionOwner, actionGeneration: actionGeneration,
                               actionScope: actionScope, actionRevision: actionRevision,
@@ -803,7 +791,6 @@ private struct TranscriptMessage: View {
 private struct TranscriptMessageBody: View, Equatable {
     let message: ChatMessage
     let isStreaming: Bool
-    let searchMatch: NativeSearchMatch?
     let filePreviewsAreSettled: Bool
     let actionOwner: PresentationOwner?
     let actionGeneration: UUID
@@ -816,7 +803,6 @@ private struct TranscriptMessageBody: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.isStreaming == rhs.isStreaming,
-              lhs.searchMatch == rhs.searchMatch,
               lhs.filePreviewsAreSettled == rhs.filePreviewsAreSettled,
               lhs.actionOwner == rhs.actionOwner, lhs.actionGeneration == rhs.actionGeneration,
               lhs.actionScope == rhs.actionScope, lhs.actionRevision == rhs.actionRevision,

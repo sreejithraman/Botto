@@ -1089,52 +1089,6 @@ import BottoCore
         await library.refresh(evidence: .cached, bots: cachedBots, force: force)
     }
 
-    @discardableResult func openLibraryChat(_ chat: LibraryChat,
-        accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true }) async -> Bool {
-        guard !Task.isCancelled, library.isCurrent(chat), bot(withID: chat.botID) != nil else { return false }
-        let workspace = chats, sourceLibrary = library
-        let connection = generation, recovery = attachmentRecoveryGeneration
-        // The Library selection stays pending until commit. Any newer write supersedes it,
-        // including one that leaves the selected bytes unchanged or writes nil.
-        let selection = selectionRevision
-        guard let intent = workspace.beginLibraryOpening(chat.identity), workspace === chats,
-              generation == connection, attachmentRecoveryGeneration == recovery else { return false }
-        let authority = BotNavigationAuthority(workspace: workspace, connection: connection, recovery: recovery, claim: intent.claim)
-        let ownsLibrary: @MainActor () -> Bool = { [self] in
-            !Task.isCancelled && sourceLibrary === library && !sourceLibrary.isRetired && sourceLibrary.isCurrent(chat)
-        }
-        let ownsSelection: @MainActor () -> Bool = { [self] in selectionRevision == selection && ownsLibrary() }
-        let opened = await workspace.openLibraryChat(intent, isCurrent: ownsSelection, accepts: accepts) { [self] identity in
-            identity.profile == chat.identity.profile && ownsSelection() &&
-                commitAttachedSelection(chat.identity.profile, authority: authority, while: ownsLibrary)
-        }
-        return opened != nil
-    }
-
-    func openSearchMessage(_ target: SearchMessageTarget) async -> SearchMessageOpeningResult {
-        let workspace = chats, sourceLibrary = library
-        guard sourceLibrary.isCurrent(target.chat),
-              let current = sourceLibrary.chats.first(where: { $0.id == target.chat.id }),
-              TranscriptMessageIndex(.init(id: current.identity.root.text, storedID: current.identity.stored.text, profileID: current.botID,
-                  messages: current.messages)).matches(target.message) else { return .unavailable }
-        var rejected = false
-        var attached: ChatMessage?
-        let opened = await openLibraryChat(target.chat) { identity, snapshot in
-            guard sourceLibrary.isCurrent(target.chat) else { rejected = true; return false }
-            attached = target.resolve(identity: identity, snapshot: snapshot)
-            rejected = attached == nil
-            return attached != nil
-        }
-        guard !Task.isCancelled, workspace === chats, sourceLibrary === library else { return .superseded }
-        guard opened else { return rejected ? .unavailable : .couldNotOpen }
-        guard let attached, let selection = workspace.selection(profile: target.chat.identity.profile),
-              workspace.isCurrent(selection.owner), let identity = selection.identity,
-              SearchMessageTarget.sameSource(identity, target.chat.identity),
-              TranscriptMessageIndex(selection.snapshot).matches(attached) else { return .unavailable }
-        return .opened(.init(workspace: ObjectIdentifier(workspace), owner: selection.owner,
-                             identity: identity, message: attached, query: target.query))
-    }
-
     private func refreshBots() async -> Bool {
         guard isConnected, !Task.isCancelled else { return false }
         let waiterID = UUID(), owner = generation

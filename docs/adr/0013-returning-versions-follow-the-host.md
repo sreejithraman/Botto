@@ -38,3 +38,8 @@ blocked.
 This decides what [retired-tip evidence](0012-retired-tip-evidence.md) deferred.
 If real Hermes output shows duplicate row IDs, withholding those rows durably is
 the next step. It would hide a row, not a chat.
+
+## Update, 26 November 2026
+
+The Library and Search screens are retired, so these rows no longer appear as
+Search snippets or artifact cards.
