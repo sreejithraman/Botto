@@ -94,9 +94,6 @@ import Testing
     let hiddenAttachment = ChatAttachment(name: "hidden.txt", path: "/host/hidden.txt")
     let messages: [ChatMessage] = [
         ordinary,
-        .init(id: "hidden", role: .assistant, text: "MEDIA:/host/hidden.txt", displayKind: "hidden"),
-        .init(id: "silent", role: .assistant, text: "MEDIA:/host/silent.txt", isSilent: true),
-        .init(id: "machinery", role: .user, text: "MEDIA:/host/machinery.txt", attachments: [hiddenAttachment], displayKind: "process_complete"),
         .init(id: "tool", role: .tool, text: "Downloaded /host/cache.pdf\nExample: `MEDIA:/host/log.pdf`", toolName: "terminal"),
         .init(id: "system", role: .system, text: "MEDIA:/host/system.pdf", attachments: [hiddenAttachment]),
         .init(id: "user-example", role: .user, text: "Please emit MEDIA:/host/user-example.pdf")
@@ -123,9 +120,10 @@ import Testing
 }
 
 @Test func artifactDiscoveryIncludesUserFileCardsAsReferences() {
+    let notes = ChatAttachment(name: "Q3 notes.txt", path: "t3-attachment:notes", mimeType: "text/plain")
     let messages: [ChatMessage] = [
-        .init(id: "upload", role: .user, text: "Read my notes.\n\n@file:`/host/Q3 notes.txt`"),
-        .init(id: "example", role: .user, text: "An example:\n\n```text\n@file:/host/example.txt\n```"),
+        .init(id: "upload", role: .user, text: "Read my notes.", attachments: [notes]),
+        .init(id: "typed", role: .user, text: "Read my notes.\n\n@file:`/host/typed.txt`"),
         .init(id: "assistant", role: .assistant, text: "MEDIA:/host/result.pdf")
     ]
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
@@ -178,9 +176,7 @@ import Testing
         .init(id: "output", role: .tool, text: #"{"generated_file":"/host/generated.png","results":[{"output_file":"./report.pdf"}]}"#, toolName: "design_asset"),
         .init(id: "inputs", role: .tool, text: #"{"input":{"generated_file":"/host/input.png"},"source":{"output_file":"/host/source.pdf"},"args":{"output_path":"/host/requested.pdf"},"arguments":{"saved_to":"/host/argument.pdf"},"logs":{"output_file":"/host/log.pdf"},"stdout":{"output_path":"/host/stdout.pdf"},"example":{"output_path":"/host/example.pdf"},"path":"/host/generic.pdf"}"#, toolName: "design_asset"),
         .init(id: "producer-inputs", role: .tool, text: #"{"input":{"output_path":"/host/producer-input.pdf"},"args":{"generated_file":"/host/producer-args.pdf"}}"#, toolName: "image_generate"),
-        .init(id: "failed", role: .tool, text: #"{"success":false,"output_file":"/host/failed.pdf"}"#, toolName: "design_asset"),
-        .init(id: "hidden", role: .tool, text: #"{"output_file":"/host/hidden.pdf"}"#, toolName: "design_asset", displayKind: "hidden"),
-        .init(id: "silent", role: .tool, text: #"{"output_file":"/host/silent.pdf"}"#, toolName: "design_asset", isSilent: true)
+        .init(id: "failed", role: .tool, text: #"{"success":false,"output_file":"/host/failed.pdf"}"#, toolName: "design_asset")
     ]
     let artifacts = ArtifactDiscovery.artifacts(in: messages)
     #expect(Set(artifacts.compactMap(\.attachment).map(\.path)) == ["/host/generated.png", "./report.pdf"])

@@ -2,21 +2,13 @@ import Foundation
 import Testing
 import BottoCore
 
-@Test(arguments: ["[SILENT]", " silent ", "NO_REPLY", "**[SILENT]**", "静默。"])
-func inboxPreviewOmitsSilenceMarkers(source: String) {
-    #expect(ConversationPreview(message: .init(id: "quiet", role: .assistant, text: source)) == nil)
-}
-
 @Test(arguments: [
     "[IMPORTANT: Background process proc_56573e06a39f completed normally (exit code 0).\nCommand: example\nOutput: done]",
     "[IMPORTANT: Background process proc_56573e06a39f completed norm...",
     "\n[IMPORTANT: Background process proc_example failed (exit code 1).]"
 ])
-func inboxPreviewSkipsTypedProcessWrappersWithoutReclassifyingUserPastes(source: String) {
-    #expect(ConversationPreview(message: .init(id: "process", role: .user, text: source, displayKind: "process_complete")) == nil)
+func inboxPreviewShowsPastedProcessWrappersAsWritten(source: String) {
     let message = ChatMessage(id: "human-paste", role: .user, text: source)
-    #expect(message.isOutgoingUserMessage && message.requiresAttention)
-    #expect(message.notificationPresentation == nil && message.text == source)
     #expect(ConversationPreview(message: message)?.text.hasPrefix("[IMPORTANT: Background process ") == true)
 }
 

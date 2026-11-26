@@ -446,7 +446,7 @@ private struct NativeTranscriptHostedRow: View {
         if case let .message(message, _, _) = row.value {
             return row.id == .message(Data(message.id.utf8)) && index.matches(message)
         }
-        if case let .message(id) = row.id { return index.containsVisible(id) }
+        if case let .message(id) = row.id { return index.contains(id) }
         return true
     }
     private func rawMessageIsCurrent(_ row: NativeTranscriptRow, in snapshot: Conversation?) -> Bool {
@@ -460,7 +460,7 @@ private struct NativeTranscriptHostedRow: View {
         }
         if case let .message(id) = row.id {
             let matches = snapshot?.messages.lazy.filter { Data($0.id.utf8) == id }
-            return matches?.count == 1 && matches?.first?.isVisible == true
+            return matches?.count == 1
         }
         return true
     }
@@ -671,9 +671,7 @@ private struct NativeTranscriptHostedRow: View {
               let cell = collection.cellForItem(at: original.indexPath) as? NativeTranscriptCell,
               let baseline = cell.committedFittingSize,
               abs(baseline.width - original.size.width) < 1, abs(baseline.height - original.size.height) < 1,
-              snapshot?.messages.last?.requiresAttention == true else { return }
-        if let id = source.itemIdentifier(for: original.indexPath), case let .message(message, _, _) = lookup[id]?.value,
-           !message.requiresAttention { return }
+              snapshot?.messages.isEmpty == false else { return }
         _ = scrollPolicy.snapshotChanged()
         updateLatest()
     }

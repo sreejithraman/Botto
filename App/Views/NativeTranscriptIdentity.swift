@@ -48,7 +48,7 @@ struct NativeTranscriptMessagePlan {
         let repeated = repeatedIdentities(messages.map { Data($0.id.utf8) }).union(unavailableMessageIDs)
         let repeatedWork = repeatedIdentities(messages.filter { $0.role == .tool }.map { WorkDetailsDocument.identity(of: $0) })
         entries = messages.enumerated().compactMap { index, message in
-            guard message.isVisible, !pending.contains(Data(message.id.utf8)) else { return nil }
+            guard !pending.contains(Data(message.id.utf8)) else { return nil }
             let exact = Data(message.id.utf8), ambiguous = repeated.contains(exact) || (message.role == .tool && repeatedWork.contains(WorkDetailsDocument.identity(of: message)))
             return Entry(id: ambiguous ? .ambiguousMessage(index) : .message(exact), message: message, isAmbiguous: ambiguous, sourceIndex: index)
         }
@@ -100,9 +100,6 @@ struct NativeTranscriptIdentityNotice: View {
 struct NativeTranscriptAmbiguousMessage: View {
     let message: ChatMessage
     var body: some View {
-        if message.notificationPresentation != nil {
-            MessageView(message: message)
-        } else {
         VStack(alignment: .leading, spacing: 8) {
             Text(verbatim: message.toolName ?? message.role.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
             Text(verbatim: message.text).textSelection(.enabled)
@@ -111,7 +108,6 @@ struct NativeTranscriptAmbiguousMessage: View {
                     .font(.subheadline)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 }
 struct NativeTranscriptAmbiguousRequest: View {

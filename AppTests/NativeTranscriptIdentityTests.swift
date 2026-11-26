@@ -158,35 +158,6 @@ import WebKit
         }
     }
 
-    @Test func groupedBackgroundUpdatesKeepSourceLabels() async throws {
-        let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        service.snapshots[session.root]?.queuedMessages = [
-            .init(id: "process", text: "Process payload", submissionID: "[\"completion\",\"process-id\",1]"),
-            .init(id: "agents", text: "Agent payload", submissionID: "[\"async_delegation\",\"batch-id\",\"\"]")
-        ]
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-grouped-updates.invalid")!)
-        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
-        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
-        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
-        let previous = scene.windows.first { $0.isKeyWindow }
-        let host = UIHostingController(rootView: QueuedMessagesView(workspace: store.chats,
-            screen: store.chats.screen(profile: service.profile), inputAvailable: true, canAttemptSave: true,
-            requireConnection: { true }).environment(\.scenePhase, .active))
-        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
-        defer {
-            host.dismiss(animated: false); window.isHidden = true; window.rootViewController = nil; previous?.makeKey()
-            store.forgetConnection(); LocalHistory.remove(for: configuration.id)
-        }
-        try await wait("queued background group opens its shared details sheet") { element("2 queued background events", in: host.view) != nil }
-        #expect(try #require(element("2 queued background events", in: host.view)).accessibilityActivate())
-        try await wait("grouped updates preserve numbered source headings and payloads") {
-            guard let sheet = host.presentedViewController else { return false }
-            return element("Background process finished", in: sheet.view) != nil && element("Background agents finished", in: sheet.view) != nil &&
-                element("1", in: sheet.view) != nil && element("2", in: sheet.view) != nil &&
-                element("Process payload", in: sheet.view) != nil && element("Agent payload", in: sheet.view) != nil
-        }
-    }
-
     @Test func duplicateDisclosureIdentityCannotManufactureAnActionRow() {
         let first = ChatMessage(id: "stored:row:1", role: .tool, text: "One", workDetailsID: "shared")
         let second = ChatMessage(id: "stored:row:2", role: .tool, text: "Two", workDetailsID: "shared")
@@ -247,8 +218,9 @@ import WebKit
         #expect(plan.displayRows.map(\.id) == [.workDetails(Data("first".utf8)), .message(Data("human".utf8)), .workDetails(Data("third".utf8))])
         guard case let .workDetails(grouped)? = plan.displayRows.first else { Issue.record("Expected grouped tool results"); return }
         #expect(grouped.map(\.text) == ["One", "Two"])
-        var hiddenBoundary = human; hiddenBoundary.isSilent = true
-        let hidden = NativeTranscriptMessagePlan([first, hiddenBoundary, second])
+        let pending = ChatMessage(id: "submission:queued", role: .user, text: "Queued follow-up")
+        let hidden = NativeTranscriptMessagePlan([first, pending, second],
+            queuedMessages: [QueuedMessage(id: "queued", text: pending.text, submissionID: "queued")])
         #expect(hidden.displayRows.map(\.id) == [.workDetails(Data("first".utf8)), .workDetails(Data("second".utf8))])
         let duplicated = NativeTranscriptMessagePlan([first, first, second])
         #expect(duplicated.hasAmbiguity)
@@ -257,6 +229,18 @@ import WebKit
         var original = changed; original.text = "é"
         #expect(NativeTranscriptRowValue.workDetails([first, original]) != .workDetails([first, changed]))
     }
+    /// A reply is shown as written, even when its whole text looks like an old silence marker.
+    @Test(arguments: ["Silent.", "NO REPLY", "[SILENT]"])
+    func replyThatLooksLikeASilenceMarkerIsShown(text: String) throws {
+        let reply = ChatMessage(id: "reply", role: .assistant, text: text)
+        #expect(NativeTranscriptMessagePlan([reply]).entries.map(\.message.id) == [reply.id])
+        let stored = try ExactID("stored"), identity = SessionIdentity(profile: try ExactID("bot"), root: stored, stored: stored, aliases: [])
+        var book = ConversationBook()
+        let chat = book.merge(SessionSummary(identity: identity, title: "Main", isCanonical: true, persistence: .durable, messageCount: 1))
+        book.cache(Conversation(id: "runtime", storedID: "stored", profileID: "bot", messages: [reply]), for: chat)
+        #expect(book.record(chat)?.replyPreview == text)
+        #expect(book.record(chat)?.inboxMessage?.text == text)
+    }
     @Test func queuedSubmissionRowsStayHiddenUntilAdmissionWithoutLosingRawDuplicateQuarantine() {
         let pending = ChatMessage(id: "submission:queued", role: .user, text: "Queued follow-up")
         let reply = ChatMessage(id: "reply", role: .assistant, text: "Current reply")
@@ -264,9 +248,9 @@ import WebKit
         let plan = NativeTranscriptMessagePlan([reply, pending], queuedMessages: [queue])
         #expect(plan.entries.map(\.message.id) == [reply.id])
         #expect(NativeTranscriptMessagePlan([reply, pending]).entries.map(\.message.id) == [reply.id, pending.id])
-        let silentDuplicate = ChatMessage(id: reply.id, role: .assistant, text: "Hidden duplicate", isSilent: true)
-        let ambiguous = NativeTranscriptMessagePlan([reply, silentDuplicate, pending], queuedMessages: [queue])
-        #expect(ambiguous.entries.count == 1 && ambiguous.entries[0].isAmbiguous)
+        let duplicate = ChatMessage(id: reply.id, role: .assistant, text: "Duplicate")
+        let ambiguous = NativeTranscriptMessagePlan([reply, duplicate, pending], queuedMessages: [queue])
+        #expect(ambiguous.entries.count == 2 && ambiguous.entries.allSatisfy(\.isAmbiguous))
         let exactQueue = QueuedMessage(id: "unicode", text: "Exact", submissionID: "é")
         let byteDistinct = ChatMessage(id: "submission:e\u{301}", role: .user, text: "Keep byte-distinct content")
         #expect(NativeTranscriptMessagePlan([byteDistinct], queuedMessages: [exactQueue]).entries.count == 1)
@@ -352,55 +336,7 @@ import WebKit
         }
         #expect(service.responses.isEmpty)
     }
-    @Test func hiddenDuplicateRevokesAnAlreadyMountedVisibleFileWithoutShowingHiddenPayload() async throws {
-        let service = try WorkspaceTestService(), session = service.summaries[0].identity
-        let file = ChatMessage(id: "hidden-conflict", role: .assistant, text: "::preview{file=\"report.html\"}")
-        service.snapshots[session.root] = .init(id: session.root.text, storedID: session.stored.text,
-            profileID: session.profile.text, messages: [file])
-        service.downloadData = Data("<!doctype html><html><body>Current unique document</body></html>".utf8)
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://native-hidden-identity.invalid")!)
-        let store = AppStore(service: service, persistence: .init(load: { nil }, save: { _ in }, remove: {}))
-        try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
-        let owner = try #require(store.chats.screen(profile: service.profile)?.owner)
-        await store.chats.refreshDirectory(owner); store.chats.displayed(owner)
-        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
-        let previous = scene.windows.first { $0.isKeyWindow }
-        let host = UIHostingController(rootView: Host(store: store)), window = UIWindow(windowScene: scene)
-        window.rootViewController = host; window.makeKeyAndVisible()
-        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey(); store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        let originalDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
-            phase: "initial hidden duplicate", diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
-        let controller = try #require(collectionController(host)), downloads = service.downloads
-        let heldCandidate = controller.collection.visibleCells.compactMap { ($0 as? NativeTranscriptCell)?.exposure }.first
-        let held = try #require(heldCandidate)
-        var hidden = ChatMessage(id: file.id, role: .assistant, text: "HIDDEN-CONFLICT-PAYLOAD")
-        hidden.isSilent = true
-        service.snapshots[session.root]?.messages = [file, hidden]
-        service.onEvent?(.conversation(try service.publication(session)))
-        #expect(!store.richReplyContext(for: service.profile.text, messageID: file.id).permits(try #require(ReplyContent(message: file).blocks.first)))
-        try await wait("hidden duplicate removes document and contributes no display row") {
-            controller.collection.numberOfItems(inSection: 0) == 3 && webViews(host.view).isEmpty && !held.isCurrent
-        }
-        #expect(service.downloads == downloads)
-        let plan = NativeTranscriptMessagePlan(try #require(store.chats.screen(profile: service.profile)?.snapshot).messages)
-        #expect(plan.entries.count == 1 && plan.entries[0].isAmbiguous)
-        service.snapshots[session.root]?.messages = [hidden, hidden]
-        service.onEvent?(.conversation(try service.publication(session)))
-        try await wait("hidden-only duplication leaves only the empty state and terminal") {
-            controller.collection.numberOfItems(inSection: 0) == 2 && webViews(host.view).isEmpty
-        }
-        #expect(NativeTranscriptMessagePlan(try #require(store.chats.screen(profile: service.profile)?.snapshot).messages).entries.isEmpty)
-        #expect(!held.canPresent && service.downloads == downloads)
-        service.snapshots[session.root]?.messages = [file]
-        service.onEvent?(.conversation(try service.publication(session)))
-        let restoredDocument = try await MountedReplyFileDocument.waitForText("Current unique document", in: host.view,
-            excluding: originalDocument, phase: "restored hidden duplicate",
-            diagnostics: { "downloads=\(service.downloads) ownerCurrent=\(store.chats.isCurrent(owner)) opening=\(store.chats.screen(profile: service.profile)?.isOpening ?? true) items=\(self.collectionController(host)?.collection.numberOfItems(inSection: 0) ?? -1)" })
-        #expect(restoredDocument !== originalDocument && originalDocument.superview == nil)
-        #expect(service.downloads == downloads)
-        #expect(!held.canPresent)
-    }
-    @Test(arguments: ["hiddenDuplicate", "differentContent", "auxiliary"])
+    @Test(arguments: ["duplicate", "differentContent", "auxiliary"])
     func suppliedNativeRowsCannotManufactureMessageAuthorityFromDisplayLookup(shape: String) async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let message = ChatMessage(id: "raw-authority", role: .assistant, text: "::preview{file=\"report.html\"}")
@@ -411,15 +347,14 @@ import WebKit
         try #require(await store.connect(configuration)); await store.open(try #require(store.bots.first))
         let workspace = store.chats, owner = try #require(workspace.screen(profile: service.profile)?.owner)
         await workspace.refreshDirectory(owner); workspace.displayed(owner)
-        if shape == "hiddenDuplicate" {
-            var hidden = message; hidden.isSilent = true
-            service.snapshots[identity.root]?.messages.append(hidden)
+        if shape == "duplicate" {
+            service.snapshots[identity.root]?.messages.append(message)
             service.onEvent?(.conversation(try service.publication(identity)))
         }
         let screen = try #require(workspace.screen(profile: service.profile))
         let rich = store.richReplyContext(for: service.profile.text, messageID: message.id)
         let block = try #require(ReplyContent(message: message).blocks.first)
-        #expect(rich.permits(block) == (shape != "hiddenDuplicate"))
+        #expect(rich.permits(block) == (shape != "duplicate"))
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         let previous = scene.windows.first { $0.isKeyWindow }, controller = NativeTranscriptController(), window = UIWindow(windowScene: scene)
         window.rootViewController = controller; window.makeKeyAndVisible()

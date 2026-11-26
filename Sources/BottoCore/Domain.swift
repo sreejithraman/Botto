@@ -108,27 +108,17 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var transientID: UUID?
     /// Read-only disclosure continuity; never a durable row or artifact identity.
     public var workDetailsID: String? = nil
+    /// Keys outside this list, including those older builds saved, are ignored when decoding.
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, timestamp, toolName, attachments, transientID, displayKind, displayText, isSilent, canonicalText
+        case id, role, text, timestamp, toolName, attachments, transientID
     }
     public nonisolated func hasStableIdentity(storedID: String) -> Bool {
         transientID == nil && Self.isStableID(Data(id.utf8), storedID: storedID)
     }
-    /// Host-authored provenance. Missing metadata never authorizes automation classification.
-    public var displayKind: String?
-    public var displayText: String?
-    /// Unprojected response text retained alongside a different host display projection. Never rendered.
-    /// Nil means no separate canonical copy is stored, including legacy display-only saved rows.
-    public var canonicalText: String?
-    /// Presentation only; the original text and row remain in the cached transcript.
-    /// Exact control matching repairs stale partial-marker projections in older caches.
-    public var isSilent: Bool?
-    public init(id: String, role: Role, text: String, timestamp: Date? = nil, toolName: String? = nil, attachments: [ChatAttachment] = [], displayKind: String? = nil, isSilent: Bool? = nil, displayText: String? = nil, transientID: UUID? = nil, workDetailsID: String? = nil, canonicalText: String? = nil) {
+    public init(id: String, role: Role, text: String, timestamp: Date? = nil, toolName: String? = nil, attachments: [ChatAttachment] = [], transientID: UUID? = nil, workDetailsID: String? = nil) {
         self.id = id; self.role = role; self.text = text; self.timestamp = timestamp
         self.toolName = toolName; self.attachments = attachments
         self.transientID = transientID; self.workDetailsID = workDetailsID
-        self.displayKind = displayKind; self.isSilent = isSilent; self.displayText = displayText
-        self.canonicalText = canonicalText
     }
 }
 

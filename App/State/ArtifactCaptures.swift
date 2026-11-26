@@ -64,14 +64,10 @@ private final class OriginalReadCancellation: @unchecked Sendable {
     }
     private func accepts(_ owner: UUID) -> Bool { !isRetired && online && generation == owner && !Task.isCancelled }
 
-    /// Hashes the retained unprojected row representation; it cannot reconstruct upstream content shapes.
-    /// Without separate canonical text, hash the encoded row.
+    /// Hashes the encoded row, so a changed row cannot reuse an earlier capture.
     private nonisolated static func sourceRevision(_ message: ChatMessage) -> Data {
-        var producer = message
-        producer.text = message.canonicalText ?? message.text
-        producer.canonicalText = nil
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return Data(SHA256.hash(data: (try? encoder.encode([producer])) ?? Data()))
+        return Data(SHA256.hash(data: (try? encoder.encode([message])) ?? Data()))
     }
 
     static func originalKey(identity: SessionIdentity, attachment: ChatAttachment, messages: [ChatMessage],

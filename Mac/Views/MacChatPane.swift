@@ -150,13 +150,12 @@ struct MacChatPane: View {
     }
 
     var body: some View {
-        let messages = opened.snapshot.messages.filter { $0.isSilent != true }
         VStack(spacing: 0) {
             header
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(messages) { message in
+                        ForEach(opened.snapshot.messages) { message in
                             MacTranscriptMessage(message: message) { attachment in
                                 onPreview(.attachment(attachment, store: store))
                             }
@@ -376,8 +375,8 @@ struct MacTranscriptMessage: View {
                 Spacer(minLength: 90)
                 VStack(alignment: .trailing, spacing: 6) {
                     attachments(alignment: .trailing)
-                    if !text.isEmpty {
-                        MacMarkdownView(text: text, style: .outgoing)
+                    if !message.text.isEmpty {
+                        MacMarkdownView(text: message.text, style: .outgoing)
                             .padding(.horizontal, 15)
                             .padding(.vertical, 10)
                             .background(MacTheme.outgoing, in: UnevenRoundedRectangle(
@@ -388,15 +387,13 @@ struct MacTranscriptMessage: View {
             .help(timestamp)
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
-                MacMarkdownView(text: text, style: .editorial)
+                MacMarkdownView(text: message.text, style: .editorial)
                 attachments(alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .help(timestamp)
         }
     }
-
-    private var text: String { message.displayText ?? message.text }
 
     private var timestamp: String {
         message.timestamp?.formatted(date: .abbreviated, time: .shortened) ?? ""
@@ -640,7 +637,7 @@ struct MacToolCard: View {
             .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
                 ScrollView([.vertical, .horizontal]) {
-                    Text(detail)
+                    Text(message.text)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .fixedSize()
@@ -658,14 +655,12 @@ struct MacToolCard: View {
         .clipShape(.rect(cornerRadius: 12))
     }
 
-    private var detail: String { message.displayText ?? message.text }
-
     private var title: String {
         message.toolName ?? (message.role == .tool ? "Tool" : "System note")
     }
 
     private var summary: String {
-        detail.split(whereSeparator: \.isNewline).first.map { String($0.prefix(120)) } ?? ""
+        message.text.split(whereSeparator: \.isNewline).first.map { String($0.prefix(120)) } ?? ""
     }
 
     private var symbol: String {

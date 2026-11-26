@@ -289,8 +289,8 @@ import BottoCore
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         service.snapshots[identity.root]?.messages = [
             .init(id: "answer", role: .assistant, text: "The service is healthy.", timestamp: .init(timeIntervalSince1970: 100)),
-            .init(id: "process", role: .user, text: "Raw process details", displayKind: "process_complete"),
-            .init(id: "silent", role: .assistant, text: "[SILENT]")]
+            .init(id: "check", role: .tool, text: "uptime\nup 3 days", toolName: "Command"),
+            .init(id: "empty", role: .assistant, text: "")]
         let workspace = fixture(service)
         let before = workspace.persisted()
         await workspace.refreshInboxHistory(profiles: [service.profile])
@@ -449,7 +449,7 @@ import BottoCore
         let id = book.merge(service.summaries[0])
         book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text, messages: [
             .init(id: "reply", role: .assistant, text: "A useful cached answer."),
-            .init(id: "silent", role: .assistant, text: "[SILENT]")]), for: id)
+            .init(id: "check", role: .tool, text: "uptime\nup 3 days", toolName: "Command")]), for: id)
         var raw = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(book)) as? [String: Any])
         var records = try #require(raw["records"] as? [[String: Any]])
         for index in records.indices {

@@ -17,38 +17,6 @@ struct AppBotAvatar: View {
     }
 }
 
-/// Sender stamps identify presentation only; historical rows never borrow live activity.
-struct ChatSenderAvatar: View {
-    let sender: ChatMessage.MessageSender
-    let profile: BotProfile?
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 32
-
-    var body: some View {
-        Group {
-            if let profile {
-                BotAvatar(profile: profile, size: size, motion: .still)
-            } else {
-                Text(String(sender.name.prefix(1)).uppercased())
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: size, height: size)
-                    .background(BottoTheme.surface, in: Circle())
-            }
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
-    }
-
-    /// Remote and duplicate labels cannot select a local bot's saved appearance.
-    nonisolated static func profile(for sender: ChatMessage.MessageSender, among profiles: [BotProfile]) -> BotProfile? {
-        guard !sender.handle.contains("@"), !sender.handle.contains("/"), !sender.handle.contains(".") else { return nil }
-        let exact = profiles.filter { $0.id.utf8.elementsEqual(sender.handle.utf8) }
-        if !exact.isEmpty { return exact.count == 1 ? exact[0] : nil }
-        let named = profiles.filter { $0.name.utf8.elementsEqual(sender.name.utf8) }
-        return named.count == 1 ? named[0] : nil
-    }
-}
-
 extension AppStore {
     func avatarPresentation(for bot: BotProfile, scope: BotAvatarScope = .profile) -> BotAvatarPresentation {
         if link == .offline { return .offline }
