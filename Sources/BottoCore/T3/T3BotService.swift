@@ -30,7 +30,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
-@MainActor public final class T3BotService: T3BotBrainControlling, T3WorkflowRoutineControlling {
+@MainActor public final class T3BotService: T3BotBrainControlling {
     public typealias WebSocketFactory = @Sendable (URLRequest) throws -> any T3WebSocketTransport
     public var onEvent: ((BotServiceEvent) -> Void)?
     public var onPushActivity: ((T3PushActivity) -> Void)?
@@ -414,10 +414,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     public func listWorkflowRoutines() async throws -> [T3WorkflowRoutine] {
         guard workflowRoutinesAvailable else { return [] }
-        let session = try requireSession()
-        return try await workflowRoutineFiles(in: session)
-            .compactMap { T3WorkflowRoutine(file: $0, scope: pushScope(session)) }
-            .sorted { $0.id.uuidString < $1.id.uuidString }
+        return try await workflowRoutines(in: requireSession())
+            .sorted { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
     }
 
     public func turnOnWorkflowRoutine(_ proposal: T3WorkflowRoutineProposal) async throws -> T3WorkflowRoutine {
@@ -500,9 +498,11 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         if let problem = reply["problems"].list?.first?["message"].nonempty {
             throw T3WorkflowRoutineError.definition(problem)
         }
+        guard let changed = reply["changed"].flag else { throw T3ServiceError.invalidResponse }
+        guard changed else { throw T3WorkflowRoutineError.changed }
     }
 
-    public func workflowRoutineActivity(threadID: String) async throws -> [T3WorkflowRoutineActivity] {
+    func workflowRoutineActivity(threadID: String) async throws -> [T3WorkflowRoutineActivity] {
         guard workflowRoutinesAvailable else { return [] }
         let session = try requireSession()
         guard session.shells[threadID] != nil else { return [] }
@@ -527,7 +527,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                         try self.check(session)
                         guard session.shells[threadID] != nil else { break }
                         let latest = snapshot["definition"]["revision"].integer
-                        if routines == nil || latest != revision {
+                        if routines == nil || latest == nil || latest != revision {
                             routines = try await self.workflowRoutines(threadID: threadID, in: session)
                             revision = latest
                         }
@@ -540,9 +540,13 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         }
     }
 
-    public func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws {
-        let session = try requireSession()
+    public func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String,
+                                              access: ConversationAccess) async throws {
+        let (session, selection) = try resolve(access)
         let proposal = question.proposal
+        guard selection.identity.stored.text.utf8.elementsEqual(proposal.threadID.utf8) else {
+            throw ConversationServiceError.wrongConversation
+        }
         guard workflowRoutinesAvailable, proposal.scope == pushScope(session),
               session.shells[proposal.threadID] != nil, question.choices.contains(choice),
               session.workflowAnswers.insert(question.runID).inserted else {
@@ -554,8 +558,9 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
               activities.contains(where: { $0.question == question }) else {
             throw T3WorkflowRoutineError.questionChanged
         }
+        _ = try resolve(access)
         _ = try await mutationReply("workflows.answer", payload: .object([
-            "runId": .string(question.runID), "name": .string(question.name), "choice": .string(choice),
+            "runId": .string(question.runID), "name": .string(T3WorkflowRoutineQuestion.name), "choice": .string(choice),
         ]), in: session)
         try check(session)
     }
@@ -569,10 +574,14 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 
     private func workflowRoutines(threadID: String, in session: Session) async throws -> [T3WorkflowRoutine] {
+        try await workflowRoutines(in: session)
+            .filter { $0.proposal.threadID.utf8.elementsEqual(threadID.utf8) }
+    }
+
+    private func workflowRoutines(in session: Session) async throws -> [T3WorkflowRoutine] {
         let scope = pushScope(session)
         return try await workflowRoutineFiles(in: session)
             .compactMap { T3WorkflowRoutine(file: $0, scope: scope) }
-            .filter { $0.proposal.threadID.utf8.elementsEqual(threadID.utf8) }
     }
 
     public func listRoutines() async throws -> [T3ScheduledRoutine] {

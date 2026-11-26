@@ -44,23 +44,23 @@ import Testing
         let watched = try await service.watchWorkflowRoutineActivity(threadID: threadID)
         var questionFromStream: T3WorkflowRoutineQuestion?
         for try await activity in watched {
-            if let question = activity.first?.question {
-                questionFromStream = question
-                break
-            }
+            questionFromStream = activity.first?.question
+            if questionFromStream != nil { break }
         }
         let question = try #require(questionFromStream)
         #expect(question.choices == ["Run", "Skip"])
         let paused = try await service.setWorkflowRoutineEnabled(installed, enabled: false)
         #expect(!paused.enabled)
         #expect(try await service.workflowRoutineActivity(threadID: threadID).first?.question == question)
-        try await service.answerWorkflowRoutineQuestion(question, choice: "Skip")
+        let identity = try T3ProjectionMapper.identity(profile: ExactID(projectID), threadID: threadID)
+        let opened = try await service.openChat(.stored(identity))
+        try await service.answerWorkflowRoutineQuestion(question, choice: "Skip", access: opened.access)
         let result = try await waitFor(seconds: 12, "Routine result") {
             try await service.workflowRoutineActivity(threadID: threadID).first?.result
         }
         #expect(result == "Skipped")
         await #expect(throws: T3WorkflowRoutineError.questionChanged) {
-            try await service.answerWorkflowRoutineQuestion(question, choice: "Run")
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Run", access: opened.access)
         }
 
         try await service.deleteWorkflowRoutine(paused)

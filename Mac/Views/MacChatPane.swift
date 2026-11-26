@@ -477,7 +477,6 @@ private struct MacRoutineActivityView: View {
             do {
                 let updates = try await store.withWorkflowRoutines { try await $0.watchWorkflowRoutineActivity(threadID: threadID) }
                 for try await update in updates {
-                    guard store.selectedChannelID == threadID else { return }
                     activities = update
                 }
             } catch {
@@ -487,11 +486,11 @@ private struct MacRoutineActivityView: View {
     }
 
     private func answer(_ question: T3WorkflowRoutineQuestion, choice: String, id: String) {
-        guard store.selectedChannelID == threadID, busy.insert(id).inserted else { return }
+        guard busy.insert(id).inserted else { return }
         error = nil
         Task {
             defer { busy.remove(id) }
-            do { try await store.withWorkflowRoutines { try await $0.answerWorkflowRoutineQuestion(question, choice: choice) } }
+            do { try await store.answerWorkflowRoutineQuestion(question, choice: choice) }
             catch where store.selectedChannelID == threadID { self.error = error.localizedDescription }
             catch { }
         }

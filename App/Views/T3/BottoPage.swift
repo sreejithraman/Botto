@@ -28,6 +28,7 @@ struct BottoPage: View {
     @State private var routinesError: String?
     @State private var workflowRoutinesError: String?
     @State private var latestRoutineRead = UUID()
+    @State private var latestWorkflowRoutineRead = UUID()
     @State private var loadError: String?
     @State private var retry = 0
     @State private var openedOutput: T3OutputFile?
@@ -278,9 +279,9 @@ struct BottoPage: View {
                              reload: { try await store.readT3ProjectFile(relativePath: "MEMORY.md") })
             }
         case .routines:
-            T3RoutinesList(store: store, routines: $routines, workflowRoutines: $workflowRoutines, loadError: routinesError,
+            T3RoutinesList(store: store, routines: $routines, workflowRoutines: workflowRoutines, loadError: routinesError,
                            workflowLoadError: workflowRoutinesError, reload: loadRoutines, reloadWorkflows: loadWorkflowRoutines,
-                           isCurrent: { isCurrent }, onOpenChat: { channel in dismiss(); onOpenChat(channel) })
+                           recordWorkflowChange: recordWorkflowChange, isCurrent: { isCurrent }, onOpenChat: { channel in dismiss(); onOpenChat(channel) })
         case .skills:
             T3SkillsList(store: store, skills: brain?.skills ?? [], isCurrent: { isCurrent })
         case .files:
@@ -345,16 +346,33 @@ struct BottoPage: View {
     }
 
     private func loadWorkflowRoutines() async {
-        guard isCurrent, store.isConnected else { return }
-        guard store.workflowRoutinesAvailable else { workflowRoutines = []; workflowRoutinesError = nil; return }
+        guard isCurrent else { return }
+        let request = UUID()
+        latestWorkflowRoutineRead = request
+        guard store.workflowRoutinesAvailable else {
+            workflowRoutines = []
+            workflowRoutinesError = nil
+            return
+        }
         do {
             let loaded = try await store.withWorkflowRoutines { try await $0.listWorkflowRoutines() }
-            guard !Task.isCancelled, isCurrent else { return }
-            workflowRoutines = loaded.sorted { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
+            guard !Task.isCancelled, isCurrent, latestWorkflowRoutineRead == request else { return }
+            workflowRoutines = loaded
             workflowRoutinesError = nil
-        } catch where !Task.isCancelled && isCurrent {
+        } catch where !Task.isCancelled && isCurrent && latestWorkflowRoutineRead == request {
             workflowRoutinesError = error.localizedDescription
         } catch { }
+    }
+
+    private func recordWorkflowChange(_ id: UUID, _ updated: T3WorkflowRoutine?) {
+        guard isCurrent else { return }
+        latestWorkflowRoutineRead = UUID()
+        workflowRoutines.removeAll { $0.id == id }
+        if let updated {
+            workflowRoutines.append(updated)
+            workflowRoutines.sort { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
+        }
+        workflowRoutinesError = nil
     }
 
     private func commitName() {
@@ -659,11 +677,12 @@ private struct T3MemoryList: View {
 struct T3RoutinesList: View {
     let store: AppStore
     @Binding var routines: [T3ScheduledRoutine]?
-    @Binding var workflowRoutines: [T3WorkflowRoutine]
+    let workflowRoutines: [T3WorkflowRoutine]
     let loadError: String?
     let workflowLoadError: String?
     let reload: @MainActor () async -> Void
     let reloadWorkflows: @MainActor () async -> Void
+    let recordWorkflowChange: @MainActor (UUID, T3WorkflowRoutine?) -> Void
     let isCurrent: @MainActor () -> Bool
     let onOpenChat: (T3ChannelSummary) -> Void
     @State private var pending: Set<String> = []
@@ -727,7 +746,7 @@ struct T3RoutinesList: View {
         }
         .sheet(isPresented: $showsCreator) {
             T3RoutineCreator(store: store, isCurrent: isCurrent, onWorkflowCreated: { routine in
-                workflowRoutines = workflowRoutines.filter { $0.id != routine.id } + [routine]
+                recordWorkflowChange(routine.id, routine)
             }) { routine in
                 routines = ((routines ?? []).filter { $0.id != routine.id } + [routine])
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -743,7 +762,7 @@ struct T3RoutinesList: View {
                 case .workflow(let workflow):
                     perform(id: workflow.id.uuidString) {
                         try await store.withWorkflowRoutines { try await $0.deleteWorkflowRoutine(workflow) }
-                        await reloadWorkflows()
+                        recordWorkflowChange(workflow.id, nil)
                     }
                 }
             }
@@ -770,13 +789,15 @@ struct T3RoutinesList: View {
             } else {
                 Toggle("Active", isOn: Binding(get: { routine.enabled }, set: { enabled in
                     perform(id: routine.id.uuidString) {
-                        _ = try await store.withWorkflowRoutines { try await $0.setWorkflowRoutineEnabled(routine, enabled: enabled) }
-                        await reloadWorkflows()
+                        let updated = try await store.withWorkflowRoutines {
+                            try await $0.setWorkflowRoutineEnabled(routine, enabled: enabled)
+                        }
+                        recordWorkflowChange(updated.id, updated)
                     }
                 }))
                 .labelsHidden().tint(BottoTheme.action)
                 .accessibilityLabel("\(proposal.name) active")
-                .accessibilityIdentifier("t3-workflow-routine-active")
+                .accessibilityIdentifier("t3-workflow-routine-toggle-\(routine.id.uuidString.lowercased())")
             }
         }
         .padding(.vertical, 4)
@@ -916,7 +937,7 @@ private struct T3RoutineCreator: View {
                     } header: {
                         Text(proposal.name)
                     } footer: {
-                        Text("Botto will ask in this Space before each run.")
+                        Text("This Routine uses the host’s clock. Botto will ask in this Space before each run.")
                     }
                 } else {
                     editor
@@ -1023,12 +1044,14 @@ private struct T3RoutineCreator: View {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let threadID = threadID
+        let asksBeforeRunning = asksBeforeRunning
         saving = true
         error = nil
         Task {
             defer { saving = false }
             do {
-                if asksBeforeRunning, let threadID {
+                if asksBeforeRunning {
+                    guard let threadID else { throw ConversationServiceError.wrongConversation }
                     let draft = try await store.withWorkflowRoutines {
                         try $0.proposeWorkflowRoutine(name: name, prompt: prompt, schedule: schedule, threadID: threadID)
                     }
@@ -1065,6 +1088,7 @@ struct T3RoutineActivityView: View {
     let store: AppStore
     let threadID: String
     let canAnswer: Bool
+    let respond: @MainActor (T3WorkflowRoutineQuestion, String) async throws -> Void
     @State private var activities: [T3WorkflowRoutineActivity] = []
     @State private var busy: Set<String> = []
     @State private var error: String?
@@ -1096,11 +1120,12 @@ struct T3RoutineActivityView: View {
             if let error { InlineNotice(message: error) { self.error = nil } }
         }
         .padding(.horizontal, 16)
-        .task {
+        .task(id: store.connectionGeneration) {
+            activities = []
+            error = nil
             do {
                 let updates = try await store.withWorkflowRoutines { try await $0.watchWorkflowRoutineActivity(threadID: threadID) }
                 for try await update in updates {
-                    guard store.selectedT3ChannelID == threadID else { return }
                     activities = update
                 }
             } catch {
@@ -1110,11 +1135,11 @@ struct T3RoutineActivityView: View {
     }
 
     private func answer(_ question: T3WorkflowRoutineQuestion, choice: String, id: String) {
-        guard canAnswer, store.selectedT3ChannelID == threadID, busy.insert(id).inserted else { return }
+        guard canAnswer, busy.insert(id).inserted else { return }
         error = nil
         Task {
             defer { busy.remove(id) }
-            do { try await store.withWorkflowRoutines { try await $0.answerWorkflowRoutineQuestion(question, choice: choice) } }
+            do { try await respond(question, choice) }
             catch where store.selectedT3ChannelID == threadID { self.error = error.localizedDescription }
             catch { }
         }

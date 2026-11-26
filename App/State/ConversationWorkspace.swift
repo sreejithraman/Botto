@@ -1490,6 +1490,15 @@ private struct ReadObservationKey: Hashable, Sendable {
         drafts.append(.init(request: row.request, text: text))
         questionDrafts[owner.chat] = (source, drafts)
     }
+    func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String,
+                                       owner: PresentationOwner) async throws {
+        guard !Task.isCancelled, canAct(owner), let access = owner.access else {
+            throw ConversationServiceError.staleConversation
+        }
+        guard let routines = service as? T3BotService else { throw T3ServiceError.unsupported }
+        try await routines.answerWorkflowRoutineQuestion(question, choice: choice, access: access)
+    }
+
     func answer(_ intent: RequestIntent, response: RequestResponse) async {
         // A rendered request already blocks optional reads. Its reservation begins
         // only on dispatch, never merely by creating a request row.

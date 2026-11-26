@@ -715,13 +715,13 @@ import BottoCore
     }
 
     var workflowRoutinesAvailable: Bool {
-        (t3BrainService as? any T3WorkflowRoutineControlling)?.workflowRoutinesAvailable == true
+        isConnected && !showsConnection && active && (t3BrainService as? T3BotService)?.workflowRoutinesAvailable == true
     }
 
-    func withWorkflowRoutines<Value>(_ action: @MainActor (any T3WorkflowRoutineControlling) async throws -> Value)
+    func withWorkflowRoutines<Value>(_ action: @MainActor (T3BotService) async throws -> Value)
         async throws -> Value {
         try await withT3Service { service in
-            guard let routines = service as? any T3WorkflowRoutineControlling else { throw T3ServiceError.unsupported }
+            guard let routines = service as? T3BotService else { throw T3ServiceError.unsupported }
             return try await action(routines)
         }
     }

@@ -1,18 +1,5 @@
 import Foundation
 
-@MainActor public protocol T3WorkflowRoutineControlling {
-    var workflowRoutinesAvailable: Bool { get }
-    func proposeWorkflowRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String) throws
-        -> T3WorkflowRoutineProposal
-    func turnOnWorkflowRoutine(_ proposal: T3WorkflowRoutineProposal) async throws -> T3WorkflowRoutine
-    func listWorkflowRoutines() async throws -> [T3WorkflowRoutine]
-    func setWorkflowRoutineEnabled(_ routine: T3WorkflowRoutine, enabled: Bool) async throws -> T3WorkflowRoutine
-    func deleteWorkflowRoutine(_ routine: T3WorkflowRoutine) async throws
-    func watchWorkflowRoutineActivity(threadID: String) async throws
-        -> AsyncThrowingStream<[T3WorkflowRoutineActivity], Error>
-    func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws
-}
-
 /// The fixed schedule, prompt and existing Space the owner can approve together.
 public struct T3WorkflowRoutineProposal: Identifiable, Equatable, Sendable {
     public let id: UUID
@@ -57,8 +44,7 @@ public struct T3WorkflowRoutine: Identifiable, Equatable, Sendable {
     // Recreate the source on read. A matching file name or comment alone does
     // not make an externally authored workflow a Botto Routine.
     init?(file: JSONValue, scope: T3PushScope) {
-        guard file["name"].text?.hasPrefix("botto-routine-") == true,
-              file["problems"].list?.isEmpty == true,
+        guard file["problems"].list?.isEmpty == true,
               let source = file["source"].text,
               let line = source.split(separator: "\n", maxSplits: 1).first,
               line.hasPrefix(Self.marker),
@@ -159,7 +145,7 @@ public struct T3WorkflowRoutineQuestion: Equatable, Sendable {
     public let title: String
     public let choices: [String]
     let runID: String
-    let name: String
+    static let name = "run-routine"
     let proposal: T3WorkflowRoutineProposal
 }
 
@@ -175,13 +161,15 @@ public struct T3WorkflowRoutineActivity: Identifiable, Equatable, Sendable {
         }
         var result: [Self] = []
         var recent: Set<UUID> = []
+        // T3 sends newest runs first. Older open questions remain answerable.
         for run in runs {
             guard let id = run["runId"].nonempty, let version = run["version"].integer,
                   version > 0, !version.isMultiple(of: 2),
                   let routine = routines.first(where: {
                       run["workflow"].text == $0.workflowName && version <= $0.version
                   }) else { continue }
-            let question = questions.first { $0["runId"].text == id && $0["name"].text == "run-routine" }
+            let newest = recent.insert(routine.id).inserted
+            let question = questions.first { $0["runId"].text == id && $0["name"].text == T3WorkflowRoutineQuestion.name }
             if let question {
                 let request = question["request"]
                 guard request["data"]["threadId"].text?.utf8.elementsEqual(routine.proposal.threadID.utf8) == true,
@@ -189,11 +177,10 @@ public struct T3WorkflowRoutineActivity: Identifiable, Equatable, Sendable {
                       request["choices"].list == [.string("Run"), .string("Skip")] else { continue }
                 result.append(.init(id: id, routineName: routine.proposal.name,
                                     question: .init(title: title, choices: ["Run", "Skip"], runID: id,
-                                                    name: "run-routine", proposal: routine.proposal),
+                                                    proposal: routine.proposal),
                                     result: nil))
-            } else if !recent.contains(routine.id), let value = run["result"].nonempty {
+            } else if newest, let value = run["result"].nonempty {
                 result.append(.init(id: id, routineName: routine.proposal.name, question: nil, result: value))
-                recent.insert(routine.id)
             }
         }
         return result

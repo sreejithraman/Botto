@@ -30,6 +30,9 @@ final class MacBottoStore {
     /// Files Botto saved under outputs/, loaded when something needs them.
     private(set) var outputs: [T3OutputFile]?
     private(set) var routines: [T3ScheduledRoutine]?
+    private(set) var workflowRoutines: [T3WorkflowRoutine] = []
+    private(set) var workflowRoutinesError: String?
+    @ObservationIgnored private var latestWorkflowRoutineRead = UUID()
     private(set) var isConnected = false
     private(set) var isConnecting = false
     private(set) var isOpeningChannel = false
@@ -158,6 +161,7 @@ final class MacBottoStore {
         isCheckingProviders = false
         outputs = nil
         routines = nil
+        clearWorkflowRoutines()
         isConnected = false
         isConnecting = false
         isOpeningChannel = false
@@ -559,13 +563,63 @@ final class MacBottoStore {
         channels = service.currentT3Channels
     }
 
-    var workflowRoutinesAvailable: Bool {
-        (service as? any T3WorkflowRoutineControlling)?.workflowRoutinesAvailable == true
+    func loadWorkflowRoutines() async {
+        guard workflowRoutinesAvailable else { clearWorkflowRoutines(); return }
+        let request = UUID()
+        latestWorkflowRoutineRead = request
+        do {
+            let loaded = try await withWorkflowRoutines { try await $0.listWorkflowRoutines() }
+            guard !Task.isCancelled, latestWorkflowRoutineRead == request else { return }
+            workflowRoutines = loaded
+            workflowRoutinesError = nil
+        } catch where !Task.isCancelled && latestWorkflowRoutineRead == request {
+            workflowRoutinesError = error.localizedDescription
+        } catch { }
     }
 
-    func withWorkflowRoutines<Value>(_ action: @MainActor (any T3WorkflowRoutineControlling) async throws -> Value)
+    func turnOnWorkflowRoutine(_ proposal: T3WorkflowRoutineProposal) async throws {
+        let routine = try await withWorkflowRoutines { try await $0.turnOnWorkflowRoutine(proposal) }
+        recordWorkflowChange(routine.id, routine)
+    }
+
+    func setWorkflowRoutineEnabled(_ routine: T3WorkflowRoutine, enabled: Bool) async throws {
+        let updated = try await withWorkflowRoutines { try await $0.setWorkflowRoutineEnabled(routine, enabled: enabled) }
+        recordWorkflowChange(updated.id, updated)
+    }
+
+    func deleteWorkflowRoutine(_ routine: T3WorkflowRoutine) async throws {
+        try await withWorkflowRoutines { try await $0.deleteWorkflowRoutine(routine) }
+        recordWorkflowChange(routine.id, nil)
+    }
+
+    private func recordWorkflowChange(_ id: UUID, _ updated: T3WorkflowRoutine?) {
+        latestWorkflowRoutineRead = UUID()
+        workflowRoutines.removeAll { $0.id == id }
+        if let updated {
+            workflowRoutines.append(updated)
+            workflowRoutines.sort { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
+        }
+        workflowRoutinesError = nil
+    }
+
+    private func clearWorkflowRoutines() {
+        latestWorkflowRoutineRead = UUID()
+        workflowRoutines = []
+        workflowRoutinesError = nil
+    }
+
+    func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws {
+        guard let access = openedConversation?.access else { throw ConversationServiceError.staleConversation }
+        try await withWorkflowRoutines { try await $0.answerWorkflowRoutineQuestion(question, choice: choice, access: access) }
+    }
+
+    var workflowRoutinesAvailable: Bool {
+        isConnected && (service as? T3BotService)?.workflowRoutinesAvailable == true
+    }
+
+    func withWorkflowRoutines<Value>(_ action: @MainActor (T3BotService) async throws -> Value)
         async throws -> Value {
-        guard let routines = service as? any T3WorkflowRoutineControlling else { throw T3ServiceError.unsupported }
+        guard let routines = service as? T3BotService else { throw T3ServiceError.unsupported }
         return try await live { try await action(routines) }
     }
 
@@ -677,6 +731,7 @@ final class MacBottoStore {
             onPushScope?(nil)
             openID = UUID()
             openedConversation = nil
+            clearWorkflowRoutines()
             isConnected = false
             isConnecting = false
             isOpeningChannel = false

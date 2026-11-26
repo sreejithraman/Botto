@@ -401,15 +401,33 @@ import Testing
         let question = try #require(activities.first?.question)
         #expect(question.choices == ["Run", "Skip"])
         #expect(try await service.workflowRoutineActivity(threadID: "archived-channel").isEmpty)
-        await #expect(throws: T3WorkflowRoutineError.questionChanged) {
-            try await service.answerWorkflowRoutineQuestion(question, choice: "Delete")
+        let profile = try ExactID("bot-project")
+        let linked = try T3ProjectionMapper.identity(profile: profile, threadID: "existing-general")
+        let other = try T3ProjectionMapper.identity(profile: profile, threadID: "archived-channel")
+        let unrelated = try await service.openChat(.stored(other))
+        await #expect(throws: ConversationServiceError.wrongConversation) {
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Skip", access: unrelated.access)
         }
-        try await service.answerWorkflowRoutineQuestion(question, choice: "Skip")
+        let opened = try await service.openChat(.stored(linked))
+        await #expect(throws: T3WorkflowRoutineError.questionChanged) {
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Delete", access: opened.access)
+        }
+
+        var snapshots = await host.holdNextWorkflowSnapshot().makeAsyncIterator()
+        let pendingAnswer = Task { try await service.answerWorkflowRoutineQuestion(question, choice: "Run", access: opened.access) }
+        _ = try #require(await snapshots.next(isolation: MainActor.shared))
+        _ = try await service.openChat(.stored(other))
+        try await host.releaseWorkflowSnapshot()
+        await #expect(throws: ConversationServiceError.staleConversation) { try await pendingAnswer.value }
+        #expect(await host.workflowAnswers.isEmpty)
+
+        let reopened = try await service.openChat(.stored(linked))
+        try await service.answerWorkflowRoutineQuestion(question, choice: "Skip", access: reopened.access)
         let completed = try await service.workflowRoutineActivity(threadID: "existing-general")
         #expect(completed.first?.question == nil)
         #expect(completed.first?.result == "Skipped")
         await #expect(throws: T3WorkflowRoutineError.questionChanged) {
-            try await service.answerWorkflowRoutineQuestion(question, choice: "Skip")
+            try await service.answerWorkflowRoutineQuestion(question, choice: "Skip", access: reopened.access)
         }
         #expect(await host.workflowAnswers.map { $0["runId"].text } == ["own-run"])
     }
@@ -1152,6 +1170,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private(set) var workflowAnswers: [JSONValue] = []
     private var workflowRuns: [JSONValue] = []
     private var workflowQuestions: [JSONValue] = []
+    private var waitingForWorkflowSnapshot: AsyncStream<String>.Continuation?
+    private var heldWorkflowSnapshotID: String?
     private var routineStreams: Set<String> = []
     private(set) var interruptedRoutineStreams = 0
     private(set) var routineUpserts: [JSONValue] = []
@@ -1275,12 +1295,32 @@ private actor T3ServiceHost: T3WebSocketTransport {
 
     func addOutputs() { outputsAvailable = true }
 
+    func holdNextWorkflowSnapshot() -> AsyncStream<String> {
+        let (requests, continuation) = AsyncStream<String>.makeStream()
+        waitingForWorkflowSnapshot = continuation
+        return requests
+    }
+
+    func releaseWorkflowSnapshot() throws {
+        let id = try #require(heldWorkflowSnapshotID)
+        heldWorkflowSnapshotID = nil
+        try sendWorkflowSnapshot(id)
+    }
+
+    private func sendWorkflowSnapshot(_ id: String) throws {
+        try chunk(id, values: [.object(["runs": .array(workflowRuns), "questions": .array(workflowQuestions)])])
+    }
+
     func seedWorkflowQuestions(workflow: String) throws {
         workflowRuns = [
             try t3JSON(#"{"runId":"own-run","version":1,"status":"waiting","result":null}"#),
             try t3JSON(#"{"runId":"foreign-run","workflow":"foreign-workflow","version":1,"status":"waiting","result":null}"#),
         ]
         workflowRuns[0]["workflow"] = .string(workflow)
+        workflowRuns.append(.object([
+            "runId": .string("old-run"), "workflow": .string(workflow), "version": .number(1),
+            "status": .string("completed"), "result": .string("Older result"),
+        ]))
         workflowQuestions = [
             try t3JSON(#"{"runId":"own-run","name":"run-routine","request":{"title":"Run the Routine?","choices":["Run","Skip"],"data":{"threadId":"existing-general"}}}"#),
             try t3JSON(#"{"runId":"foreign-run","name":"run-routine","request":{"title":"Foreign question","choices":["Run","Skip"],"data":{"threadId":"existing-general"}}}"#),
@@ -1543,7 +1583,14 @@ private actor T3ServiceHost: T3WebSocketTransport {
                 reply = try t3JSON(#"{"relativeUrl":"/api/assets/signed/report.txt","expiresAt":4100000000000}"#)
             }
         case "workflows.subscribe":
-            try chunk(id, values: [.object(["runs": .array(workflowRuns), "questions": .array(workflowQuestions)])])
+            if let observer = waitingForWorkflowSnapshot {
+                heldWorkflowSnapshotID = id
+                waitingForWorkflowSnapshot = nil
+                observer.yield(id)
+                observer.finish()
+            } else {
+                try sendWorkflowSnapshot(id)
+            }
             return
         case "workflows.answer":
             workflowAnswers.append(request)
