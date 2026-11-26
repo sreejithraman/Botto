@@ -1,10 +1,6 @@
 import XCTest
 import Vision
 
-/// The bound for a condition that a passing test always reaches, the same as AppTests' `readinessLimit`.
-/// It stops a hang rather than measuring speed.
-let readinessLimit: TimeInterval = 45
-
 @MainActor enum RenderedTranscriptText {
     struct Observation {
         let bounds: CGRect
@@ -147,9 +143,9 @@ let readinessLimit: TimeInterval = 45
         let search = app.textFields["t3-drawer-search"]
         if search.exists && search.isHittable { return }
         let open = app.buttons["t3-open-drawer"]
-        XCTAssertTrue(open.waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssertTrue(open.waitForExistence(timeout: readinessTimeout), file: file, line: line)
         open.tap()
-        XCTAssertTrue(search.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertTrue(search.waitForExistence(timeout: readinessTimeout), file: file, line: line)
     }
 
     static func space(_ id: String, in app: XCUIApplication) -> XCUIElement {
@@ -165,10 +161,10 @@ let readinessLimit: TimeInterval = 45
                 search.swipeUp()
             }
         }
-        XCTAssertTrue(row.waitForExistence(timeout: 5) && row.isHittable, file: file, line: line)
+        XCTAssertTrue(row.waitForExistence(timeout: readinessTimeout) && row.isHittable, file: file, line: line)
         row.tap()
         let header = app.buttons["t3-chat-header"]
-        XCTAssertTrue(header.waitForExistence(timeout: 6), file: file, line: line)
+        XCTAssertTrue(header.waitForExistence(timeout: readinessTimeout), file: file, line: line)
     }
 
     static func openSettings(in app: XCUIApplication) {

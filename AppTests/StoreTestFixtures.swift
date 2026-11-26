@@ -125,10 +125,6 @@ import BottoCore
     }
 }
 
-/// The shared bound for a condition that a passing test always reaches. A hosted runner has held the
-/// main actor for 26 seconds, so this stops a hang rather than measuring speed. Assertions about elapsed
-/// time, an expected timeout, or something that must not happen keep their own limits.
-let readinessLimit = Duration.seconds(45)
 /// A wait longer than this passes but leaves an attachment, so lateness stays visible.
 let slowReadiness = Duration.seconds(3)
 

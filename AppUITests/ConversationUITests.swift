@@ -434,10 +434,10 @@ final class ConversationUITests: XCTestCase {
         app.launch()
         WorkspaceNavigation.openSpace("scout", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
-        XCTAssertTrue(composer.waitForExistence(timeout: readinessLimit))
+        XCTAssertTrue(composer.waitForExistence(timeout: readinessTimeout))
         XCTAssertEqual(app.buttons["t3-chat-header"].label, "Weekend research")
         let finalHistoryMessage = app.descendants(matching: .any)["transcript-message-performance-399"]
-        XCTAssertTrue(finalHistoryMessage.waitForExistence(timeout: readinessLimit))
+        XCTAssertTrue(finalHistoryMessage.waitForExistence(timeout: readinessTimeout))
         XCTAssertTrue(finalHistoryMessage.isHittable)
         XCTAssertTrue(composer.isEnabled)
         composer.tap()
@@ -449,12 +449,12 @@ final class ConversationUITests: XCTestCase {
         let producerCompleted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             FileManager.default.fileExists(atPath: completionMarker.path)
         }, object: nil)
-        let producerFinished = XCTWaiter.wait(for: [producerCompleted], timeout: readinessLimit) == .completed
+        let producerFinished = XCTWaiter.wait(for: [producerCompleted], timeout: readinessTimeout) == .completed
         if !producerFinished { captureReadingState(app, name: "Producer stream deadline") }
         XCTAssertTrue(producerFinished, "The producer must finish its 200 fragments.")
         let reply = app.otherElements["transcript-message-performance-reply-1"]
         let finished = reply.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 1 complete.")).firstMatch
-        let firstCompleted = finished.waitForExistence(timeout: readinessLimit)
+        let firstCompleted = finished.waitForExistence(timeout: readinessTimeout)
         if !firstCompleted { captureReadingState(app, name: "First stream deadline") }
         XCTAssertTrue(firstCompleted, "The completed reply must reach the native transcript.")
         let streamElapsed = streamStart.duration(to: .now)
@@ -462,7 +462,7 @@ final class ConversationUITests: XCTestCase {
         let words = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Word 199.")).firstMatch
         XCTAssertTrue(words.exists, "The final streamed words must reach the native transcript.")
         XCTAssertFalse(app.descendants(matching: .any)["chat-typing-indicator"].exists)
-        XCTAssertFalse(app.buttons["Stop"].exists)
+        XCTAssertFalse(app.buttons["Stop response"].exists)
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         for cycle in 0..<3 {
             // Read the previous reply through its exact row identity. Its long text
@@ -476,7 +476,7 @@ final class ConversationUITests: XCTestCase {
                     viewport: transcript.frame, app: app)
                 return calibration != nil
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [calibrated], timeout: readinessLimit), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [calibrated], timeout: readinessTimeout), .completed)
             let visibleCompletion = try XCTUnwrap(calibration, "Calibrate the actual completion in a stable text frame.")
             let calibratedSize = visibleCompletion.textFrame.size
             let completionInset = visibleCompletion.textFrame.maxY - visibleCompletion.bounds.minY
@@ -515,11 +515,11 @@ final class ConversationUITests: XCTestCase {
             composer.tap()
             composer.typeText("Keep reading \(cycle)")
             app.buttons["Send message"].tap()
-            XCTAssertTrue(app.buttons["Latest messages"].waitForExistence(timeout: readinessLimit))
+            XCTAssertTrue(app.buttons["Latest messages"].waitForExistence(timeout: readinessTimeout))
             let paused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 FileManager.default.fileExists(atPath: directory.appendingPathComponent("performance-stream-\(cycle + 2).started").path)
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [paused], timeout: readinessLimit), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [paused], timeout: readinessTimeout), .completed)
             XCTAssertTrue(app.buttons["Stop response"].exists)
             composer.tap()
             composer.typeText("Draft after send \(cycle)")
@@ -528,7 +528,7 @@ final class ConversationUITests: XCTestCase {
             let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 app.buttons["Send message"].exists
             }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: readinessLimit), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: readinessTimeout), .completed)
             XCTAssertEqual(composer.value as? String, "Draft after send \(cycle)")
             let readingFrame = landmark.frame
             XCTAssertEqual(readingFrame.minY, readingY, accuracy: 2)
@@ -550,7 +550,7 @@ final class ConversationUITests: XCTestCase {
             app.buttons["Latest messages"].tap()
             let currentText = "Performance stream \(cycle + 2) complete."
             let currentCompletion = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", currentText)).firstMatch
-            XCTAssertTrue(currentCompletion.waitForExistence(timeout: readinessLimit))
+            XCTAssertTrue(currentCompletion.waitForExistence(timeout: readinessTimeout))
             XCTAssertTrue(currentCompletion.isHittable)
             let currentLine = try XCTUnwrap(RenderedTranscriptText.line(currentText, in: currentCompletion,
                 viewport: transcript.frame, app: app), "Latest must reveal the actual completion line.")
@@ -570,20 +570,20 @@ final class ConversationUITests: XCTestCase {
         let pending = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             FileManager.default.fileExists(atPath: directory.appendingPathComponent("performance-stream-5.started").path)
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: readinessLimit), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: readinessTimeout), .completed)
         XCTAssertTrue(app.buttons["Stop response"].exists)
         composer.tap()
         composer.typeText("Draft while following")
-        XCTAssertTrue(app.buttons["Latest messages"].waitForExistence(timeout: readinessLimit))
+        XCTAssertTrue(app.buttons["Latest messages"].waitForExistence(timeout: readinessTimeout))
         app.buttons["Latest messages"].tap()
         let pendingRow = app.otherElements["transcript-message-performance-reply-5"]
         let pendingWords = pendingRow.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Word 19.")).firstMatch
-        XCTAssertTrue(pendingWords.waitForExistence(timeout: readinessLimit))
+        XCTAssertTrue(pendingWords.waitForExistence(timeout: readinessTimeout))
         XCTAssertTrue(pendingWords.isHittable)
         XCTAssertTrue(app.descendants(matching: .any)["chat-typing-indicator"].isHittable)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("performance-stream-5.hold"))
         let finalCompletion = pendingRow.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 5 complete.")).firstMatch
-        let finalReplyCompleted = finalCompletion.waitForExistence(timeout: readinessLimit)
+        let finalReplyCompleted = finalCompletion.waitForExistence(timeout: readinessTimeout)
         if !finalReplyCompleted {
             let globalCompletion = app.staticTexts.containing(NSPredicate(format: "label ENDSWITH %@", "Performance stream 5 complete.")).firstMatch.exists
             let sendAvailable = app.buttons["Send message"].exists
