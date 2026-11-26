@@ -20,16 +20,13 @@ struct ArtifactPreview: View {
     private static let controlSide: CGFloat = 44
     private static let controlSpacing: CGFloat = 8
     let session: any ArtifactReadingSession
-    let isExpanded: Bool
     var isActive = true
     /// Outlasts `isActive` through a brief inactive scene. Files turns the scene inactive
     /// while it resolves a name collision; dropping its sheet then loses the completion
     /// and presents Files again.
     var holdsOutput = true
     let onClose: () -> Void
-    var onToggleExpanded: (() -> Void)? = nil
     let onRetry: () -> Void
-    var onBrowseBots: (() -> Void)? = nil
     var canPresentOutput: () -> Bool = { true }
     var connectionFeedback: AnyView? = nil
     var pages: ArtifactPages? = nil
@@ -82,7 +79,7 @@ struct ArtifactPreview: View {
 
     /// The title centers in the header whatever each side holds, so it clears the fuller side.
     private var titleInset: CGFloat {
-        let trailing = 1 + (isReloading ? 1 : 0) + (onToggleExpanded == nil ? 0 : 1)
+        let trailing = 1 + (isReloading ? 1 : 0)
         return CGFloat(trailing) * (Self.controlSide + Self.controlSpacing)
     }
 
@@ -99,13 +96,6 @@ struct ArtifactPreview: View {
                 if isReloading {
                     ProgressView().controlSize(.small).frame(width: Self.controlSide, height: Self.controlSide)
                         .accessibilityLabel("Reloading file")
-                }
-                if let onToggleExpanded {
-                    control(isExpanded ? "Exit full screen" : "Full screen",
-                            systemImage: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                            action: onToggleExpanded)
-                        .accessibilityIdentifier("artifact-toggle-expanded")
-                        .disabled(!isActive || session.isPresentingOutput)
                 }
                 actions
             }
@@ -160,18 +150,12 @@ struct ArtifactPreview: View {
                     if isActive && canPresentOutput() { session.reload() }
                 }.disabled(session.isLoading)
             }
-            if let onBrowseBots {
-                Divider()
-                Button("Bots", systemImage: "sidebar.left", action: onBrowseBots)
-                    .accessibilityIdentifier("workspace-browse-bots")
-            }
         } label: {
             controlLabel("Actions", systemImage: "ellipsis")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("artifact-actions")
-        // Bots stays reachable while a file loads or fails, when there is nothing to export.
-        .disabled(!isActive || session.isPresentingOutput || (onBrowseBots == nil && fileUnavailable))
+        .disabled(!isActive || session.isPresentingOutput || fileUnavailable)
     }
 }
 

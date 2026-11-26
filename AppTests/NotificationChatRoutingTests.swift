@@ -5,7 +5,7 @@ import BottoCore
 
 @MainActor struct NotificationChatRoutingTests {
     @Test(arguments: ["current", "removed", "failure"])
-    func notificationReopensAClosedTabOnlyAfterAnAuthorizedOpen(outcome: String) async throws {
+    func notificationOpensItsChatOnlyAfterAnAuthorizedOpen(outcome: String) async throws {
         let service = try WorkspaceTestService()
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
@@ -13,13 +13,7 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         let main = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(other, owner: main.owner)))
-        let reader = try #require(workspace.screen(profile: service.profile))
-        let close = try #require(workspace.captureClose(other, owner: reader.owner))
-        _ = try #require(workspace.close(close))
-        #expect(workspace.screen(profile: service.profile)?.owner.chat == main.owner.chat)
-        #expect(workspace.closedChats(profile: service.profile).map(\.id) == [other])
+        let other = try #require(workspace.chats(service.profile).dropFirst().first?.id)
 
         let gate = WorkspaceGate(); service.openGate = gate
         if outcome == "failure" { service.openError = ConversationServiceError.disconnected }
@@ -42,10 +36,8 @@ import BottoCore
         #expect(committed == (outcome == "current" ? [destination] : []))
         if outcome == "current" {
             #expect(result.owner.chat == other && result.canAct)
-            #expect(workspace.closedChats(profile: service.profile).isEmpty)
         } else {
-            #expect(result.owner.chat == main.owner.chat && result.canCreate)
-            #expect(workspace.closedChats(profile: service.profile).map(\.id) == [other])
+            #expect(result.owner.chat == main.owner.chat)
             #expect(workspace.persisted().preference(service.profile)?.lastSelected == main.owner.chat)
         }
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.responses.isEmpty)

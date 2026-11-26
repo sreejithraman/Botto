@@ -24,20 +24,6 @@ struct OpeningIntent: Sendable {
     fileprivate let epoch: UUID
     fileprivate let request: UUID
     fileprivate let profile: ExactID
-    fileprivate let attention: Bool
-}
-struct SelectionIntent {
-    fileprivate let owner: PresentationOwner
-    fileprivate let target: ChatID
-    fileprivate let request: UUID
-}
-struct ChatCloseIntent { fileprivate let owner: PresentationOwner; fileprivate let target: ChatID }
-struct ChatReopenIntent { fileprivate let owner: PresentationOwner; fileprivate let target: ChatID }
-struct ClosedChat: Identifiable { let id: ChatID; let title: String }
-struct CreationIntent {
-    fileprivate let owner: PresentationOwner
-    fileprivate let operation: UUID
-    fileprivate let reservation: WorkspaceOperationReservation
 }
 struct SendIntent {
     fileprivate let delivery: MessageDelivery
@@ -119,19 +105,6 @@ enum ActivityPresentation: Equatable, Sendable {
         }
     }
 }
-struct ChatCard: Identifiable {
-    let id: ChatID
-    let title: String
-    let userPreview: String
-    let replyPreview: String
-    let isMain: Bool
-    let isPreferred: Bool
-    let unread: Bool
-    let activity: ActivityPresentation
-    var status: BotStatus? { activity.currentStatus }
-    let isAvailable: Bool
-    let isOffline: Bool
-}
 struct ChatSelection {
     let owner: PresentationOwner
     let snapshot: Conversation?
@@ -160,12 +133,10 @@ struct ChatScreen {
     let canAct: Bool
     let canEditDraft: Bool
     let selectedViewLifetime: UUID
-    let canCreate: Bool
     let isOpening: Bool
     let hasEarlierMessages: Bool
     let isSending: Bool
     let isUploading: Bool
-    let isCreating: Bool
     let isLoadingDirectory: Bool
     let error: String?
     let attachments: [ChatAttachment]
@@ -252,7 +223,6 @@ private struct ReadObservationKey: Hashable, Sendable {
     @ObservationIgnored var onUserNavigation: (@MainActor () -> Void)?
     @ObservationIgnored var onHapticFeedback: (@MainActor (ChatHapticFeedback) -> Void)?
     private var selected: ChatID?
-    private var locallySelected: ChatID?
     private var presentation = UUID()
     private var recovery = UUID()
     private var online = false
@@ -318,8 +288,6 @@ private struct ReadObservationKey: Hashable, Sendable {
     private var stops: [ChatID: UUID] = [:]
     private let queuedEditing = QueuedMessageEditing()
     private var answers: [ChatID: [String: UUID]] = [:]
-    private var creations: [ExactID: UUID] = [:]
-    private var uncertainCreation: Set<ExactID> = []
     private var dispatched: Set<UUID> = []
     private var imports: [UUID: PresentationOwner] = [:]
     /// One chat's upload slot. A frame already handed to the service cannot be recalled, so
@@ -483,17 +451,8 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     func canEditDraft(_ owner: PresentationOwner) -> Bool {
         isCurrent(owner) && screenBook.record(owner.chat)?.isUnverified == false && availability[owner.chat] != false
-            && (canAct(owner) || locallySelected == owner.chat || opening != nil || readAuthorityBlocked || !online)
+            && (canAct(owner) || opening != nil || readAuthorityBlocked || !online)
     }
-    private func canActivate(_ owner: PresentationOwner) -> Bool {
-        isCurrent(owner) && locallySelected == owner.chat && online && opening == nil
-            && screenBook.record(owner.chat)?.isUnverified == false && availability[owner.chat] != false
-    }
-    func captureActivation(_ owner: PresentationOwner) -> SelectionIntent? {
-        guard canActivate(owner) else { return nil }
-        return captureSelection(owner.chat, owner: owner)
-    }
-    private func canCreateFrom(_ owner: PresentationOwner) -> Bool { canAct(owner) || canActivate(owner) }
     private func owner(_ id: ChatID) -> PresentationOwner {
         .init(workspace: scope, chat: id, recovery: recovery, presentation: presentation,
               access: selected == id ? live?.access : nil)
@@ -521,11 +480,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             requests: isCurrent(rendered) ? requestRows : [], canAct: canAct(rendered),
             canEditDraft: canEditDraft(rendered),
             selectedViewLifetime: selectedViewLifetime,
-            canCreate: canCreateFrom(rendered) && creations[profile] == nil && !uncertainCreation.contains(profile),
             isOpening: selection.isOpening,
             hasEarlierMessages: snapshot?.hasEarlierMessages == true,
             isSending: sends[id] != nil,
-            isUploading: uploadReservations[id] != nil, isCreating: creations[profile] != nil,
+            isUploading: uploadReservations[id] != nil,
             isLoadingDirectory: loadingDirectories.contains(profile), error: errors[id] ?? readOnlyExplanation(record) ?? directoryWarnings[profile],
             attachments: staged.map(\.attachment), pendingAttachments: (pendingImports[id] ?? []).map(\.attachment),
             needsReattachment: staged.contains { !$0.valid },
@@ -553,60 +511,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
         }
         return record.lastKnownActivity.map(ActivityPresentation.historical) ?? .unobserved
-    }
-    func cards(profile: ExactID) -> [ChatCard] {
-        let prefs = book.preference(profile)
-        return book.visible(profile).map { record in
-            .init(id: record.id, title: record.title,
-                userPreview: record.userPreview,
-                replyPreview: record.replyPreview,
-                isMain: record.id == prefs?.main, isPreferred: record.id == prefs?.preferred,
-                unread: record.isUnread, activity: activityPresentation(record),
-                isAvailable: true, isOffline: !online)
-        }
-    }
-    func captureClose(_ chat: ChatID, owner: PresentationOwner) -> ChatCloseIntent? {
-        guard isCurrent(owner), let record = book.record(chat),
-              record.profile == book.record(owner.chat)?.profile,
-              chat != book.preference(record.profile)?.main,
-              book.visible(record.profile).contains(where: { $0.id == chat }),
-              book.visible(record.profile).count > 1 else { return nil }
-        return .init(owner: owner, target: chat)
-    }
-    func close(_ intent: ChatCloseIntent) -> ClosedChat? {
-        guard captureClose(intent.target, owner: intent.owner) != nil,
-              let record = book.record(intent.target) else { return nil }
-        onUserNavigation?()
-        if selected == intent.target {
-            guard let replacement = book.visible(record.profile).first(where: { $0.id != intent.target })?.id else { return nil }
-            avatarActivity.retire()
-            live = nil; requestRows = []; retirePresentation(); selected = replacement
-            locallySelected = replacement
-            mutateBook {
-                $0.update(intent.target) { $0.isClosedLocally = true }
-                $0.updatePreference(record.profile) { $0.lastSelected = replacement }
-            }
-            rebuildRequests()
-        } else {
-            withMutation(keyPath: \.book) { bookStorage.update(intent.target) { $0.isClosedLocally = true } }
-        }
-        onDirty()
-        return .init(id: record.id, title: record.title)
-    }
-    func closedChats(profile: ExactID) -> [ClosedChat] {
-        let main = book.preference(profile)?.main
-        return book.ordered(profile).filter { $0.id != main && $0.isClosedLocally == true }
-            .map { .init(id: $0.id, title: $0.title) }
-    }
-    func captureReopening(_ chat: ChatID, owner: PresentationOwner) -> ChatReopenIntent? {
-        guard isCurrent(owner), let record = book.record(chat), record.isClosedLocally == true,
-              record.profile == book.record(owner.chat)?.profile else { return nil }
-        return .init(owner: owner, target: chat)
-    }
-    func reopen(_ intent: ChatReopenIntent) {
-        guard captureReopening(intent.target, owner: intent.owner) != nil else { return }
-        withMutation(keyPath: \.book) { bookStorage.update(intent.target) { $0.isClosedLocally = nil } }
-        onDirty()
     }
     func aggregate(profile: ExactID) -> ChatAggregate {
         aggregate(profile: profile, records: book.ordered(profile))
@@ -673,15 +577,15 @@ private struct ReadObservationKey: Hashable, Sendable {
     func ownsNavigation(_ claim: NavigationClaim) -> Bool {
         !retired && claim.scope == scope && navigationRequest == claim.request
     }
-    func captureOpening(profile: ExactID, attention: Bool = false) -> OpeningIntent? {
+    func captureOpening(profile: ExactID) -> OpeningIntent? {
         guard !retired, book.preference(profile) != nil, let claim = captureNavigationClaim() else { return nil }
-        return captureOpening(profile: profile, attention: attention, claim: claim)
+        return captureOpening(profile: profile, claim: claim)
     }
-    func captureOpening(profile: ExactID, attention: Bool = false, claim: NavigationClaim) -> OpeningIntent? {
+    func captureOpening(profile: ExactID, claim: NavigationClaim) -> OpeningIntent? {
         guard ownsNavigation(claim) else { return nil }
         if book.preference(profile) == nil { ensureProfile(profile) }
         guard ownsNavigation(claim), book.preference(profile) != nil else { return nil }
-        return .init(scope: scope, epoch: presentation, request: claim.request, profile: profile, attention: attention)
+        return .init(scope: scope, epoch: presentation, request: claim.request, profile: profile)
     }
     private func restorePreviousAttachment(_ previous: ChatID?, recovery connection: UUID, claim: NavigationClaim) async {
         guard let previous, ownsNavigation(claim), online, recovery == connection, selected == previous, live == nil else { return }
@@ -719,8 +623,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         defer { if navigationRequest == intent.request { navigationRequest = nil } }
         if userInitiated { onUserNavigation?() }
         guard ownsOpening(intent) else { return }
-        if intent.attention { await openAttention(profile: intent.profile, request: intent.request) }
-        else if let id = book.opening(intent.profile) { await attach(id, navigation: intent.request) }
+        if let id = book.opening(intent.profile) { await attach(id, navigation: intent.request) }
     }
     func openBot(profile: ExactID) async {
         guard !retired else { return }
@@ -771,41 +674,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         if let selected, book.record(selected)?.profile == intent.profile, live != nil || opening != nil { return }
         await open(intent, userInitiated: false)
     }
-    func openAttention(profile: ExactID) async {
-        guard !retired else { return }
-        ensureProfile(profile)
-        guard let intent = captureOpening(profile: profile, attention: true) else { return }
-        await open(intent)
-    }
-    private func openAttention(profile: ExactID, request: UUID) async {
-        guard !retired, navigationRequest == request else { return }
-        ensureProfile(profile)
-        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting, navigation: request); return }
-        // Read inventory without first opening the preferred chat and marking it read.
-        if selected == nil || selected.flatMap({ book.record($0)?.profile }) != profile {
-            avatarActivity.retire()
-            live = nil; requestRows = []
-            retirePresentation(preservingNavigation: request); selected = book.opening(profile)
-        }
-        guard let screen = screen(profile: profile) else { return }
-        await refreshDirectory(screen.owner)
-        guard isCurrent(screen.owner), navigationRequest == request else { return }
-        if let waiting = aggregate(profile: profile).attentionChat { await attach(waiting, navigation: request) }
-        else { errors[screen.owner.chat] = "Botto couldn’t identify the waiting chat. Refresh the chat list." }
-    }
-    func captureSelection(_ chat: ChatID, owner: PresentationOwner) -> SelectionIntent? {
-        guard isCurrent(owner), book.record(chat)?.profile == book.record(owner.chat)?.profile else { return nil }
-        let request = UUID()
-        navigationRequest = request
-        // A choice supersedes older intents when captured, not when its queued task runs.
-        onUserNavigation?()
-        return .init(owner: owner, target: chat, request: request)
-    }
-    func select(_ intent: SelectionIntent) async {
-        guard !Task.isCancelled, isCurrent(intent.owner), navigationRequest == intent.request,
-              book.record(intent.target)?.profile == book.record(intent.owner.chat)?.profile else { return }
-        await attach(intent.target)
-    }
     private enum SelectionCommit { case immediate, afterAttachment }
     @discardableResult private func installTranscript(_ publication: OpenedConversation, for id: ChatID, title: String, navigation request: UUID? = nil) -> Bool {
         let connection = recovery, epoch = presentation, previous = live
@@ -842,7 +710,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         inboxHistoryReads.removeValue(forKey: id)?.task.cancel()
         let preserveSelection = selectionCommit == .afterAttachment
         if preserveSelection, record.isUnverified || availability[id] == false { return nil }
-        if !preserveSelection && locallySelected != id { locallySelected = nil }
         avatarActivity.retire()
         live = nil; requestRows = []
         if preserveSelection && online { readAuthorityBlocked = true }
@@ -921,7 +788,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             if (staging[actual] ?? []).contains(where: { $0.source.stored != opened.identity.stored }) { invalidateStaging(actual) }
             retiredRecoveryAccesses.remove(opened.access)
-            locallySelected = nil; readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
+            readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
             guard installTranscript(opened, for: actual, title: record.title, navigation: request) else { return nil }
             return opened.identity
         } catch {
@@ -1123,7 +990,6 @@ private struct ReadObservationKey: Hashable, Sendable {
                         recordActivity(.unknown("This chat is unavailable on the host"), for: record.id)
                     }
                 }
-                uncertainCreation.remove(profile)
             }
             complete[profile] = directory.isComplete
             if directory.isComplete { activityDirectories.insert(profile) }
@@ -1145,12 +1011,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             }
             refreshAvatarProfile(profile)
         }
-    }
-    func preferOpening(_ chat: ChatID?, owner: PresentationOwner) {
-        guard isCurrent(owner), let profile = book.record(owner.chat)?.profile,
-              chat == nil || book.record(chat!)?.profile == profile else { return }
-        mutateBook { $0.updatePreference(profile) { $0.preferred = chat } }; onDirty()
-        scheduleInboxHistory(profiles: [profile])
     }
     func draft(_ owner: PresentationOwner) -> String { draftBook.record(owner.chat)?.draft.text ?? "" }
     /// Follows the saved opening choice, which can differ from the selected chat.
@@ -1219,7 +1079,7 @@ private struct ReadObservationKey: Hashable, Sendable {
               current.readEvidence.map({ ReadObservationKey($0.summaryObservedBeforeRead) }) != hint,
               !current.snapshot.isWorking, current.snapshot.pendingRequests.isEmpty,
               sends[id] == nil, stops[id] == nil, (answers[id] ?? [:]).isEmpty,
-              creations[identity.profile] == nil, uploadReservations[id] == nil,
+              uploadReservations[id] == nil,
               !imports.values.contains(where: { $0.chat == id }),
               !pendingOperations.values.contains(id), downloads.isEmpty else { return }
         let attempt = UUID(), lifetime = selectedViewLifetime
@@ -1286,35 +1146,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         imports[id] = nil
         if sends[chat] == id { sends[chat] = nil }
         if stops[chat] == id { stops[chat] = nil }
-        if let profile = book.record(chat)?.profile, creations[profile] == id { creations[profile] = nil }
         considerForegroundRead()
-    }
-    func captureCreation(_ owner: PresentationOwner) -> CreationIntent? {
-        guard canCreateFrom(owner), let profile = book.record(owner.chat)?.profile,
-              creations[profile] == nil, !uncertainCreation.contains(profile) else { return nil }
-        let operation = UUID(); creations[profile] = operation
-        navigationRequest = operation
-        onUserNavigation?()
-        return .init(owner: owner, operation: operation, reservation: reserveOperation(operation, chat: owner.chat))
-    }
-    func create(_ intent: CreationIntent) async {
-        guard !dispatched.contains(intent.operation) else { return }
-        defer { withExtendedLifetime(intent.reservation) { finishOperation(intent.operation) } }
-        guard let profile = book.record(intent.owner.chat)?.profile, creations[profile] == intent.operation else { return }
-        guard !Task.isCancelled, canCreateFrom(intent.owner) else { return }
-        dispatched.insert(intent.operation)
-        defer { if creations[profile] == intent.operation { creations[profile] = nil } }
-        do {
-            let receipt = try await service.createConversation(profile: profile, operationID: intent.operation)
-            guard !retired, receipt.operationID == intent.operation, receipt.summary.identity.profile == profile else { return }
-            let id = mutateBook { $0.merge(receipt.summary) }; availability[id] = true; reconcileRequestSource(id); onDirty()
-            // A completed mutation is retained independently of its follow-on navigation.
-            if !Task.isCancelled, isCurrent(intent.owner), navigationRequest == intent.operation { await attach(id) }
-        } catch {
-            guard !retired else { return }
-            errors[intent.owner.chat] = error.localizedDescription
-            if error as? ConversationServiceError == .uncertain { uncertainCreation.insert(profile) }
-        }
     }
     func captureSend(_ owner: PresentationOwner, delivery: MessageDelivery = .queue) -> SendIntent? {
         guard canAct(owner), let record = book.record(owner.chat), let source = live?.identity,
@@ -1915,7 +1747,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             return draining
         }
         for chat in Array(pendingImports.keys) { stopPending(chat: chat) }
-        creations = creations.filter { dispatched.contains($0.value) }
         pendingOperations = pendingOperations.filter { dispatched.contains($0.key) }
         sends = sends.filter { dispatched.contains($0.value) }
         stops = stops.filter { dispatched.contains($0.value) }

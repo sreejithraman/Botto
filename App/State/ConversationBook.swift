@@ -135,17 +135,6 @@ extension ChatRecord {
         }
         return updatedAt.map { $0 > (seen?.observedAt ?? .distantPast) } ?? false
     }
-    // Keep transcript predicates on the record's value interface. Running them in
-    // a workspace closure otherwise checks the main executor for every message.
-    var userPreview: String {
-        transcript?.messages.last(where: { $0.role == .user })?.text ?? ""
-    }
-    var replyPreview: String {
-        if let summary, !summary.preview.isEmpty, hasUnseenSummary {
-            return String(decoding: summary.preview, as: UTF8.self)
-        }
-        return transcript?.messages.last(where: { $0.role == .assistant })?.text ?? preview
-    }
     mutating func displayed(_ snapshot: Conversation, acknowledging observation: ChatSummaryEvidence?, at now: Date) {
         let content = ChatContentEvidence(snapshot), previous = seen
         if content.hasContent || previous?.messageID != nil || previous?.content?.hasContent == true { hasContentHistory = true }

@@ -52,8 +52,7 @@ struct ConversationPersistenceTests {
         #expect(messages.map(\.id) == ["scheduled", "dm", "process", "answer", "compacted"])
         #expect(messages.map(\.text)[1...] == ["Message from 🤖 Gustavo (@gustavo): Done.", "Command output", "Silent.", "Report ready."])
         #expect(NativeTranscriptMessagePlan(messages).entries.map(\.message.id) == messages.map(\.id))
-        #expect(loaded.book.record(chat)?.replyPreview == "Report ready.")
-        #expect(loaded.book.record(chat)?.userPreview == "Command output")
+        #expect(loaded.book.record(chat)?.inboxMessage?.text == "Report ready.")
     }
 
     @Test func identityMatchingRequiresOneProfileOwnedLineage() throws {

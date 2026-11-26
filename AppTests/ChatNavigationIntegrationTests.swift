@@ -4,27 +4,6 @@ import BottoCore
 @testable import Botto
 
 @MainActor struct ChatNavigationIntegrationTests {
-    @Test func anOlderQueuedCreationCannotRetireANewerNotificationRoute() async throws {
-        let (workspace, service) = try await fixture()
-        let original = try #require(workspace.screen(profile: service.profile))
-        let creation = try #require(workspace.captureCreation(original.owner))
-        var navigations = 0
-        workspace.onUserNavigation = { navigations += 1 }
-        let gate = WorkspaceGate()
-        service.directoryGate = gate
-        let notification = Task { await workspace.openNotificationChat(service.summaries[1].identity, isCurrent: { true }) }
-        await gate.entered()
-
-        await workspace.create(creation)
-
-        #expect(service.creates.count == 1)
-        #expect(navigations == 0, "An older mutation cannot cancel a newer notification's navigation")
-        #expect(workspace.screen(profile: service.profile)?.owner.chat == original.owner.chat)
-        gate.release()
-        #expect(await notification.value)
-        #expect(workspace.selection(profile: service.profile)?.identity?.root == service.summaries[1].identity.root)
-    }
-
     @Test func automaticRestorationDoesNotRetirePendingUserNavigation() async throws {
         let (workspace, service) = try await fixture()
         workspace.retireConnection()
@@ -76,12 +55,10 @@ import BottoCore
         await gate.entered()
         workspace.retireConnection()
         workspace.setOnline(true)
-        let cached = try #require(workspace.screen(profile: service.profile))
-        let main = try #require(workspace.cards(profile: service.profile).first { $0.isMain }?.id)
-        let manual = try #require(workspace.captureSelection(main, owner: cached.owner))
+        #expect(workspace.screen(profile: service.profile) != nil)
         service.openGate = nil
 
-        await workspace.select(manual)
+        #expect(await workspace.openSaved(service.summaries[0]))
         gate.release()
 
         #expect(await !notification.value)

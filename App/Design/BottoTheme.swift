@@ -26,7 +26,6 @@ extension View {
     /// Keep the canvas continuous while native bars own separation on scroll.
     @ViewBuilder func bottoNavigationChrome() -> some View {
         let canvas = containerBackground(BottoTheme.paper, for: .navigation)
-            .containerBackground(BottoTheme.paper, for: .navigationSplitView)
         if #available(iOS 27, *) {
             canvas.toolbarMinimizationBehavior(.never, for: .navigationBar)
         } else {

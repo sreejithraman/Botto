@@ -108,8 +108,7 @@ import BottoCore
         if retireConnection {
             f.workspace.retireConnection()
         } else {
-            let other = try #require(f.workspace.cards(profile: f.service.profile).first { !$0.isMain }?.id)
-            await f.workspace.select(try #require(f.workspace.captureSelection(other, owner: screen.owner)))
+            #expect(await f.workspace.openSaved(f.service.summaries[1]))
             f.workspace.setTranscriptVisible(true, owner: try f.screen().owner)
         }
         gate.release()

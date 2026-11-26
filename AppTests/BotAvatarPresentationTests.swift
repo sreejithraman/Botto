@@ -140,15 +140,14 @@ import BottoCore
         await workspace.refreshDirectory(owner)
         service.directoryActivity = [:]
         await workspace.refreshDirectory(owner)
-        let sibling = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        let intent = try #require(workspace.captureSelection(sibling, owner: owner))
         let gate = WorkspaceGate(); service.openGate = gate
-        let opening = Task { await workspace.select(intent) }
+        let opening = Task { await workspace.openSaved(service.summaries[1]) }
         await gate.entered()
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .profile).activity == .working)
-        #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .idle)
+        // Main stays selected, with its own work, until the other chat arrives.
+        #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .working)
         gate.release()
-        await opening.value
+        #expect(await opening.value)
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .idle)
     }
 
@@ -272,7 +271,7 @@ import BottoCore
             book: .init(), service: service, now: { clock.date }, onDirty: {})
         workspace.setOnline(true)
         await workspace.openBot(profile: service.profile)
-        var screen = try #require(workspace.screen(profile: service.profile))
+        let screen = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(screen.owner)
         let identity = service.summaries[0].identity
         let value = try service.publication(identity)
@@ -281,11 +280,8 @@ import BottoCore
         workspace.receive(.init(identity: identity, snapshot: value.snapshot, access: value.access, activity: facts))
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .finished)
         #expect(workspace.avatarPresentation(profile: try ExactID("foreign"), scope: .selectedChat).activity == .unavailable)
-        screen = try #require(workspace.screen(profile: service.profile))
-        let sibling = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(sibling, owner: screen.owner)))
-        let other = try #require(workspace.screen(profile: service.profile))
-        await workspace.select(try #require(workspace.captureSelection(screen.selectedChatID, owner: other.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
+        #expect(await workspace.openSaved(service.summaries[0]))
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .idle)
         workspace.setOnline(false)
         workspace.receive(.init(identity: identity, snapshot: value.snapshot, access: value.access, activity: facts))

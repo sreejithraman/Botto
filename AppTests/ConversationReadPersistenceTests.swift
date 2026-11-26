@@ -35,7 +35,7 @@ import BottoCore
         let workspace = ConversationWorkspace(scope: .init(cacheID: cacheID, exactAccount: [], incarnation: UUID()),
             book: loaded.book, service: try WorkspaceTestService(), onDirty: {})
         await workspace.openBot(profile: profile)
-        #expect(workspace.cards(profile: profile).first?.unread == false)
+        #expect(workspace.chats(profile).first?.isUnread == false)
         #expect(workspace.screen(profile: profile)?.snapshot?.messages.first?.text == "Old V2 answer")
     }
 
@@ -54,8 +54,7 @@ import BottoCore
         workspace.setOnline(true); await workspace.openBot(profile: profile)
         let a = try #require(workspace.screen(profile: profile))
         await workspace.refreshDirectory(a.owner); workspace.displayed(a.owner)
-        let b = try #require(workspace.cards(profile: profile).first { !$0.isMain }?.id)
-        await workspace.select(try #require(workspace.captureSelection(b, owner: a.owner)))
+        #expect(await workspace.openSaved(service.summaries[1]))
         let ownerB = try #require(workspace.screen(profile: profile)?.owner)
         let exact = "New e\u{301} answer", newAt = Date.now.addingTimeInterval(1)
         service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
@@ -66,13 +65,11 @@ import BottoCore
         let reloaded = ConversationWorkspace(scope: .init(cacheID: cacheID, exactAccount: [], incarnation: UUID()),
             book: fresh.book, service: service, onDirty: {})
         await reloaded.openBot(profile: profile)
-        let freshB = try #require(reloaded.screen(profile: profile))
-        let freshBCards = reloaded.cards(profile: profile)
-        let card = try #require(freshBCards.first { $0.id == a.selectedChatID })
-        #expect(card.unread && Data(card.replyPreview.utf8) == Data(exact.utf8))
+        #expect(reloaded.screen(profile: profile) != nil)
+        #expect(reloaded.chats(profile).first { $0.id == a.selectedChatID }?.isUnread == true)
         #expect(fresh.book.record(a.selectedChatID)?.summary?.messageCount == 2)
         #expect(fresh.book.record(a.selectedChatID)?.transcript?.messages.last?.id == "old")
-        await reloaded.select(try #require(reloaded.captureSelection(a.selectedChatID, owner: freshB.owner)))
+        #expect(await reloaded.openSaved(service.summaries[0]))
         reloaded.displayed(try #require(reloaded.screen(profile: profile)?.owner))
         try LocalHistory(book: reloaded.persisted()).save(for: cacheID, directory: directory)
         let stillUnread = try LocalHistory.load(for: cacheID, directory: directory)
@@ -80,8 +77,8 @@ import BottoCore
         service.snapshots[identity.root]?.messages = [old, .init(id: "new", role: .assistant, text: exact, timestamp: newAt)]
         reloaded.setOnline(true); await reloaded.openBot(profile: profile)
         let visible = try #require(reloaded.screen(profile: profile))
-        let visibleCards = reloaded.cards(profile: profile)
-        #expect(visibleCards.first { $0.id == a.selectedChatID }?.unread == true)
+        let visibleChats = reloaded.chats(profile)
+        #expect(visibleChats.first { $0.id == a.selectedChatID }?.isUnread == true)
         reloaded.displayed(visible.owner)
         try LocalHistory(book: reloaded.persisted()).save(for: cacheID, directory: directory)
         let seen = try LocalHistory.load(for: cacheID, directory: directory)
@@ -111,10 +108,10 @@ import BottoCore
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
         let screen = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(screen.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == true,
+        #expect(workspace.chats(service.profile).first?.isUnread == true,
             "Legacy seen dates cannot acknowledge an inventory observation by themselves")
         workspace.displayed(screen.owner)
-        #expect(workspace.cards(profile: service.profile).first?.unread == false)
+        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(main)?.seen?.observedAt == readAt)
         #expect(workspace.draft(screen.owner) == " exact draft \n")
     }
@@ -157,13 +154,13 @@ import BottoCore
         restored.setOnline(true); await restored.openBot(profile: service.profile)
         let current = try #require(restored.screen(profile: service.profile))
         await restored.refreshDirectory(current.owner)
-        #expect(restored.cards(profile: service.profile).first?.unread == true)
+        #expect(restored.chats(service.profile).first?.isUnread == true)
         restored.setOnline(false)
         restored.displayed(try #require(restored.screen(profile: service.profile)?.owner))
-        #expect(restored.cards(profile: service.profile).first?.unread == true)
+        #expect(restored.chats(service.profile).first?.isUnread == true)
         restored.setOnline(true); await restored.openBot(profile: service.profile)
         restored.displayed(try #require(restored.screen(profile: service.profile)?.owner))
-        #expect(restored.cards(profile: service.profile).first?.unread == false)
+        #expect(restored.chats(service.profile).first?.isUnread == false)
     }
 
 }

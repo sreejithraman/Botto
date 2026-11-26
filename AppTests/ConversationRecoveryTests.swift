@@ -19,14 +19,10 @@ import BottoCore
         defer { LocalHistory.remove(for: configuration.id) }
         let workspace = store.chats
         var before = try #require(workspace.screen(profile: service.profile))
-        var beforeCards = workspace.cards(profile: service.profile)
         if ordinary {
             await workspace.refreshDirectory(before.owner)
-            let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
-            await workspace.select(try #require(workspace.captureSelection(other, owner: before.owner)))
+            #expect(await workspace.openSaved(service.summaries[1]))
             before = try #require(workspace.screen(profile: service.profile))
-            beforeCards = workspace.cards(profile: service.profile)
-            workspace.preferOpening(try #require(beforeCards.first { $0.isMain }?.id), owner: before.owner)
         }
         let identity = service.summaries[ordinary ? 1 : 0].identity
         let attachment = ChatAttachment(name: "proof.txt", path: "/proof.txt")
@@ -72,19 +68,14 @@ import BottoCore
         let workspace = store.chats, callback = try #require(service.onEvent)
         let before = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(before.owner)
-        let other = try #require(workspace.cards(profile: service.profile).first { !$0.isMain }?.id)
         let identity = service.summaries[0].identity
         callback(.disconnected("First recovery"))
         let pending = try service.publication(identity)
         callback(.conversation(pending))
         switch retirement {
         case .selection, .selectionRoundTrip:
-            var offline = try #require(workspace.screen(profile: service.profile))
-            await workspace.select(try #require(workspace.captureSelection(other, owner: offline.owner)))
-            if retirement == .selectionRoundTrip {
-                offline = try #require(workspace.screen(profile: service.profile))
-                await workspace.select(try #require(workspace.captureSelection(before.selectedChatID, owner: offline.owner)))
-            }
+            #expect(await workspace.openSaved(service.summaries[1]))
+            if retirement == .selectionRoundTrip { #expect(await workspace.openSaved(service.summaries[0])) }
         case .review: store.showsConnection = true
         case .connection: workspace.retireConnection()
         case .recovery: callback(.disconnected("Second recovery"))
