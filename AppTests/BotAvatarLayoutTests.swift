@@ -18,17 +18,6 @@ struct BotAvatarLayoutTests {
         #expect(try #require(firstRow) <= 1, "The visible \(shape) body starts at the shared top edge.")
     }
 
-    @Test func fittedImagesPreserveAspectRatioAndShareVisibleTop() throws {
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 60)).image { context in
-            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 120, height: 60))
-        }
-        let actual = try render(BotAvatar(profile: BotProfile(id: "fitted-image", name: "Image"),
-            image: image, size: 56, motion: .still, fitsBody: true)
-            .frame(width: 56, height: 56, alignment: .top), size: 56, scale: 1)
-        #expect((0..<actual.width).contains { actual.alpha($0, 0) > 128 })
-        #expect((0..<actual.width).allSatisfy { actual.alpha($0, 30) == 0 }, "The image stays 2:1.")
-    }
-
     @Test func fittedShortBodyKeepsThinkingCueNearBody() throws {
         let profile = BotProfile(id: "fitted-cue", name: "Cue", appearance: BotAppearance(shape: .pill))
         let actual = try render(BotAvatar(profile: profile, size: 56,
@@ -147,33 +136,13 @@ struct BotAvatarLayoutTests {
         }
     }
 
-    @Test func canonicalFallbackAndImagePrecedenceArePreserved() throws {
+    @Test func canonicalFallbackIsPreserved() throws {
         for id in ["default", "research", "inbox-triage", "triangle", "new-helper"] {
             let automatic = BotProfile(id: id, name: id)
             var explicit = automatic
             explicit.appearance = BotAppearance(shape: automatic.face.shape, color: automatic.face.color)
             #expect(try render(BotAvatar(profile: automatic, size: 56, motion: .still), size: 56).bytes
                 == render(BotAvatar(profile: explicit, size: 56, motion: .still), size: 56).bytes)
-        }
-        let renderer = ImageRenderer(content: Rectangle().fill(.blue).frame(width: 20, height: 20))
-        let image = UIImage(cgImage: try #require(renderer.cgImage))
-        let profile = BotProfile(id: "triangle", name: "Triangle", appearance: BotAppearance(shape: .triangle))
-        let actual = try render(BotAvatar(profile: profile, image: image, size: 56, motion: .still), size: 56)
-        let expected = try render(Image(uiImage: image).resizable().scaledToFit(), size: 56)
-        #expect(actual.bytes == expected.bytes)
-    }
-
-    @Test func offlineSavedImageKeepsItsPixelsAndShowsAStaticSignalCue() throws {
-        let renderer = ImageRenderer(content: Rectangle().fill(.blue).frame(width: 20, height: 20))
-        let image = UIImage(cgImage: try #require(renderer.cgImage))
-        let profile = BotProfile(id: "photo", name: "Photo", appearance: BotAppearance(shape: .squircle))
-        for size: CGFloat in [30, 32, 56, 72] {
-            let online = try render(BotAvatar(profile: profile, image: image, size: size), size: size * 2)
-            let offline = try render(BotAvatar(profile: profile, image: image, size: size, presentation: .offline)
-                .environment(\.avatarMotionDisabledForTesting, true), size: size * 2)
-            #expect(offline.bytes != online.bytes)
-            let center = (offline.height / 2 * offline.width + offline.width / 2) * 4
-            #expect(Array(offline.bytes[center..<center + 4]) == Array(online.bytes[center..<center + 4]))
         }
     }
 

@@ -10,7 +10,7 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
     case queuedMessageUnavailable
     case responseTooLong
 
-    case avatarConflict, partialAvatar, uncertainAvatar, invalidAvatar, avatarRefresh, avatarReload
+    case avatarConflict, invalidAvatar, avatarRefresh
     case profileConflict, partialProfile, uncertainProfile
     case artifactTooLarge
 
@@ -23,11 +23,8 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
         case .steeringUnavailable: "Steering requires an active turn. Your draft is still here."
         case .steeringAttachments: "Messages with attachments must be queued as a follow-up. Your draft and files are still here."
         case .artifactTooLarge: "This file is too large to open in Botto. The download limit is 25 MiB."
-        case .avatarRefresh: "Your avatar was saved, but Botto couldn’t refresh it. Reload the avatar before making another change."
-        case .avatarReload: "Botto couldn’t reload the avatar from the host. Try reloading again before making another change."
-        case .avatarConflict: "This avatar changed on the host. Reload it before choosing again."
-        case .partialAvatar: "The face was saved, but updating its image was not confirmed. Reload the avatar to check what the host kept before saving again."
-        case .uncertainAvatar: "The host did not confirm the avatar change. It may have saved. Reload the avatar to check before saving again."
+        case .avatarRefresh: "Your look was saved, but Botto couldn’t show it yet. Pull down on your spaces to refresh before changing it again."
+        case .avatarConflict: "This look changed while you were choosing. Close this page, pull down on your spaces to refresh, then choose again."
         case .invalidAvatar: "Choose a valid avatar shape and color."
         case .incompatible: "The host returned unexpected data. Check the connection and try again."
         case .authentication: "The host rejected the sign-in. Sign in again, or check the username and password."

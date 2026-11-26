@@ -52,3 +52,19 @@ func invalidFaceColorsAreRejected(color: String) {
     let saved = try JSONEncoder().encode(current)
     #expect(try JSONDecoder().decode(BotProfile.self, from: saved) == current)
 }
+
+/// Older bot.json files can carry image fields from before T3. They still decode, round-trip,
+/// and the next look edit clears the preview hash while keeping the rest.
+@Test func savedBotJSONWithImageFieldsStillDecodes() throws {
+    let hash = String(repeating: "ab", count: 32)
+    let saved = Data(##"{"displayName":"Kit","avatar":{"shape":"cloud","color":"#123456","custom":true,"imageKind":"photo","expression":"curious","bottoPreviewSHA256":"\##(hash)"}}"##.utf8)
+    let manifest = try JSONDecoder().decode(T3BotManifest.self, from: saved)
+    let avatar = try #require(manifest.avatar)
+    #expect(avatar.shape == .cloud && avatar.color == "#123456" && avatar.custom)
+    #expect(avatar.imageKind == "photo" && avatar.bottoPreviewSHA256 == hash && avatar.expression == "curious")
+    #expect(try JSONDecoder().decode(T3BotManifest.self, from: JSONEncoder().encode(manifest)) == manifest)
+
+    let edited = BotAvatarChoice.edit(.init(shape: .drop)).applying(to: avatar)
+    #expect(edited.bottoPreviewSHA256 == nil && edited.imageKind == "shape")
+    #expect(edited.shape == .drop && edited.color == "#123456" && edited.expression == "curious")
+}

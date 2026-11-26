@@ -40,7 +40,7 @@ phases. The size slider compares 30–96pt faces; the gallery also shows native
 | Offline | Closed canonical eyes with a static no-signal cue. |
 
 Preview Reduce Motion and inactive scenes stop frame loops while preserving
-static semantic cues. Saved images and picker previews stay still. Attachment
+static semantic cues. Picker previews stay still. Attachment
 points derive from projected canonical contours at every size. Canonical mood
 easing owns ordinary transitions; native status reactions do not replace its
 blink, gaze, volume or base motion.
@@ -71,8 +71,8 @@ require separate measurement.
 ## Verification
 
 `BotFaceMotionTests` cover narrow reaction timing, reduced-motion policy and
-stored-expression mood mapping. `BotAvatarLayoutTests` cover palette, image
-precedence, fitted bounds and cues. `CustomAvatarLayoutTests` prepare actual
+stored-expression mood mapping. `BotAvatarLayoutTests` cover palette, fitted
+bounds and cues. `CustomAvatarLayoutTests` prepare actual
 canonical assets and paint fixed frames for all ten families and official custom
 examples, including arcs, side views, Happy eyes and containment.
 `OpenBotAvatarEngineTests` compare the Swift bridge with independently generated
@@ -82,7 +82,7 @@ for the current snapshot.
 `BotAvatarPresentationTests` and BottoCore's `ConversationActivityTests` retain
 ownership of work clocks, aggregate precedence, verified outcomes, replay and
 stale-event behavior. Complete acceptance must also exercise the real playground,
-replay and interrupted states, every family at header/row sizes, saved images,
+replay and interrupted states, every family at header/row sizes,
 actual system Reduce Motion, scene transitions, VoiceOver and a live verified
 outcome. Historical observations of the earlier renderer do not prove the
 canonical renderer. Record current results in [verification](verification.md).

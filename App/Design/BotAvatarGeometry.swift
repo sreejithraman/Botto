@@ -5,20 +5,13 @@ import BottoCore
     let size: CGFloat
     let bodyBounds: CGRect
 
-    init(shape: BotAvatarShape, size: CGFloat, imageSize: CGSize? = nil, geometry: BotAvatarGeometry? = nil) {
+    init(shape: BotAvatarShape, size: CGFloat, geometry: BotAvatarGeometry? = nil) {
         self.size = size
-        if let imageSize, imageSize.width > 0, imageSize.height > 0 {
-            let scale = min(size / imageSize.width, size / imageSize.height)
-            let fitted = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-            bodyBounds = CGRect(x: (size - fitted.width) / 2, y: (size - fitted.height) / 2,
-                                width: fitted.width, height: fitted.height)
-        } else {
-            let fallback = BotAvatarCatalog.geometry(for: shape)
-            let asset = BotAvatarRenderCache.shared.asset(for: geometry ?? fallback)
-                ?? BotAvatarRenderCache.shared.asset(for: fallback)
-            bodyBounds = (asset?.restingBounds ?? CGRect(x: 8, y: 8, width: 84, height: 84))
-                .applying(CGAffineTransform(scaleX: size / 100, y: size / 100))
-        }
+        let fallback = BotAvatarCatalog.geometry(for: shape)
+        let asset = BotAvatarRenderCache.shared.asset(for: geometry ?? fallback)
+            ?? BotAvatarRenderCache.shared.asset(for: fallback)
+        bodyBounds = (asset?.restingBounds ?? CGRect(x: 8, y: 8, width: 84, height: 84))
+            .applying(CGAffineTransform(scaleX: size / 100, y: size / 100))
     }
     var fittedHeight: CGFloat { bodyBounds.height }
     var fittedVerticalOffset: CGFloat { size / 2 - bodyBounds.midY }

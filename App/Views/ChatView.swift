@@ -485,12 +485,12 @@ struct ChatTranscript: View {
                 })
             }
         } else {
-            let display = NativeTranscriptEmptyDisplay(profile: bot, image: store.avatar(for: bot),
+            let display = NativeTranscriptEmptyDisplay(profile: bot,
                 opening: screen?.isOpening == true, connected: store.isConnected,
                 presentation: store.avatarPresentation(for: bot, scope: .selectedChat))
             rows.append(.init(id: .empty, value: .empty(display)) { _, _ in
                 hosted(VStack(spacing: 16) {
-                    BotAvatar(profile: display.profile, image: display.image, size: display.opening ? 64 : 90,
+                    BotAvatar(profile: display.profile, size: display.opening ? 64 : 90,
                         presentation: display.presentation)
                     if display.opening {
                         Text("Opening your space…").font(.subheadline).foregroundStyle(.secondary)
@@ -786,7 +786,7 @@ private struct TranscriptMessage: View {
                               actionOwner: actionOwner, actionGeneration: actionGeneration,
                               actionScope: actionScope, actionRevision: actionRevision,
                               canOpenAttachment: onOpenAttachment != nil,
-                              senderProfile: senderProfile, senderImage: senderProfile.flatMap(store.avatar(for:)),
+                              senderProfile: senderProfile,
                               onOpenAttachment: onOpenAttachment, thumbnails: store.chats.thumbnails)
             .equatable()
             .environment(\.richReplyContext, message.isVisible && message.role == .assistant ? store.richReplyContext(for: botID, messageID: message.id) : .chat(nil))
@@ -811,7 +811,6 @@ private struct TranscriptMessageBody: View, Equatable {
     let actionRevision: UUID?
     let canOpenAttachment: Bool
     let senderProfile: BotProfile?
-    let senderImage: UIImage?
     let onOpenAttachment: ((ChatAttachment) -> Void)?
     let thumbnails: AttachmentThumbnails
 
@@ -822,7 +821,7 @@ private struct TranscriptMessageBody: View, Equatable {
               lhs.actionOwner == rhs.actionOwner, lhs.actionGeneration == rhs.actionGeneration,
               lhs.actionScope == rhs.actionScope, lhs.actionRevision == rhs.actionRevision,
               lhs.canOpenAttachment == rhs.canOpenAttachment,
-              sameSenderProfile(lhs.senderProfile, rhs.senderProfile), lhs.senderImage === rhs.senderImage,
+              sameSenderProfile(lhs.senderProfile, rhs.senderProfile),
               TranscriptContentRevision.sameMessage(lhs.message, rhs.message) else { return false }
         return true
     }
@@ -830,16 +829,16 @@ private struct TranscriptMessageBody: View, Equatable {
     nonisolated private static func sameSenderProfile(_ lhs: BotProfile?, _ rhs: BotProfile?) -> Bool {
         guard lhs == rhs else { return false }
         let first = [lhs?.id, lhs?.name, lhs?.appearance?.rawShape, lhs?.appearance?.color,
-                     lhs?.appearance?.imageKind, lhs?.appearance?.expression]
+                     lhs?.appearance?.expression]
         let second = [rhs?.id, rhs?.name, rhs?.appearance?.rawShape, rhs?.appearance?.color,
-                      rhs?.appearance?.imageKind, rhs?.appearance?.expression]
+                      rhs?.appearance?.expression]
         return first.map { $0.map { Data($0.utf8) } } == second.map { $0.map { Data($0.utf8) } }
     }
 
     var body: some View {
         MessageView(message: message, isStreaming: isStreaming,
                     filePreviewsAreSettled: filePreviewsAreSettled,
-                    senderProfile: senderProfile, senderImage: senderImage, onOpenAttachment: onOpenAttachment,
+                    senderProfile: senderProfile, onOpenAttachment: onOpenAttachment,
                     thumbnails: thumbnails)
     }
 }

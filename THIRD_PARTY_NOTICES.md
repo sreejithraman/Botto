@@ -1,8 +1,7 @@
 # Third-party notices
 
 Botto adapts native Hermes connection, gateway, profile creation, request parsing,
-transcript reconciliation, attachment preparation, shared avatar identity, appearance and
-asset loading rules from
+transcript reconciliation, attachment preparation, shared avatar identity and appearance rules from
 [Hermex](https://github.com/uzairansaruzi/hermex), revision
 `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (2026-10-22).
 
@@ -31,7 +30,6 @@ Adapted source areas:
 - `Models/MessageAttachment.swift` and `HermesMobileTests/HermesChatAttachmentTests.swift`:
   read-only transcript reference extraction, display names and presentation fixtures.
 - `Features/Bots/BotProfileAppearance.swift`: shared palette, profile-ID defaults and adaptive color contrast.
-- `Features/Bots/BotAvatarStore.swift`: bounded thumbnails and the desktop face-copy rule.
 - `Features/Bots/BotProfileEditor.swift`: merge/CAS and explicit image-clear contracts.
 
 Botto's corresponding files are under `Sources/BottoCore`, `App/Design`, and

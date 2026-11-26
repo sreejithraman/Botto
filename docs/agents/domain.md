@@ -20,7 +20,7 @@ Read technical contracts alongside the vocabulary when they apply:
   mutation access, and protocol boundaries.
 - [Pairing integration](../pairing-integration.md) and [setup](../setup.md) for
   connection, authentication, and host reachability.
-- [Avatars](../avatars.md) for shared identity, image precedence, edits, and motion.
+- [Avatars](../avatars.md) for shared identity, edits, and motion.
 - [Rich replies and files](../rich-content.md) for rendering and artifact behavior.
 
 These guides own implementation details and evidence. The glossary owns names;

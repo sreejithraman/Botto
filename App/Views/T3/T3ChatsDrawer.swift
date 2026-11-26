@@ -102,7 +102,7 @@ struct T3ChatsDrawer: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 44)
         .refreshable {
-            await store.refresh(revalidateAvatars: true)
+            await store.refresh()
             await outputs.load(store)
         }
     }
@@ -263,7 +263,7 @@ struct T3ChatsDrawer: View {
     /// It stays a plain awake face: other spaces' questions belong to their own rows and the footer.
     private var mainFace: some View {
         let bot = store.primaryT3Bot
-        return BotAvatar(profile: bot ?? BotProfile(id: "t3-waking", name: ""), image: bot.flatMap { store.avatar(for: $0) },
+        return BotAvatar(profile: bot ?? BotProfile(id: "t3-waking", name: ""),
                          size: 30, presentation: store.link == .offline ? .offline : .idle)
             .frame(width: 34, height: 34)
             .accessibilityHidden(true)

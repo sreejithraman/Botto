@@ -1,7 +1,7 @@
 import SwiftUI
 import BottoCore
 
-/// Saved-bot surfaces share activity selection, clocks, reactions and image precedence here.
+/// Saved-bot surfaces share activity selection, clocks and reactions here.
 struct AppBotAvatar: View {
     let store: AppStore
     let bot: BotProfile
@@ -11,7 +11,7 @@ struct AppBotAvatar: View {
 
     var body: some View {
         let value = store.avatarPresentation(for: bot, scope: scope)
-        BotAvatar(profile: bot, image: store.avatar(for: bot), size: size,
+        BotAvatar(profile: bot, size: size,
             motion: value.activity.isWorkingPhase ? .working(since: value.workStartedAt ?? value.enteredAt) : .idle,
             presentation: value, fitsBody: fitsBody)
     }
@@ -21,13 +21,12 @@ struct AppBotAvatar: View {
 struct ChatSenderAvatar: View {
     let sender: ChatMessage.MessageSender
     let profile: BotProfile?
-    let image: UIImage?
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 32
 
     var body: some View {
         Group {
             if let profile {
-                BotAvatar(profile: profile, image: image, size: size, motion: .still)
+                BotAvatar(profile: profile, size: size, motion: .still)
             } else {
                 Text(String(sender.name.prefix(1)).uppercased())
                     .font(.caption.weight(.semibold))

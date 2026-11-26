@@ -238,23 +238,18 @@ import BottoCore
         #expect(revisionElement("Hello, Renamed Milo.", in: fixture.host.view) != nil)
     }
 
-    @Test func exactEmptyProfileAndThumbnailInputsAndStreamingProjectionChangeDisplayRevisionOnly() throws {
+    @Test func exactEmptyProfileInputsAndStreamingProjectionChangeDisplayRevisionOnly() throws {
         let message = ChatMessage(id: "same", role: .assistant, text: "```html\n<p>Done</p>\n```")
         let streaming = NativeTranscriptRowValue.message(message, working: true, streaming: true)
         let formerTail = NativeTranscriptRowValue.message(message, working: true, streaming: false)
         #expect(streaming != formerTail && streaming.canContinueForeground(with: formerTail))
         var profile = BotProfile(id: "same", name: "é", appearance: .init(shape: .circle, color: "#ef4444"))
-        let original = NativeTranscriptEmptyDisplay(profile: profile, image: nil, opening: false, connected: true)
+        let original = NativeTranscriptEmptyDisplay(profile: profile, opening: false, connected: true)
         profile.name = "e\u{301}"
-        #expect(original != .init(profile: profile, image: nil, opening: false, connected: true))
-        #expect(original != .init(profile: original.profile, image: nil, opening: true, connected: true))
-        #expect(original != .init(profile: original.profile, image: nil, opening: false, connected: false))
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { _ in UIColor.red.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
-        #expect(original != .init(profile: original.profile, image: image, opening: false, connected: true))
-        let withImage = NativeTranscriptEmptyDisplay(profile: original.profile, image: image, opening: false, connected: true)
-        #expect(withImage == .init(profile: original.profile, image: image, opening: false, connected: true))
-        let replacement = UIImage(cgImage: try #require(image.cgImage))
-        #expect(withImage != .init(profile: original.profile, image: replacement, opening: false, connected: true))
+        #expect(original != .init(profile: profile, opening: false, connected: true))
+        #expect(original != .init(profile: original.profile, opening: true, connected: true))
+        #expect(original != .init(profile: original.profile, opening: false, connected: false))
+        #expect(original == .init(profile: original.profile, opening: false, connected: true))
     }
 
     @Test func sharedAndIndependentTextStoragePreserveExactWireRevisions() {

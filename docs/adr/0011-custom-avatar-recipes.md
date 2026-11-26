@@ -7,9 +7,11 @@ status: accepted
 ## Update
 
 In November 2026 Botto moved to T3 Code. Avatar generation had no screen and was
-removed, together with its Hermes `llm.oneshot` path. The generation and bundled
-prompt paragraphs below are history. The recipe storage and rendering decision
-still holds.
+removed, together with its Hermes `llm.oneshot` path. T3 hosts serve no avatar
+images, so the image path went too: the static PNG export, `bottoPreviewSHA256`
+matching, photo precedence and the asset upload. The generation, bundled prompt
+and image paragraphs below are history. The recipe storage and rendering
+decision still holds.
 
 Botto stores validated character geometry in the existing shared `shape` value
 as a versioned `botto-path:1:` recipe wrapping an
