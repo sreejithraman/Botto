@@ -96,7 +96,7 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Reconnect"].isHittable)
         app.buttons["artifact-done"].tap()
         app.buttons["Add attachment"].tap()
-        app.buttons["Choose a file"].tap()
+        NativeMenu.choose(app.buttons["Choose a file"])
         XCTAssertTrue(app.staticTexts["You’re offline"].exists)
         XCTAssertFalse(app.navigationBars["Browse"].exists)
     }
@@ -106,10 +106,12 @@ final class ConversationUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        app.buttons["t3-new-space"].tap()
+        let newSpace = app.buttons["t3-new-space"]
+        XCTAssertTrue(newSpace.waitForExistence(timeout: 10))
+        newSpace.tap()
         XCTAssertTrue(app.scrollViews["t3-fresh-page"].waitForExistence(timeout: 5))
         app.buttons["Add attachment"].tap()
-        app.buttons["Choose a file"].tap()
+        NativeMenu.choose(app.buttons["Choose a file"])
         XCTAssertTrue(app.tabBars.buttons["Browse"].firstMatch.waitForExistence(timeout: 20))
     }
 

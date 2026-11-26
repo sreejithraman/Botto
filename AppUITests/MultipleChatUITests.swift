@@ -269,21 +269,7 @@ final class MultipleChatUITests: XCTestCase {
         }
         let app = launch()
         app.buttons["Add attachment"].tap()
-        let chooseFile = app.buttons["Choose a file"]
-        var previousFrame = CGRect.null
-        let menuReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            MainActor.assumeIsolated {
-                guard chooseFile.exists, chooseFile.isHittable else {
-                    previousFrame = .null; return false
-                }
-                let frame = chooseFile.frame
-                defer { previousFrame = frame }
-                return frame == previousFrame
-            }
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [menuReady], timeout: 5), .completed,
-                       "Wait for the native attachment menu to settle.")
-        chooseFile.tap()
+        NativeMenu.choose(app.buttons["Choose a file"])
         // Browse the durable provider directly. Recents search uses a separate
         // index and can omit a file just exported by another application.
         let browse = app.tabBars.buttons["Browse"].firstMatch

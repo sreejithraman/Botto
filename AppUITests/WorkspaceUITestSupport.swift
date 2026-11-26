@@ -138,6 +138,26 @@ import Vision
     }
 }
 
+/// A native menu animates in, so tap its item only once it has stopped moving.
+@MainActor enum NativeMenu {
+    static func choose(_ item: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        var previousFrame = CGRect.null
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            MainActor.assumeIsolated {
+                guard item.exists, item.isHittable else {
+                    previousFrame = .null; return false
+                }
+                let frame = item.frame
+                defer { previousFrame = frame }
+                return frame == previousFrame
+            }
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 5), .completed,
+                       "Wait for the native menu to settle.", file: file, line: line)
+        item.tap()
+    }
+}
+
 @MainActor enum WorkspaceNavigation {
     static func openDrawer(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let search = app.textFields["t3-drawer-search"]

@@ -376,7 +376,7 @@ struct ChatComposer: View {
 
 extension View {
     /// Keep `interactive` off glass that holds other controls: there it stops a Menu inside from running its items.
-    @ViewBuilder func controlGlass<S: Shape>(in shape: S, interactive: Bool = true) -> some View {
+    @ViewBuilder func controlGlass<S: Shape>(in shape: S, interactive: Bool) -> some View {
         if #available(iOS 26, *) {
             glassEffect(.regular.interactive(interactive), in: shape)
         } else {
