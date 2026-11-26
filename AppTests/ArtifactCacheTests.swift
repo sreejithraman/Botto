@@ -63,6 +63,106 @@ import BottoCore
         }
     }
 
+    private func pageBytesInUse(_ root: URL) throws -> Int {
+        var handle: OpaquePointer?
+        defer { sqlite3_close(handle) }
+        try #require(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
+        func value(_ pragma: String) -> Int {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(handle, pragma, -1, &statement, nil) == SQLITE_OK, sqlite3_step(statement) == SQLITE_ROW else { return -1 }
+            return Int(sqlite3_column_int64(statement, 0))
+        }
+        return (value("PRAGMA page_count") - value("PRAGMA freelist_count")) * value("PRAGMA page_size")
+    }
+    private func pressureKey(_ name: String, pathBytes: Int = 1_500) throws -> ArtifactOriginalKey {
+        let id = try ExactID("chat")
+        return .init(identity: SessionIdentity(profile: try ExactID("bot"), root: id, stored: id, aliases: [id]),
+            messageID: Data(name.utf8), path: Data(("/" + String(repeating: "p", count: pathBytes)).utf8), sourceRevision: Data(name.utf8))
+    }
+    private func pressureScope() -> ArtifactCacheScope {
+        .init(configurationID: UUID(), serverURL: Data("https://other.example".utf8), installationID: nil, username: Data(), provider: nil)
+    }
+
+    /// A capture too large for the page budget on its own is refused without evicting anything, in any scope.
+    @Test func aCaptureThatCannotFitIsRefusedAndKeepsEveryOtherCapture() async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.indexBytes = 40_000
+            let (_, scope, key) = try fixture()
+            let other = pressureScope()
+            let cache = own(ArtifactCache(root: root, limits: limits))
+            let session = cache.session(scope: scope), otherSession = cache.session(scope: other)
+            try await session.retainOriginal(bytes, for: key)
+            try await otherSession.retainOriginal(bytes, for: key)
+            let rows = try entries(in: root).map { [$0.kind] + [$0.scope, $0.key, $0.payload].map(\.count) }, blobs = try files(in: root)
+            // Its rows fit the row allowance, but with their primary-key index copy they need more pages than the budget.
+            let large = try pressureKey("large", pathBytes: 17_000)
+            await #expect(throws: ArtifactCacheError.quota) { _ = try await session.retainOriginal(bytes, for: large) }
+            #expect(try entries(in: root).map { [$0.kind] + [$0.scope, $0.key, $0.payload].map(\.count) } == rows)
+            #expect(try files(in: root) == blobs)
+            await cache.close()
+            let reopened = own(ArtifactCache(root: root, limits: limits))
+            #expect(try await reopened.session(scope: scope).original(for: key)?.artifact.data == bytes.data)
+            #expect(try await reopened.session(scope: other).original(for: key)?.artifact.data == bytes.data)
+        }
+    }
+
+    /// A replacement that needs evictions to fit, then is revoked or retired before COMMIT, takes its evictions
+    /// back with it: the key keeps its previous original and digest, and no other row is gone.
+    /// The committed case shows the same replacement really evicts, and never its own key.
+    @Test(arguments: ["revoked", "retired", "committed"])
+    func aWithdrawnReplacementUnderPagePressureKeepsThePreviousCaptureAndEvictsNothing(withdrawal: String) async throws {
+        try await withCacheRoot { root, own in
+            var limits = ArtifactCache.Limits(); limits.indexBytes = 40_000
+            let gate = CaptureCommitGate()
+            defer { gate.release() }
+            let (_, scope, _) = try fixture()
+            let cache = own(ArtifactCache(root: root, limits: limits, beforeCaptureCommit: { gate.pause() }))
+            let session = cache.session(scope: scope)
+            // The replaced key is the least recently used, the first candidate for eviction.
+            let key = try pressureKey("replaced")
+            let previousDigest = try #require(try await session.retainOriginal(bytes, for: key))
+            var fillers = 0
+            while try pageBytesInUse(root) < 44 * 1024 {
+                let filler = DownloadedArtifact(data: Data("filler \(fillers)".utf8), filename: "filler.txt", mimeType: "text/plain")
+                try await session.retainOriginal(filler, for: try pressureKey("filler-\(fillers)"))
+                fillers += 1
+            }
+            let rows = try entries(in: root)
+            try #require(rows.count == 2 * (fillers + 1), "Filling must not evict")
+            let blobs = try files(in: root)
+            let admission = ArtifactCaptureAdmission(), consumer = UUID()
+            admission.register(consumer)
+            gate.arm()
+            // Long metadata needs about six more pages than the budget leaves.
+            let replacement = DownloadedArtifact(data: Data("replacement".utf8), filename: String(repeating: "f", count: 24_000), mimeType: "text/plain")
+            let replacing = Task { try await session.retainOriginal(replacement, for: key, admission: admission) }
+            defer { replacing.cancel(); admission.revokeAll() }
+            await waitWhile { !gate.isEntered }
+            try #require(gate.isEntered)
+            if withdrawal == "revoked" { admission.revoke(consumer) } else if withdrawal == "retired" { session.retire() }
+            gate.release()
+            if withdrawal == "committed" {
+                #expect(try await replacing.value != nil)
+                let after = try entries(in: root)
+                #expect(after.count < rows.count, "The replacement needed evictions to fit")
+                #expect(after.filter { $0.key == Self.captureKey(key) }.count == 2)
+                #expect(try await session.original(for: key)?.artifact.data == replacement.data)
+                #expect(try pageBytesInUse(root) <= 64 * 1024)
+                return
+            }
+            await #expect(throws: (any Error).self) { _ = try await replacing.value }
+            let after = try entries(in: root)
+            #expect(after.count == rows.count, "A withdrawn capture evicts nothing")
+            #expect(after.map(\.key) == rows.map(\.key) && after.map(\.payload) == rows.map(\.payload))
+            #expect(try files(in: root) == blobs)
+            await cache.close()
+            let reopened = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
+            #expect(try await reopened.original(for: key)?.artifact.data == bytes.data)
+            #expect(try await reopened.originalDigest(for: key) == previousDigest)
+        }
+    }
+
     /// Startup pruning also opens and upgrades the cache. A lock at launch must not leave the cache unavailable
     /// for the rest of the run: the next workspace mount retries it once.
     @Test func aStartupPruneThatFailsIsRetriedByALaterMount() async throws {

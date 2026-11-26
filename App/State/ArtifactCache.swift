@@ -192,7 +192,6 @@ nonisolated struct CachedArtifactOriginal: Sendable {
     }
 }
 enum ArtifactCacheError: Error { case unavailable, retired, unsupportedSchema, quota }
-nonisolated private struct PhysicalPressure: Error {}
 
 fileprivate actor ArtifactCacheBackend {
     private let root: URL
@@ -307,41 +306,33 @@ fileprivate actor ArtifactCacheBackend {
         guard artifact.data.count <= limits.singleOriginalBytes, artifact.data.count <= limits.originalBytes else { return nil }
         let name = filename(scope: scope, digest: digest, kind: 1)
         let payload = try encoder.encode(OriginalMetadata(filename: artifact.filename, mimeType: artifact.mimeType, digest: digest))
-        var evict = false
-        while true {
-            // Reclaiming removes files no row names, including this one after a rollback.
-            try writeBlob(artifact.data, name: name)
-            do {
-                try database.transaction {
-                    try insert(scope: scope, kind: 1, key: originalKey(key), payload: payload, blob: name, size: artifact.data.count)
-                    try insert(scope: scope, kind: 3, key: originalKey(key), payload: digest, size: digest.count)
-                    try enforceLimits()
-                    guard try row(scope: scope, kind: 1, key: originalKey(key))?.first?.data == payload,
-                          try row(scope: scope, kind: 3, key: originalKey(key))?.first?.data == digest else { throw ArtifactCacheError.quota }
-                    beforeCaptureCommit?()
-                    try Task.checkCancellation()
-                    // Claim publication immediately before COMMIT; later presentation
-                    // retirement cannot undo bytes admitted while a consumer was valid.
-                    try admission?.claimPublication()
-                    _ = try self.scope(lease)
-                }
-                return digest
-            } catch is PhysicalPressure {
-                try reclaimPages(evicting: evict)
-                evict = true
-            }
+        // Digest-named, so a replacement with other bytes never overwrites the file its previous row names.
+        // Files no committed row names are swept on return (the defer above), whichever way the transaction ends.
+        try writeBlob(artifact.data, name: name)
+        let target = (scope: scope, key: originalKey(key))
+        // Every eviction happens inside this transaction, so a refused, revoked or retired capture deletes nothing.
+        try database.transaction {
+            try insert(scope: scope, kind: 1, key: target.key, payload: payload, blob: name, size: artifact.data.count)
+            try insert(scope: scope, kind: 3, key: target.key, payload: digest, size: digest.count)
+            try enforceLimits(keeping: target)
+            guard try row(scope: scope, kind: 1, key: target.key)?.first?.data == payload,
+                  try row(scope: scope, kind: 3, key: target.key)?.first?.data == digest else { throw ArtifactCacheError.quota }
+            beforeCaptureCommit?()
+            try Task.checkCancellation()
+            // Claim publication immediately before COMMIT; later presentation
+            // retirement cannot undo bytes admitted while a consumer was valid.
+            try admission?.claimPublication()
+            _ = try self.scope(lease)
         }
+        try? compactFreePages()
+        return digest
     }
-    /// The file outgrew its page budget. Outside a transaction, first compact free pages,
-    /// then on later attempts evict the oldest tenth of rows and compact again.
-    private func reclaimPages(evicting: Bool) throws {
-        guard let database else { throw ArtifactCacheError.unavailable }
-        try Task.checkCancellation()
-        if evicting {
-            let target = try rowBytes() * 9 / 10
-            repeat { try evictOldest() } while try rowBytes() > target
-            try cleanup()
-        }
+    /// Evicted rows leave free pages behind. Give them back once they would hold the file over its budget,
+    /// or make up a quarter of it. This only compacts; it never removes a row.
+    private func compactFreePages() throws {
+        guard let database else { return }
+        let pages = try integer("PRAGMA page_count"), free = try integer("PRAGMA freelist_count"), pageBytes = try integer("PRAGMA page_size")
+        guard free > 0, pages * pageBytes > physicalBudget || free * 4 >= pages else { return }
         try database.execute("VACUUM")
     }
     private func readBlob(_ name: String, maximumBytes: Int) -> Data? {
@@ -387,27 +378,34 @@ fileprivate actor ArtifactCacheBackend {
         // Include mapping keys, scope bytes and response metadata in admission.
         try database?.rows("SELECT COALESCE(SUM(length(payload)+length(key)+length(scope)+length(configuration)+128),0) FROM entries").first?[0].integer ?? 0
     }
-    private func evictOldest(kind: Int? = nil) throws {
+    private func integer(_ pragma: String) throws -> Int {
         guard let database else { throw ArtifactCacheError.unavailable }
-        let rows = try database.rows("SELECT rowid FROM entries" +
-            (kind == nil ? "" : " WHERE kind=?") + " ORDER BY accessed ASC LIMIT 1", kind.map { [.integer($0)] } ?? [])
+        return try database.rows(pragma).first?.first?.integer ?? 0
+    }
+    /// SQLite pages and indexes also consume the index allowance. Small
+    /// injected budgets retain the minimum schema pages (64 KiB).
+    private var physicalBudget: Int { max(64 * 1024, limits.indexBytes) }
+    /// Deleted rows return whole pages to the freelist, so evictions in an open transaction lower this.
+    private func pageBytesInUse() throws -> Int {
+        try (integer("PRAGMA page_count") - integer("PRAGMA freelist_count")) * integer("PRAGMA page_size")
+    }
+    /// Deletes the least recently used row other than the capture being written; `.quota` when none is left.
+    private func evictOldest(kind: Int? = nil, keeping target: (scope: ArtifactCacheScope, key: Data)) throws {
+        guard let database else { throw ArtifactCacheError.unavailable }
+        let rows = try database.rows("SELECT rowid FROM entries WHERE NOT (scope=? AND key=?)" +
+            (kind == nil ? "" : " AND kind=?") + " ORDER BY accessed ASC LIMIT 1",
+            [.data(target.scope.namespace), .data(target.key)] + (kind.map { [.integer($0)] } ?? []))
         guard let id = rows.first?.first?.integer else { throw ArtifactCacheError.quota }
         try database.execute("DELETE FROM entries WHERE rowid=?", [.integer(id)])
     }
-    /// Runs inside a capture's transaction. Physical pressure is reclaimed by the caller after rollback.
-    private func enforceLimits() throws {
+    /// Runs inside the capture's transaction, after its rows are inserted.
+    private func enforceLimits(keeping target: (scope: ArtifactCacheScope, key: Data)) throws {
         guard let database else { return }
         while (try database.rows("SELECT COALESCE(SUM(size),0) FROM (SELECT blob,MAX(size) AS size FROM entries WHERE kind=1 GROUP BY blob)").first?[0].integer ?? 0) > max(0, limits.originalBytes) {
-            try evictOldest(kind: 1)
+            try evictOldest(kind: 1, keeping: target)
         }
-        while try rowBytes() > max(0, limits.indexBytes) { try evictOldest() }
-        // SQLite pages and indexes also consume the index allowance. Small
-        // injected budgets retain the minimum schema pages (64 KiB).
-        let physicalBudget = max(64 * 1024, limits.indexBytes)
-        let pages = try database.rows("PRAGMA page_count").first?.first?.integer ?? 0
-        let pageBytes = try database.rows("PRAGMA page_size").first?.first?.integer ?? 0
-        guard pageBytes > 0 else { throw ArtifactCacheError.quota }
-        guard pages <= physicalBudget / pageBytes else { throw PhysicalPressure() }
+        while try rowBytes() > max(0, limits.indexBytes) { try evictOldest(keeping: target) }
+        while try pageBytesInUse() > physicalBudget { try evictOldest(keeping: target) }
     }
 }
 
