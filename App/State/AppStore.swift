@@ -702,8 +702,8 @@ import BottoCore
         try await withT3Service { try await $0.listRoutines() }
     }
 
-    func createT3Routine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
-        try await withT3Service { try await $0.createRoutine(name: name, prompt: prompt, cron: cron, threadID: threadID) }
+    func createT3Routine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
+        try await withT3Service { try await $0.createRoutine(name: name, prompt: prompt, schedule: schedule, threadID: threadID) }
     }
 
     func setT3RoutineEnabled(id: String, enabled: Bool) async throws {

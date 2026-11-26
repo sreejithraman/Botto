@@ -5,7 +5,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported, unknownHistoryOffset
     case mainSpaceRecoveryRequired
     case invalidPath, proseChanged
-    case unsupportedRoutineSchedule, protectedMainSpace
+    case protectedMainSpace
 
     public var errorDescription: String? {
         switch self {
@@ -25,7 +25,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
         case .invalidPath: "Choose a file inside the bot project."
         case .proseChanged: "This file changed elsewhere. Copy your edits before reloading it from the host."
-        case .unsupportedRoutineSchedule: "Enter a cron expression with a fixed minute and hour, optional weekdays, and * for day of month and month."
         case .protectedMainSpace: "The main space stays. You can rename it instead."
         }
     }
@@ -405,10 +404,9 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return tasks.filter { $0["projectId"].text == session.profile.text }
     }
 
-    public func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
+    public func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
         let session = try requireSession()
         let title = try Self.name(name)
-        let schedule = try Self.routineSchedule(cron)
         let model = modelSelection(session)
         guard model != .null else { throw T3ServiceError.missingModel }
         // A routine without a space gets its own, named after it, so its results stay together.
@@ -420,7 +418,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let runtime = session.config["settings"]["defaultRuntimeMode"].nonempty ?? "approval-required"
         let reply = try await mutationReply("scheduledTasks.upsert", payload: .object([
             "commandId": .string(UUID().uuidString), "title": .string(title), "prompt": .string(prompt), "enabled": .bool(true),
-            "schedule": schedule, "projectId": .string(session.profile.text), "threadId": .string(destination),
+            "schedule": Self.routineSchedulePayload(schedule), "projectId": .string(session.profile.text), "threadId": .string(destination),
             "threadMode": .string("continue"), "workspaceStrategy": .object(["type": .string("root")]),
             "modelSelection": model, "runtimeMode": .string(runtime), "interactionMode": .string("default"),
             "createdBy": .string("user"), "creationSource": .string("mobile")
@@ -1235,15 +1233,21 @@ private extension T3BotService {
         case "thread.updated":
             let shell = item["thread"]
             guard shell["projectId"].text == session.profile.text, let id = shell["id"].nonempty else { return }
-            catchUpOnSetup(session)
-            if shell["archivedAt"] == .null {
-                session.shells[id] = shell
-                session.archivedShells.removeValue(forKey: id)
+            if T3ProjectionMapper.isWorkflowStep(shell) {
+                let active = session.shells.removeValue(forKey: id)
+                let archived = session.archivedShells.removeValue(forKey: id)
+                changed = active != nil || archived != nil
             } else {
-                session.archivedShells[id] = shell
-                session.shells.removeValue(forKey: id)
+                catchUpOnSetup(session)
+                if shell["archivedAt"] == .null {
+                    session.shells[id] = shell
+                    session.archivedShells.removeValue(forKey: id)
+                } else {
+                    session.archivedShells[id] = shell
+                    session.shells.removeValue(forKey: id)
+                }
+                changed = true
             }
-            changed = true
         case "thread.removed":
             guard let id = item["threadId"].nonempty else { return }
             if item["location"].text == "archive" {
@@ -1296,7 +1300,7 @@ private extension T3BotService {
 
     func indexShells(_ rows: [JSONValue], in session: Session) -> [String: JSONValue] {
         var shells: [String: JSONValue] = [:]
-        for row in rows where row["projectId"].text == session.profile.text {
+        for row in rows where row["projectId"].text == session.profile.text && !T3ProjectionMapper.isWorkflowStep(row) {
             if let id = row["id"].nonempty { shells[id] = row }
         }
         return shells
@@ -1478,53 +1482,37 @@ private extension T3BotService {
         }
     }
 
-    static func routineSchedule(_ cron: String) throws -> JSONValue {
-        let fields = cron.split(whereSeparator: \.isWhitespace)
-        guard fields.count == 5, let minute = Int(fields[0]), (0...59).contains(minute),
-              let hour = Int(fields[1]), (0...23).contains(hour), fields[2] == "*", fields[3] == "*" else {
-            throw T3ServiceError.unsupportedRoutineSchedule
-        }
-        var schedule: [String: JSONValue] = [
-            "type": .string("fixed_time"), "timeOfDay": .string(String(format: "%02d:%02d", hour, minute))
+    static func routineSchedulePayload(_ schedule: T3RoutineSchedule) -> JSONValue {
+        var payload: [String: JSONValue] = [
+            "type": .string("fixed_time"),
+            "timeOfDay": .string(String(format: "%02d:%02d", schedule.hour, schedule.minute))
         ]
-        if fields[4] != "*" {
-            var weekdays: Set<Int> = []
-            for span in fields[4].split(separator: ",", omittingEmptySubsequences: false) {
-                let bounds = span.split(separator: "-", omittingEmptySubsequences: false)
-                guard (1...2).contains(bounds.count), let first = weekday(bounds[0]),
-                      let last = weekday(bounds[bounds.count - 1]), first <= last else {
-                    throw T3ServiceError.unsupportedRoutineSchedule
-                }
-                weekdays.formUnion((first...last).map { $0 % 7 })
-            }
-            schedule["weekdays"] = .array(weekdays.sorted().map { .number(Double($0)) })
+        if schedule.days != T3RoutineSchedule.everyDay {
+            payload["weekdays"] = .array(schedule.days.sorted().map { .number(Double($0)) })
         }
-        return .object(schedule)
-    }
-
-    static func weekday(_ field: Substring) -> Int? {
-        if let number = Int(field), (0...7).contains(number) { return number }
-        return ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].firstIndex(of: field.uppercased())
+        return .object(payload)
     }
 
     static func routine(_ task: JSONValue) throws -> T3ScheduledRoutine {
-        let schedule = task["schedule"]
+        let wireSchedule = task["schedule"]
         guard let id = task["id"].nonempty, let title = task["title"].nonempty,
               let prompt = task["prompt"].nonempty, let enabled = task["enabled"].flag,
-              let type = schedule["type"].nonempty else {
+              let type = wireSchedule["type"].nonempty else {
             throw T3ServiceError.invalidResponse
         }
-        var cron = ""
+        let schedule: T3RoutineSchedule?
         if type == "fixed_time" {
-            let time = schedule["timeOfDay"].text?.split(separator: ":")
-            guard let time, time.count == 2, let hour = Int(time[0]), let minute = Int(time[1]) else {
+            let time = wireSchedule["timeOfDay"].text?.split(separator: ":")
+            let days = Set((wireSchedule["weekdays"].list ?? []).compactMap(\.integer))
+            guard let time, time.count == 2, let hour = Int(time[0]), let minute = Int(time[1]),
+                  let fixed = T3RoutineSchedule(hour: hour, minute: minute, days: days.isEmpty ? T3RoutineSchedule.everyDay : days) else {
                 throw T3ServiceError.invalidResponse
             }
-            let weekdays = Set((schedule["weekdays"].list ?? []).compactMap(\.integer)).sorted()
-            let days = weekdays.isEmpty || weekdays.count == 7 ? "*" : weekdays.map(String.init).joined(separator: ",")
-            cron = "\(minute) \(hour) * * \(days)"
+            schedule = fixed
+        } else {
+            schedule = nil
         }
-        return T3ScheduledRoutine(id: id, name: title, prompt: prompt, cron: cron, enabled: enabled,
+        return T3ScheduledRoutine(id: id, name: title, prompt: prompt, schedule: schedule, enabled: enabled,
                                   threadID: task["threadId"].text, nextRunAt: T3ProjectionMapper.date(task["nextRunAt"]),
                                   lastRunAt: T3ProjectionMapper.date(task["lastRunAt"]))
     }

@@ -733,7 +733,7 @@ struct T3RoutinesList: View {
     }
 
     private func scheduleLine(_ routine: T3ScheduledRoutine, chat: T3ChannelSummary?) -> String {
-        var parts = [T3RoutineSchedule.summary(routine.cron)]
+        var parts = [T3RoutineSchedule.summary(routine.schedule)]
         if !routine.enabled { parts.append(String(localized: "Paused")) }
         else if let next = routine.nextRunAt { parts.append(String(localized: "next \(next.formatted(.relative(presentation: .named)))")) }
         if let chat { parts.append(String(localized: "in \(chat.displayTitle)")) }
@@ -785,21 +785,28 @@ private struct T3RoutineCreator: View {
     @State private var saving = false
     @State private var error: String?
 
-    private var schedule: T3RoutineSchedule {
-        switch cadence {
-        case .daily: .daily
-        case .weekdays: .weekdays
-        case .custom: .days(days)
-        }
+    private var clockTime: DateComponents {
+        Calendar.current.dateComponents([.hour, .minute], from: time)
     }
 
-    private var cron: String {
-        let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
-        return schedule.cron(hour: parts.hour ?? 9, minute: parts.minute ?? 0)
+    private var schedule: T3RoutineSchedule? {
+        let days = switch cadence {
+        case .daily: T3RoutineSchedule.everyDay
+        case .weekdays: T3RoutineSchedule.weekdays
+        case .custom: self.days
+        }
+        return T3RoutineSchedule(hour: clockTime.hour ?? 9, minute: clockTime.minute ?? 0, days: days)
+    }
+
+    private var scheduleSummary: String {
+        if let schedule { return T3RoutineSchedule.summary(schedule) }
+        // Keep the existing preview when all custom days have been deselected.
+        let emptySelection = "\(clockTime.minute ?? 0) \(clockTime.hour ?? 9) * * "
+        return String(localized: "Cron · \(emptySelection)")
     }
 
     private var canCreate: Bool {
-        !saving && schedule.isValid
+        !saving && schedule != nil
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -824,7 +831,7 @@ private struct T3RoutineCreator: View {
                     DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
                         .accessibilityIdentifier("t3-routine-time")
                 } footer: {
-                    Text("\(T3RoutineSchedule.summary(cron)), on the host’s clock.")
+                    Text("\(scheduleSummary), on the host’s clock.")
                 }
                 Section {
                     Picker("Space", selection: $threadID) {
@@ -878,18 +885,17 @@ private struct T3RoutineCreator: View {
     }
 
     private func create() {
-        guard canCreate, isCurrent() else { return }
+        guard canCreate, isCurrent(), let schedule else { return }
         guard store.isConnected else { error = T3ServiceError.disconnected.localizedDescription; return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cron = cron
         let threadID = threadID
         saving = true
         error = nil
         Task {
             defer { saving = false }
             do {
-                let routine = try await store.createT3Routine(name: name, prompt: prompt, cron: cron, threadID: threadID)
+                let routine = try await store.createT3Routine(name: name, prompt: prompt, schedule: schedule, threadID: threadID)
                 guard isCurrent() else { return }
                 onCreated(routine)
                 dismiss()

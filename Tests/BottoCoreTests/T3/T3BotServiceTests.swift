@@ -215,6 +215,30 @@ import Testing
         #expect(activity.kind == .reply)
     }
 
+    @Test func workflowStepsStayOutOfSpacesDirectoryAndPushSubscriptions() async throws {
+        let host = T3ServiceHost(existing: true)
+        try await host.addWorkflowStep("workflow-active")
+        try await host.addWorkflowStep("workflow-archived", archived: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        let (activities, observed) = AsyncStream<T3PushActivity>.makeStream()
+        service.onPushActivity = { observed.yield($0) }
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+
+        #expect(service.currentT3Channels.map(\.id) == ["existing-general"])
+        let bot = try #require(try await service.bots().first)
+        let profile = try ExactID(bot.id)
+        let directory = try await service.conversations(profile: profile)
+        #expect(directory.summaries.map { $0.identity.stored.text } == ["existing-general"])
+
+        try await host.addWorkflowStep("workflow-live")
+        try await host.completeForPush("existing-general")
+        let activity = try #require(await firstActivity(activities))
+        #expect(activity.spaceID == "existing-general")
+        #expect(service.currentT3Channels.map(\.id) == ["existing-general"])
+        #expect(await host.threadSubscriptions == ["existing-general"])
+    }
+
     private func firstActivity(_ activities: AsyncStream<T3PushActivity>) async -> T3PushActivity? {
         await withTaskGroup(of: T3PushActivity?.self) { group in
             group.addTask {
@@ -307,15 +331,16 @@ import Testing
         }
         let existing = try #require(initial.first)
         #expect(existing.id == "once-task")
-        #expect(existing.cron.isEmpty)
+        #expect(existing.schedule == nil)
         #expect(existing.lastRunAt == T3PairingExchange.date("2026-11-24T12:00:00Z"))
 
+        let daily = try #require(T3RoutineSchedule(hour: 9, minute: 0))
         let morning = try await service.createRoutine(name: "Morning brief", prompt: "Summarize inbox",
-                                                      cron: "0 9 * * *", threadID: nil)
+                                                      schedule: daily, threadID: nil)
         #expect(morning.name == "Morning brief")
         #expect(morning.prompt == "Summarize inbox")
         #expect(morning.enabled)
-        #expect(morning.cron == "0 9 * * *")
+        #expect(morning.schedule == daily)
         // Without a space, a routine gets its own, named after it.
         let routineChat = try #require(await host.createdThreads.last)
         #expect(await host.createdThreads.count == 1)
@@ -327,19 +352,17 @@ import Testing
         #expect(morning.lastRunAt == nil)
 
         try await service.archiveChannel(threadID: "archived-channel", archived: false)
+        let workdays = try #require(T3RoutineSchedule(hour: 17, minute: 30, days: T3RoutineSchedule.weekdays))
         let weekdays = try await service.createRoutine(name: "Build report", prompt: "Summarize builds",
-                                                       cron: "30 17 * * 1-5", threadID: "archived-channel")
+                                                       schedule: workdays, threadID: "archived-channel")
         #expect(weekdays.threadID == "archived-channel")
-        #expect(weekdays.cron == "30 17 * * 1,2,3,4,5")
+        #expect(weekdays.schedule == workdays)
         let payloads = await host.routineUpserts
         #expect(payloads.count == 2)
         #expect(payloads.first?["schedule"] == .object(["type": .string("fixed_time"), "timeOfDay": .string("09:00")]))
         #expect(payloads.last?["schedule"] == .object([
             "type": .string("fixed_time"), "timeOfDay": .string("17:30"), "weekdays": .array([1, 2, 3, 4, 5].map { .number($0) })
         ]))
-        await #expect(throws: T3ServiceError.unsupportedRoutineSchedule) {
-            try await service.createRoutine(name: "Month end", prompt: "Summarize inbox", cron: "0 9 28 * *", threadID: nil)
-        }
 
         try await service.setRoutineEnabled(id: morning.id, enabled: false)
         let afterDisable = try await service.listRoutines()
@@ -352,15 +375,24 @@ import Testing
         #expect(await host.interruptedRoutineStreams >= 3)
     }
 
+    @Test func fixedRoutineSchedulesRequireADayAndAValidTime() {
+        #expect(T3RoutineSchedule(hour: 9, minute: 0, days: []) == nil)
+        #expect(T3RoutineSchedule(hour: 9, minute: 0, days: [7]) == nil)
+        #expect(T3RoutineSchedule(hour: 24, minute: 0) == nil)
+        #expect(T3RoutineSchedule(hour: 9, minute: 60) == nil)
+        #expect(T3RoutineSchedule(hour: 0, minute: 5, days: [0])?.days == [0])
+    }
+
     @Test func lostRoutineAcknowledgementReportsAnUncertainCreation() async throws {
         let host = T3ServiceHost(existing: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
         defer { service.disconnect() }
         _ = try await service.connect(configuration: existingConfiguration())
         await host.loseNextRoutineAcknowledgement()
+        let schedule = try #require(T3RoutineSchedule(hour: 9, minute: 0))
         await #expect(throws: ConversationServiceError.uncertain) {
             try await service.createRoutine(name: "Morning brief", prompt: "Summarize inbox",
-                                            cron: "0 9 * * *", threadID: nil)
+                                            schedule: schedule, threadID: nil)
         }
         #expect(await host.routineUpserts.count == 1)
         #expect(await host.createdThreads.count == 1)
@@ -1065,6 +1097,16 @@ private actor T3ServiceHost: T3WebSocketTransport {
                 "archivedAt": .string(time), "pinnedAt": .string(time)
             ])
         }
+    }
+
+    func addWorkflowStep(_ id: String, archived: Bool = false) throws {
+        var shell: JSONValue = .object([
+            "id": .string(id), "projectId": .string(projectID), "title": .string("Workflow step"),
+            "lineage": .object(["workflowStep": .bool(true)])
+        ])
+        if archived { shell["archivedAt"] = .string(time) }
+        threads[id] = shell
+        try shellUpdate(id)
     }
 
     func archiveFromAnotherClient(_ thread: String) throws {

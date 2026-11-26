@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 
 enum T3ProjectionMapper {
+    static func isWorkflowStep(_ shell: JSONValue) -> Bool {
+        shell["lineage"]["workflowStep"].flag == true
+    }
+
     static let toolTypes: Set<String> = ["command_execution", "file_change", "file_search", "web_search"]
     static let activeStatuses: Set<String> = ["preparing", "starting", "running", "waiting"]
     static let approvalKinds: Set<String> = ["command", "file-read", "file-change", "permission", "mcp-elicitation"]

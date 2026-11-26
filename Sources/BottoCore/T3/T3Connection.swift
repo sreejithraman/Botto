@@ -164,23 +164,43 @@ public struct T3OutputFile: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
+/// A fixed time on the host’s clock, on one or more days of the week.
+public struct T3RoutineSchedule: Equatable, Sendable {
+    public static let everyDay = Set(0...6)
+    public static let weekdays: Set<Int> = [1, 2, 3, 4, 5]
+    public static let weekends: Set<Int> = [0, 6]
+
+    public let hour: Int
+    public let minute: Int
+    /// 0 is Sunday.
+    public let days: Set<Int>
+
+    public init?(hour: Int, minute: Int, days: Set<Int> = Self.everyDay) {
+        guard (0...23).contains(hour), (0...59).contains(minute),
+              !days.isEmpty, days.isSubset(of: Self.everyDay) else { return nil }
+        self.hour = hour
+        self.minute = minute
+        self.days = days
+    }
+}
+
+public struct T3ScheduledRoutine: Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String
     public let prompt: String
-    /// Empty for host schedules without a cron representation.
-    public let cron: String
+    /// Absent for host schedules other than a fixed time of day.
+    public let schedule: T3RoutineSchedule?
     public let enabled: Bool
     public let threadID: String?
     public let nextRunAt: Date?
     public let lastRunAt: Date?
 
-    public init(id: String, name: String, prompt: String, cron: String, enabled: Bool,
+    public init(id: String, name: String, prompt: String, schedule: T3RoutineSchedule?, enabled: Bool,
                 threadID: String?, nextRunAt: Date?, lastRunAt: Date?) {
         self.id = id
         self.name = name
         self.prompt = prompt
-        self.cron = cron
+        self.schedule = schedule
         self.enabled = enabled
         self.threadID = threadID
         self.nextRunAt = nextRunAt
@@ -210,7 +230,7 @@ public struct T3ScheduledRoutine: Identifiable, Codable, Equatable, Sendable {
     func listOutputs() async throws -> [T3OutputFile]
     func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact
     func listRoutines() async throws -> [T3ScheduledRoutine]
-    func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine
     func setRoutineEnabled(id: String, enabled: Bool) async throws
     func deleteRoutine(id: String) async throws
 }
@@ -232,7 +252,7 @@ public extension T3BotBrainControlling {
 
     func listRoutines() async throws -> [T3ScheduledRoutine] { [] }
 
-    func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
         throw T3ServiceError.unsupported
     }
 

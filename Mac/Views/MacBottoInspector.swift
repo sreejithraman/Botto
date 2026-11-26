@@ -372,7 +372,7 @@ private struct MacRoutinesPage: View {
     }
 
     private func row(_ routine: T3ScheduledRoutine) -> some View {
-        MacHairlineRow(title: routine.name, detail: MacRoutineSchedule.summary(routine.cron)) {
+        MacHairlineRow(title: routine.name, detail: T3RoutineSchedule.macSummary(routine.schedule)) {
             HStack(spacing: 8) {
                 Toggle("Active", isOn: Binding(get: { routine.enabled }, set: { enabled in
                     Task {
@@ -400,7 +400,7 @@ private struct MacRoutineForm: View {
     @State private var name = ""
     @State private var prompt = ""
     @State private var time = Calendar.current.date(bySettingHour: 8, minute: 0, second: 0, of: .now) ?? .now
-    @State private var days: MacRoutineSchedule = .everyDay
+    @State private var days = T3RoutineSchedule.everyDay
     @State private var saving = false
     @State private var error: String?
 
@@ -411,7 +411,9 @@ private struct MacRoutineForm: View {
                 .textFieldStyle(.roundedBorder).lineLimit(2...5)
             HStack {
                 Picker("Days", selection: $days) {
-                    ForEach(MacRoutineSchedule.allCases) { Text($0.rawValue).tag($0) }
+                    Text(verbatim: "Every day").tag(T3RoutineSchedule.everyDay)
+                    Text(verbatim: "Weekdays").tag(T3RoutineSchedule.weekdays)
+                    Text(verbatim: "Weekends").tag(T3RoutineSchedule.weekends)
                 }
                 .labelsHidden()
                 .fixedSize()
@@ -434,13 +436,13 @@ private struct MacRoutineForm: View {
 
     private func add() {
         let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
-        let cron = days.cron(hour: parts.hour ?? 8, minute: parts.minute ?? 0)
+        guard let schedule = T3RoutineSchedule(hour: parts.hour ?? 8, minute: parts.minute ?? 0, days: days) else { return }
         saving = true
         error = nil
         Task {
             defer { saving = false }
             do {
-                try await store.createRoutine(name: name, prompt: prompt, cron: cron)
+                try await store.createRoutine(name: name, prompt: prompt, schedule: schedule)
                 onDone()
             } catch { self.error = error.localizedDescription }
         }
