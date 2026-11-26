@@ -59,7 +59,7 @@ public enum T3RPCError: Error, Equatable, LocalizedError, Sendable {
 }
 
 actor T3RPCClient {
-    typealias Stream = AsyncThrowingStream<HermesJSON, Error>
+    typealias Stream = AsyncThrowingStream<JSONValue, Error>
 
     private struct Pending {
         let continuation: Stream.Continuation
@@ -111,7 +111,7 @@ actor T3RPCClient {
         return request
     }
 
-    func call(_ method: String, payload: HermesJSON = .object([:]), firstStreamValue: Bool = false) async throws -> HermesJSON {
+    func call(_ method: String, payload: JSONValue = .object([:]), firstStreamValue: Bool = false) async throws -> JSONValue {
         let (id, stream) = try await request(method, payload: payload, isStream: firstStreamValue, timed: true)
         var iterator = stream.makeAsyncIterator()
         if let result = try await iterator.next() {
@@ -122,13 +122,13 @@ actor T3RPCClient {
         throw T3RPCError.invalidFrame
     }
 
-    func subscribe(_ method: String, payload: HermesJSON = .object([:])) async throws -> Stream {
+    func subscribe(_ method: String, payload: JSONValue = .object([:])) async throws -> Stream {
         try await request(method, payload: payload, isStream: true, timed: false).stream
     }
 
     func close() async { await terminate(with: .closed) }
 
-    private func request(_ method: String, payload: HermesJSON, isStream: Bool,
+    private func request(_ method: String, payload: JSONValue, isStream: Bool,
                          timed: Bool) async throws -> (id: String, stream: Stream) {
         try Task.checkCancellation()
         if let failure { throw failure }
@@ -146,7 +146,7 @@ actor T3RPCClient {
             } catch {}
         } : nil
         pending[id] = Pending(continuation: continuation, isStream: isStream, timeout: timeout)
-        let frame: HermesJSON = .object([
+        let frame: JSONValue = .object([
             "_tag": .string("Request"), "id": .string(id), "tag": .string(method),
             "payload": payload, "headers": .array([])
         ])
@@ -206,7 +206,7 @@ actor T3RPCClient {
         return failure == nil
     }
 
-    private func send(_ frame: HermesJSON, timeout: Duration? = nil) async throws {
+    private func send(_ frame: JSONValue, timeout: Duration? = nil) async throws {
         if let failure { throw failure }
         let deadline = ContinuousClock.now + (timeout ?? requestTimeout)
         let writeTimeout = Task { [weak self] in
@@ -220,7 +220,7 @@ actor T3RPCClient {
     }
 
     private func receive(_ data: Data) async throws {
-        guard let frame = try? JSONDecoder().decode(HermesJSON.self, from: data),
+        guard let frame = try? JSONDecoder().decode(JSONValue.self, from: data),
               let tag = frame["_tag"].text, !tag.isEmpty else { throw T3RPCError.invalidFrame }
         switch tag {
         case "Ping": try await send(.object(["_tag": .string("Pong")]))
@@ -256,7 +256,7 @@ actor T3RPCClient {
         }
     }
 
-    private static func remoteError(_ cause: HermesJSON) -> T3RPCError {
+    private static func remoteError(_ cause: JSONValue) -> T3RPCError {
         let reasons = cause.list ?? cause["reasons"].list ?? [cause]
         for reason in reasons {
             switch reason["_tag"].text {

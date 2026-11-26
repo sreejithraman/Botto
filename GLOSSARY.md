@@ -1,65 +1,49 @@
 # Botto
 
-Botto is a mobile companion for Hermes bots and their chats. This glossary names
-the shared identities, avatar concepts, and notification relationships.
+Botto is a native Mac, iPhone, and iPad companion backed by T3 Code.
 
 ## Language
 
-**Chat**:
-An ongoing exchange with one bot, including its messages and related work.
-_Avoid_: Conversation or session as interface labels
+**Bot**
+The companion associated with one T3 project and its workspace.
 
-**Space**:
-A lasting place in a T3 Code workspace for one ongoing part of the user's life with
-Botto. It is the T3 counterpart of a chat.
-_Avoid_: Chat, thread or channel as interface labels in a T3 workspace; `#` before a name
+**Workspace**
+The bot's project and its Spaces, instructions, memory, skills, and outputs.
 
-**Main space**:
-The one space that anchors a T3 bot and coordinates its other spaces. It has whatever
-name the user gives it.
-_Avoid_: General, home channel
+**Space**
+A lasting place for an ongoing part of the user's life with Botto. A Space
+has a plain name and its own conversation, draft, and work. Use **Space** for
+the place people open in the interface.
 
-**Bot**:
-A Hermes assistant shown in Botto, with its own identity, configuration, and chats.
-_Avoid_: Account, chat
+**Main Space**
+The one Space that anchors the bot and coordinates its other Spaces. It
+initially takes the bot's name and can be renamed independently.
 
-**Artifact**:
-A file or visual connected to a chat, with the bot and chat it came from.
-_Avoid_: Attachment as a name for the whole library
+**Pairing**
+Permission for a device to connect directly to a specific T3 environment
+through a reviewed origin.
 
-**Output**:
-An artifact a bot explicitly delivered or a generation result identified as its work.
+**Artifact**
+A file or visual associated with a Space, with its originating work attached.
+
+**Output**
+An artifact the bot delivered or that a generation result identifies as its work.
 An existing file can be delivered as an output.
-_Avoid_: Created file when authorship is unknown
 
-**Reference**:
-An artifact supplied to a chat or linked without an explicit delivery or generation signal.
-_Avoid_: Output when a file was only used or mentioned
+**Reference**
+An artifact provided to a Space or mentioned without a delivery or generation signal.
 
-**Hermes profile**:
-The host-managed identity and configuration behind a bot.
-_Avoid_: Display name
+**Display name**
+The visible name of the bot.
 
-**Profile ID**:
-The host's identifier for a Hermes profile, independent of its visible label.
-_Avoid_: Display name, title
+**Shared avatar**
+The bot's saved appearance across its paired clients.
 
-**Notification pairing**:
-An authorization for one device to receive notifications from one Hermes
-profile on a saved host, removable without affecting other devices.
+**Notification pairing**
+Authorization for one device to receive alerts for a saved workspace.
 
-**Notification target**:
+**Notification target**
 A provider registration used to deliver alerts for a notification pairing.
-The provider can retire the target while the pairing remains authorized.
-
-**Display name**:
-The human-readable label shown for a bot, which can differ from its profile ID.
-_Avoid_: Profile ID
-
-**Shared avatar**:
-A bot's saved appearance used across Hermes clients, expressed as a drawn face
-or a saved image.
-_Avoid_: Local theme
 
 **Drawn face**:
 An avatar described by a shape or generated recipe and a color, rather than a

@@ -6,21 +6,21 @@ import BottoCore
     let owner = ConversationIssuer<String>(), foreign = ConversationIssuer<String>()
     let first = try owner.issue("A")
     #expect(try owner.resolve(first) == "A")
-    #expect(throws: HermesServiceError.staleConversation) { try foreign.resolve(first) }
+    #expect(throws: ConversationServiceError.staleConversation) { try foreign.resolve(first) }
     _ = try owner.issue("B")
     let current = try owner.issue("A")
-    #expect(throws: HermesServiceError.staleConversation) { try owner.resolve(first) }
+    #expect(throws: ConversationServiceError.staleConversation) { try owner.resolve(first) }
     #expect(try owner.resolve(current) == "A")
     owner.retireAttachment()
-    #expect(throws: HermesServiceError.staleConversation) { try owner.resolve(current) }
+    #expect(throws: ConversationServiceError.staleConversation) { try owner.resolve(current) }
     #expect(try owner.resolve(owner.issue("A")) == "A")
     owner.close()
-    #expect(throws: HermesServiceError.staleConversation) { try owner.issue("A") }
+    #expect(throws: ConversationServiceError.staleConversation) { try owner.issue("A") }
 }
 
 @Test func exactIDsPreserveUnicodeBytes() throws {
     #expect(try ExactID("é") != ExactID("e\u{301}"))
-    #expect(throws: HermesServiceError.wrongConversation) { try ExactID("") }
+    #expect(throws: ConversationServiceError.wrongConversation) { try ExactID("") }
 }
 
 @Test func decodedExactIDRejectsEmptyAndInvalidUTF8WithoutReplacement() throws {

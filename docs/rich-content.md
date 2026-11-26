@@ -1,13 +1,13 @@
 # Rich replies and files
 
-Choose **Explore the demo**, then open the pinned **Canvas** bot. It includes
+Choose **Explore the demo**, then open the **Canvas** Space. It includes
 an interactive HTML dashboard, a Mermaid flowchart, an SVG illustration, plain
 code, and downloadable PDF, text, image, and HTML samples. No server or special
 launch argument is needed. The files and interactions stay on the device until
 you choose Save or Share.
 
 The last Canvas example loads an interactive three-bar visual from an HTML file
-using the same `::preview` directive as Hermes Desktop.
+using the `::preview` directive.
 
 Rendering and file-access rationale: [isolated assistant content](adr/0004-isolated-rich-content.md)
 and [durable identity and live access](adr/0003-durable-identity-live-access.md).
@@ -31,12 +31,12 @@ The next step is a short review.
 Bot replies also support a standalone file directive:
 
 ```text
-::preview{file="/path/on/hermes/report.html" height="360"}
+::preview{file="/path/in/workspace/report.html" height="360"}
 ```
 
 Botto waits until the conversation is idle, then downloads the file through its original
 connection, profile, and stored conversation. Relative paths resolve on the
-Hermes host against that session's working folder. `.html`, `.htm`, and `.xhtml`
+T3 host against the Space's working folder. `.html`, `.htm`, and `.xhtml`
 files render in the same isolated WebKit preview as HTML fences, with native
 Source and Expand controls. The optional height supplies a bounded starting
 size; measured content determines the rendered height. An original-file card
@@ -84,7 +84,7 @@ storage, not all WebKit, graphics or app memory. When capacity is busy, source
 stays available while rendering waits; HTML has no new shared render cap.
 
 HTML supports self-contained styles and local inline JavaScript. Each preview
-has an isolated, temporary WebKit environment. It has no Hermes credentials,
+has an isolated, temporary WebKit environment. It has no T3 credentials,
 shared browser storage, native app bridge, file access, or network access.
 Remote scripts, images, fonts, forms, links, and extra diagram engines cannot
 load. A failed or oversized preview leaves its source readable.
@@ -108,74 +108,30 @@ custom icon provider loads; TeX labels remain source. See
 
 ## File previews
 
-The **Artifacts** tab gathers delivered files, explicit terminal deliveries,
-structured generation results,
-and complete HTML, SVG, and Mermaid previews across chats. **Filter** limits the
-list by bot or file type. **Include references** also shows user-supplied files
-and local file links without an explicit delivery signal. Ordinary web links,
-generic tool logs, and code examples do not become outputs. An output can be an
-existing file the bot deliberately shared; the label does not prove authorship.
+Open workspace outputs from Botto's page. The Spaces drawer can search for
+Spaces and files. File cards in a conversation retain the producing Space and
+message occurrence. A reference can point to an input or linked file. An output
+identifies work that was delivered.
 
-Tap an artifact to preview, Save, or Share without switching the selected chat.
-The reader identifies its bot and chat; **Open chat** goes to that exact chat.
-Image and HTML output cards load covers without opening the reader. HTML covers
-use the same isolated renderer, freeze a small image, then stop the document.
-Only the image is cached; the cover keeps no running JavaScript. Cached covers
-remain available offline. Failed cover reads retry after reconnect, refresh, or
-a successful original-file read without clearing covers already on screen.
-The separate **Search** tab finds bots, chat titles, message text, and artifacts
-in available history. Search and library reads never mark a chat read. Partial
-or unavailable history has a visible warning; pull to refresh retries reads.
-Botto retains a bounded local index, inline source, downloaded originals, and
-thumbnails across launches. Accepted chat updates feed that index without a
-separate history scan. An offline relaunch shows retained content; it does not
-claim a complete host library. Live updates omit unsettled assistant tails
-from the disk index until completion. Device storage pressure can evict captures.
-
-Opening Artifacts or Search reuses the mounted list. Automatic directory checks
-share a 60-second freshness window; connection recovery, roster changes, and
-server directory notifications invalidate it. Leaving a tab keeps its background
-check alive while the saved connection remains mounted. Accepted chat updates
-continue to update the list directly. Unknown directory dates preserve known
-cached ordering dates. Explicit refresh bypasses the freshness window.
-Existing history notices stay in place during local indexing and background
-checks; their actions remain visible but disabled until the check finishes.
-
-A directory check reuses complete history when
-its tip, message count, timestamp, and exact preview are unchanged. Summaries
-missing that evidence require a newest-page check; reused older pages carry
-a freshness notice and **Check Older History** action. A complete single-page
-check needs no notice. Pull to refresh checks history again. Partial history
-remains partial and cannot certify an unchanged complete result.
-
-Previewing a captured file reuses its original bytes, including offline.
-**Reload from Bot** explicitly downloads the current host file; failure keeps
-the previous capture visible. Save and Share wait for Reload to finish, and an
-active export keeps its captured copy. A new producing message or source revision gets
-a separate capture. A host path alone does not identify immutable contents.
-Display text alone is not a source revision. A changed display view keeps its
-capture when the retained producer fields are unchanged. Raw authority history
-and REST can still produce different keys when they extract list content differently.
-An older page read saved display text without the unprojected row text, so that
-capture stays apart and a recovered row can need one online preview.
-The cache stays within its saved connection, installation, profile, and chat;
-confirmed Forget removes that connection's captures. Cached identity never
-grants network access. See [artifact capture scope](adr/0010-scoped-artifact-captures.md).
+An original-file capture belongs to the connection, environment, and Space that
+produced it. A file path alone does not identify immutable contents. When the
+source occurrence or revision changes, Botto can fetch a fresh copy. Confirmed
+Forget removes captures for that connection. Cached identity does not grant
+network access. See [artifact capture scope](adr/0010-scoped-artifact-captures.md).
 
 Tap a file card in either a user message or a bot reply to preview its captured
-copy or download it from its originating Hermes conversation. Historical cards
+copy or download it from its originating Space. Historical cards
 keep their own producing occurrence, even when a later reply reuses the path.
-Botto recognizes explicit Hermes `MEDIA:` and
+Botto recognizes explicit `MEDIA:` and
 `@file:` references, local `file://` links, and Markdown links to explicit server
 paths. Ordinary web links and code examples remain text. Host paths identify
-files on Hermes; they never open as local iPhone paths.
+files on the T3 host. The iPhone only reads downloaded copies.
 
 The retained file reader appears beside its conversation when space permits,
 or fills the detail area in narrow space. Where it can sit beside the chat, **Full
 screen** and **Exit full screen** change its allocation; **Close** ends the preview.
-A reader filling the workspace takes the navigation bar's place and carries **Bots**
-in its **Actions** menu. Browsing Bots hides the reader.
-Selecting a bot retires the old reader, including when selecting the same bot.
+Close the reader to return to the conversation. Changing the selected Space
+retires that reader.
 
 Plain text uses a selectable, read-only native text view with strict decoding.
 PDF, images and other supported formats use Quick Look. A message's attachments

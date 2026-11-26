@@ -61,10 +61,10 @@ struct MacPreviewFileTests {
         draft.text = "Keep this"
         draft.selectModel(first)
         #expect(draft.offersAutomaticModel)
-        await #expect(throws: HermesServiceError.rejected(400)) {
+        await #expect(throws: ConversationServiceError.rejected(400)) {
             _ = try await draft.submit { _ in "first-space" } send: { _, _, _, model in
                 #expect(model == first)
-                throw HermesServiceError.rejected(400)
+                throw ConversationServiceError.rejected(400)
             }
         }
         #expect(!draft.offersAutomaticModel)
@@ -90,10 +90,10 @@ struct MacPreviewFileTests {
         func send(_ id: String, _ text: String, _ files: [URL], _: T3ModelOption?) async throws {
             #expect(id == "weekend-space")
             #expect(files == [file])
-            if reject { throw HermesServiceError.rejected(400) }
+            if reject { throw ConversationServiceError.rejected(400) }
             delivered.append(text)
         }
-        await #expect(throws: HermesServiceError.rejected(400)) {
+        await #expect(throws: ConversationServiceError.rejected(400)) {
             _ = try await draft.submit(create: create, send: send)
         }
         #expect(draft.createdSpace == "weekend-space")
@@ -246,11 +246,11 @@ struct MacPresentationTests {
 
     @Test func uncertainActionSurvivesNavigationAndDismissingAnotherError() throws {
         let store = try store()
-        store.recordMutationFailure(HermesServiceError.uncertain)
+        store.recordMutationFailure(ConversationServiceError.uncertain)
         let notice = try #require(store.pendingMutationNotice)
         store.showFreshPage()
         #expect(store.pendingMutationNotice == notice)
-        store.recordMutationFailure(HermesServiceError.invalidAttachment)
+        store.recordMutationFailure(ConversationServiceError.invalidAttachment)
         _ = try #require(store.error)
         store.dismissError()
         #expect(store.error == nil)

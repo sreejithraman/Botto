@@ -299,13 +299,13 @@ final class MacBottoStore {
     }
 
     private func uploadFreshFiles(_ urls: [URL], access: ConversationAccess) async throws -> [ChatAttachment] {
-        guard urls.count <= AttachmentLimits.count else { throw HermesServiceError.attachmentLimit }
+        guard urls.count <= AttachmentLimits.count else { throw ConversationServiceError.attachmentLimit }
         var attachments: [ChatAttachment] = []
         var bytes = 0
         for url in urls {
             let data = try await Self.readLocalFile(url)
             bytes += data.count
-            guard bytes <= AttachmentLimits.totalBytes else { throw HermesServiceError.attachmentLimit }
+            guard bytes <= AttachmentLimits.totalBytes else { throw ConversationServiceError.attachmentLimit }
             let attachment = try await service.upload(data: data, filename: url.lastPathComponent,
                                                       mimeType: MacAttachmentKind.mimeType(for: url), access: access)
             attachments.append(attachment)
@@ -326,7 +326,7 @@ final class MacBottoStore {
     }
 
     func recordMutationFailure(_ failure: any Error) {
-        if case HermesServiceError.uncertain = failure {
+        if case ConversationServiceError.uncertain = failure {
             pendingMutationNotice = failure.localizedDescription
         } else if !(failure is CancellationError) {
             error = failure.localizedDescription
@@ -580,7 +580,7 @@ final class MacBottoStore {
             try checkConnection(connection)
             return true
         } catch {
-            if (error as? HermesServiceError) == .uncertain || (connectionID == connection && !Task.isCancelled) {
+            if (error as? ConversationServiceError) == .uncertain || (connectionID == connection && !Task.isCancelled) {
                 recordMutationFailure(error)
             }
             return false

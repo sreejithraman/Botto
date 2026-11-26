@@ -67,11 +67,6 @@ and retained in [scripts/avatar-engine/upstream/LICENSE](scripts/avatar-engine/u
 pinned build tool. [build.py](scripts/avatar-engine/build.py) reproducibly builds
 the engine bundle and canonical resting previews. No engine code downloads at runtime.
 
-`Tests/BottoCoreTests/Fixtures/HermesAgent` contains sanitized captured fixtures
-copied from Hermex, retaining its manifest and embedded capture revisions:
-Hermes Agent `ca6782850432927f33df4775cb6dd45bb51460d2`, version 0.21.5.
-The fixture license is the same MIT notice above.
-
 Inline Mermaid diagrams use the bundled official **Pele 1.9.0** distribution,
 upstream commit `e7f092a4de147cc32210913c20e36eaa5fcd0ef1`.
 [Pele](https://github.com/obsidianmd/pele) is copyright (c) 2026 kepano, under
@@ -82,26 +77,5 @@ The bundled `pele-provenance.json` records package integrity, source pins,
 checksums, and the controlled render options. No diagram scripts, fonts, or
 assets download at runtime.
 
-`Tests/BottoCoreTests/Fixtures/AuthorityContract` contains Botto-authored synthetic
-examples of the official Hermes authority contract inspected at
-`4a0eaf7989b6804319ddb94fa5d96c5a716080a1`. Its manifest explicitly distinguishes
-these examples from captured host traffic. The authority adapter is an original
-Swift implementation of the documented JSON contract; no Python source was copied.
-
-`Tests/BottoCoreTests/Fixtures/AuthorityCaptured` contains traffic captured by Botto
-against the real gateway at that same official revision, with a deterministic
-local model. Its manifest records the revision, capture date and removed fields.
-These captures include durable history, streaming, tool execution and approval
-recovery. They contain no authentication responses, cookies or WebSocket tickets.
-
-The proposed native-session observer and explicit-profile installer patch in
-`Push/upstream` modifies official Hermes Agent source at revision
-`fcc26fbd9f1641755e49793d7ed608f3b7214c3d`. Its upstream MIT notice, copyright
-(c) 2025 Nous Research, is preserved in
-[Push/upstream/LICENSE](Push/upstream/LICENSE). The patch is a development
-prerequisite for optional notifications, not a released Hermes capability.
-
-Botto's push plugin and relay retain their existing MIT notices in
-[Push/plugin/LICENSE](Push/plugin/LICENSE) and
-[Push/relay/LICENSE](Push/relay/LICENSE). Historical project names in copyright
-notices identify the original authorship and are preserved.
+Botto's push relay retains its [MIT notice](Push/relay/LICENSE). Historical
+project names in copyright notices identify the original authorship.

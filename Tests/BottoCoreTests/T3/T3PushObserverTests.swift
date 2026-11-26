@@ -9,7 +9,7 @@ import Testing
 
     @Test func emitsSettledSpaceWorkOnce() throws {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
-        let shell: HermesJSON = .object([
+        let shell: JSONValue = .object([
             "id": .string("space-42"), "title": .string("Trips"), "status": .string("completed"),
             "latestRunId": .string("routine-run"), "latestRunCompletedAt": .string(timestamp)
         ])
@@ -33,7 +33,7 @@ import Testing
 
     @Test func emitsActionableRequestsOnceAndCancelsThem() {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
-        let shell: HermesJSON = .object(["id": .string("space-42"), "title": .string("Trips")])
+        let shell: JSONValue = .object(["id": .string("space-42"), "title": .string("Trips")])
         let approval = ["id": "approve", "status": "pending", "kind": "command", "createdAt": timestamp]
         let question = ["id": "ask", "status": "pending", "kind": "user_input", "createdAt": timestamp]
         #expect(observer.requests(frame(approval, space: "other"), in: shell, now: now).isEmpty)
@@ -46,7 +46,7 @@ import Testing
 
     @Test func ignoresHistoryAndInternalRequests() {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-600))
-        let shell: HermesJSON = .object(["id": .string("space-42")])
+        let shell: JSONValue = .object(["id": .string("space-42")])
         let records = [
             ["id": "internal", "kind": "auth_refresh", "status": "pending", "createdAt": timestamp],
             ["id": "expired", "kind": "command", "status": "pending", "createdAt": "2027-01-15T07:54:00Z"]
@@ -61,11 +61,11 @@ import Testing
 
     @Test func reconcilesFreshSnapshotAndRejectsOutOfOrderPendingReplay() throws {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-60))
-        let shell: HermesJSON = .object(["id": .string("space-42")])
+        let shell: JSONValue = .object(["id": .string("space-42")])
         let request = ["id": "question", "status": "resolved", "kind": "user_input", "createdAt": timestamp]
-        let snapshot: HermesJSON = .object(["kind": .string("snapshot"), "projection": .object([
+        let snapshot: JSONValue = .object(["kind": .string("snapshot"), "projection": .object([
             "thread": .object(["id": .string("space-42")]),
-            "runtimeRequests": .array([.object(request.mapValues(HermesJSON.string))])
+            "runtimeRequests": .array([.object(request.mapValues(JSONValue.string))])
         ])])
         let cancellation = try #require(observer.requests(snapshot, in: shell, now: now).first)
         #expect(cancellation.cancelled)
@@ -75,7 +75,7 @@ import Testing
 
     @Test func childThreadsOnlyNotifyForSupportedApprovals() {
         var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
-        var child: HermesJSON = .object([
+        var child: JSONValue = .object([
             "id": .string("space-42"), "status": .string("completed"), "latestRunId": .string("child-run"),
             "latestRunCompletedAt": .string(timestamp),
             "lineage": .object(["relationshipToParent": .string("subagent")])
@@ -90,9 +90,9 @@ import Testing
         #expect(observer.shellActivity(in: child, now: now)?.kind == .approval)
     }
 
-    private func frame(_ fields: [String: String], space: String = "space-42") -> HermesJSON {
+    private func frame(_ fields: [String: String], space: String = "space-42") -> JSONValue {
         .object(["kind": .string("event"), "event": .object([
-            "type": .string("runtime-request.updated"), "threadId": .string(space), "payload": .object(fields.mapValues(HermesJSON.string))
+            "type": .string("runtime-request.updated"), "threadId": .string(space), "payload": .object(fields.mapValues(JSONValue.string))
         ])])
     }
 }

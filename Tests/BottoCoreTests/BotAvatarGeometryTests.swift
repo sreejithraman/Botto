@@ -98,14 +98,9 @@ private let catJSON = #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18
     let orange = BotAvatarChoice.geometry(cat, color: .value("#f97316"))
     #expect(orange.applying(to: current).geometry == cat)
     #expect(orange.applying(to: current).color == BotAvatarColors.preset(for: "#f97316")?.shared)
-    let original: [String: HermesJSON] = ["shape": .string("cloud"), "color": .string("unsupported-shared-color"), "title": .string("Keep")]
-    let colored = orange.merging(into: original)
-    #expect(colored["shape"]?.text == cat.recipe && colored["title"]?.text == "Keep")
-    #expect(colored["color"]?.text == orange.applying(to: current).color)
-    let automatic = BotAvatarChoice.geometry(cat, color: .automatic)
-    #expect(automatic.applying(to: current).geometry == cat && automatic.applying(to: current).color == nil)
-    #expect(automatic.merging(into: original)["color"] == nil)
-    #expect(throws: HermesServiceError.invalidAvatar) {
+    let automatic = BotAvatarChoice.geometry(cat, color: .automatic).applying(to: current)
+    #expect(automatic.geometry == cat && automatic.color == nil)
+    #expect(throws: ConversationServiceError.invalidAvatar) {
         try BotAvatarChoice.geometry(cat, color: .value("unrecognized-explicit-color")).validate()
     }
 }
@@ -132,7 +127,7 @@ private let catJSON = #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18
     #expect(normalized.name == "Cat")
 }
 
-@Test func hermesAvatarCatalogKeepsAOneToOneShapeFamilyMapping() {
+@Test func avatarPresetCatalogKeepsAOneToOneShapeFamilyMapping() {
     #expect(BotAvatarShape.allCases.count == 10)
     let definitions = BotAvatarShape.allCases.map { BotAvatarCatalog.geometry(for: $0) }
     #expect(Set(definitions.map(\.id)) == Set(BotAvatarShape.allCases.map(\.rawValue)))
@@ -144,7 +139,7 @@ private let catJSON = #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18
     }
 }
 
-@Test func hermesAvatarCatalogDefinitionsPassCanonicalValidation() async throws {
+@Test func avatarPresetCatalogDefinitionsPassCanonicalValidation() async throws {
     for shape in BotAvatarShape.allCases {
         let geometry = BotAvatarCatalog.geometry(for: shape)
         let canonical = try await BotAvatarEngine.shared.validate(geometry)
@@ -152,7 +147,7 @@ private let catJSON = #"{"version":1,"id":"cat","name":"Cat","body":{"path":"M18
     }
 }
 
-@Test func hermesAvatarCatalogPreservesDefaultsBlobatarSeedsAndSavedMetadata() throws {
+@Test func avatarPresetCatalogPreservesDefaultsBlobatarSeedsAndSavedMetadata() throws {
     let defaults: [(String, BotAvatarShape, String)] = [
         ("default", .squircle, "#8b5cf6"),
         ("inbox-triage", .cloud, "hsl(90 68% 58%)"),

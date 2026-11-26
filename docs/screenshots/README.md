@@ -1,6 +1,6 @@
 # Native app captures
 
-The README uses these running-app captures:
+These running-app captures show the previous workspace:
 
 - `welcome.png`: Botto welcome, brand trio, and shared tagline.
 - `inbox.png`: the labeled demo workspace with sample bots and activity.

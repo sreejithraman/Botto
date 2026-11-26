@@ -31,7 +31,7 @@ def main():
         if args.check:
             if destination.read_bytes() != engine: raise SystemExit("OpenBotAvatarEngine.js is stale")
         else: destination.write_bytes(engine)
-        catalog = resources / "HermesAvatarDefinitions.json"
+        catalog = resources / "AvatarPresetDefinitions.json"
         if catalog.exists():
             script = """
 const fs = require('node:fs'), vm = require('node:vm');
@@ -47,9 +47,9 @@ const assets = definitions.map(definition => {
 process.stdout.write(JSON.stringify(assets));
 """
             assets = subprocess.check_output(["node", "-e", script, str(bundle), str(catalog)], cwd=ROOT)
-            destination = resources / "HermesAvatarFrames.json"
+            destination = resources / "AvatarPresetFrames.json"
             if args.check:
-                if destination.read_bytes() != assets: raise SystemExit("HermesAvatarFrames.json is stale")
+                if destination.read_bytes() != assets: raise SystemExit("AvatarPresetFrames.json is stale")
             else: destination.write_bytes(assets)
     print("Open Bot Avatar bundle and preset frames match" if args.check else "Built Open Bot Avatar bundle and preset frames")
 

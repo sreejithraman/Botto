@@ -2,7 +2,7 @@ import Testing
 import BottoCore
 
 @Suite struct BotAvatarColorTests {
-    @Test func fractionalRGBSpellingsMatchAllTwelveHermesPresets() {
+    @Test func fractionalRGBSpellingsMatchAllTwelveSharedPresets() {
         // Exact decimal channels of HSL(h, 68%, 58%) at the twelve 30-degree hues.
         // Numeric RGB uses 0...255; percentage RGB expresses the same channels.
         let fixtures = [
@@ -97,14 +97,14 @@ import BottoCore
 
     @Test func presetEquivalenceIsValueBasedWithoutSnappingCustomColors() {
         // Independently calculated with Python colorsys.hls_to_rgb(h/360, .58, .68).
-        let hermesHex = ["#dd4b4b", "#dd944b", "#dddd4b", "#94dd4b", "#4bdd4b", "#4bdd94",
+        let referenceHex = ["#dd4b4b", "#dd944b", "#dddd4b", "#94dd4b", "#4bdd4b", "#4bdd94",
                          "#4bdddd", "#4b94dd", "#4b4bdd", "#944bdd", "#dd4bdd", "#dd4b94"]
         for (index, preset) in BotAvatarColors.presets.enumerated() {
             #expect(BotAvatarColors.preset(for: preset.shared) == preset)
             #expect(BotAvatarColors.preset(for: preset.hex) == preset)
-            #expect(BotAvatarColors.preset(for: hermesHex[index]) == preset)
+            #expect(BotAvatarColors.preset(for: referenceHex[index]) == preset)
             #expect(BotAvatarColors.presentation(preset.shared) == preset.hex)
-            #expect(BotAvatarColors.presentation(hermesHex[index]) == preset.hex)
+            #expect(BotAvatarColors.presentation(referenceHex[index]) == preset.hex)
         }
         #expect(BotAvatarColors.preset(for: " HsLa(360deg, 68%, 58%, 100%) ")?.id == "red")
         #expect(BotAvatarColors.preset(for: "hsl(.5turn 68% 58%)")?.id == "teal")

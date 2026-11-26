@@ -11,7 +11,7 @@ enum T3ProjectionMapper {
         return SessionIdentity(profile: profile, root: thread, stored: thread, aliases: [])
     }
 
-    static func directory(_ shells: [HermesJSON], profile: ExactID, observedAt: Date, mainThreadID: String? = nil,
+    static func directory(_ shells: [JSONValue], profile: ExactID, observedAt: Date, mainThreadID: String? = nil,
                           previews: [String: ConversationPreview] = [:])
         throws -> (directory: ConversationDirectory, channels: [T3ChannelSummary]) {
         let channels = shells.compactMap { shell -> T3ChannelSummary? in
@@ -68,17 +68,17 @@ enum T3ProjectionMapper {
         return String(words.prefix(limit - 1)).trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    static func status(_ shell: HermesJSON) -> BotStatus {
+    static func status(_ shell: JSONValue) -> BotStatus {
         let state = shell["activityRunStatus"].text ?? shell["status"].text ?? "idle"
         if shell["pendingRuntimeRequest"] != .null || state == "waiting" { return .waiting }
         return activeStatuses.contains(state) || state == "queued" ? .working : .idle
     }
 
-    static func visibleItems(_ rows: [HermesJSON]) -> [HermesJSON] {
+    static func visibleItems(_ rows: [JSONValue]) -> [JSONValue] {
         rows.sorted { ($0["position"].integer ?? 0) < ($1["position"].integer ?? 0) }.map { $0["item"] }
     }
 
-    static func messageTextLookup(_ messages: [HermesJSON]) -> [String: String] {
+    static func messageTextLookup(_ messages: [JSONValue]) -> [String: String] {
         var lookup: [String: String] = [:]
         for message in messages {
             if let id = message["id"].nonempty, let text = message["text"].text { lookup[id] = text }
@@ -86,14 +86,14 @@ enum T3ProjectionMapper {
         return lookup
     }
 
-    static func resolvedText(_ item: HermesJSON, messagesByID: [String: String] = [:]) -> String {
+    static func resolvedText(_ item: JSONValue, messagesByID: [String: String] = [:]) -> String {
         if item["textOmitted"].flag == true, let id = item["messageId"].nonempty, let text = messagesByID[id] {
             return text
         }
         return item["text"].text ?? ""
     }
 
-    static func chatMessage(_ item: HermesJSON, messagesByID: [String: String] = [:]) -> ChatMessage? {
+    static func chatMessage(_ item: JSONValue, messagesByID: [String: String] = [:]) -> ChatMessage? {
         guard let itemID = item["id"].nonempty else { return nil }
         let role: ChatMessage.Role
         let text: String
@@ -124,14 +124,14 @@ enum T3ProjectionMapper {
                            attachments: item["attachments"].list?.compactMap(attachment) ?? [])
     }
 
-    static func attachment(_ value: HermesJSON) -> ChatAttachment? {
+    static func attachment(_ value: JSONValue) -> ChatAttachment? {
         guard let id = value["id"].nonempty, let name = value["name"].nonempty,
               let mimeType = value["mimeType"].nonempty else { return nil }
         return ChatAttachment(name: name, path: "t3-attachment:" + id, mimeType: mimeType,
                               byteCount: value["sizeBytes"].integer)
     }
 
-    static func pending(_ request: HermesJSON, item: HermesJSON?) -> PendingRequest? {
+    static func pending(_ request: JSONValue, item: JSONValue?) -> PendingRequest? {
         guard request["status"].text == "pending", let id = request["id"].nonempty else { return nil }
         if request["responseCapability"]["type"].text == "not_resumable" {
             return PendingRequest(id: id, kind: .unsupported, title: "Request unavailable",
@@ -168,7 +168,7 @@ enum T3ProjectionMapper {
         return PendingRequest(id: id, kind: .unsupported, title: "Request requires T3 Code")
     }
 
-    static func date(_ value: HermesJSON) -> Date? { T3PairingExchange.date(value.text) }
+    static func date(_ value: JSONValue) -> Date? { T3PairingExchange.date(value.text) }
 
     static func stableUUID(_ id: String) -> UUID {
         let hash = Array(SHA256.hash(data: Data(id.utf8)).prefix(16))
@@ -179,24 +179,24 @@ enum T3ProjectionMapper {
 
 struct T3ThreadProjection {
     private struct TimelineRow {
-        let item: HermesJSON
+        let item: JSONValue
         let isLocal: Bool
 
         var ordinal: Int? { item["ordinal"].integer }
     }
 
-    private var thread: HermesJSON
-    private var runs: [HermesJSON]
-    private var messages: [HermesJSON]
-    private var runtimeRequests: [HermesJSON]
-    private var turnItems: [HermesJSON]
+    private var thread: JSONValue
+    private var runs: [JSONValue]
+    private var messages: [JSONValue]
+    private var runtimeRequests: [JSONValue]
+    private var turnItems: [JSONValue]
     private var timeline: [TimelineRow]
     private let oldestSnapshotLocalOrdinal: Int?
     private(set) var sequence: Int
     private let hasMoreHistory: Bool
     private(set) var activity: ConversationActivity
 
-    init(snapshot: HermesJSON, sequence: Int, hasMoreHistory: Bool, lineage: UUID) {
+    init(snapshot: JSONValue, sequence: Int, hasMoreHistory: Bool, lineage: UUID) {
         thread = snapshot["thread"]
         runs = snapshot["runs"].list ?? []
         messages = snapshot["messages"].list ?? []
@@ -218,7 +218,7 @@ struct T3ThreadProjection {
 
     var threadID: String? { thread["id"].nonempty }
 
-    private var activeRun: HermesJSON? {
+    private var activeRun: JSONValue? {
         runs.filter { T3ProjectionMapper.activeStatuses.contains($0["status"].text ?? "") }
             .max { ($0["ordinal"].integer ?? 0) < ($1["ordinal"].integer ?? 0) }
     }
@@ -231,7 +231,7 @@ struct T3ThreadProjection {
             || timeline.contains { $0.item["type"].text == "user_message" }
     }
 
-    private var queuedRuns: [HermesJSON] {
+    private var queuedRuns: [JSONValue] {
         runs.filter { $0["status"].text == "queued" }.sorted {
             let first = $0["queuePosition"].integer ?? .max
             let second = $1["queuePosition"].integer ?? .max
@@ -255,7 +255,7 @@ struct T3ThreadProjection {
         return runtime + nativeCards
     }
 
-    func requestItem(_ id: String?) -> HermesJSON? {
+    func requestItem(_ id: String?) -> JSONValue? {
         guard let id else { return nil }
         return turnItems.last { $0["requestId"].text == id } ?? timeline.last { $0.item["requestId"].text == id }?.item
     }
@@ -283,7 +283,7 @@ struct T3ThreadProjection {
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
     }
 
-    mutating func apply(_ event: HermesJSON, sequence: Int, live: Bool) {
+    mutating func apply(_ event: JSONValue, sequence: Int, live: Bool) {
         guard sequence > self.sequence, event["threadId"].text == threadID else { return }
         self.sequence = sequence
         let payload = event["payload"]
@@ -343,11 +343,11 @@ struct T3ThreadProjection {
         refreshActivity(eventTime: eventTime, reaction: reaction, signal: signal, sameRun: previousActive == activeRunID)
     }
 
-    private static func isHeldInput(_ item: HermesJSON) -> Bool {
+    private static func isHeldInput(_ item: JSONValue) -> Bool {
         item["type"].text == "user_message" && item["inputIntent"].text == "queued_turn"
     }
 
-    private mutating func updateTimeline(_ item: HermesJSON, wasLoaded: Bool = false) {
+    private mutating func updateTimeline(_ item: JSONValue, wasLoaded: Bool = false) {
         let row = TimelineRow(item: item, isLocal: true)
         let existing = timeline.lastIndex { $0.item["id"] == item["id"] }
         if let existing {
@@ -402,7 +402,7 @@ struct T3ThreadProjection {
                                         phaseStartedAt: phase == nil ? nil : phaseAt, reaction: reaction, signal: signal)
     }
 
-    private static func upsert(_ value: HermesJSON, into items: inout [HermesJSON]) {
+    private static func upsert(_ value: JSONValue, into items: inout [JSONValue]) {
         guard let id = value["id"].nonempty else { return }
         if let index = items.lastIndex(where: { $0["id"].text == id }) { items[index] = value }
         else { items.append(value) }

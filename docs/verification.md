@@ -1,5 +1,25 @@
 # Verification
 
+## T3 workspace checks
+
+Use the [verification map](agents/verification/index.md) for current setup and
+acceptance. The T3-only code has separate proof for the Swift package, hosted
+iOS workspace and Demo, and BottoMac. Run these command checks on the revision
+being reviewed.
+
+- `swift test --filter T3` and `swift test --no-parallel`
+- iOS `build-for-testing` and hosted T3 workspace, Demo, and launch tests on an
+  owned simulator
+- BottoMac tests on macOS
+
+Signed physical iPhone pairing over LAN, Tailscale, or a public HTTPS tunnel
+and background APNs delivery require their own evidence.
+
+## Earlier source and workflows
+
+The entries below record specific revisions of the previous architecture.
+They preserve their observed results and limits.
+
 Botto 0.1.0 was checked on 30 October 2026 with Xcode 27.1. Native observations
 below use an iPhone 17 Pro Simulator running iOS 26.5. These results describe
 the checked source and workflows, not every supported device or server.

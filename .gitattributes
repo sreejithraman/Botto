@@ -4,7 +4,5 @@
 /docs/research/** export-ignore
 /docs/drafting/** export-ignore
 /docs/ui-direction.md export-ignore
-/Push/upstream/verification-tests.log export-ignore
-/Push/upstream/verification-lint.log export-ignore
 
 /docs/specs/** export-ignore

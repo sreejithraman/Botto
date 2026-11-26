@@ -5,7 +5,7 @@ import Darwin
 import Glibc
 #endif
 
-/// A QR carries only an address. Parsing never connects or changes a saved connection.
+/// Validates and normalizes the reviewed pairing origin.
 public struct PairingAddress: Sendable {
     public enum Failure: Error, Equatable, LocalizedError {
         case invalidAddress
@@ -15,7 +15,7 @@ public struct PairingAddress: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .invalidAddress: "Use an HTTPS server origin or a supported Hermes connection code."
+            case .invalidAddress: "Enter a valid HTTP or HTTPS origin."
             case .tooLong: "This connection code is too long."
             case .unsupportedPath: "Enter the server origin without a path."
             case .insecureHTTP: "HTTP requires the explicit trusted local network option."
@@ -24,28 +24,6 @@ public struct PairingAddress: Sendable {
     }
 
     public static func parse(_ input: String, allowInsecureHTTP: Bool = false) throws -> URL {
-        try validateText(input)
-        guard let parts = URLComponents(string: input), let scheme = parts.scheme?.lowercased() else {
-            throw Failure.invalidAddress
-        }
-        if scheme == "hermes" || scheme == "botto" {
-            let authority = input.dropFirst(scheme.count + 3).prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" })
-            guard input.prefix(scheme.count + 3).lowercased() == scheme + "://",
-                  authority == (scheme == "hermes" ? "connect" : "hermes"),
-                  parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil,
-                  (scheme == "hermes" && parts.percentEncodedHost == "connect" && parts.percentEncodedPath.isEmpty)
-                    || (scheme == "botto" && parts.percentEncodedHost == "hermes" && parts.percentEncodedPath == "/connect"),
-                  let query = parts.percentEncodedQuery,
-                  query.hasPrefix("url="), !query.contains("&"),
-                  let destination = String(query.dropFirst(4)).removingPercentEncoding, !destination.isEmpty
-            else { throw Failure.invalidAddress }
-            // Decode exactly once. The nested value must itself be an HTTP(S) origin.
-            return try origin(destination, allowInsecureHTTP: allowInsecureHTTP)
-        }
-        return try origin(input, allowInsecureHTTP: allowInsecureHTTP)
-    }
-
-    private static func origin(_ input: String, allowInsecureHTTP: Bool) throws -> URL {
         try validateText(input)
         guard var parts = URLComponents(string: input),
               let scheme = parts.scheme?.lowercased(), ["https", "http"].contains(scheme),

@@ -55,4 +55,4 @@ Changing that preference or leaving the app settles the trio in its current stat
 
 The tagline is **Big ideas. Little sidekicks.** Welcome and Settings share
 the same copy from `BottoBrand.tagline`. Welcome keeps the three bots, name,
-tagline, and connection/demo actions. Hermes remains named in the Connect action.
+tagline, and connection/demo actions. The current welcome offers Mac pairing and Demo.

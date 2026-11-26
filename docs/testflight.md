@@ -146,7 +146,7 @@ its builds cannot be promoted to the public App Store.
 5. Set `BOTTO_TESTFLIGHT_AUTOMATIC` to `true` after the hosted delivery passes.
 
 Accept the invitation in TestFlight on a physical device to verify launch,
-demo entry, real Hermes sign-in, chat, and connection restoration after
+demo entry, real T3 pairing, conversation, and connection restoration after
 relaunch. An accepted upload does not prove installation or those workflows.
 
 The existing manual beta does not establish that this GitHub delivery path

@@ -77,7 +77,7 @@ public enum ArtifactDiscovery {
         }
         for message in messages {
             guard message.isVisible, message.displayKind != "hidden", message.isSilent != true,
-                  !HermesMessagePresentation.isMachinery(message.displayKind) || message.botSender != nil else { continue }
+                  !MessagePresentation.isMachinery(message.displayKind) || message.botSender != nil else { continue }
             if message.role == .tool {
                 for attachment in generatedFiles(in: message) { add(attachment, from: message, category: .output) }
                 continue
@@ -131,7 +131,7 @@ public enum ArtifactDiscovery {
     ]
     private static let resultKeys: Set<String> = ["result", "results", "output", "outputs", "data", "artifacts", "files"]
 
-    private static func failed(_ fields: [String: HermesJSON]) -> Bool {
+    private static func failed(_ fields: [String: JSONValue]) -> Bool {
         fields["success"]?.flag == false || fields["ok"]?.flag == false ||
             fields["is_error"]?.flag == true || fields["error"]?.nonempty != nil ||
             ["error", "failed", "failure"].contains(fields["status"]?.text?.lowercased() ?? "") ||
@@ -139,7 +139,7 @@ public enum ArtifactDiscovery {
     }
 
     private static func generatedFiles(in message: ChatMessage) -> [ChatAttachment] {
-        let value = try? HermesJSON.decode(Data(message.text.utf8))
+        let value = try? JSONValue.decode(Data(message.text.utf8))
         var files: [ChatAttachment] = []
         if message.toolName?.lowercased() == "terminal" {
             func deliveries(in text: String) -> [ChatAttachment] {
@@ -148,7 +148,7 @@ public enum ArtifactDiscovery {
                     return nil
                 }
             }
-            func collect(_ value: HermesJSON) -> [ChatAttachment] {
+            func collect(_ value: JSONValue) -> [ChatAttachment] {
                 if let text = value.text { return deliveries(in: text) }
                 guard let fields = value.fields,
                       !failed(fields) else { return [] }
@@ -161,7 +161,7 @@ public enum ArtifactDiscovery {
         }
         guard !readOnlyTools.contains(message.toolName?.lowercased() ?? ""),
               let value else { return [] }
-        func collect(_ value: HermesJSON) {
+        func collect(_ value: JSONValue) {
             switch value {
             case .object(let fields):
                 guard !failed(fields) else { return }

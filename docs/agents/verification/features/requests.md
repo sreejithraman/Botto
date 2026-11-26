@@ -1,120 +1,53 @@
 # Answer requests and stop work (`requests`)
 
-## User-facing description
+Use the [shared setup](../index.md#shared-setup-and-readiness). Demo exercises
+visible controls and local state. For live proof use a disposable T3 project
+and a harmless provider action that requires approval or input. Draft.
 
-See what a bot needs, review the host's choices, submit a choice or clarification,
-or ask the running bot to stop. Sub-features: approval/denial, persistent-choice
-confirmation, free-text questions, unsupported desktop requests, pending feedback,
-offline safety, recovery, and Stop.
+## Approvals and questions
 
-## How to get to it
+1. `requests.approval.a1` — Open the pending approval in its originating Space.
+   Verify the offered choices and their enabled state. Switch Spaces and check
+   the second Space has its own request controls.
+2. `requests.approval.a2` — Approve a harmless action and verify one result
+   from its original turn. Repeat separately with denial. Read the outcome
+   from the original Space.
+3. `requests.approval.a3` — When the provider offers a lasting grant, inspect
+   **Allow future actions?** and cancel. Verify the request stays pending.
+   Confirm separately in an authorized disposable scope and check the grant
+   at the host.
 
-- `requests.e.attention`: inbox → waiting bot’s context menu → **Needs you**.
-- `requests.e.chat`: open a bot while a request is pending or receive one while
-  composing; cards appear in the transcript above the composer.
-- `requests.e.stop`: working conversation → **Stop** beside working status.
+1. `requests.question.a1` — Trigger a provider question with known choices.
+   Submit one offered answer and verify that the original turn resumes with it.
+   Where a free-text answer is offered, try whitespace and a nonempty answer.
+2. `requests.question.a2` — Deliver a request that requires T3 Code. Verify the
+   message directs the reader to the host and that the unsupported action has
+   no submission control.
+3. `requests.question.a3` — Use a hosted fixture that returns a definite
+   validation rejection, including **This answer is too long**. Verify the
+   pending request and typed draft survive. Correct the answer and confirm a
+   deliberate retry uses a fresh operation and submits once. The
+   [native form test](../../../../AppTests/NativeTranscriptRequestContinuityTests.swift)
+   exercises the rendered retry behavior with a fixture.
 
-## Interactive checks
+## Connection recovery and Stop
 
-Follow [shared setup](../index.md). Demo Milo offers **Allow once** / **Keep
-draft**. The disposable host's `BOTTO_APPROVAL` prompt requests its documented
-harmless command. Use only authorized local tools and run-owned profiles.
-Questions, unsupported requests, persistent choices, and delayed completion need
-appropriate host fixtures; none is supplied by ordinary Milo demo. **Draft.**
+1. `requests.recovery.a1` — Interrupt the T3 connection with a request
+   pending. Check the state against the originating Space after reconnecting.
+   Keep the local answer draft through disconnection. Only submit a current
+   request after recovery.
+2. `requests.recovery.a2` — Hold or lose acknowledgment for an answer, then
+   reconnect or switch the paired workspace. Confirm there is no automatic
+   resubmission, and compare the original host's result before retrying.
+   Check that an old completion cannot dismiss the new workspace's form.
+3. `requests.stop.a1` — Stop a running turn in an owned Space and attempt a
+   repeat while Stop is pending. Verify the terminal state from T3 history.
+4. `requests.stop.a2` — Interrupt the connection during Stop, then compare
+   the real terminal outcome after reconnecting. Check that no resend or
+   late result is applied to a replacement Space.
+5. `requests.stop.a3` — Repeat with large Dynamic Type and VoiceOver. Record
+   labels, busy and disabled states, focus order, and how Stop becomes reachable.
 
-Workflow `requests.approval`:
-
-1. `.a1` Enter via **Needs you** in Inbox and separately directly into a waiting chat.
-   Expect title, full action detail, and exactly the host-offered choices, with
-   all actions visible/hittable above composer. Repeat keyboard open and largest
-   text. Proof: visible bounds, screenshot, semantic names, host pending payload.
-2. `.a2` Choose **Keep draft** in demo, then deny a separate harmless live
-   fixture. Expect request removal and no approved tool effect. Choose **Allow
-   once** on a fresh live request; repeat tap while pending. Expect one answer,
-   pending feedback, then host resolution and exactly one harmless tool result.
-   Proof: UI transitions, fresh pending-request read and host execution receipt.
-   Demo's **Understood. I’ll keep the draft here.** proves no real host denial.
-3. `.a3` On a host-offered “always” choice, expect **Allow future actions?** with
-   scope consequence text. Cancel: request stays, no persistent grant. Confirm on
-   an authorized disposable scope only: expect the exact chosen grant on fresh
-   host read. Proof: dialog, cancel/confirm outcomes, independent permission
-   readback. Reset only that run-owned grant after proof.
-
-Workflow `requests.question`:
-
-1. `.a1` Trigger an actual host clarification. Expect its offered choices and
-   **Write your answer** / **Submit answer**. Whitespace-only answer is disabled;
-   trimmed nonempty response submits once and settles the same request. Proof:
-   semantic controls, pending feedback, fresh host response/readback.
-2. `.a2` Deliver unsupported request or approval with no supported choices.
-   Expect **Continue on Desktop** or supported fallback guidance and no unsafe
-   mobile answer path. Proof: host fixture and rendered controls. A fabricated
-   state setter alone cannot prove public delivery of these states.
-3. `.a3` Submit a free-text answer larger than 16,384 UTF-8 bytes. Expect
-   **This answer is too long** with the byte limit, shortening guidance, and
-   **Nothing was sent.** Show this feedback after submission is attempted;
-   preserve the draft and pending request. Shorten the answer and deliberately
-   submit again; expect one host answer. Exactly 16,384 bytes is allowed.
-   Repeat with multibyte text: 4,096 🙂 characters fit; adding one ASCII
-   character exceeds the limit. Keep empty-answer and host-offered-choice
-   validation unchanged. Proof: error text, retained draft/request, and host
-   frame count/payload. If acknowledgment is lost after a valid answer is sent,
-   expect uncertain-result guidance and no automatic resubmission on reconnect;
-   check the host before sending again. Core service regressions cover byte
-   boundaries, rejection before writing, corrected retry, and lost acknowledgment;
-   they do not prove rendered feedback or draft retention. For the real form,
-   run `testLiveOversizedQuestionKeepsDraftUntilCorrectedSubmission` with a
-   signed Simulator build and `TEST_RUNNER_BOTTO_UI_TEST_HERMES_URL` pointing to
-   the [disposable authority host](../../../dev-host.md). Its deterministic
-   `BOTTO_QUESTION` provider requests a note through Hermes's actual clarify tool.
-   The test pastes oversized text, checks quiet drafting and retained input
-   after rejection, then submits a corrected answer and checks the host reply.
-
-Workflow `requests.recovery`:
-
-1. `.a1` Drop the run-owned socket while awaiting a decision; reconnect and
-   reopen. Expect the same current request restored with host choices. Relaunch
-   offline from saved cache; expect no actionable stale request. Proof: fresh
-   request identity from host plus offline/online captures.
-   While disconnected, allow local question drafting and show connection
-   feedback only after an answer is attempted. No permission confirmation or
-   response may proceed offline; recovery requires deliberate submission against
-   the current request. Preserve the response text during recovery.
-2. `.a2` Hold an answer pending, interrupt or replace the connection via external
-   Botto link, then release success/error. Expect no late mutation of the new
-   workspace or dismissing its form; no automatic answer retry. A request already
-   accepted remotely may remain resolved. Proof: new workspace identity and
-   independent old host resolution/count, not a claim of remote rollback.
-
-Workflow `requests.stop`:
-
-1. `.a1` Start controlled long work. Expect Stop when the conversation reports
-   active work. If disconnected, tapping Stop shows connection feedback and
-   sends no command. Online, tap once and attempt repeat while **Stopping…**;
-   expect bounded feedback and host cancellation, then no Stop when idle.
-   Proof: status transition, host stop receipt, and fresh canonical turn state.
-2. `.a2` Repeat with stop error/disconnection and late completion after Stop.
-   Expect an honest error/actual host final state, no phantom new turn, no
-   automatic resubmit, and no updates applied to a replacement workspace.
-   Proof: timed UI and host terminal state. Demo task cancellation does not prove
-   backend Stop; live Stop remains untested until a suitable fixture exists.
-3. `.a3` On iPhone/iPad and accessibility XXXL, VoiceOver must name choices,
-   consequences, busy/disabled state, and Stop. Preserve task-order focus while
-   replies arrive; record async announcements and keyboard reachability. Reduce
-   Motion must not change authorization or final outcomes. Proof: focus/spoken
-   record and relevant screenshots.
-
-## Gotchas
-
-Source: [RequestCard](../../../../App/Views/RequestCard.swift),
-[ChatComposer](../../../../App/Views/ChatComposer.swift),
-[AppStore](../../../../App/State/AppStore.swift).
-[Hermes service tests](../../../../Tests/BottoCoreTests/HermesServiceTests.swift)
-exercise request validation and recovery through the public service boundary.
-[Conversation tests](../../../../AppUITests/ConversationUITests.swift) exercise
-demo decisions and include an opt-in harmless live approval while typing. The
-live case skips without its host fixture. Backend smoke checks exercise approval
-reconnect, not all public decision entries or live clarification/Stop. Approval
-can run real tools; read success from the host rather than inferring it from a
-card disappearing. Missing fixtures block assertions rather than removing them.
-See [verification](../../../verification.md) for recorded checks and limits.
+The [workspace retry tests](../../../../AppTests/ConversationAnswerRetryTests.swift)
+cover rejected and uncertain answers. Live provider behavior requires separate
+proof through the same T3 Space.

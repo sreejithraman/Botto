@@ -35,17 +35,15 @@ project; [project.yml](../../project.yml) owns its generated settings.
 The [verification map](verification/index.md) owns acceptance recipes;
 [verification.md](../verification.md) owns recorded results and their limits.
 
-## Live Hermes tests
+## Live T3 tests
 
-The isolated [authority host](../dev-host.md) and [sidecar host](../dev-host-sidecar.md)
-guides own source pins, prerequisites, opt-in test variables, and teardown.
-Their temporary paths are run-owned examples. Live probes create profiles and
-mutate host data; use the documented disposable runtimes and read their current
-process records before teardown.
+Use a disposable T3 environment and project. Follow
+[shared setup and readiness](verification/index.md#shared-setup-and-readiness)
+for route review, test isolation, and evidence.
 
 ## Performance work
 
-Workloads live in the [streaming replay test](../../Tests/BottoCoreTests/StreamingReplayPerformanceTests.swift),
+Workloads live in the
 [native performance tests](../../AppUITests/ConversationUITests.swift), and
 [scrolling, typing and sending benchmarks](../../AppUITests/ConversationPerformanceUITests.swift).
 The [verification record](../verification.md) records checked workloads,

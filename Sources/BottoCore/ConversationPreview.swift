@@ -9,20 +9,20 @@ public struct ConversationPreview: Codable, Equatable, Sendable {
         guard message.role == .user || message.role == .assistant,
               message.isVisible, message.displayKind != "hidden" else { return nil }
         if message.role == .assistant, message.displayKind != "failed_turn", message.isSilent == true,
-           HermesMessagePresentation.isSilence(message.text, partial: true) { return nil }
+           MessagePresentation.isSilence(message.text, partial: true) { return nil }
         let summary: String
-        if HermesMessagePresentation.isMachinery(message.displayKind), message.botSender == nil {
+        if MessagePresentation.isMachinery(message.displayKind), message.botSender == nil {
             guard let notification = message.notificationPresentation,
                   message.displayKind != "internal_notification",
                   notification.title.lowercased().hasSuffix(" failed")
                     || notification.title.lowercased().hasPrefix("subagent task failed: ") else { return nil }
             summary = notification.title
         } else if message.displayKind == "failed_turn",
-                  message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || HermesMessagePresentation.isSilence(message.text) {
+                  message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || MessagePresentation.isSilence(message.text) {
             summary = "Reply failed"
         } else {
             var displayMessage = message
-            displayMessage.text = message.role == .assistant && HermesMessagePresentation.isSilence(message.text) ? "" : message.attributedText
+            displayMessage.text = message.role == .assistant && MessagePresentation.isSilence(message.text) ? "" : message.attributedText
             let display = AttachmentPresentation.display(displayMessage)
             let text = ReplyContent.summary(display.text)
             if !text.isEmpty { summary = text }

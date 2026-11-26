@@ -369,7 +369,7 @@ public actor BotAvatarEngine {
 
     private enum Bundled {
         static let assets: [BotAvatarDrawingAsset] = {
-            guard let url = Bundle.module.url(forResource: "HermesAvatarFrames", withExtension: "json"),
+            guard let url = Bundle.module.url(forResource: "AvatarPresetFrames", withExtension: "json"),
                   let data = try? Data(contentsOf: url),
                   let assets = try? JSONDecoder().decode([BotAvatarDrawingAsset].self, from: data) else { return [] }
             return assets

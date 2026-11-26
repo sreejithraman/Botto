@@ -1,0 +1,110 @@
+import Foundation
+
+/// Accumulate URLSession chunks off the main actor. All mutable state is locked;
+/// cancellation may race the serial delegate callbacks, including before start.
+nonisolated final class BoundedHTTPReceiver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    typealias Response = (Data, HTTPURLResponse)
+    private let url: URL?
+    private let limit: Int
+    private let limitError: ConversationServiceError
+    private let lock = NSLock()
+    private var data = Data()
+    private var response: HTTPURLResponse?
+    private var continuation: CheckedContinuation<Response, any Error>?
+    private var completed = false
+    private var earlyResult: Result<Response, any Error>?
+
+    static func receive(_ request: URLRequest, in session: URLSession, limit: Int,
+                        limitError: ConversationServiceError) async throws -> Response {
+        let receiver = BoundedHTTPReceiver(url: request.url, limit: limit, limitError: limitError)
+        let task = session.dataTask(with: request)
+        task.delegate = receiver
+        return try await withTaskCancellationHandler {
+            try await receiver.result(starting: task)
+        } onCancel: {
+            receiver.finish(.failure(CancellationError()))
+            task.cancel()
+        }
+    }
+
+    private init(url: URL?, limit: Int, limitError: ConversationServiceError) {
+        self.url = url; self.limit = limit; self.limitError = limitError
+    }
+
+    private func result(starting task: URLSessionDataTask) async throws -> Response {
+        try await withCheckedThrowingContinuation { continuation in
+            let early: Result<Response, any Error>? = lock.withLock {
+                if let earlyResult { self.earlyResult = nil; return earlyResult }
+                self.continuation = continuation
+                return nil
+            }
+            if let early { continuation.resume(with: early) }
+            else { task.resume() }
+        }
+    }
+
+    private func finish(_ result: Result<Response, any Error>) {
+        let waiting = lock.withLock {
+            guard !completed else { return nil as CheckedContinuation<Response, any Error>? }
+            completed = true
+            data = Data()
+            response = nil
+            let waiting = continuation
+            continuation = nil
+            if waiting == nil { earlyResult = result }
+            return waiting
+        }
+        waiting?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        finish(.failure(ConversationServiceError.redirected))
+        completionHandler(nil)
+        task.cancel()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        guard let response = response as? HTTPURLResponse else {
+            finish(.failure(ConversationServiceError.disconnected)); completionHandler(.cancel); return
+        }
+        guard response.url == url, !(300..<400).contains(response.statusCode) else {
+            finish(.failure(ConversationServiceError.redirected)); completionHandler(.cancel); return
+        }
+        // This is only an early refusal. The actual delivered bytes remain bounded
+        // when Content-Length is missing, false, or describes compressed bytes.
+        guard response.expectedContentLength <= limit else {
+            finish(.failure(limitError)); completionHandler(.cancel); return
+        }
+        let active = lock.withLock {
+            guard !completed else { return false }
+            self.response = response
+            return true
+        }
+        completionHandler(active ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        let overflow = lock.withLock {
+            guard !completed else { return false }
+            guard chunk.count <= limit - data.count else { return true }
+            data.append(chunk)
+            return false
+        }
+        if overflow {
+            finish(.failure(limitError))
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let result: Result<Response, any Error> = lock.withLock {
+            if let error { return .failure(error) }
+            guard let response else { return .failure(ConversationServiceError.disconnected) }
+            return .success((data, response))
+        }
+        finish(result)
+    }
+}

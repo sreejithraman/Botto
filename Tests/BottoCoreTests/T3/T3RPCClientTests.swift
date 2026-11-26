@@ -4,8 +4,8 @@ import Testing
 
 actor T3TestSocket: T3WebSocketTransport {
     nonisolated let incoming: AsyncThrowingStream<Data, Error>.Continuation
-    nonisolated let sent: AsyncStream<HermesJSON>
-    private let outgoing: AsyncStream<HermesJSON>.Continuation
+    nonisolated let sent: AsyncStream<JSONValue>
+    private let outgoing: AsyncStream<JSONValue>.Continuation
     private var iterator: AsyncThrowingStream<Data, Error>.Iterator
     private let stalledTag: String?
     private var stalledWrites: [CheckedContinuation<Void, Error>] = []
@@ -16,14 +16,14 @@ actor T3TestSocket: T3WebSocketTransport {
         let messages = AsyncThrowingStream<Data, Error>.makeStream()
         incoming = messages.continuation
         iterator = messages.stream.makeAsyncIterator()
-        let frames = AsyncStream<HermesJSON>.makeStream()
+        let frames = AsyncStream<JSONValue>.makeStream()
         sent = frames.stream
         outgoing = frames.continuation
     }
 
     func send(_ data: Data) async throws {
         guard !isClosed else { throw T3RPCError.closed }
-        let frame = try JSONDecoder().decode(HermesJSON.self, from: data)
+        let frame = try JSONDecoder().decode(JSONValue.self, from: data)
         outgoing.yield(frame)
         if let stalledTag, frame["_tag"].text == stalledTag {
             try await withCheckedThrowingContinuation { stalledWrites.append($0) }
@@ -95,7 +95,7 @@ actor T3TestSocket: T3WebSocketTransport {
         let socket = T3TestSocket()
         let client = T3RPCClient(transport: socket)
         var sent = socket.sent.makeAsyncIterator()
-        let values = AsyncStream<HermesJSON>.makeStream()
+        let values = AsyncStream<JSONValue>.makeStream()
         var received = values.stream.makeAsyncIterator()
         let consumer = Task {
             let stream = try await client.subscribe("orchestration.subscribeShell")

@@ -20,15 +20,6 @@ import BottoCore
     var completedOpens: [OpenedConversation] = []
     var stopGate: WorkspaceGate?
     var responseGate: WorkspaceGate?
-    var pushRemovalGate: WorkspaceGate?
-    var pushStatusResult: PushHostStatus?
-    var pushStatuses: [String: PushHostStatus] = [:]
-    var pushStatusGate: WorkspaceGate?
-    var pushStatusGatedProfileID: String?
-    var pushStatusError: (any Error)?
-    var pushStatusCalls: [String] = []
-    var pushEnrollments: [(PushEnrollmentRequest, String, ConnectionConfiguration?)] = []
-    private(set) var connectedConfiguration: ConnectionConfiguration?
     var connectError: (any Error)?
     private(set) var connectionAttempts = 0
     var stops: [UUID] = []
@@ -91,27 +82,9 @@ import BottoCore
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
         connectionAttempts += 1
         if let connectError { throw connectError }
-        connectedConfiguration = configuration
         return .init(version: "test")
     }
     func disconnect() { issuer.retireAttachment() }
-    func pushStatus(profileID: String) async throws -> PushHostStatus {
-        pushStatusCalls.append(profileID)
-        let result = pushStatuses[profileID] ?? pushStatusResult
-        if pushStatusGatedProfileID == nil || pushStatusGatedProfileID == profileID { await pushStatusGate?.wait() }
-        if let pushStatusError { throw pushStatusError }
-        guard let result else { throw PushError.unsupported }
-        return result
-    }
-    func enrollPushDevice(_ request: PushEnrollmentRequest, profileID: String) async throws -> PushEnrollment {
-        pushEnrollments.append((request, profileID, connectedConfiguration))
-        guard let pushStatusResult, let installationID = pushStatusResult.installationID else { throw PushError.unsupported }
-        return .init(installationID: installationID, deviceID: request.deviceID, generation: 1, preferences: request.preferences)
-    }
-    func removePushDevice(deviceID: String, operationID: UUID, profileID: String) async throws -> PushRemovalResult {
-        await pushRemovalGate?.wait()
-        return .init(status: "revoked")
-    }
     func bots() async throws -> [BotProfile] {
         rosterCalls += 1
         await rosterGate?.wait()

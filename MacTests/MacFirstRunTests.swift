@@ -12,7 +12,7 @@ import Testing
 
         // A failed rename keeps the page up to try again, through a reconnection too. The choices are already safe.
         host.failsRename = true
-        await #expect(throws: HermesServiceError.uncertain) {
+        await #expect(throws: ConversationServiceError.uncertain) {
             try await store.setUpBot(name: "Miso", face: BotFace(shape: .drop, color: "#38bdf8"))
         }
         #expect(host.manifest.displayName == "Miso")
@@ -243,7 +243,7 @@ import Testing
         self.manifest.mainThreadID = main
     }
     func renameChannel(threadID: String, title: String) async throws {
-        if failsRename { throw HermesServiceError.uncertain }
+        if failsRename { throw ConversationServiceError.uncertain }
         renames[threadID] = title
         currentT3Channels = currentT3Channels.map {
             .init(id: $0.id, title: $0.id == threadID ? title : $0.title, isMain: $0.isMain, isPinned: $0.isPinned, isArchived: $0.isArchived,
