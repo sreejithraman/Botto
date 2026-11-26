@@ -65,14 +65,19 @@ def suite_fallback(selector: Optional[str]) -> str:
     return f" Run its suite instead: ./scripts/check-native.sh {selector.rpartition('/')[0]}"
 
 
+# A test that records only a known issue ("Expected Failure") still ran and passed.
+PASSING_RESULTS = ("Passed", "Expected Failure")
+
+
 def verified_results(selector: Optional[str], summary: dict, nodes: List[dict]) -> str:
-    passed = summary.get("passedTests")
-    if not isinstance(passed, int) or passed < 1:
+    passed, known = summary.get("passedTests"), summary.get("expectedFailures", 0)
+    if not isinstance(passed, int) or not isinstance(known, int) or passed + known < 1:
         sys.exit("Native run reported success without executing any passing tests." + suite_fallback(selector))
-    if selector and not any(case.get("result") == "Passed" and selects(selector, case.get("nodeIdentifier") or "")
+    if selector and not any(case.get("result") in PASSING_RESULTS and selects(selector, case.get("nodeIdentifier") or "")
                             for case in recorded_cases(nodes)):
         sys.exit(f"Native run reported no passing result for {selector}." + suite_fallback(selector))
-    return f"Native results: {passed} passed, {summary.get('failedTests')} failed, {summary.get('skippedTests')} skipped"
+    return (f"Native results: {passed} passed, {known} with known issues, "
+            f"{summary.get('failedTests')} failed, {summary.get('skippedTests')} skipped")
 
 
 def xcresult(kind: str, bundle: str) -> dict:

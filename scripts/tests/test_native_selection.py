@@ -95,6 +95,15 @@ class ResultTests(unittest.TestCase):
             with self.subTest(selector=selector), self.assertRaises(SystemExit):
                 native_selection.verified_results(selector, {"passedTests": 1}, nodes)
 
+    def test_a_known_issue_counts_as_a_pass(self):
+        nodes = results(case("Suite/flaky()", "Expected Failure"))
+        self.assertIn("1 with known issues", native_selection.verified_results(
+            "Suite/flaky()", {"passedTests": 0, "expectedFailures": 1}, nodes))
+        with self.assertRaises(SystemExit) as stopped:
+            native_selection.verified_results("Suite/flaky()", {"passedTests": 0, "expectedFailures": 1},
+                                              results(case("Suite/flaky()", "Failed"), case("Suite/other()", "Expected Failure")))
+        self.assertIn("no passing result for Suite/flaky()", str(stopped.exception))
+
     def test_xctest_selector_matches_the_identifier_xcode_records(self):
         native_selection.verified_results("Legacy/testOne", {"passedTests": 1}, results(case("Legacy/testOne()")))
 
