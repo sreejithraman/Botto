@@ -304,9 +304,7 @@ final class ConversationUITests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
         app.launch()
-        let milo = app.buttons["Milo, pinned"]
-        XCTAssertTrue(milo.waitForExistence(timeout: 5))
-        milo.tap()
+        WorkspaceNavigation.openSpace("milo", in: app)
         let composer = app.descendants(matching: .any)["chat-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         composer.tap()
