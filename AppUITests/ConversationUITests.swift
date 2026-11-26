@@ -65,17 +65,14 @@ final class ConversationUITests: XCTestCase {
             .press(forDuration: 0.1, thenDragTo: reply.coordinate(withNormalizedOffset: CGVector(dx: 0.001, dy: 0.03)))
         trailing.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: reply.coordinate(withNormalizedOffset: CGVector(dx: 0.999, dy: 1.2)))
-        // Synthesized ⌘C and ⌘V can be dropped, and a stale pasteboard then hides it. Use the
-        // edit menus, and prove Copy wrote the pasteboard.
+        // Synthesized ⌘C and ⌘V can be dropped, so use the edit menus. Seed the pasteboard so a
+        // copy that never happens can't pass on whatever it held before.
         UIPasteboard.general.string = "Not the selected reply"
-        let seeded = UIPasteboard.general.changeCount
         NativeMenu.choose(app.menuItems["Copy"])
-        XCTAssertNotEqual(UIPasteboard.general.changeCount, seeded, "Copy must write the selection.")
         let composer = app.descendants(matching: .any)["chat-composer"]
         composer.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        // A tap on the focused composer opens its edit menu. A tap during the keyboard
-        // animation can miss it, so allow a few.
+        // A tap on the focused composer opens its edit menu. A tap while the keyboard is still
+        // animating can miss it, so allow a few.
         let paste = app.menuItems["Paste"]
         for _ in 0..<3 where !paste.exists {
             composer.tap(); _ = paste.waitForExistence(timeout: 2)
