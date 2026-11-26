@@ -1,6 +1,10 @@
 import Foundation
 import Testing
+
 @testable import BottoCore
+
+/// The prompt main hid, written out so a change to the production string fails these tests.
+private let imageOnlyPrompt = "Please examine the attached image."
 
 private func userRow(_ text: String, _ attachments: [ChatAttachment]) -> ChatMessage {
     ChatMessage(id: "thread-1:item-1", role: .user, text: text, attachments: attachments)
@@ -37,15 +41,15 @@ private func userRow(_ text: String, _ attachments: [ChatAttachment]) -> ChatMes
 
 @Test func aPhotoSentWithOnlyTheImagePromptShowsAlone() throws {
     let photo = ChatAttachment(name: "upload_bz7wz_3o.jpg", path: "t3-attachment:photo", mimeType: "image/jpeg")
-    let message = userRow(AttachmentPresentation.imageOnlyPrompt, [photo])
+    let message = userRow(imageOnlyPrompt, [photo])
     #expect(AttachmentPresentation.display(message).text.isEmpty)
     #expect(try #require(ConversationPreview(message: message)).text == "Shared a photo")
 
     let file = ChatAttachment(name: "notes.txt", path: "t3-attachment:notes", mimeType: "text/plain")
-    #expect(ConversationPreview(message: userRow(AttachmentPresentation.imageOnlyPrompt, [file]))?.text == "Shared a file")
+    #expect(ConversationPreview(message: userRow(imageOnlyPrompt, [file]))?.text == "Shared a file")
 
-    for kept in [userRow(AttachmentPresentation.imageOnlyPrompt, []), userRow(AttachmentPresentation.imageOnlyPrompt + " Thanks", [photo]),
-                 ChatMessage(id: "reply", role: .assistant, text: AttachmentPresentation.imageOnlyPrompt, attachments: [photo])] {
+    for kept in [userRow(imageOnlyPrompt, []), userRow(imageOnlyPrompt + " Thanks", [photo]),
+                 ChatMessage(id: "reply", role: .assistant, text: imageOnlyPrompt, attachments: [photo])] {
         #expect(AttachmentPresentation.display(kept).text == kept.text)
         #expect(ConversationPreview(message: kept)?.text == kept.text)
     }
@@ -63,7 +67,7 @@ private func userRow(_ text: String, _ attachments: [ChatAttachment]) -> ChatMes
 @Test(arguments: [ChatMessage.Role.assistant, .system, .tool])
 func otherRolesShowTheirAttachmentsAsSent(_ role: ChatMessage.Role) {
     let attachment = ChatAttachment(name: "0F6A3C1E-8D2B-4F7A-9C3D-5E6F7A8B9C0D-result.txt", path: "t3-attachment:result")
-    let message = ChatMessage(id: "other", role: role, text: AttachmentPresentation.imageOnlyPrompt, attachments: [attachment, attachment])
+    let message = ChatMessage(id: "other", role: role, text: imageOnlyPrompt, attachments: [attachment, attachment])
     let shown = AttachmentPresentation.display(message)
     #expect(shown.text == message.text)
     #expect(shown.attachments == message.attachments)
