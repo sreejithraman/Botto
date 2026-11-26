@@ -1294,73 +1294,73 @@ import UIKit
         }
     }
 
-    /// The Spaces drawer is modal for VoiceOver, so while it is closed it must also be hidden from it. Otherwise
-    /// VoiceOver stays trapped in the off-screen drawer and can't reach the chat. XCUITest can't see this: its
-    /// tree lists accessibilityHidden elements, so this walks the tree the way VoiceOver does instead.
-    @Test func voiceOverReachesOnlyTheVisibleSideOfTheDrawer() async throws {
+    /// The Spaces drawer is modal for VoiceOver, so while it is closed it must also stay out of the accessibility
+    /// tree, or VoiceOver could be held in the off-screen drawer. XCUITest can't check this: its snapshot lists
+    /// the closed drawer at x = -372 along with elements marked accessibilityHidden. This reads the hosted
+    /// tree the app exposes to assistive technology instead. It doesn't model how VoiceOver arbitrates modal views.
+    @Test func accessibilityExposesOnlyTheVisibleSideOfTheDrawer() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
         let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
         await store.start()
         try NativeAccessibilityRuntime.enable()
-        // A bare test window has no SwiftUI scene, so give the workspace the active phase the app's scene would.
+        // The window belongs to the test host's foreground scene, but SwiftUI's scene phase comes from an App
+        // scene, which a bare window lacks; the toolbar acts only while it is active.
         let workspace = T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})
         try await withHosted(workspace.environment(\.scenePhase, .active)) { window in
-            var reached = try await reach(window, "The chat opens with the drawer closed") { $0.identifiers.contains("t3-chat-header") }
-            #expect(!reached.identifiers.contains("t3-spaces-drawer"), "\(reached.identifiers.sorted())")
+            var exposed = try await expose(window, "The chat opens with the drawer closed") {
+                $0["t3-chat-header"] != nil && $0["t3-open-drawer"] != nil
+            }
+            #expect(exposed["t3-drawer-search"] == nil, "\(exposed.keys.sorted())")
 
             // The toolbar's bar button doesn't take accessibilityActivate() in a test host, so press it as a control.
-            try #require(reached.elements["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
-            reached = try await reach(window, "The drawer opens") { $0.identifiers.contains("t3-drawer-search") }
-            #expect(!reached.identifiers.contains("t3-chat-header"), "\(reached.identifiers.sorted())")
-            // The search icon is hidden from VoiceOver, so a walk that finds it is not reading what VoiceOver reads.
-            #expect(!reached.identifiers.contains("magnifyingglass"))
+            try #require(exposed["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
+            exposed = try await expose(window, "The drawer opens") { $0["t3-drawer-search"] != nil }
+            #expect(exposed["t3-chat-header"] == nil, "\(exposed.keys.sorted())")
+            // The search icon is hidden, so a tree that shows it isn't honoring accessibilityHidden. iOS 27 names
+            // it "magnifyingglass" after its symbol; recheck this control if a runtime names it differently.
+            #expect(exposed["magnifyingglass"] == nil)
         }
     }
 
-    private func reach(_ window: UIWindow, _ reason: String, until ready: (Reached) -> Bool) async throws -> Reached {
-        var reached = Reached()
-        let settled = try await waitWhile(reason, diagnostics: { "\(reached.identifiers.sorted())" }) {
+    /// The accessibility elements the hosted view exposes, by identifier, once `ready` holds.
+    private func expose(_ window: UIWindow, _ reason: String,
+                        until ready: ([String: NSObject]) -> Bool) async throws -> [String: NSObject] {
+        var exposed: [String: NSObject] = [:]
+        let settled = try await waitWhile(reason, diagnostics: { "\(exposed.keys.sorted())" }) {
             window.layoutIfNeeded()
-            reached = Reached(window)
-            if ready(reached) { return false }
+            exposed = [:]
+            var seen: Set<ObjectIdentifier> = []
+            collectExposedElements(window, into: &exposed, seen: &seen)
+            if ready(exposed) { return false }
             try await Task.sleep(for: .milliseconds(50))
             return true
         }
         try #require(settled, "Timed out: \(reason)")
-        return reached
+        return exposed
     }
 
-    /// What VoiceOver can reach: it skips hidden subtrees, stops at elements, and keeps only modal siblings.
-    @MainActor private struct Reached {
-        var identifiers: Set<String> = []
-        var elements: [String: NSObject] = [:]
-
-        init() {}
-        init(_ root: NSObject) {
-            var seen: Set<ObjectIdentifier> = []
-            walk(root, seen: &seen)
-        }
-
-        private mutating func walk(_ object: NSObject, seen: inout Set<ObjectIdentifier>) {
-            guard seen.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return }
-            if let view = object as? UIView, view.isHidden || view.alpha == 0 { return }
+    /// Skips hidden subtrees and stops at elements. A container's own element list, even an empty one, wins over its subviews.
+    private func collectExposedElements(_ object: NSObject, into exposed: inout [String: NSObject], seen: inout Set<ObjectIdentifier>) {
+        guard seen.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return }
+        if let view = object as? UIView, view.isHidden || view.alpha == 0 { return }
+        if object.isAccessibilityElement {
             // SwiftUI's accessibility nodes answer accessibilityIdentifier without declaring UIAccessibilityIdentification.
             let identify = NSSelectorFromString("accessibilityIdentifier")
             if object.responds(to: identify), let id = object.perform(identify)?.takeUnretainedValue() as? String, !id.isEmpty {
-                identifiers.insert(id)
-                elements[id] = object
+                exposed[id] = object
             }
-            if object.isAccessibilityElement { return }
-            var children = (object.accessibilityElements ?? []).compactMap { $0 as? NSObject }
-            if children.isEmpty {
-                let count = object.accessibilityElementCount()
-                if count > 0, count != NSNotFound { children = (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
-            }
-            if children.isEmpty { children = (object as? UIView)?.subviews ?? [] }
-            let modal = children.filter(\.accessibilityViewIsModal)
-            for child in modal.isEmpty ? children : modal { walk(child, seen: &seen) }
+            return
         }
+        let children: [NSObject]
+        if let elements = object.accessibilityElements {
+            children = elements.compactMap { $0 as? NSObject }
+        } else if case let count = object.accessibilityElementCount(), count > 0, count != NSNotFound {
+            children = (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject }
+        } else {
+            children = (object as? UIView)?.subviews ?? []
+        }
+        for child in children { collectExposedElements(child, into: &exposed, seen: &seen) }
     }
 
     @Test func aBotSomeoneAlreadyKnowsSkipsFirstRun() async throws {
