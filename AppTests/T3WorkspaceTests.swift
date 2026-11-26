@@ -1311,13 +1311,16 @@ import UIKit
             var exposed = try await expose(window, "The chat opens with the drawer closed") {
                 $0["t3-chat-header"] != nil && $0["t3-open-drawer"] != nil
             }
-            #expect(exposed["t3-drawer-search"] == nil, "\(exposed.keys.sorted())")
+            let drawerElements = exposed.keys.filter {
+                $0.hasPrefix("t3-drawer-") || $0.hasPrefix("t3-space-") || $0 == "t3-main-space" || $0 == "t3-archived-toggle"
+            }
+            #expect(drawerElements.isEmpty, "\(drawerElements.sorted())")
 
             // The toolbar's bar button doesn't take accessibilityActivate() in a test host, so press it as a control.
             try #require(exposed["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
             exposed = try await expose(window, "The drawer opens") { $0["t3-drawer-search"] != nil }
             #expect(exposed["t3-chat-header"] == nil, "\(exposed.keys.sorted())")
-            // The search icon is hidden, so a tree that shows it isn't honoring accessibilityHidden. iOS 27 names
+            // The open drawer's search icon is hidden, so a tree that shows it isn't honoring accessibilityHidden. iOS 27 names
             // it "magnifyingglass" after its symbol; recheck this control if a runtime names it differently.
             #expect(exposed["magnifyingglass"] == nil)
         }
