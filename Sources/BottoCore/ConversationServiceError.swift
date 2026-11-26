@@ -10,7 +10,7 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
     case queuedMessageUnavailable
     case responseTooLong
 
-    case avatarConflict, partialAvatar, uncertainAvatar, invalidAvatar, avatarRefresh
+    case avatarConflict, uncertainAvatar, invalidAvatar, avatarRefresh
     case profileConflict, partialProfile, uncertainProfile
     case artifactTooLarge
 
@@ -25,7 +25,6 @@ public enum ConversationServiceError: Error, LocalizedError, Equatable, Sendable
         case .artifactTooLarge: "This file is too large to open in Botto. The download limit is 25 MiB."
         case .avatarRefresh: "Your avatar was saved, but Botto couldn’t refresh it. Reload the avatar before making another change."
         case .avatarConflict: "This avatar changed on the host. Reload it before choosing again."
-        case .partialAvatar: "The face was saved, but updating its image was not confirmed. Reload the avatar to check what the host kept before saving again."
         case .uncertainAvatar: "The host did not confirm the avatar change. It may have saved. Reload the avatar to check before saving again."
         case .invalidAvatar: "Choose a valid avatar shape and color."
         case .incompatible: "The host returned unexpected data. Check the connection and try again."

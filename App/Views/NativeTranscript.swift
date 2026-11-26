@@ -53,9 +53,9 @@ struct NativeTranscriptEmptyDisplay: Equatable {
         return lhs.opening == rhs.opening && lhs.connected == rhs.connected &&
             lhs.presentation == rhs.presentation && a == b &&
             [a.id, a.name, a.emoji, a.description, a.preview, a.model, a.appearance?.rawShape,
-             a.appearance?.color, a.appearance?.imageKind, a.appearance?.expression].map(bytes) ==
+             a.appearance?.color, a.appearance?.expression].map(bytes) ==
             [b.id, b.name, b.emoji, b.description, b.preview, b.model, b.appearance?.rawShape,
-             b.appearance?.color, b.appearance?.imageKind, b.appearance?.expression].map(bytes)
+             b.appearance?.color, b.appearance?.expression].map(bytes)
     }
 }
 struct NativeTranscriptContext: Equatable {

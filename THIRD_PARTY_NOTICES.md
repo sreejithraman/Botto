@@ -1,8 +1,7 @@
 # Third-party notices
 
 Botto adapts native Hermes connection, gateway, profile creation, request parsing,
-transcript reconciliation, attachment preparation, shared avatar identity, appearance and
-asset loading rules from
+transcript reconciliation, attachment preparation, shared avatar identity and appearance rules from
 [Hermex](https://github.com/uzairansaruzi/hermex), revision
 `47809f2cd1f07bcbe592ee8960cf9c63e88b734c` (2026-10-22).
 

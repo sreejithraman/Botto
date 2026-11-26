@@ -12,9 +12,10 @@ the selected appearance. Cancel leaves the last saved appearance in place.
 
 `AvatarPresetDefinitions.json` and `AvatarPresetFrames.json` are the bundled
 catalog and reference frames. The picker uses shared shape families and color
-presets. Older recorded metadata can still carry a generated shape, a custom
-color, or an image fingerprint. These values keep their existing interpretation
-when displayed. The renderer supports explicit hex, RGB/RGBA, and HSL/HSLA
+presets. Older recorded metadata can still carry a generated shape or a custom
+color, which keep their existing interpretation when displayed. Old image fields
+(`imageKind`, `bottoPreviewSHA256`) still decode but change nothing on screen.
+The renderer supports explicit hex, RGB/RGBA, and HSL/HSLA
 colors and falls back for values it cannot draw.
 
 ## Refresh and motion

@@ -225,16 +225,14 @@ import BottoCore
         #expect(service.saves == 2)
     }
 
-    @Test(arguments: ["appearance", "image"])
-    func authoritativeAvatarConflictRequiresReloadBeforeDeliberateSave(change: String) async throws {
+    @Test func authoritativeAvatarConflictRequiresReloadBeforeDeliberateSave() async throws {
         let service = AvatarService()
         let store = AppStore(service: service, persistence: AvatarStorage().persistence)
         let connection = ConnectionConfiguration(serverURL: URL(string: "https://conflict-avatars.example")!)
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        if change == "appearance" { service.profiles[0].appearance = BotAppearance(shape: .hexagon, color: "#ec4899") }
-        else { service.profiles[0].hasAvatar = false }
+        service.profiles[0].appearance = BotAppearance(shape: .hexagon, color: "#ec4899")
         let fresh = service.profiles
         await store.refresh()
         await #expect(throws: ConversationServiceError.avatarConflict) { try await store.saveAvatar(.automatic, to: destination) }
@@ -260,7 +258,6 @@ import BottoCore
         }
         #expect(service.saves == 1 && service.mutations == 1)
         #expect(service.profiles[0].face == BotFace(shape: .drop, color: "hsl(120 68% 58%)"))
-        #expect(service.profiles[0].hasAvatar == false)
         #expect(store.bots == visible)
         service.failRoster = false
         #expect(await store.connect(connection))
@@ -308,7 +305,6 @@ import BottoCore
         #expect(service.saves == 1 && service.mutations == 0)
         try await store.saveAvatar(.automatic, to: reloaded)
         #expect(service.saves == 2 && service.mutations == 1)
-        #expect(service.profiles[0].hasAvatar == false)
     }
 
     @Test(arguments: [false, true]) func interruptedServiceTargetReadCannotWriteAfterReconnect(reconnect: Bool) async throws {
@@ -426,13 +422,18 @@ import BottoCore
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         try await store.saveAvatar(.face(.init(shape: .drop, color: "#22c55e")), to: destination)
         #expect(store.bots[0].face == BotFace(shape: .drop, color: "hsl(120 68% 58%)"))
-        #expect(store.bots[0].hasAvatar == false)
         #expect(service.saves == 1 && store.notice == nil)
+        let character = try #require(store.avatarDestination(for: store.bots[0]))
+        try await store.saveAvatar(.geometry(DemoBotService.sampleCharacter, color: .value("#22c55e")), to: character)
+        #expect(store.bots[0].appearance?.rawShape == DemoBotService.sampleCharacter.recipe)
+        #expect(store.bots[0].appearance?.geometry == DemoBotService.sampleCharacter)
+        #expect(store.bots[0].appearance?.color == "hsl(120 68% 58%)")
+        #expect(service.profiles[0].appearance == store.bots[0].appearance && service.saves == 2)
         await store.setActive(false)
         await #expect(throws: ConversationServiceError.disconnected) {
-            try await store.saveAvatar(.automatic, to: destination)
+            try await store.saveAvatar(.automatic, to: character)
         }
-        #expect(service.saves == 1)
+        #expect(service.saves == 2)
     }
 
     @Test(arguments: ["cancel", "background", "transport", "reconnect", "demo", "replacement"])
@@ -521,14 +522,12 @@ import BottoCore
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
-    var profiles = [BotProfile(id: "shared", name: "Shared", appearance: BotAppearance(imageKind: "photo"), hasAvatar: true, lookRevision: 1)]
+    var profiles = [BotProfile(id: "shared", name: "Shared", appearance: BotAppearance(), hasAvatar: false, lookRevision: 1)]
     var holdRoster = false
     var failRoster = false
     var failRosterAfterSave = false
     var connectError: ConversationServiceError?
-    var profileSaves = 0
     var saveError: ConversationServiceError?
-    var rendererError: BotAvatarEngineError?
     var targetReadError: ConversationServiceError?
     var holdTargetRead = false
     var pendingTargetRead: CheckedContinuation<Void, Never>?
@@ -552,14 +551,12 @@ import BottoCore
     }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         let index = profiles.firstIndex { $0.id.utf8.elementsEqual(bot.id.utf8) }!
-        profileSaves += 1
         if let name = edit.name { profiles[index].name = name }
         if let description = edit.description { profiles[index].description = description }
         return profiles[index]
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
         saves += 1
-        if let rendererError { throw rendererError }
         // Mirror the real service's fresh target read and prewrite connection fence.
         let owner = connectionGeneration
         if holdTargetRead { await withCheckedContinuation { pendingTargetRead = $0 } }
@@ -568,15 +565,12 @@ import BottoCore
         let matches = profiles.indices.filter { profiles[$0].id == bot.id }
         guard matches.count == 1, let index = matches.first else { throw ConversationServiceError.profileUnavailable }
         let fresh = profiles[index]
-        guard (fresh.hasAvatar == true) == (bot.hasAvatar == true),
-              (fresh.appearance ?? BotAppearance()) == (bot.appearance ?? BotAppearance()) else {
+        guard (fresh.appearance ?? BotAppearance()) == (bot.appearance ?? BotAppearance()) else {
             throw ConversationServiceError.avatarConflict
         }
         if let saveError { throw saveError }
         mutations += 1
         profiles[index].appearance = choice.applying(to: fresh.appearance ?? BotAppearance())
-        profiles[index].appearance?.bottoPreviewSHA256 = nil
-        profiles[index].hasAvatar = false
         profiles[index].lookRevision = (fresh.lookRevision ?? 0) + 1
         if failRosterAfterSave { failRoster = true }
         let saved = profiles[index]

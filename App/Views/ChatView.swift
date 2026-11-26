@@ -829,9 +829,9 @@ private struct TranscriptMessageBody: View, Equatable {
     nonisolated private static func sameSenderProfile(_ lhs: BotProfile?, _ rhs: BotProfile?) -> Bool {
         guard lhs == rhs else { return false }
         let first = [lhs?.id, lhs?.name, lhs?.appearance?.rawShape, lhs?.appearance?.color,
-                     lhs?.appearance?.imageKind, lhs?.appearance?.expression]
+                     lhs?.appearance?.expression]
         let second = [rhs?.id, rhs?.name, rhs?.appearance?.rawShape, rhs?.appearance?.color,
-                      rhs?.appearance?.imageKind, rhs?.appearance?.expression]
+                      rhs?.appearance?.expression]
         return first.map { $0.map { Data($0.utf8) } } == second.map { $0.map { Data($0.utf8) } }
     }
 
