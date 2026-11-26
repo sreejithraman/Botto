@@ -45,14 +45,16 @@ import Vision
     }
 }
 
-/// The Demo transcript scrolls beneath the fixed header and the opaque banner above the composer,
+/// The transcript scrolls beneath the fixed header and the composer, with the Demo banner above it,
 /// and `isHittable` can still be true there. Only this area is one a person can read and tap.
 @MainActor func readingArea(of transcript: XCUIElement, in app: XCUIApplication) -> CGRect {
     let top = app.buttons["t3-chat-header"].frame.maxY
     let visible = transcript.frame.intersection(app.frame)
+    let banner = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Demo workspace."))
+    let composer = app.textViews.matching(identifier: "chat-composer")
     // The closed Spaces drawer keeps its own banner beside the transcript.
-    let bottom = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Demo workspace."))
-        .allElementsBoundByIndex.map(\.frame).filter { $0.intersects(visible) }.map(\.minY).max() ?? visible.maxY
+    let bottom = (banner.allElementsBoundByIndex + composer.allElementsBoundByIndex).map(\.frame)
+        .filter { $0.intersects(visible) }.map(\.minY).min() ?? visible.maxY
     return CGRect(x: visible.minX, y: top, width: visible.width, height: bottom - top)
 }
 

@@ -29,10 +29,13 @@ final class ArtifactExportUITests: XCTestCase {
         let transcript = app.descendants(matching: .any).matching(identifier: "chat-transcript").firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         let cards = app.buttons.matching(NSPredicate(format: "label == %@", "Open " + filename))
+        // A card taller than the reading area counts once its centre, where it is tapped, is inside.
         let visibleCard = {
             let area = readingArea(of: transcript, in: app)
             return cards.allElementsBoundByIndex.first {
-                $0.exists && $0.isEnabled && $0.isHittable && area.contains($0.frame)
+                let frame = $0.frame
+                return $0.exists && $0.isEnabled && $0.isHittable && (area.contains(frame)
+                    || frame.height > area.height && area.contains(CGPoint(x: frame.midX, y: frame.midY)))
             }
         }
         // A swipe's momentum can leave the card under the banner. Drag it to the
@@ -40,8 +43,14 @@ final class ArtifactExportUITests: XCTestCase {
         for _ in 0..<8 {
             guard visibleCard() == nil else { break }
             guard let card = cards.allElementsBoundByIndex.first(where: \.exists) else { transcript.swipeDown(); continue }
-            let area = readingArea(of: transcript, in: app)
-            let distance = min(max(area.minY + area.height / 3 - card.frame.midY, -area.height / 2), area.height / 2)
+            let area = readingArea(of: transcript, in: app), frame = card.frame
+            guard area.height > 0 else { break }
+            // Keep the whole card, with a little margin, inside a short area at large text sizes.
+            let room = (area.height - frame.height) / 2, margin = min(8, max(room, 0))
+            let target = room < 0 ? area.midY : min(max(area.minY + area.height / 3, area.minY + frame.height / 2 + margin),
+                                                    area.maxY - frame.height / 2 - margin)
+            let distance = min(max(target - frame.midY, -area.height / 2), area.height / 2)
+            guard abs(distance) >= 1 else { break }
             let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
                 CGVector(dx: area.midX - app.frame.minX, dy: area.midY - distance / 2 - app.frame.minY))
             start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)),
@@ -56,7 +65,7 @@ final class ArtifactExportUITests: XCTestCase {
             XCTFail("The requested file card became unavailable before opening.")
             return app
         }
-        card.tap()
+        card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         assertOutputActions(in: app)
         XCTAssertFalse(app.descendants(matching: .any)["artifact-error"].exists)
         return app
@@ -369,7 +378,8 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.buttons["artifact-share"].exists)
         XCTAssertFalse(filesPicker(in: app).exists)
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
-        XCTAssertFalse(shareCopy(in: app).exists, "Connection replacement must retire native Share too.")
+        XCTAssertTrue(app.otherElements["ActivityListView"].firstMatch.waitForNonExistence(timeout: 5),
+                      "Connection replacement must retire native Share too.")
         let reviewed = app.staticTexts["https://replacement.example"].waitForExistence(timeout: 5)
         capture("Connection replaces artifact presentation", app: app)
         XCTAssertTrue(reviewed)
