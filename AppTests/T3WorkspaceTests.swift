@@ -1309,30 +1309,34 @@ import UIKit
         let workspace = T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})
         try await withHosted(workspace.environment(\.scenePhase, .active)) { window in
             var exposed = try await expose(window, "The chat opens with the drawer closed") {
-                $0["t3-chat-header"] != nil && $0["t3-open-drawer"] != nil
+                $0.byID["t3-chat-header"] != nil && $0.byID["t3-open-drawer"] != nil
             }
-            let drawerElements = exposed.keys.filter {
-                $0.hasPrefix("t3-drawer-") || $0.hasPrefix("t3-space-") || $0 == "t3-main-space" || $0 == "t3-archived-toggle"
-            }
-            #expect(drawerElements.isEmpty, "\(drawerElements.sorted())")
+            // The closed drawer is the only thing laid out left of the screen, so any element there leaked from it,
+            // whatever the drawer is showing and whether or not the element has an identifier.
+            #expect(exposed.leftOfScreen.isEmpty, "\(exposed.leftOfScreen)")
 
             // The toolbar's bar button doesn't take accessibilityActivate() in a test host, so press it as a control.
-            try #require(exposed["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
-            exposed = try await expose(window, "The drawer opens") { $0["t3-drawer-search"] != nil }
-            #expect(exposed["t3-chat-header"] == nil, "\(exposed.keys.sorted())")
+            try #require(exposed.byID["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
+            exposed = try await expose(window, "The drawer opens") { $0.byID["t3-drawer-search"] != nil }
+            #expect(exposed.byID["t3-chat-header"] == nil, "\(exposed.byID.keys.sorted())")
             // The open drawer's search icon is hidden, so a tree that shows it isn't honoring accessibilityHidden. iOS 27 names
             // it "magnifyingglass" after its symbol; recheck this control if a runtime names it differently.
-            #expect(exposed["magnifyingglass"] == nil)
+            #expect(exposed.byID["magnifyingglass"] == nil)
         }
     }
 
-    /// The accessibility elements the hosted view exposes, by identifier, once `ready` holds.
-    private func expose(_ window: UIWindow, _ reason: String,
-                        until ready: ([String: NSObject]) -> Bool) async throws -> [String: NSObject] {
-        var exposed: [String: NSObject] = [:]
-        let settled = try await waitWhile(reason, diagnostics: { "\(exposed.keys.sorted())" }) {
+    private struct Exposed {
+        var byID: [String: NSObject] = [:]
+        /// Elements lying wholly left of the screen, by identifier or label.
+        var leftOfScreen: [String] = []
+    }
+
+    /// The accessibility elements the hosted view exposes, once `ready` holds.
+    private func expose(_ window: UIWindow, _ reason: String, until ready: (Exposed) -> Bool) async throws -> Exposed {
+        var exposed = Exposed()
+        let settled = try await waitWhile(reason, diagnostics: { "\(exposed.byID.keys.sorted()) left=\(exposed.leftOfScreen)" }) {
             window.layoutIfNeeded()
-            exposed = [:]
+            exposed = Exposed()
             var seen: Set<ObjectIdentifier> = []
             collectExposedElements(window, into: &exposed, seen: &seen)
             if ready(exposed) { return false }
@@ -1344,15 +1348,16 @@ import UIKit
     }
 
     /// Skips hidden subtrees and stops at elements. A container's own element list, even an empty one, wins over its subviews.
-    private func collectExposedElements(_ object: NSObject, into exposed: inout [String: NSObject], seen: inout Set<ObjectIdentifier>) {
+    private func collectExposedElements(_ object: NSObject, into exposed: inout Exposed, seen: inout Set<ObjectIdentifier>) {
         guard seen.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return }
         if let view = object as? UIView, view.isHidden || view.alpha == 0 { return }
         if object.isAccessibilityElement {
             // SwiftUI's accessibility nodes answer accessibilityIdentifier without declaring UIAccessibilityIdentification.
             let identify = NSSelectorFromString("accessibilityIdentifier")
-            if object.responds(to: identify), let id = object.perform(identify)?.takeUnretainedValue() as? String, !id.isEmpty {
-                exposed[id] = object
-            }
+            let id = object.responds(to: identify) ? object.perform(identify)?.takeUnretainedValue() as? String : nil
+            if let id, !id.isEmpty { exposed.byID[id] = object }
+            let frame = object.accessibilityFrame
+            if !frame.isEmpty, frame.maxX <= 0 { exposed.leftOfScreen.append(id ?? object.accessibilityLabel ?? "\(type(of: object))") }
             return
         }
         let children: [NSObject]
