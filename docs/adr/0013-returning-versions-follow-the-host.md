@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # Let a returning chat version follow the host
@@ -44,3 +44,9 @@ the next step. It would hide a row, not a chat.
 The Library and Search screens are retired, so these rows no longer appear as
 Search snippets or artifact cards.
 The index that held them is removed, and opening an older cache deletes its rows.
+
+## Update, 27 November 2026
+
+Superseded by [T3 thread IDs are chat identity](0015-t3-thread-ids-are-chat-identity.md).
+T3 threads never return to an older tip, and Book no longer keeps negative
+evidence about rows.

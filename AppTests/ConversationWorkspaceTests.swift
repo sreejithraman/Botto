@@ -610,7 +610,7 @@ import BottoCore
         #expect(workspace.chats(service.profile).count == 2)
     }
 
-    @Test func directoryReadsCoalesceAndLateOrPartialResultsPreserveCurrentAndCachedRecords() async throws {
+    @Test func directoryReadsCoalesceAndLateOrFailedResultsPreserveCurrentAndCachedRecords() async throws {
         let (workspace, service) = try fixture()
         await workspace.openBot(profile: service.profile)
         let a = try #require(workspace.screen(profile: service.profile))
@@ -633,11 +633,6 @@ import BottoCore
         service.directoryGate = nil
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
-        service.summaries = [service.summaries[0]]; service.directoryComplete = false
-        await workspace.refreshDirectory(b.owner)
-        #expect(workspace.chats(service.profile).count == 3)
-        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages.first?.text == "Other")
-        #expect(workspace.screen(profile: service.profile)?.directoryComplete == false)
         service.directoryError = ConversationServiceError.timeout
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
@@ -663,21 +658,6 @@ import BottoCore
         #expect(service.sends.first?.2.profile == service.profile)
         #expect(service.sends.first?.2.root.text == "other-root" && service.sends.first?.2.stored.text == "other-tip")
         #expect(workspace.screen(profile: service.profile)?.error == nil)
-    }
-
-    @Test func positiveACKWithLocalJournalRepairRemainsAcceptedAndDoesNotEncourageResend() async throws {
-        let (workspace, service) = try fixture()
-        await workspace.openBot(profile: service.profile)
-        let screen = try #require(workspace.screen(profile: service.profile))
-        workspace.editDraft("accepted", owner: screen.owner)
-        let initialRevision = try #require(workspace.persisted().record(screen.selectedChatID)?.draft.revision)
-        service.journal = .needsLocalRepair
-        let intent = try #require(workspace.captureSend(screen.owner))
-        await workspace.send(intent); await workspace.send(intent)
-        let after = try #require(workspace.screen(profile: service.profile))
-        #expect(workspace.draft(after.owner).isEmpty && workspace.persisted().record(after.selectedChatID)?.draft.revision != initialRevision)
-        #expect(after.error?.contains("accepted") == true && after.error?.contains("Don’t resend") == true)
-        #expect(service.sends.count == 1)
     }
 
     @Test func oldDirectorySampleCannotRestoreWaitingAfterNewerActivityClearsIt() async throws {
@@ -737,7 +717,7 @@ import BottoCore
         #expect(workspace.chats(decomposed).map(\.id) == [second])
     }
 
-    @Test func completeKnownDirectorySuppressesRosterFallbackAndPartialOrUnknownDirectoryRetainsIt() async throws {
+    @Test func completeKnownDirectorySuppressesRosterFallbackAndStaleOrUnknownDirectoryRetainsIt() async throws {
         let service = try WorkspaceTestService(), profile = service.profile
         let other = service.summaries[1].identity
         service.directoryActivity[other] = .known(.idle, .distantFuture)
@@ -750,8 +730,7 @@ import BottoCore
         await workspace.refreshDirectory(owner)
         #expect(workspace.aggregate(profile: profile).directoryComplete)
         #expect(workspace.aggregate(profile: profile).status == .idle)
-        service.directoryComplete = false
-        await workspace.refreshDirectory(owner)
+        workspace.invalidateActivityDirectory(profile)
         #expect(!workspace.aggregate(profile: profile).directoryComplete)
         #expect(workspace.aggregate(profile: profile).status == .waiting)
         #expect(workspace.aggregate(profile: profile).attentionChat == nil)
@@ -759,7 +738,6 @@ import BottoCore
         #expect(workspace.aggregate(profile: profile).status == .working)
         workspace.observeProfiles([.init(id: profile.text, name: "Milo", status: .idle)])
         #expect(workspace.aggregate(profile: profile).status == .idle)
-        service.directoryComplete = true
         service.directoryActivity[other] = .unknown("Unavailable")
         await workspace.refreshDirectory(owner)
         #expect(workspace.aggregate(profile: profile).status == nil)

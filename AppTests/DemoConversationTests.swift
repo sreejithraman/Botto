@@ -78,7 +78,6 @@ import BottoCore
         XCTAssertEqual(receipt.operationID, editOperation)
         XCTAssertEqual(receipt.source, opened.identity)
         XCTAssertEqual(receipt.admissionID, editOperation.uuidString)
-        XCTAssertEqual(receipt.journal, .saved)
         XCTAssertEqual(latest.queuedMessages.map(\.text), ["Already waiting", editedText])
         let edited = try XCTUnwrap(latest.queuedMessages.last)
         XCTAssertEqual(edited.id, editOperation.uuidString)

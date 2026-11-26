@@ -283,7 +283,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     private var complete: [ExactID: Bool] = [:]
     private var activityDirectories: Set<ExactID> = []
     private var errors: [ChatID: String] = [:]
-    private var directoryWarnings: [ExactID: String] = [:]
+    private var directoryErrors: [ExactID: String] = [:]
     private var sends: [ChatID: UUID] = [:]
     private var stops: [ChatID: UUID] = [:]
     private let queuedEditing = QueuedMessageEditing()
@@ -484,7 +484,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             hasEarlierMessages: snapshot?.hasEarlierMessages == true,
             isSending: sends[id] != nil,
             isUploading: uploadReservations[id] != nil,
-            isLoadingDirectory: loadingDirectories.contains(profile), error: errors[id] ?? readOnlyExplanation(record) ?? directoryWarnings[profile],
+            isLoadingDirectory: loadingDirectories.contains(profile), error: errors[id] ?? readOnlyExplanation(record) ?? directoryErrors[profile],
             attachments: staged.map(\.attachment), pendingAttachments: (pendingImports[id] ?? []).map(\.attachment),
             needsReattachment: staged.contains { !$0.valid },
             directoryComplete: complete[profile] ?? false,
@@ -902,35 +902,9 @@ private struct ReadObservationKey: Hashable, Sendable {
                       opening?.chat != id, selected != id || live == nil else { return }
                 onAcceptedTranscript?()
             }
-        } catch let failure as ConversationHistoryPage.Failure {
-            publishDisputes(failure, from: read, in: id, profile: profile)
         } catch {
             // Optional history reads preserve the cached excerpt and existing activity.
         }
-    }
-    private func publishDisputes(_ failure: ConversationHistoryPage.Failure, from read: RecentHistoryRead,
-                                 in id: ChatID, profile: ExactID) {
-        let disputes = failure.unavailableMessageIDs
-        func currentSource(in book: ConversationBook) -> (identity: SessionIdentity, title: String)? {
-            guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
-                  inboxProfiles.contains(profile), opening?.chat != id, selected != id || live == nil,
-                  let current = book.record(id), let identity = current.binding.identity,
-                  sameSource(identity, failure.identity) else { return nil }
-            return (identity, current.title)
-        }
-        guard !disputes.isEmpty, currentSource(in: book) != nil else { return }
-        let changed = mutateBook { book in
-            currentSource(in: book) != nil && book.dispute(disputes, from: failure.identity, in: id)
-        }
-        if changed { onDirty() }
-        guard currentSource(in: book) != nil else { return }
-        onAcceptedTranscript?()
-    }
-    /// A coherent proof from the exact source resolves its disputes in Book.
-    func resolveDisputes(_ messageIDs: Set<Data>, on source: SessionIdentity) {
-        guard !retired, let id = book.chat(disputing: messageIDs, on: source) else { return }
-        mutateBook { $0.resolveDisputes(messageIDs, in: id) }
-        onDirty()
     }
     func invalidateActivityDirectory(_ profile: ExactID) {
         guard online, !retired else { return }
@@ -974,27 +948,24 @@ private struct ReadObservationKey: Hashable, Sendable {
                 else { mutateActivity { $0[id] = nil } }
                 if selected == id, let live { updateActivity(live, id: id) }
             }
-            if directory.isComplete {
-                for record in book.ordered(profile) where !available.contains(record.id) {
-                    // A provisional T3 Main can still be resolved by a canonical open.
-                    if service is any T3BotBrainControlling, case .provisionalMain = record.binding { continue }
-                    availability[record.id] = false
-                    if selected == record.id, let current = live {
-                        retiredRecoveryAccesses.insert(current.access)
-                        live = nil
-                        avatarActivity.retire()
-                        retireActionOwnership()
-                    }
-                    reconcileRequestSource(record.id)
-                    if selected != record.id || live == nil {
-                        recordActivity(.unknown("This chat is unavailable on the host"), for: record.id)
-                    }
+            for record in book.ordered(profile) where !available.contains(record.id) {
+                // A provisional Main can still be resolved by a canonical open.
+                if case .provisionalMain = record.binding { continue }
+                availability[record.id] = false
+                if selected == record.id, let current = live {
+                    retiredRecoveryAccesses.insert(current.access)
+                    live = nil
+                    avatarActivity.retire()
+                    retireActionOwnership()
+                }
+                reconcileRequestSource(record.id)
+                if selected != record.id || live == nil {
+                    recordActivity(.unknown("This chat is unavailable on the host"), for: record.id)
                 }
             }
-            complete[profile] = directory.isComplete
-            if directory.isComplete { activityDirectories.insert(profile) }
-            else { activityDirectories.remove(profile) }
-            directoryWarnings[profile] = directory.warning ?? (directory.isComplete ? nil : "Some chats couldn’t be loaded. Cached chats are preserved.")
+            complete[profile] = true
+            activityDirectories.insert(profile)
+            directoryErrors[profile] = nil
             refreshAvatarProfile(profile)
             rebuildRequests()
             onDirty()
@@ -1003,7 +974,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                   read.recovery == recovery, read.presentation == presentation else { return }
             directoryReads[profile] = nil; loadingDirectories.remove(profile)
             activityDirectories.remove(profile)
-            directoryWarnings[profile] = error.localizedDescription; complete[profile] = false
+            directoryErrors[profile] = error.localizedDescription; complete[profile] = false
             for record in book.ordered(profile) {
                 if selected != record.id || live == nil {
                     recordActivity(.unknown(error.localizedDescription), for: record.id)
@@ -1178,12 +1149,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                 mutateBook { $0.update(intent.owner.chat) { $0.draft = .init(text: "", revision: UUID()) } }
             }
             staging[intent.owner.chat]?.removeAll { intent.stagedIDs.contains($0.id) }
-            if case .needsLocalRepair = receipt.journal {
-                errors[intent.owner.chat] = "The host accepted this message, but its local receipt needs repair. Don’t resend it."
-                emitFeedback(.warning, owner: intent.owner, lifetime: feedbackLifetime)
-            } else {
-                emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
-            }
+            emitFeedback(.accepted, owner: intent.owner, lifetime: feedbackLifetime)
             onDirty()
         } catch {
             if !retired { errors[intent.owner.chat] = error.localizedDescription }
@@ -1238,9 +1204,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             return try await self.service.replaceQueuedMessage(message, text: text, access: access, operationID: operation)
         }
         guard !retired, let receipt, sameSource(receipt.source, source) else { return }
-        if case .needsLocalRepair = receipt.journal {
-            errors[owner.chat] = "The host saved this edit, but its local receipt needs repair. Don’t send it again."
-        }
         onDirty()
     }
 

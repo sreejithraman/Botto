@@ -35,7 +35,6 @@ import BottoCore
     var downloadGate: WorkspaceGate?
     var createError: (any Error)?
     var directoryError: (any Error)?
-    var directoryComplete = true
     var directoryResult: ConversationDirectory?
     var readSummaryAvailable = true
     var directoryActivity: [SessionIdentity: ObservedActivity] = [:]
@@ -59,7 +58,6 @@ import BottoCore
     var previewUnavailable = false
     var previewReads: [SessionIdentity] = []
     var directoryChanges: Set<ExactID> = []
-    var journal: JournalDurability = .saved
     init() throws {
         profile = try ExactID("milo")
         let main = SessionIdentity(profile: profile, root: try ExactID("main-root"), stored: try ExactID("main-tip"), aliases: [])
@@ -91,13 +89,13 @@ import BottoCore
         await directoryGate?.wait()
         if let directoryError { throw directoryError }
         if let captured { return captured }
-        return .init(summaries: summaries.filter { $0.identity.profile == profile }, activity: directoryActivity, isComplete: directoryComplete)
+        return .init(summaries: summaries.filter { $0.identity.profile == profile }, activity: directoryActivity)
     }
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
         let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map { snapshot in
             let ids = Set(snapshot.messages.map { Data($0.id.utf8) })
-            let proof = !snapshot.hasEarlierMessages && (snapshot.unavailableMessageIDs ?? []).isEmpty
+            let proof = !snapshot.hasEarlierMessages
                 && ids.count == snapshot.messages.count && snapshot.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
                 ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
             return .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages, identityRead: proof)
@@ -152,7 +150,7 @@ import BottoCore
         deliveries.append(delivery)
         await sendGate?.wait()
         if let sendError { throw sendError }
-        return .init(operationID: operationID, source: source, admissionID: "accepted", journal: journal)
+        return .init(operationID: operationID, source: source, admissionID: "accepted")
     }
     func replaceQueuedMessage(_ message: QueuedMessage, text: String, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access)
@@ -161,7 +159,7 @@ import BottoCore
         await replacementGate?.wait()
         if let replacementError { throw replacementError }
         if !acceptsReplacementBeforeGate { try applyReplacement(message, text: text, source: source, operation: operationID) }
-        return .init(operationID: operationID, source: source, admissionID: operationID.uuidString, journal: journal)
+        return .init(operationID: operationID, source: source, admissionID: operationID.uuidString)
     }
     private func applyReplacement(_ message: QueuedMessage, text: String, source: SessionIdentity, operation: UUID) throws {
         guard let index = snapshots[source.root]?.queuedMessages.firstIndex(where: { $0 == message && $0.canEdit }) else {
@@ -174,7 +172,7 @@ import BottoCore
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access); stops.append(operationID)
         await stopGate?.wait()
-        return .init(operationID: operationID, source: source, admissionID: nil, journal: .saved)
+        return .init(operationID: operationID, source: source, admissionID: nil)
     }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access)
@@ -182,7 +180,7 @@ import BottoCore
         await responseGate?.wait()
         if let responseError { throw responseError }
         responses.append(request)
-        return .init(operationID: operationID, source: source, admissionID: nil, journal: .saved)
+        return .init(operationID: operationID, source: source, admissionID: nil)
     }
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
         uploads.append(try issuer.resolve(access))

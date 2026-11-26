@@ -50,7 +50,7 @@ nonisolated struct TranscriptMessageIndex {
 
     init(_ snapshot: Conversation?) {
         var messages: [Data: ChatMessage] = [:]
-        var ambiguous = snapshot?.unavailableMessageIDs ?? []
+        var ambiguous: Set<Data> = []
         for message in snapshot?.messages ?? [] {
             let id = Data(message.id.utf8)
             if message.transientID == nil && !ChatMessage.isStableID(id, storedID: snapshot?.storedID ?? "") { ambiguous.insert(id) }
@@ -87,12 +87,11 @@ nonisolated enum TranscriptContentRevision {
         case (nil, nil): true
         case let (a?, b?):
             a.messages.elementsEqual(b.messages, by: sameMessage) && a.pendingRequests.elementsEqual(b.pendingRequests, by: sameRequest)
-                && (a.unavailableMessageIDs ?? []) == (b.unavailableMessageIDs ?? [])
         default: false
         }
     }
     static func uniqueMessage(_ expected: ChatMessage, in snapshot: Conversation?) -> Bool {
-        guard let snapshot, snapshot.unavailableMessageIDs?.contains(Data(expected.id.utf8)) != true else { return false }
+        guard let snapshot else { return false }
         var found = false
         for message in snapshot.messages where exact(message.id, expected.id) {
             guard !found, sameMessage(message, expected) else { return false }

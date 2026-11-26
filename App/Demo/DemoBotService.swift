@@ -223,7 +223,7 @@ import BottoCore
         guard identities[identity.root.bytes] == identity,
               let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
         let ids = Set(chat.messages.map { Data($0.id.utf8) })
-        let proof = !chat.hasEarlierMessages && (chat.unavailableMessageIDs ?? []).isEmpty
+        let proof = !chat.hasEarlierMessages
             && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
             ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
         return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
@@ -240,7 +240,7 @@ import BottoCore
         guard connected, connection == epoch else { throw ConversationServiceError.staleConversation }
         #endif
         let keys = order.filter { identities[$0]?.profile == profile }
-        return ConversationDirectory(summaries: keys.compactMap(summary), activity: observations(profile), isComplete: true)
+        return ConversationDirectory(summaries: keys.compactMap(summary), activity: observations(profile))
     }
 
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession {
@@ -525,7 +525,7 @@ import BottoCore
     }
 
     private func receipt(_ source: SessionIdentity, _ operation: UUID) -> MutationReceipt {
-        MutationReceipt(operationID: operation, source: source, admissionID: operation.uuidString, journal: .saved)
+        MutationReceipt(operationID: operation, source: source, admissionID: operation.uuidString)
     }
 
     private func requireProfile(_ profile: ExactID) throws {
@@ -651,7 +651,7 @@ import BottoCore
             ChatMessage(id: "m3", role: .assistant, text: "I also drafted a note to move the project check-in to Thursday. Take a look before it goes anywhere.", timestamp: now.addingTimeInterval(-180))
         ], pendingRequests: [PendingRequest(id: "demo-approval", kind: .approval, title: "Send the check-in note?",
             detail: "To: Jordan\n\nCould we move our check-in to Thursday at 2? That gives us time to finish the proposal first.",
-            choices: [.init(id: "once", label: "Allow once"), .init(id: "deny", label: "Keep draft")], queueID: "demo-queue")])
+            choices: [.init(id: "once", label: "Allow once"), .init(id: "deny", label: "Keep draft")])])
         chats[Data("scout".utf8)] = Conversation(id: "demo-scout", storedID: "scout", profileID: Self.profileID, messages: [
             .init(id: "s1", role: .user, text: "Find a quiet spot for a long weekend. Somewhere with good walks.", timestamp: now.addingTimeInterval(-1800)),
             .init(id: "s2", role: .tool, text: "Compared trails, train routes, and places to stay.", timestamp: now.addingTimeInterval(-1500), toolName: "Research"),

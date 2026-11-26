@@ -6,6 +6,8 @@ import BottoCore
 @MainActor final class TestConversationAuthority {
     private let issuer = ConversationIssuer<Conversation>()
     private var current: OpenedConversation?
+    /// Every chat this host has opened. Its directory lists them, as a host lists its threads.
+    private var listed: [SessionIdentity] = []
     func identity(_ conversation: Conversation) throws -> SessionIdentity {
         .init(profile: try ExactID(conversation.profileID), root: try ExactID("test-root-" + conversation.profileID),
               stored: try ExactID(conversation.storedID), aliases: [])
@@ -18,11 +20,12 @@ import BottoCore
         else { access = try issuer.issue(conversation) }
         let opened = OpenedConversation(identity: identity, snapshot: conversation, access: access)
         current = opened
+        if !listed.contains(identity) { listed.append(identity) }
         return opened
     }
     func resolve(_ access: ConversationAccess) throws -> Conversation { try issuer.resolve(access) }
     func receipt(_ access: ConversationAccess, _ operation: UUID) throws -> MutationReceipt {
-        .init(operationID: operation, source: try identity(resolve(access)), admissionID: "test-accepted", journal: .saved)
+        .init(operationID: operation, source: try identity(resolve(access)), admissionID: "test-accepted")
     }
     func profile(_ target: SessionTarget) -> String {
         switch target {
@@ -31,7 +34,8 @@ import BottoCore
         }
     }
     func directory(_ profile: ExactID) -> ConversationDirectory {
-        .init(summaries: [], activity: [:], isComplete: false)
+        .init(summaries: listed.filter { $0.profile == profile }
+            .map { .init(identity: $0, title: "", isCanonical: true, persistence: .durable) }, activity: [:])
     }
 }
 

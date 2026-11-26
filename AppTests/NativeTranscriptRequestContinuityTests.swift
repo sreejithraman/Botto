@@ -191,11 +191,11 @@ import BottoCore
         #expect(fixture.service.base.responseOperations.count == 2)
     }
 
-    @Test(arguments: ["id", "title", "detail", "queueID", "choiceID", "choiceLabel"])
+    @Test(arguments: ["id", "title", "detail", "choiceID", "choiceLabel"])
     func sameAccessWireOnlyRequestRevisionRetiresOldActionsAndConfirmation(field: String) async throws {
         let choice = RequestChoice(id: "always-\u{e9}", label: "Caf\u{e9}")
         let request = PendingRequest(id: "approval-\u{e9}", kind: .approval, title: "Approve \u{e9}",
-            detail: "Detail \u{e9}", choices: [choice], queueID: "queue-\u{e9}")
+            detail: "Detail \u{e9}", choices: [choice])
         let fixture = try await Fixture(request: request)
         defer { fixture.close() }
         let scope = try #require((try await fixture.requestCell()).exposure)
@@ -207,7 +207,6 @@ import BottoCore
         case "id": revised.id = "approval-e\u{301}"
         case "title": revised.title = "Approve e\u{301}"
         case "detail": revised.detail = "Detail e\u{301}"
-        case "queueID": revised.queueID = "queue-e\u{301}"
         case "choiceID": revised.choices[0].id = "always-e\u{301}"
         default: revised.choices[0].label = "Cafe\u{301}"
         }
@@ -233,7 +232,6 @@ import BottoCore
         let sent = try #require(fixture.service.base.responses.first)
         #expect(Data(sent.id.utf8) == Data(revised.id.utf8))
         #expect(Data(sent.title.utf8) == Data(revised.title.utf8) && Data(sent.detail.utf8) == Data(revised.detail.utf8))
-        #expect(sent.queueID.map { Data($0.utf8) } == revised.queueID.map { Data($0.utf8) })
         #expect(Data(sent.choices[0].id.utf8) == Data(newChoice.id.utf8))
         #expect(Data(sent.choices[0].label.utf8) == Data(newChoice.label.utf8))
         guard case let .choice(value) = try #require(fixture.service.responseValues.first) else {

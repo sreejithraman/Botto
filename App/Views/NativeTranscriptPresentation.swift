@@ -15,7 +15,7 @@ struct WorkDetailsDocument {
     }
 
     func updated(in snapshot: Conversation?) -> Self? {
-        for row in NativeTranscriptMessagePlan(snapshot?.messages ?? [], unavailableMessageIDs: snapshot?.unavailableMessageIDs ?? []).displayRows {
+        for row in NativeTranscriptMessagePlan(snapshot?.messages ?? []).displayRows {
             guard case let .workDetails(current) = row,
                   Self.continues(messages, with: current) else { continue }
             return .init(title: title, messages: current)

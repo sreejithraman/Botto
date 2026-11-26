@@ -518,7 +518,7 @@ import BottoCore
         workspace.observeProfiles(bots); workspace.setOnline(true)
         await workspace.refreshActivityDirectories(for: bots)
         #expect(service.directoryCalls == 2)
-        service.directoryResult = .init(summaries: service.summaries, activity: service.directoryActivity, isComplete: true)
+        service.directoryResult = .init(summaries: service.summaries, activity: service.directoryActivity)
         service.directoryGate = gate
         workspace.invalidateActivityDirectory(service.profile)
         let old = Task { await workspace.refreshActivityDirectories(for: bots) }
@@ -601,7 +601,7 @@ import BottoCore
         defer { LocalHistory.remove(for: first.id); LocalHistory.remove(for: second.id) }
         service.directoryGate = gate
         for summary in service.summaries { service.directoryActivity[summary.identity] = .known(.waiting, .now) }
-        service.directoryResult = .init(summaries: service.summaries, activity: service.directoryActivity, isComplete: true)
+        service.directoryResult = .init(summaries: service.summaries, activity: service.directoryActivity)
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         let connecting = Task { await store.connect(first) }
         await gate.entered()
