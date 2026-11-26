@@ -90,6 +90,98 @@ import BottoCore
         #expect(workspace.screen(profile: service.profile)?.canAct == true)
     }
 
+    // Opening a stored chat is how a Space opens (AppStore.openT3Channel). When it
+    // fails or is cancelled, the chat the user left comes back with its draft and a
+    // fresh attachment; the retired one is never reused.
+    @Test(arguments: [false, true])
+    func unsuccessfulStoredChatOpeningRestoresTheOriginalEditableChat(cancel: Bool) async throws {
+        let (workspace, service) = try await fixture()
+        let before = try #require(workspace.screen(profile: service.profile))
+        let oldAccess = try #require(service.completedOpens.last?.access)
+        workspace.editDraft("Keep my original draft", owner: before.owner)
+        let target = service.summaries[1]
+        let gate = WorkspaceGate(); service.openGate = gate
+        let claim = try #require(workspace.captureNavigationClaim())
+        let opening = Task { await workspace.openStoredChat(target, claim: claim) }
+        await gate.entered()
+        service.openGate = nil
+        if cancel { opening.cancel() }
+        else {
+            let failing = target.identity.root
+            service.openResult = { opened in
+                if opened.identity.root == failing { throw ConversationServiceError.disconnected }
+                return opened
+            }
+        }
+        gate.release()
+
+        #expect(!(await opening.value))
+
+        let returned = try #require(workspace.screen(profile: service.profile))
+        #expect(returned.owner.chat == before.owner.chat)
+        #expect(returned.canEditDraft)
+        #expect(returned.canAct)
+        #expect(workspace.draft(returned.owner) == "Keep my original draft")
+        let restored = try #require(service.completedOpens.last)
+        #expect(restored.identity.root == service.summaries[0].identity.root)
+        #expect(restored.access != oldAccess)
+        #expect(throws: (any Error).self) { try service.issuer.resolve(oldAccess) }
+    }
+
+    @Test func cancelledStoredChatOpeningCannotRestoreOverANewerChoice() async throws {
+        let (workspace, service) = try await fixture()
+        let third = SessionIdentity(profile: service.profile, root: try ExactID("third-root"), stored: try ExactID("third-tip"), aliases: [])
+        service.summaries.append(.init(identity: third, title: "Third", isCanonical: false, persistence: .durable))
+        service.snapshots[third.root] = .init(id: third.root.text, storedID: third.stored.text, profileID: service.profile.text,
+                                              messages: [.init(id: "third-message", role: .assistant, text: "Third")])
+        let gate = WorkspaceGate(); service.openGate = gate
+        let claim = try #require(workspace.captureNavigationClaim())
+        let opening = Task { await workspace.openStoredChat(service.summaries[1], claim: claim) }
+        await gate.entered()
+        opening.cancel()
+        service.openGate = nil
+        let newer = try #require(workspace.captureNavigationClaim())
+        #expect(await workspace.openStoredChat(service.summaries[2], claim: newer))
+        let newerAccess = try #require(service.completedOpens.last?.access)
+        let opens = service.opens.count
+        gate.release()
+
+        #expect(!(await opening.value))
+
+        #expect(workspace.selection(profile: service.profile)?.identity?.root == third.root)
+        #expect(workspace.screen(profile: service.profile)?.canAct == true)
+        #expect(service.opens.count == opens, "The cancelled opening restores nothing over the newer choice")
+        #expect(try service.issuer.resolve(newerAccess) == third)
+    }
+
+    @Test func failedRestorationKeepsTheOriginalDraftEditableWithoutRevivingAccess() async throws {
+        let (workspace, service) = try await fixture()
+        let before = try #require(workspace.screen(profile: service.profile))
+        let oldAccess = try #require(service.completedOpens.last?.access)
+        workspace.editDraft("Keep editing locally", owner: before.owner)
+        let gate = WorkspaceGate(); service.openGate = gate
+        let claim = try #require(workspace.captureNavigationClaim())
+        let opening = Task { await workspace.openStoredChat(service.summaries[1], claim: claim) }
+        await gate.entered()
+        service.openGate = nil
+        let original = service.summaries[0].identity.root
+        service.openResult = { opened in
+            if opened.identity.root == original { throw ConversationServiceError.disconnected }
+            return opened
+        }
+        opening.cancel(); gate.release()
+
+        #expect(!(await opening.value))
+
+        let returned = try #require(workspace.screen(profile: service.profile))
+        #expect(returned.owner.chat == before.owner.chat)
+        #expect(returned.canEditDraft)
+        #expect(!returned.canAct)
+        #expect(returned.error != nil)
+        #expect(workspace.draft(returned.owner) == "Keep editing locally")
+        #expect(throws: (any Error).self) { try service.issuer.resolve(oldAccess) }
+    }
+
     private func fixture() async throws -> (ConversationWorkspace, WorkspaceTestService) {
         let service = try WorkspaceTestService()
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),

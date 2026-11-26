@@ -86,9 +86,6 @@ import BottoCore
         #expect(workspace.screen(profile: scout)?.canAct == true)
     }
 
-    enum LibraryBoundary: CaseIterable { case directory, attachment }
-    enum LibraryNewerIntent: CaseIterable { case none, sameValue, nilValue, inboxRoute }
-
     enum NewerSelection: CaseIterable {
         case inboxSameBot, sameValue, retirement, inboxEquivalentBot, equivalentValue
     }

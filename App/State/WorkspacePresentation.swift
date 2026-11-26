@@ -113,8 +113,8 @@ import BottoCore
         surface = .reading(target); revision = UUID()
     }
 
-    /// Settles the whole destination at once: a tab or reader left for a later update
-    /// still covers the workspace, and its compact column can then miss the native split view.
+    /// Choosing a chat settles presentation at once: bot browsing ends, and an open
+    /// file reader and its loaded neighbor pages give up their reads.
     func didChooseConversation() {
         let previous = artifact
         surface = .reading(.chat); revision = UUID()
