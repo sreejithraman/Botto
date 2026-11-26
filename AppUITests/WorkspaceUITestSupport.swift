@@ -1,6 +1,10 @@
 import XCTest
 import Vision
 
+/// The bound for a condition that a passing test always reaches, the same as AppTests' `readinessLimit`.
+/// It stops a hang rather than measuring speed.
+let readinessLimit: TimeInterval = 45
+
 @MainActor enum RenderedTranscriptText {
     struct Observation {
         let bounds: CGRect
