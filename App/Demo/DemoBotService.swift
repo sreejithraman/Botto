@@ -74,7 +74,6 @@ import BottoCore
             #endif
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--attribution-demo") { seedAttributionDemo() }
-            if ProcessInfo.processInfo.arguments.contains("--search-navigation-proof") { seedSearchNavigationProof() }
             #endif
             registerSpace(mainID, title: "Main Space")
             seedSideChats()
@@ -781,22 +780,6 @@ import BottoCore
                 publish(latest, source: source)
             } catch { return }
         }
-    }
-
-    private func seedSearchNavigationProof() {
-        let now = Date(timeIntervalSince1970: 1_790_208_000)
-        var messages = (0..<230).map { index in
-            ChatMessage(id: "search-history-\(index)", role: .assistant,
-                text: "History entry \(index). The project has another ordinary update to review.",
-                timestamp: now.addingTimeInterval(Double(index - 230)))
-        }
-        messages[18] = ChatMessage(id: "search-deep-user-match", role: .user,
-            text: String(repeating: "The older project discussion continues with practical details. ", count: 90) +
-                "Copper lantern checkpoint is the exact place to resume.",
-            timestamp: now.addingTimeInterval(-212))
-        messages.append(ChatMessage(id: "search-history-tail", role: .assistant,
-            text: "Newest history tail sentinel.", timestamp: now))
-        chats[Data("canvas".utf8)] = Conversation(id: "demo-canvas", storedID: "canvas", profileID: Self.profileID, messages: messages)
     }
 
     /// Opt-in, deterministic stress data. Ordinary Demo keeps its small sample workspace.

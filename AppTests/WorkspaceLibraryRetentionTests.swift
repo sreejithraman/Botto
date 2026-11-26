@@ -1356,26 +1356,6 @@ import BottoCore
         reopened.retire(); await reopenedCache.close()
     }
 
-    @Test func reloadingOneCoverKeepsOtherContentIdentitiesAndItsPriorImageUsable() async throws {
-        let service = RetainedLibraryService(), source = service.source("main")
-        let library = WorkspaceLibrary(service: service)
-        service.summaries = [service.summary(source, at: 20)]
-        service.pages[source] = [0: .init(messages: [service.message("first", text: "MEDIA:/first.png", at: 10),
-            service.message("second", text: "MEDIA:/second.png", at: 20)], nextOffset: nil, isComplete: true)]
-        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
-        let first = try #require(library.artifacts.first { $0.artifact.messageID == "first" })
-        let second = try #require(library.artifacts.first { $0.artifact.messageID == "second" })
-        let beforeFirst = LibraryThumbnails.request(for: first, library: library).content
-        let beforeSecond = LibraryThumbnails.request(for: second, library: library).content
-        _ = try await library.download(first, force: true)
-        let afterFirst = LibraryThumbnails.request(for: first, library: library).content
-        #expect(afterFirst != beforeFirst)
-        #expect(LibraryThumbnails.request(for: second, library: library).content == beforeSecond)
-        #expect(beforeFirst.representsSameSource(as: afterFirst))
-        #expect(!beforeSecond.representsSameSource(as: afterFirst))
-        library.retire()
-    }
-
     @Test func forcedReloadReportsBytesTheCacheRefusesWhileOrdinaryReadStillReturnsThem() async throws {
         let service = RetainedLibraryService(), source = service.source("main")
         var limits = ArtifactCache.Limits()
@@ -1392,42 +1372,6 @@ import BottoCore
         #expect(failure?.localizedDescription == "The refreshed file couldn’t be saved on this device. Try again.")
         #expect(try await library.download(item).data == service.downloadedBytes)
         library.retire()
-    }
-
-    @Test func failedReloadSaveKeepsThePreviousCaptureAndReportsFailure() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let service = RetainedLibraryService(), source = service.source("main")
-        let scope = ArtifactCacheScope(configurationID: UUID(), serverURL: Data(), installationID: nil, username: Data(), provider: nil)
-        let cache = ArtifactCache(root: root)
-        let library = WorkspaceLibrary(service: service, cache: cache.session(scope: scope))
-        service.summaries = [service.summary(source, at: 20)]
-        service.pages[source] = [0: .init(messages: [service.message("report", text: "MEDIA:/report.txt", at: 20)], nextOffset: nil, isComplete: true)]
-        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
-        let item = try #require(library.artifacts.first), reader = LibraryArtifactPreviewSession(item: item, library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil || reader.isLoading }
-        let captured = try #require(reader.file)
-        var handle: OpaquePointer?
-        #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
-        defer { sqlite3_close(handle) }
-        #expect(sqlite3_exec(handle, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
-        service.downloadedBytes = Data("new host bytes".utf8)
-        reader.reload()
-        await waitWhile { reader.errorMessage == nil || reader.isLoading }
-        #expect(reader.errorMessage != nil)
-        #expect(reader.file === captured)
-        #expect(sqlite3_exec(handle, "ROLLBACK", nil, nil, nil) == SQLITE_OK)
-        library.setOnline(false)
-        #expect(try await library.download(item).data == Data("original bytes".utf8))
-        library.retire(); await cache.close()
-        let reopenedCache = ArtifactCache(root: root)
-        let reopened = WorkspaceLibrary(service: service, cache: reopenedCache.session(scope: scope))
-        await reopened.restore()
-        let restored = try #require(reopened.artifacts.first)
-        #expect(try await reopened.download(restored).data == Data("original bytes".utf8))
-        reopened.retire(); await reopenedCache.close()
     }
 
     @Test(arguments: [false, true])
@@ -1677,36 +1621,6 @@ import BottoCore
         reopened.retire(); await reopenedCache.close()
     }
 
-    @Test(arguments: [false, true])
-    func readerOffersHostReloadOnlyForFileCaptures(fileBacked: Bool) async throws {
-        let service = RetainedLibraryService(), source = service.source("main")
-        let library = WorkspaceLibrary(service: service)
-        defer { library.retire() }
-        library.setOnline(true)
-        library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
-            messages: [service.message("output", text: fileBacked ? "MEDIA:/report.html" : "```html\n<h1>Captured source</h1>\n```", at: 20)]), title: "Main", evidence: .read(startedAt: .now, observedSource: source))
-        try await waitForInitialLibraryArtifacts(library)
-        let reader = LibraryArtifactPreviewSession(item: try #require(library.artifacts.first), library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil || reader.isLoading }
-        let captured = try #require(reader.file)
-        #expect(reader.canReload == fileBacked)
-        let downloads = service.downloadCount, histories = service.historyReads
-        service.downloadedBytes = Data("new host file".utf8)
-        reader.reload()
-        await waitWhile { reader.isLoading || (fileBacked && service.downloadCount == downloads) }
-        if fileBacked {
-            #expect(service.downloadCount == downloads + 1)
-            #expect(reader.file?.data == Data("new host file".utf8))
-        } else {
-            #expect(reader.file === captured)
-            #expect(service.downloadCount == downloads && service.historyReads == histories)
-        }
-        reader.beginOutput(.share)
-        #expect(reader.output?.file.data == reader.file?.data)
-    }
-
     @Test(arguments: [true, false])
     func pendingPagesKeepUsefulArtifactsQuietUntilCoverageSettles(complete: Bool) async throws {
         let service = RetainedLibraryService(), gate = StoreTestBarrier()
@@ -1807,78 +1721,6 @@ import BottoCore
         reopened.retire(); await reopenedCache.close()
     }
 
-    @Test func galleryCoversFollowProducingEditsAndExplicitReload() async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        let library = WorkspaceLibrary(service: service), covers = LibraryThumbnails()
-        library.setOnline(true)
-        func image(_ color: UIColor) -> Data {
-            UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).pngData { context in
-                color.setFill(); context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
-            }
-        }
-        func accept(_ text: String) async throws {
-            library.accept(identity: source, snapshot: .init(id: "main", storedID: "main", profileID: "helper",
-                messages: [service.message("image", text: text, at: 20)]), title: "Main", evidence: .read(startedAt: .now, observedSource: source))
-            await waitWhile { !library.artifacts.contains(where: {
-                $0.artifact.messageID == "image" && $0.chat.messages.first(where: { $0.id == "image" })?.text == text
-                    && $0.chat.sourceRevisions[Data("image".utf8)] != nil
-            }) }
-        }
-        service.downloadedBytes = image(.red)
-        try await accept("First image MEDIA:/chart.png")
-        let first = try #require(library.artifacts.first)
-        let initialRequest = LibraryThumbnails.request(for: first, library: library)
-        let red = try #require(await covers.image(for: first, library: library))
-        service.downloadedBytes = image(.green)
-        try await accept("Revised image MEDIA:/chart.png")
-        let revised = try #require(library.artifacts.first)
-        #expect(first.id == revised.id)
-        let revisedRequest = LibraryThumbnails.request(for: revised, library: library)
-        #expect(initialRequest != revisedRequest)
-        let green = try #require(await covers.image(for: revised, library: library))
-        #expect(red.pngData() != green.pngData())
-        service.downloadedBytes = image(.blue)
-        _ = try await library.download(revised, force: true)
-        #expect(LibraryThumbnails.request(for: revised, library: library) != revisedRequest)
-        let blue = try #require(await covers.image(for: revised, library: library))
-        #expect(green.pngData() != blue.pngData())
-        #expect(service.downloadCount == 3)
-        library.retire()
-    }
-
-    @Test(arguments: [true, false])
-    func failedCoversRetryAfterReconnectOrReaderCapture(reconnecting: Bool) async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        service.summaries = [service.summary(source, at: 20)]
-        service.pages[source] = [0: .init(messages: [service.message("image", text: "MEDIA:/chart.png", at: 20)],
-            nextOffset: nil, isComplete: true)]
-        service.downloadedBytes = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).pngData { context in
-            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
-        }
-        let library = WorkspaceLibrary(service: service), covers = LibraryThumbnails()
-        defer { library.retire() }
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        let item = try #require(library.artifacts.first)
-        if reconnecting { library.setOnline(false) }
-        else { service.downloadFails = true }
-        let failedRequest = LibraryThumbnails.request(for: item, library: library)
-        #expect(await covers.image(for: item, library: library) == nil)
-
-        if reconnecting { library.setOnline(true) }
-        else {
-            service.downloadFails = false
-            _ = try await library.download(item)
-        }
-
-        #expect(LibraryThumbnails.request(for: item, library: library) != failedRequest,
-                "The visible card's task must retry after recovery without reopening the gallery.")
-        #expect(await covers.image(for: item, library: library) != nil)
-        #expect(service.downloadCount == (reconnecting ? 1 : 2), "The cover reuses the reader's captured original.")
-    }
-
     @Test(arguments: [false, true])
     func olderScanCannotReplaceANewerAcceptedSnapshot(changesTip: Bool) async throws {
         let service = RetainedLibraryService(), cache = ArtifactCache(root: nil)
@@ -1913,32 +1755,6 @@ import BottoCore
         await cache.close()
     }
 
-    @Test func partialNewHeadKeepsOlderCardsAndTheirCompletedReader() async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        let old = service.message("old", text: "MEDIA:/old.txt", at: 10)
-        service.summaries = [service.summary(source, at: 10)]
-        service.pages[source] = [0: .init(messages: [old], nextOffset: nil, isComplete: true)]
-        let library = WorkspaceLibrary(service: service)
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        let item = try #require(library.artifacts.first)
-        let reader = LibraryArtifactPreviewSession(item: item, library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil }
-        let file = try #require(reader.file)
-        service.pages[source] = [0: .init(messages: [service.message("new", text: "MEDIA:/new.txt", at: 20)],
-            nextOffset: 100, isComplete: true)]
-        service.failAtOffset = 100
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        #expect(Set(library.artifacts.map(\.artifact.title)) == ["old.txt", "new.txt"])
-        #expect(library.isCurrent(item))
-        #expect(reader.file === file)
-        reader.beginOutput(.save)
-        #expect(reader.output?.file === file)
-    }
-
     @Test func inertReseedingCannotClearKnownUnsettledTail() async throws {
         let service = RetainedLibraryService(), cache = ArtifactCache(root: nil)
         let source = service.source("main")
@@ -1968,57 +1784,6 @@ import BottoCore
         await cache.close()
     }
 
-    @Test func reloadAndExportCannotReplaceEachOthersFile() async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        service.summaries = [service.summary(source, at: 10)]
-        service.pages[source] = [0: .init(messages: [service.message("file", text: "MEDIA:/file.txt", at: 10)], nextOffset: nil, isComplete: true)]
-        let library = WorkspaceLibrary(service: service)
-        library.setOnline(true); await library.refresh(evidence: .observed, bots: service.profiles)
-        let reader = LibraryArtifactPreviewSession(item: try #require(library.artifacts.first), library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil }
-        let original = try #require(reader.file)
-        let gate = StoreTestBarrier(); service.downloadGate = gate
-        reader.reload(); await gate.waitUntilEntered()
-        reader.beginOutput(.save)
-        #expect(reader.output == nil)
-        #expect(reader.file === original)
-        gate.release()
-        await waitWhile { reader.isLoading }
-        reader.beginOutput(.share)
-        let output = try #require(reader.output)
-        reader.reload()
-        #expect(!reader.isLoading && reader.file === output.file)
-    }
-
-    @Test func incompleteSameTipRefreshKeepsOlderOutputAndItsCompletedReader() async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        let older = service.message("older", text: "MEDIA:/older.txt", at: 10)
-        let recent = service.message("recent", text: "MEDIA:/recent.txt", at: 20)
-        service.summaries = [service.summary(source, at: 20)]
-        service.pages[source] = [0: .init(messages: [older, recent], nextOffset: nil, isComplete: true)]
-        let library = WorkspaceLibrary(service: service)
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        let item = try #require(library.artifacts.first { $0.artifact.messageID == "older" })
-        let reader = LibraryArtifactPreviewSession(item: item, library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil }
-        let file = try #require(reader.file)
-        service.pages[source] = [0: .init(messages: [recent], nextOffset: nil, isComplete: false)]
-
-        await library.refresh(evidence: .observed, bots: service.profiles)
-
-        #expect(library.chats.first?.messages.map(\.id) == ["older", "recent"])
-        #expect(library.isCurrent(item))
-        #expect(reader.file === file)
-        #expect(library.warning != nil)
-    }
-
     @Test func acceptedPartialTailKeepsOlderOutputsAndReplacesAnEditedProducingMessage() async throws {
         let service = RetainedLibraryService()
         let source = service.source("main")
@@ -2045,34 +1810,6 @@ import BottoCore
         library.setOnline(false)
         await #expect(throws: (any Error).self) { _ = try await library.download(updated) }
         #expect(library.artifacts.contains { $0.artifact.messageID == "older" })
-    }
-
-    @Test func failedReloadKeepsTheCapturedFileAvailableForExport() async throws {
-        let service = RetainedLibraryService()
-        let source = service.source("main")
-        service.summaries = [service.summary(source, at: 20)]
-        service.pages[source] = [0: .init(messages: [service.message("file", text: "MEDIA:/report.txt", at: 20)], nextOffset: nil, isComplete: true)]
-        let library = WorkspaceLibrary(service: service)
-        library.setOnline(true)
-        await library.refresh(evidence: .observed, bots: service.profiles)
-        let item = try #require(library.artifacts.first)
-        let reader = LibraryArtifactPreviewSession(item: item, library: library)
-        defer { reader.finish() }
-        reader.retry()
-        await waitWhile { reader.file == nil }
-        let captured = try #require(reader.file)
-        library.setOnline(false)
-        reader.reload()
-        await waitWhile { reader.errorMessage == nil || reader.isLoading }
-        #expect(reader.errorMessage != nil)
-        #expect(reader.file === captured)
-        #expect(reader.file?.data == Data("original bytes".utf8))
-        reader.beginOutput(.save)
-        let output = try #require(reader.output)
-        #expect(output.file === captured)
-        reader.endOutput(id: output.id)
-        reader.beginOutput(.share)
-        #expect(reader.output?.file === captured)
     }
 
     @Test func restoringAnOlderDiskTipCannotReplaceTheLocalHistorySeed() async throws {

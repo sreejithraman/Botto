@@ -97,3 +97,9 @@ Namespace checkpoint IDs preserve newer restrictions and receipts across queued
 cleanup. Ledger version 2 reads version 1 guards; supported older readers withhold
 metadata on the unknown version. No recovery record grants host read or mutation
 access.
+
+## Update, 26 November 2026
+
+The Library and Search screens are retired. Nothing makes a deliberate library
+entry or reads Search references, so those retries and references have no caller.
+Chat file cards still open original captures as described here.

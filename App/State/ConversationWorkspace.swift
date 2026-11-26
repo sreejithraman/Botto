@@ -26,10 +26,6 @@ struct OpeningIntent: Sendable {
     fileprivate let profile: ExactID
     fileprivate let attention: Bool
 }
-struct LibraryOpeningIntent: Sendable {
-    let claim: NavigationClaim
-    fileprivate let source: SessionIdentity
-}
 struct SelectionIntent {
     fileprivate let owner: PresentationOwner
     fileprivate let target: ChatID
@@ -687,27 +683,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         guard ownsNavigation(claim), book.preference(profile) != nil else { return nil }
         return .init(scope: scope, epoch: presentation, request: claim.request, profile: profile, attention: attention)
     }
-    func beginLibraryOpening(_ source: SessionIdentity) -> LibraryOpeningIntent? {
-        guard !retired, book.preference(source.profile) != nil, let claim = captureNavigationClaim() else { return nil }
-        onUserNavigation?()
-        guard ownsNavigation(claim) else { return nil }
-        return .init(claim: claim, source: source)
-    }
-    /// `isCurrent` lets the caller's own ordering retire a pending lookup before it touches the attachment.
-    func openLibraryChat(_ intent: LibraryOpeningIntent,
-                         isCurrent: @MainActor () -> Bool = { true },
-                         accepts: @MainActor (SessionIdentity, Conversation?) -> Bool = { _, _ in true },
-                         commit: @MainActor (SessionIdentity) -> Bool) async -> SessionIdentity? {
-        guard ownsNavigation(intent.claim), isCurrent() else { return nil }
-        let request = intent.claim.request, previousSelection = selected, connection = recovery
-        defer { if navigationRequest == request { navigationRequest = nil } }
-        if let opened = await performLibraryOpening(intent, isCurrent: isCurrent, accepts: accepts, commit: commit) {
-            return opened
-        }
-        await restorePreviousAttachment(previousSelection, recovery: connection, claim: intent.claim)
-        return nil
-    }
-
     private func restorePreviousAttachment(_ previous: ChatID?, recovery connection: UUID, claim: NavigationClaim) async {
         guard let previous, ownsNavigation(claim), online, recovery == connection, selected == previous, live == nil else { return }
         // Restoration must survive cancellation without overriding a newer request.
@@ -716,31 +691,6 @@ private struct ReadObservationKey: Hashable, Sendable {
             readAuthorityBlocked = true
             await attach(previous, navigation: claim.request)
         }.value
-    }
-    private func performLibraryOpening(_ intent: LibraryOpeningIntent,
-                                       isCurrent: @MainActor () -> Bool,
-                                       accepts: @MainActor (SessionIdentity, Conversation?) -> Bool,
-                                       commit: @MainActor (SessionIdentity) -> Bool) async -> SessionIdentity? {
-        guard !Task.isCancelled, ownsNavigation(intent.claim) else { return nil }
-        let source = intent.source, request = intent.claim.request, connection = recovery
-        if online {
-            do {
-                let directory = try await service.conversations(profile: source.profile)
-                guard !Task.isCancelled, ownsNavigation(intent.claim), isCurrent(), connection == recovery, online else { return nil }
-                let matches = directory.summaries.filter {
-                    $0.identity.profile == source.profile &&
-                        ($0.identity.root == source.root ||
-                         !ConversationBook.proven($0.identity).isDisjoint(with: ConversationBook.proven(source)))
-                }
-                guard matches.count == 1, let summary = matches.first else { return nil }
-                let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBindings[source.profile]) }
-                availability[id] = true
-                return await attach(id, selectionCommit: .afterAttachment, navigation: request, accepts: accepts, commit: commit)
-            } catch { return nil }
-        } else if let id = book.matching(source), book.record(id)?.isUnverified == false {
-            return await attach(id, selectionCommit: .afterAttachment, navigation: request, accepts: accepts, commit: commit)
-        }
-        return nil
     }
     func open(_ intent: OpeningIntent) async {
         await open(intent, userInitiated: true)
@@ -1108,7 +1058,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             guard !retired, online, read.recovery == recovery, inboxHistoryReads[id]?.id == read.id,
                   inboxProfiles.contains(profile), opening?.chat != id, selected != id || live == nil,
                   let current = book.record(id), let identity = current.binding.identity,
-                  SearchMessageTarget.sameSource(identity, failure.identity) else { return nil }
+                  sameSource(identity, failure.identity) else { return nil }
             return (identity, current.title)
         }
         guard !disputes.isEmpty, currentSource(in: book) != nil else { return }
