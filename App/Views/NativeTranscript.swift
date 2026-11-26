@@ -167,9 +167,6 @@ private struct NativeTranscriptHostedRow: View {
     private var fittingPassCount = 0
     override init(frame: CGRect) {
         super.init(frame: frame)
-        #if DEBUG
-        TranscriptMeasurements.current?.register(self)
-        #endif
     }
     required init?(coder: NSCoder) { super.init(coder: coder) }
     override func prepareForReuse() {
@@ -231,11 +228,6 @@ private struct NativeTranscriptHostedRow: View {
 @MainActor final class NativeTranscriptController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
     private enum Section { case transcript }
     private(set) var collection: UICollectionView!
-    #if DEBUG
-    private var scrollTrace: InteractionFrameTrace?
-    private var performanceStreamRelease: Task<Void, Never>?
-    private var performanceStreamReleaseID: UUID?
-    #endif
     private var source: UICollectionViewDiffableDataSource<Section, NativeTranscriptItemID>!
     private var context: NativeTranscriptContext?
     private var snapshot: Conversation?
@@ -295,18 +287,7 @@ private struct NativeTranscriptHostedRow: View {
 
     override func loadView() {
         let layout = NativeTranscriptLayout(); layout.minimumLineSpacing = 14; layout.owner = self
-        #if DEBUG
-        let collection: UICollectionView
-        if NativeTranscriptGeometryCollectionView.isEnabled {
-            collection = NativeTranscriptGeometryCollectionView(frame: .zero, collectionViewLayout: layout,
-                itemIdentifier: { [weak self] in self?.source?.itemIdentifier(for: $0) },
-                modelRevision: { [weak self] in self?.applicationSequence })
-        } else {
-            collection = NativeTranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
-        }
-        #else
         let collection = NativeTranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
-        #endif
         collection.backgroundColor = .bottoPaper; collection.alwaysBounceVertical = true
         if #available(iOS 26, *) { collection.topEdgeEffect.style = .soft }
         collection.keyboardDismissMode = .interactive; collection.delegate = self
@@ -314,9 +295,6 @@ private struct NativeTranscriptHostedRow: View {
         collection.accessibilityIdentifier = "chat-transcript"
         collection.register(NativeTranscriptCell.self, forCellWithReuseIdentifier: "message")
         self.collection = collection
-        #if DEBUG
-        scrollTrace = InteractionFrameTrace.make(viewport: collection)
-        #endif
         view = UIView(); view.backgroundColor = .clear; view.tintColor = UIColor(resource: .accent)
         collection.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(collection)
         NSLayoutConstraint.activate([collection.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -348,17 +326,6 @@ private struct NativeTranscriptHostedRow: View {
                currentReaderSnapshot: (@MainActor () -> Conversation?)? = nil,
                admitsAction: @escaping @MainActor () -> Bool = { true }) {
         loadViewIfNeeded()
-        #if DEBUG
-        scrollTrace?.working = nextSnapshot?.isWorking == true
-        if active {
-            InteractionFrameTrace.bindAccessibilitySink(collection)
-        } else {
-            scrollTrace?.finish()
-            performanceStreamRelease?.cancel()
-            performanceStreamRelease = nil
-            performanceStreamReleaseID = nil
-        }
-        #endif
         applicationSequence &+= 1
         let applyingSequence = applicationSequence
         self.currentTaskSnapshot = currentTaskSnapshot
@@ -582,13 +549,6 @@ private struct NativeTranscriptHostedRow: View {
         scope.setDisplayed(cell.isDisplayed)
     }
     func retire() {
-        #if DEBUG
-        performanceStreamRelease?.cancel()
-        performanceStreamRelease = nil
-        performanceStreamReleaseID = nil
-        scrollTrace?.finish()
-        if let collection { InteractionFrameTrace.unbindAccessibilitySink(collection) }
-        #endif
         applicationSequence &+= 1
         actionAdmission = { false }; currentTaskSnapshot = { nil }; currentReaderSnapshot = { nil }; snapshot = nil
         revision &+= 1; active = false; committed = false
@@ -646,47 +606,19 @@ private struct NativeTranscriptHostedRow: View {
         (cell as? NativeTranscriptCell)?.exposure?.setDisplayed(false)
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        #if DEBUG
-        scrollTrace?.begin()
-        if PerformanceStreamGate.mode == "scroll", let ticket = PerformanceStreamGate.pending,
-           performanceStreamRelease == nil {
-            let releaseID = UUID()
-            performanceStreamReleaseID = releaseID
-            performanceStreamRelease = Task { [weak self] in
-                defer {
-                    if self?.performanceStreamReleaseID == releaseID {
-                        self?.performanceStreamRelease = nil
-                        self?.performanceStreamReleaseID = nil
-                    }
-                }
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                guard !Task.isCancelled else { return }
-                PerformanceStreamGate.release(ticket)
-            }
-        }
-        #endif
         interruptedReaderScroll = false
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         if !interruptedReaderScroll && (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) {
             recordReaderIntent(scrolling: true)
         }
-        #if DEBUG
-        TranscriptMeasurements.current?.followsLatest = followsLatest
-        #endif
         refreshExposure(); updateLatest()
     }
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        #if DEBUG
-        if !decelerate { scrollTrace?.finish() }
-        #endif
         if !interruptedReaderScroll { recordReaderIntent(scrolling: decelerate) }
         updateLatest()
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        #if DEBUG
-        scrollTrace?.finish()
-        #endif
         if !interruptedReaderScroll { recordReaderIntent(scrolling: false) }
         updateLatest()
     }

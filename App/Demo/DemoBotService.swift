@@ -846,26 +846,15 @@ import BottoCore
         let id = "performance-reply-\(number)"
         chat.messages.append(.init(id: id, role: .assistant, text: ""))
         publish(chat, source: source)
-        InteractionFrameTrace.setStreamPublishing(true)
-        defer { InteractionFrameTrace.setStreamPublishing(false) }
         for index in 0..<200 {
             do { try await Task.sleep(for: performanceChunkDelay) } catch { return }
             guard !Task.isCancelled, connected, var current = chats[key], current.isWorking,
                   let messageIndex = current.messages.firstIndex(where: { $0.id == id }) else { return }
             current.messages[messageIndex].text += "Word \(index). "
-            InteractionFrameTrace.recordStreamPublication()
             markReplying(source: source, lineage: lineage)
             publish(current, source: source)
             if index == 19 {
-                InteractionFrameTrace.setStreamPublishing(false)
-                do {
-                    switch PerformanceStreamGate.mode {
-                    case "scroll": try await PerformanceStreamGate.waitForGesture()
-                    case "typing": break
-                    default: try await waitForUITestFixture("performance-stream")
-                    }
-                } catch { return }
-                InteractionFrameTrace.setStreamPublishing(true)
+                do { try await waitForUITestFixture("performance-stream") } catch { return }
             }
         }
         guard var current = chats[key], connected, !Task.isCancelled,

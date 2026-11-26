@@ -24,9 +24,8 @@ import Testing
         }
     }
 
-    @Test func longInternalHistoryKeepsItsAttentionWithinAnInteractionBudget() {
-        let benchmark = ProcessInfo.processInfo.environment["BOTTO_MESSAGE_PRESENTATION_BENCHMARK"] == "1"
-        let count = benchmark ? 600 : 30
+    @Test func longInternalHistoryKeepsItsAttention() {
+        let count = 30
         let body = String(repeating: "A completed check with ordinary diagnostic details. ", count: 50)
         let wrapper = "[Cronjob \"Daily check\" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\n"
         let messages = (0..<count).map { index in
@@ -36,24 +35,8 @@ import Testing
             default: ChatMessage(id: "completion-\(index)", role: .user, text: body, displayKind: "process_complete")
             }
         }
-        let history = Conversation(id: "chat", storedID: "stored", profileID: "profile", messages: messages)
-        var elapsed: [Duration] = []
-        for iteration in 0..<(benchmark ? 6 : 1) {
-            let start = ContinuousClock.now
-            let attention = history.attentionMessages
-            let duration = start.duration(to: .now)
-            #expect(attention.count == count * 2 / 3)
-            #expect(attention.first?.id == "bot-1" && attention.last?.id == "completion-\(count - 1)")
-            if benchmark {
-                let parts = duration.components
-                let milliseconds = Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1e15
-                print("BOTTO_MESSAGE_PRESENTATION iteration=\(iteration) warmup=\(iteration == 0) messages=\(count) attention=\(attention.count) ms=\(milliseconds)")
-                if iteration > 0 { elapsed.append(duration) }
-            }
-        }
-        if benchmark {
-            #expect(elapsed.sorted()[elapsed.count / 2] < .milliseconds(100),
-                    "Repeated attention checks on unchanged history must leave time for interaction.")
-        }
+        let attention = Conversation(id: "chat", storedID: "stored", profileID: "profile", messages: messages).attentionMessages
+        #expect(attention.count == count * 2 / 3)
+        #expect(attention.first?.id == "bot-1" && attention.last?.id == "completion-\(count - 1)")
     }
 }

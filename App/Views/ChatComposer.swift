@@ -294,9 +294,6 @@ struct ChatComposer: View {
     }
 
     private func send(_ delivery: MessageDelivery) {
-        #if DEBUG
-        editingHandle.editor?.markSend()
-        #endif
         editingHandle.commit()
         guard canSend, stopping == nil, requireConnection() else { return }
         guard let screen, let intent = workspace.captureSend(screen.owner, delivery: delivery) else { return }
