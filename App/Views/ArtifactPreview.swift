@@ -141,7 +141,7 @@ struct ArtifactPreview: View {
         Label(label, systemImage: systemImage).labelStyle(.iconOnly)
             .font(.system(size: 16, weight: .semibold))
             .frame(width: Self.controlSide, height: Self.controlSide)
-            .controlGlass(in: Circle())
+            .controlGlass(in: Circle(), interactive: true)
             .contentShape(Circle())
     }
 

@@ -215,7 +215,7 @@ struct T3FreshPage: View {
                 }
             }
             .padding(6)
-            .controlGlass(in: RoundedRectangle(cornerRadius: 26))
+            .controlGlass(in: RoundedRectangle(cornerRadius: 26), interactive: false)
             .padding(.horizontal, 12).padding(.bottom, 8)
             .frame(maxWidth: 780)
         }

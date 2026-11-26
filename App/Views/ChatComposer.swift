@@ -210,7 +210,7 @@ struct ChatComposer: View {
             }
         }
         .padding(6)
-        .controlGlass(in: RoundedRectangle(cornerRadius: 26))
+        .controlGlass(in: RoundedRectangle(cornerRadius: 26), interactive: false)
         .onChange(of: store.t3ComposerRequest, initial: true) { _, _ in openRequestedPicker() }
         .onChange(of: canCompose) { _, _ in openRequestedPicker() }
         .onChange(of: screen?.owner) { _, _ in openRequestedPicker() }
@@ -375,9 +375,10 @@ struct ChatComposer: View {
 }
 
 extension View {
-    @ViewBuilder func controlGlass<S: Shape>(in shape: S) -> some View {
+    /// Keep `interactive` off glass that holds other controls: there it stops a Menu inside from running its items.
+    @ViewBuilder func controlGlass<S: Shape>(in shape: S, interactive: Bool) -> some View {
         if #available(iOS 26, *) {
-            glassEffect(.regular.interactive(), in: shape)
+            glassEffect(.regular.interactive(interactive), in: shape)
         } else {
             background(.regularMaterial, in: shape)
         }
