@@ -15,6 +15,20 @@ See the [T3 service](../Sources/BottoCore/T3/T3BotService.swift), the
 [iPhone and iPad panel](../App/Views/T3/BottoPage.swift), and the
 [Mac inspector](../Mac/Views/MacBottoInspector.swift).
 
+## Try a Routine that asks before each run
+
+Enable **Workflows** on your T3 Code host, then reconnect Botto. In **Routines**,
+add a Routine, turn on **Ask before each run**, and choose its time, days, and
+an existing Space. Review the schedule, Space and prompt. The Routine stays off
+until you tap **Turn on**.
+
+At the scheduled time, the Space asks whether to run it. Choose **Run** to send
+the approved prompt in that Space, or **Skip** to leave the Space as it is.
+A question that goes unanswered for 24 hours is skipped. Use **Active** to
+pause or resume future starts. A question that's already open can still be
+answered after pausing. If the host refuses deletion while a run is unfinished,
+finish that run and try again.
+
 ## Workflow pilot verification
 
 The pilot targets a single-owner T3 environment. Each paired device acts for
@@ -56,6 +70,15 @@ accepts that answer directly from an operator.
 
 The workflow returns a sample result after a durable question and uses no
 provider credentials. The ordinary-message check verifies admission only.
-Native proposal cards and workflow result delivery need separate proof
-when the pilot UI is built. This check does not exercise existing scheduled
-Routines.
+
+To run the separate Swift lifecycle test against the same disposable engine:
+
+```sh
+node scripts/check-t3-routine-workflows.mjs --native-routine
+```
+
+It opens a seeded Space, turns on the proposal, reconnects, waits for a real
+scheduled question on the native client's stream, pauses, answers **Skip**,
+and deletes the Routine. It also reads back the existing scheduled tasks and
+Space. The scheduled question and Skip run don't require a provider login.
+Capturing a provider-backed result requires a configured model on the disposable host.

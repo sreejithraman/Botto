@@ -714,6 +714,18 @@ import BottoCore
         try await withT3Service { try await $0.deleteRoutine(id: id) }
     }
 
+    var workflowRoutinesAvailable: Bool {
+        (t3BrainService as? any T3WorkflowRoutineControlling)?.workflowRoutinesAvailable == true
+    }
+
+    func withWorkflowRoutines<Value>(_ action: @MainActor (any T3WorkflowRoutineControlling) async throws -> Value)
+        async throws -> Value {
+        try await withT3Service { service in
+            guard let routines = service as? any T3WorkflowRoutineControlling else { throw T3ServiceError.unsupported }
+            return try await action(routines)
+        }
+    }
+
     func setT3ChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
         try await withT3Service {
             try await $0.setChannelModel(threadID: threadID, providerInstanceID: providerInstanceID, model: model)

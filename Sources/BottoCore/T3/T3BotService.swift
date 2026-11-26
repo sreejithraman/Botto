@@ -30,7 +30,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
-@MainActor public final class T3BotService: T3BotBrainControlling {
+@MainActor public final class T3BotService: T3BotBrainControlling, T3WorkflowRoutineControlling {
     public typealias WebSocketFactory = @Sendable (URLRequest) throws -> any T3WebSocketTransport
     public var onEvent: ((BotServiceEvent) -> Void)?
     public var onPushActivity: ((T3PushActivity) -> Void)?
@@ -509,6 +509,37 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return try await workflowRoutineActivity(threadID: threadID, in: session)
     }
 
+    public func watchWorkflowRoutineActivity(threadID: String) async throws
+        -> AsyncThrowingStream<[T3WorkflowRoutineActivity], Error> {
+        let session = try requireSession()
+        guard workflowRoutinesAvailable, session.shells[threadID] != nil else {
+            return AsyncThrowingStream { $0.finish() }
+        }
+        let updates = try await session.rpc.subscribe("workflows.subscribe")
+        try check(session)
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { output in
+            let task = Task { [weak self, weak session] in
+                do {
+                    var revision: Int?
+                    var routines: [T3WorkflowRoutine]?
+                    for try await snapshot in updates {
+                        guard let self, let session else { break }
+                        try self.check(session)
+                        guard session.shells[threadID] != nil else { break }
+                        let latest = snapshot["definition"]["revision"].integer
+                        if routines == nil || latest != revision {
+                            routines = try await self.workflowRoutines(threadID: threadID, in: session)
+                            revision = latest
+                        }
+                        output.yield(try T3WorkflowRoutineActivity.read(snapshot, routines: routines ?? []))
+                    }
+                    output.finish()
+                } catch { output.finish(throwing: error) }
+            }
+            output.onTermination = { _ in task.cancel() }
+        }
+    }
+
     public func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws {
         let session = try requireSession()
         let proposal = question.proposal
@@ -530,14 +561,18 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 
     private func workflowRoutineActivity(threadID: String, in session: Session) async throws -> [T3WorkflowRoutineActivity] {
-        let scope = pushScope(session)
-        let routines = try await workflowRoutineFiles(in: session)
-            .compactMap { T3WorkflowRoutine(file: $0, scope: scope) }
-            .filter { $0.proposal.threadID.utf8.elementsEqual(threadID.utf8) }
+        let routines = try await workflowRoutines(threadID: threadID, in: session)
         guard !routines.isEmpty else { return [] }
         let snapshot = try await session.rpc.call("workflows.subscribe", firstStreamValue: true)
         try check(session)
         return try T3WorkflowRoutineActivity.read(snapshot, routines: routines)
+    }
+
+    private func workflowRoutines(threadID: String, in session: Session) async throws -> [T3WorkflowRoutine] {
+        let scope = pushScope(session)
+        return try await workflowRoutineFiles(in: session)
+            .compactMap { T3WorkflowRoutine(file: $0, scope: scope) }
+            .filter { $0.proposal.threadID.utf8.elementsEqual(threadID.utf8) }
     }
 
     public func listRoutines() async throws -> [T3ScheduledRoutine] {

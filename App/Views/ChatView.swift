@@ -166,6 +166,10 @@ struct ChatView: View {
                 if let error = screen?.error {
                     Text(error).font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
+                if store.workflowRoutinesAvailable, let threadID = store.selectedT3ChannelID {
+                    T3RoutineActivityView(store: store, threadID: threadID, canAnswer: inputAvailable)
+                        .id(threadID)
+                }
                 // Its structural identity stays attached to the bot, preserving editor focus.
                 ChatComposer(store: store, bot: bot, workspace: workspace, screen: screen,
                              inputAvailable: inputAvailable,

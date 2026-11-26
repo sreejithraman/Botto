@@ -67,17 +67,24 @@ enum MacBrainSummary {
 }
 
 extension T3RoutineSchedule {
-    static func macSummary(_ schedule: Self?, calendar: Calendar = .current, locale: Locale = .current) -> String {
+    static func macSummary(_ schedule: Self?, calendar: Calendar = .current, locale: Locale = .current,
+                           showsChosenDays: Bool = false) -> String {
         guard let schedule, let date = calendar.date(from: DateComponents(hour: schedule.hour, minute: schedule.minute)) else {
             return "Custom schedule"
         }
         let time = date.formatted(Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
             .hour().minute())
-        let days = switch schedule.days {
-        case Self.everyDay: "Every day"
-        case Self.weekdays: "Weekdays"
-        case Self.weekends: "Weekends"
-        default: "Some days"
+        let days: String
+        switch schedule.days {
+        case Self.everyDay: days = "Every day"
+        case Self.weekdays: days = "Weekdays"
+        case Self.weekends: days = "Weekends"
+        default:
+            var weekdayCalendar = calendar
+            weekdayCalendar.locale = locale
+            days = showsChosenDays
+                ? schedule.days.sorted { ($0 + 6) % 7 < ($1 + 6) % 7 }.map { weekdayCalendar.shortWeekdaySymbols[$0] }.joined(separator: ", ")
+                : "Some days"
         }
         return "\(days) · \(time)"
     }

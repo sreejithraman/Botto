@@ -24,7 +24,9 @@ struct BottoPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var brain: T3BotBrainSnapshot?
     @State private var routines: [T3ScheduledRoutine]?
+    @State private var workflowRoutines: [T3WorkflowRoutine] = []
     @State private var routinesError: String?
+    @State private var workflowRoutinesError: String?
     @State private var latestRoutineRead = UUID()
     @State private var loadError: String?
     @State private var retry = 0
@@ -90,6 +92,7 @@ struct BottoPage: View {
         .sheet(item: $openedOutput) { T3OutputPreview(store: store, output: $0) }
         .task(id: BrainLoad(online: store.isConnected, retry: retry)) { await load() }
         .task(id: store.isConnected) { await loadRoutines() }
+        .task(id: store.workflowRoutinesAvailable) { await loadWorkflowRoutines() }
         .task(id: store.isConnected) { await outputs.load(store) }
         .onChange(of: store.primaryT3Bot?.name) { _, value in
             if !editingName, drafts.submittedName == nil, drafts.nameError == nil, let value { drafts.name = value }
@@ -179,8 +182,10 @@ struct BottoPage: View {
         if routines == nil, routinesError != nil { return String(localized: "Couldn’t load routines") }
         if routines == nil, !store.isConnected { return String(localized: "Connect to see routines") }
         guard let routines else { return String(localized: "Loading…") }
-        let active = routines.filter(\.enabled).map(\.name)
-        if active.isEmpty { return routines.isEmpty ? String(localized: "None yet") : String(localized: "All paused") }
+        let active = routines.filter(\.enabled).map(\.name) + workflowRoutines.filter(\.enabled).map { $0.proposal.name }
+        if active.isEmpty {
+            return routines.isEmpty && workflowRoutines.isEmpty ? String(localized: "None yet") : String(localized: "All paused")
+        }
         return active.joined(separator: " · ")
     }
 
@@ -273,7 +278,8 @@ struct BottoPage: View {
                              reload: { try await store.readT3ProjectFile(relativePath: "MEMORY.md") })
             }
         case .routines:
-            T3RoutinesList(store: store, routines: $routines, loadError: routinesError, reload: loadRoutines,
+            T3RoutinesList(store: store, routines: $routines, workflowRoutines: $workflowRoutines, loadError: routinesError,
+                           workflowLoadError: workflowRoutinesError, reload: loadRoutines, reloadWorkflows: loadWorkflowRoutines,
                            isCurrent: { isCurrent }, onOpenChat: { channel in dismiss(); onOpenChat(channel) })
         case .skills:
             T3SkillsList(store: store, skills: brain?.skills ?? [], isCurrent: { isCurrent })
@@ -335,6 +341,19 @@ struct BottoPage: View {
             routinesError = nil
         } catch where !Task.isCancelled && isCurrent && latestRoutineRead == request {
             routinesError = error.localizedDescription
+        } catch { }
+    }
+
+    private func loadWorkflowRoutines() async {
+        guard isCurrent, store.isConnected else { return }
+        guard store.workflowRoutinesAvailable else { workflowRoutines = []; workflowRoutinesError = nil; return }
+        do {
+            let loaded = try await store.withWorkflowRoutines { try await $0.listWorkflowRoutines() }
+            guard !Task.isCancelled, isCurrent else { return }
+            workflowRoutines = loaded.sorted { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
+            workflowRoutinesError = nil
+        } catch where !Task.isCancelled && isCurrent {
+            workflowRoutinesError = error.localizedDescription
         } catch { }
     }
 
@@ -640,20 +659,35 @@ private struct T3MemoryList: View {
 struct T3RoutinesList: View {
     let store: AppStore
     @Binding var routines: [T3ScheduledRoutine]?
+    @Binding var workflowRoutines: [T3WorkflowRoutine]
     let loadError: String?
+    let workflowLoadError: String?
     let reload: @MainActor () async -> Void
+    let reloadWorkflows: @MainActor () async -> Void
     let isCurrent: @MainActor () -> Bool
     let onOpenChat: (T3ChannelSummary) -> Void
     @State private var pending: Set<String> = []
     @State private var error: String?
     @State private var showsCreator = false
-    @State private var confirmingDelete: T3ScheduledRoutine?
+    @State private var confirmingDelete: RoutineDeletion?
+
+    private enum RoutineDeletion {
+        case scheduled(T3ScheduledRoutine)
+        case workflow(T3WorkflowRoutine)
+
+        var name: String {
+            switch self {
+            case .scheduled(let routine): routine.name
+            case .workflow(let routine): routine.proposal.name
+            }
+        }
+    }
 
     var body: some View {
         List {
             Section {
                 if let routines {
-                    if routines.isEmpty {
+                    if routines.isEmpty && workflowRoutines.isEmpty {
                         Text("No routines yet.").foregroundStyle(.secondary)
                     }
                     ForEach(routines) { routine in row(routine) }
@@ -665,6 +699,7 @@ struct T3RoutinesList: View {
                 } else {
                     HStack(spacing: 10) { ProgressView(); Text("Checking the schedule…").foregroundStyle(.secondary) }
                 }
+                ForEach(workflowRoutines) { workflowRow($0) }
             } footer: {
                 Text("Tip: you can also just ask Botto in a space, like “every Sunday at 8, plan my week.”")
             }
@@ -673,6 +708,12 @@ struct T3RoutinesList: View {
             }
             if routines != nil, let loadError {
                 Section { InlineNotice(message: loadError) }
+            }
+            if let workflowLoadError {
+                Section {
+                    InlineNotice(message: workflowLoadError)
+                    Button("Try again", systemImage: "arrow.clockwise") { Task { await reloadWorkflows() } }
+                }
             }
         }
         .scrollContentBackground(.hidden)
@@ -685,7 +726,9 @@ struct T3RoutinesList: View {
             }
         }
         .sheet(isPresented: $showsCreator) {
-            T3RoutineCreator(store: store, isCurrent: isCurrent) { routine in
+            T3RoutineCreator(store: store, isCurrent: isCurrent, onWorkflowCreated: { routine in
+                workflowRoutines = workflowRoutines.filter { $0.id != routine.id } + [routine]
+            }) { routine in
                 routines = ((routines ?? []).filter { $0.id != routine.id } + [routine])
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 Task { await reload() }
@@ -694,10 +737,56 @@ struct T3RoutinesList: View {
         .confirmationDialog("Delete this routine?", isPresented: Binding(
             get: { confirmingDelete != nil }, set: { if !$0 { confirmingDelete = nil } }
         ), titleVisibility: .visible, presenting: confirmingDelete) { routine in
-            Button("Delete “\(routine.name)”", role: .destructive) { delete(routine) }
+            Button("Delete “\(routine.name)”", role: .destructive) {
+                switch routine {
+                case .scheduled(let task): delete(task)
+                case .workflow(let workflow):
+                    perform(id: workflow.id.uuidString) {
+                        try await store.withWorkflowRoutines { try await $0.deleteWorkflowRoutine(workflow) }
+                        await reloadWorkflows()
+                    }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         } message: { _ in Text("It won’t run again. Its past messages stay in their space.") }
-        .refreshable { await reload() }
+        .refreshable {
+            await reload()
+            await reloadWorkflows()
+        }
+    }
+
+    private func workflowRow(_ routine: T3WorkflowRoutine) -> some View {
+        let proposal = routine.proposal
+        let chat = store.t3Channels.first { $0.id == proposal.threadID }
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(proposal.name).font(.body.weight(.semibold))
+                Text(T3RoutineSchedule.summary(proposal.schedule) + (routine.enabled ? "" : " · " + String(localized: "Paused")))
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if pending.contains(routine.id.uuidString) {
+                ProgressView().frame(width: 51).accessibilityLabel("Updating routine")
+            } else {
+                Toggle("Active", isOn: Binding(get: { routine.enabled }, set: { enabled in
+                    perform(id: routine.id.uuidString) {
+                        _ = try await store.withWorkflowRoutines { try await $0.setWorkflowRoutineEnabled(routine, enabled: enabled) }
+                        await reloadWorkflows()
+                    }
+                }))
+                .labelsHidden().tint(BottoTheme.action)
+                .accessibilityLabel("\(proposal.name) active")
+                .accessibilityIdentifier("t3-workflow-routine-active")
+            }
+        }
+        .padding(.vertical, 4)
+        .swipeActions {
+            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = .workflow(routine) }
+        }
+        .contextMenu {
+            if let chat { Button("Open its space", systemImage: "bubble.left") { onOpenChat(chat) } }
+            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = .workflow(routine) }
+        }
     }
 
     private func row(_ routine: T3ScheduledRoutine) -> some View {
@@ -722,13 +811,13 @@ struct T3RoutinesList: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("t3-routine-\(routine.id)")
         .swipeActions {
-            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = routine }
+            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = .scheduled(routine) }
         }
         .contextMenu {
             if let chat {
                 Button("Open its space", systemImage: "bubble.left") { onOpenChat(chat) }
             }
-            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = routine }
+            Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = .scheduled(routine) }
         }
     }
 
@@ -741,26 +830,26 @@ struct T3RoutinesList: View {
     }
 
     private func setEnabled(_ routine: T3ScheduledRoutine, _ enabled: Bool) {
-        perform(routine) {
+        perform(id: routine.id) {
             try await store.setT3RoutineEnabled(id: routine.id, enabled: enabled)
             await reload()
         }
     }
 
     private func delete(_ routine: T3ScheduledRoutine) {
-        perform(routine) {
+        perform(id: routine.id) {
             try await store.deleteT3Routine(id: routine.id)
             await reload()
         }
     }
 
-    private func perform(_ routine: T3ScheduledRoutine, action: @escaping @MainActor () async throws -> Void) {
-        guard isCurrent(), !pending.contains(routine.id) else { return }
+    private func perform(id: String, action: @escaping @MainActor () async throws -> Void) {
+        guard isCurrent(), !pending.contains(id) else { return }
         guard store.isConnected else { error = T3ServiceError.disconnected.localizedDescription; return }
-        pending.insert(routine.id)
+        pending.insert(id)
         error = nil
         Task {
-            defer { pending.remove(routine.id) }
+            defer { pending.remove(id) }
             do { try await action() }
             catch where isCurrent() { self.error = error.localizedDescription }
             catch { }
@@ -771,6 +860,7 @@ struct T3RoutinesList: View {
 private struct T3RoutineCreator: View {
     let store: AppStore
     let isCurrent: @MainActor () -> Bool
+    let onWorkflowCreated: (T3WorkflowRoutine) -> Void
     let onCreated: (T3ScheduledRoutine) -> Void
 
     private enum Cadence: Hashable { case daily, weekdays, custom }
@@ -782,6 +872,8 @@ private struct T3RoutineCreator: View {
     @State private var days: Set<Int> = [1, 3, 5]
     @State private var time = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now) ?? .now
     @State private var threadID: String?
+    @State private var asksBeforeRunning = false
+    @State private var proposal: T3WorkflowRoutineProposal?
     @State private var saving = false
     @State private var error: String?
 
@@ -806,7 +898,7 @@ private struct T3RoutineCreator: View {
     }
 
     private var canCreate: Bool {
-        !saving && schedule != nil
+        !saving && schedule != nil && (!asksBeforeRunning || threadID != nil)
             && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -814,51 +906,92 @@ private struct T3RoutineCreator: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("Name, like Morning brief", text: $name)
-                        .accessibilityIdentifier("t3-routine-name")
-                    TextField("What should Botto do?", text: $prompt, axis: .vertical)
-                        .lineLimit(3...8)
-                        .accessibilityIdentifier("t3-routine-prompt")
-                }
-                Section {
-                    Picker("Repeat", selection: $cadence) {
-                        Text("Daily").tag(Cadence.daily)
-                        Text("Weekdays").tag(Cadence.weekdays)
-                        Text("Pick days").tag(Cadence.custom)
-                    }
-                    if cadence == .custom { dayPicker }
-                    DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
-                        .accessibilityIdentifier("t3-routine-time")
-                } footer: {
-                    Text("\(scheduleSummary), on the host’s clock.")
-                }
-                Section {
-                    Picker("Space", selection: $threadID) {
-                        Text("Its own space").tag(String?.none)
-                        ForEach(store.t3Channels.filter { !$0.isArchived }) { channel in
-                            Text(channel.displayTitle).tag(Optional(channel.id))
+                if let proposal {
+                    Section {
+                        LabeledContent("Schedule", value: T3RoutineSchedule.summary(proposal.schedule))
+                        if let space = store.t3Channels.first(where: { $0.id == proposal.threadID }) {
+                            LabeledContent("Space", value: space.displayTitle)
                         }
+                        Text(proposal.prompt)
+                    } header: {
+                        Text(proposal.name)
+                    } footer: {
+                        Text("Botto will ask in this Space before each run.")
                     }
-                    .accessibilityIdentifier("t3-routine-space")
-                } footer: {
-                    Text("Results arrive as messages in this space.")
+                } else {
+                    editor
                 }
                 if let error { Section { InlineNotice(message: error) } }
             }
             .scrollContentBackground(.hidden)
             .background(BottoTheme.paper)
-            .navigationTitle("New routine").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(proposal == nil ? "New routine" : "Review routine").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(proposal == nil ? "Cancel" : "Back") {
+                        if proposal == nil { dismiss() }
+                        else { proposal = nil; error = nil }
+                    }.disabled(saving)
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Adding…" : "Add", action: create).disabled(!canCreate)
-                        .accessibilityIdentifier("t3-routine-create")
+                    if let proposal {
+                        Button(saving ? "Turning on…" : "Turn on") { turnOn(proposal) }
+                            .disabled(saving)
+                            .accessibilityIdentifier("t3-workflow-routine-turn-on")
+                    } else {
+                        Button(saving ? "Adding…" : asksBeforeRunning ? "Review" : "Add", action: create)
+                            .disabled(!canCreate)
+                            .accessibilityIdentifier("t3-routine-create")
+                    }
                 }
             }
             .tint(BottoTheme.action)
         }
         .interactiveDismissDisabled(saving)
+    }
+
+    @ViewBuilder private var editor: some View {
+        Section {
+            TextField("Name, like Morning brief", text: $name)
+                .accessibilityIdentifier("t3-routine-name")
+            TextField("What should Botto do?", text: $prompt, axis: .vertical)
+                .lineLimit(3...8)
+                .accessibilityIdentifier("t3-routine-prompt")
+        }
+        Section {
+            Picker("Repeat", selection: $cadence) {
+                Text("Daily").tag(Cadence.daily)
+                Text("Weekdays").tag(Cadence.weekdays)
+                Text("Pick days").tag(Cadence.custom)
+            }
+            if cadence == .custom { dayPicker }
+            DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
+                .accessibilityIdentifier("t3-routine-time")
+        } footer: {
+            Text("\(scheduleSummary), on the host’s clock.")
+        }
+        Section {
+            Picker("Space", selection: $threadID) {
+                if !asksBeforeRunning { Text("Its own space").tag(String?.none) }
+                ForEach(store.t3Channels.filter { !$0.isArchived }) { channel in
+                    Text(channel.displayTitle).tag(Optional(channel.id))
+                }
+            }
+            .accessibilityIdentifier("t3-routine-space")
+        } footer: {
+            Text("Results arrive as messages in this space.")
+        }
+        if store.workflowRoutinesAvailable || asksBeforeRunning {
+            Section {
+                Toggle("Ask before each run", isOn: $asksBeforeRunning)
+                    .accessibilityIdentifier("t3-workflow-routine-opt-in")
+                    .onChange(of: asksBeforeRunning) { _, enabled in
+                        if enabled, threadID == nil {
+                            threadID = store.t3Channels.first { !$0.isArchived }?.id
+                        }
+                    }
+            }
+        }
     }
 
     private var dayPicker: some View {
@@ -895,11 +1028,95 @@ private struct T3RoutineCreator: View {
         Task {
             defer { saving = false }
             do {
+                if asksBeforeRunning, let threadID {
+                    let draft = try await store.withWorkflowRoutines {
+                        try $0.proposeWorkflowRoutine(name: name, prompt: prompt, schedule: schedule, threadID: threadID)
+                    }
+                    guard isCurrent() else { return }
+                    proposal = draft
+                    return
+                }
                 let routine = try await store.createT3Routine(name: name, prompt: prompt, schedule: schedule, threadID: threadID)
                 guard isCurrent() else { return }
                 onCreated(routine)
                 dismiss()
             } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func turnOn(_ proposal: T3WorkflowRoutineProposal) {
+        guard isCurrent(), !saving else { return }
+        saving = true
+        error = nil
+        Task {
+            defer { saving = false }
+            do {
+                let routine = try await store.withWorkflowRoutines { try await $0.turnOnWorkflowRoutine(proposal) }
+                guard isCurrent() else { return }
+                onWorkflowCreated(routine)
+                dismiss()
+            } catch where isCurrent() { self.error = error.localizedDescription }
+            catch { }
+        }
+    }
+}
+
+struct T3RoutineActivityView: View {
+    let store: AppStore
+    let threadID: String
+    let canAnswer: Bool
+    @State private var activities: [T3WorkflowRoutineActivity] = []
+    @State private var busy: Set<String> = []
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(activities) { activity in
+                if let question = activity.question {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(question.title).font(.subheadline.weight(.semibold))
+                        HStack {
+                            ForEach(question.choices, id: \.self) { choice in
+                                Button(LocalizedStringKey(choice)) { answer(question, choice: choice, id: activity.id) }
+                                    .buttonStyle(BottoPillButtonStyle(prominent: choice == question.choices.first))
+                            }
+                        }
+                        .disabled(!canAnswer || busy.contains(activity.id))
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(BottoTheme.surface, in: .rect(cornerRadius: 16))
+                    .accessibilityIdentifier("t3-workflow-routine-question")
+                } else if let result = activity.result {
+                    Label("\(activity.routineName) · \(result)", systemImage: "clock")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("t3-workflow-routine-result")
+                }
+            }
+            if let error { InlineNotice(message: error) { self.error = nil } }
+        }
+        .padding(.horizontal, 16)
+        .task {
+            do {
+                let updates = try await store.withWorkflowRoutines { try await $0.watchWorkflowRoutineActivity(threadID: threadID) }
+                for try await update in updates {
+                    guard store.selectedT3ChannelID == threadID else { return }
+                    activities = update
+                }
+            } catch {
+                // Loading optional Routine activity shouldn't interrupt an ordinary Space.
+            }
+        }
+    }
+
+    private func answer(_ question: T3WorkflowRoutineQuestion, choice: String, id: String) {
+        guard canAnswer, store.selectedT3ChannelID == threadID, busy.insert(id).inserted else { return }
+        error = nil
+        Task {
+            defer { busy.remove(id) }
+            do { try await store.withWorkflowRoutines { try await $0.answerWorkflowRoutineQuestion(question, choice: choice) } }
+            catch where store.selectedT3ChannelID == threadID { self.error = error.localizedDescription }
+            catch { }
         }
     }
 }

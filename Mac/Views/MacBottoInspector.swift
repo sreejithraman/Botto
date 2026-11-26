@@ -9,6 +9,8 @@ struct MacBottoInspector: View {
     let store: MacBottoStore
     let onPreview: (MacPreviewItem) -> Void
     @State private var path: [Page] = []
+    @State private var workflowRoutines: [T3WorkflowRoutine] = []
+    @State private var workflowRoutinesError: String?
 
     enum Page: Hashable {
         case look, personality, memory, routines, skills, skill(String), files, advanced
@@ -46,6 +48,7 @@ struct MacBottoInspector: View {
             async let models: Void = store.loadModels()
             _ = await (routines, outputs, models)
         }
+        .task(id: store.workflowRoutinesAvailable) { await loadWorkflowRoutines() }
     }
 
     @ViewBuilder
@@ -84,10 +87,22 @@ struct MacBottoInspector: View {
 
     private var routinesDetail: String {
         guard let routines = store.routines else { return "Checking…" }
-        let active = routines.filter(\.enabled)
-        if routines.isEmpty { return "None yet. Ask Botto in any space." }
+        let active = routines.filter(\.enabled).map(\.name) + workflowRoutines.filter(\.enabled).map { $0.proposal.name }
+        if routines.isEmpty && workflowRoutines.isEmpty { return "None yet. Ask Botto in any space." }
         if active.isEmpty { return "All paused" }
-        return active.map(\.name).joined(separator: " · ")
+        return active.joined(separator: " · ")
+    }
+
+    private func loadWorkflowRoutines() async {
+        guard store.workflowRoutinesAvailable else { workflowRoutines = []; workflowRoutinesError = nil; return }
+        do {
+            let loaded = try await store.withWorkflowRoutines { try await $0.listWorkflowRoutines() }
+            guard !Task.isCancelled else { return }
+            workflowRoutines = loaded.sorted { $0.proposal.name.localizedStandardCompare($1.proposal.name) == .orderedAscending }
+            workflowRoutinesError = nil
+        } catch where !Task.isCancelled {
+            workflowRoutinesError = error.localizedDescription
+        } catch { }
     }
 
     @ViewBuilder
@@ -150,7 +165,9 @@ struct MacBottoInspector: View {
                                blurb: "Things Botto keeps in mind across spaces. Botto adds to this as you talk; edit anything here.",
                                autosaver: draft, reload: { try await store.readSkill(relativePath: "MEMORY.md") })
             }
-        case .routines: MacRoutinesPage(store: store)
+        case .routines:
+            MacRoutinesPage(store: store, workflowRoutines: $workflowRoutines, workflowLoadError: workflowRoutinesError,
+                            reloadWorkflows: loadWorkflowRoutines)
         case .skills:
             MacSkillsPage(skills: store.brain?.skills ?? []) { path.append(.skill($0)) }
         case .skill(let skill): MacSkillReader(store: store, path: skill)
@@ -326,9 +343,25 @@ private struct MacLookEditor: View {
 
 private struct MacRoutinesPage: View {
     let store: MacBottoStore
+    @Binding var workflowRoutines: [T3WorkflowRoutine]
+    let workflowLoadError: String?
+    let reloadWorkflows: @MainActor () async -> Void
     @State private var adding = false
     @State private var error: String?
-    @State private var deleting: T3ScheduledRoutine?
+    @State private var deleting: RoutineDeletion?
+    @State private var updating: Set<UUID> = []
+
+    private enum RoutineDeletion {
+        case scheduled(T3ScheduledRoutine)
+        case workflow(T3WorkflowRoutine)
+
+        var name: String {
+            switch self {
+            case .scheduled(let routine): routine.name
+            case .workflow(let routine): routine.proposal.name
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -338,18 +371,25 @@ private struct MacRoutinesPage: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, 10)
                 if let routines = store.routines {
-                    if routines.isEmpty, !adding {
+                    if routines.isEmpty, workflowRoutines.isEmpty, !adding {
                         Text("No routines yet.").foregroundStyle(.secondary).padding(.vertical, 12)
                     }
                     ForEach(routines) { routine in row(routine) }
                 } else {
                     ProgressView().controlSize(.small).padding(.vertical, 12)
                 }
+                ForEach(workflowRoutines) { workflowRow($0) }
                 if adding {
-                    MacRoutineForm(store: store) { adding = false }
+                    MacRoutineForm(store: store, onWorkflowCreated: { routine in
+                        workflowRoutines = workflowRoutines.filter { $0.id != routine.id } + [routine]
+                    }) { adding = false }
                         .padding(.top, 14)
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(MacTheme.error).padding(.top, 8) }
+                if let workflowLoadError {
+                    Text(workflowLoadError).font(.caption).foregroundStyle(MacTheme.error).padding(.top, 8)
+                    Button("Try again") { Task { await reloadWorkflows() } }
+                }
             }
             .padding(20)
         }
@@ -360,15 +400,58 @@ private struct MacRoutinesPage: View {
                     .help("Add a routine")
             }
         }
-        .task { await store.loadRoutines() }
+        .task(id: store.isConnected) { await store.loadRoutines() }
         .confirmationDialog("Delete this routine?", isPresented: Binding(
             get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { routine in
             Button("Delete “\(routine.name)”", role: .destructive) {
-                Task {
-                    do { try await store.deleteRoutine(routine) } catch { self.error = error.localizedDescription }
+                switch routine {
+                case .scheduled(let task):
+                    Task {
+                        do { try await store.deleteRoutine(task) } catch { self.error = error.localizedDescription }
+                    }
+                case .workflow(let workflow):
+                    update(workflow) {
+                        try await store.withWorkflowRoutines { try await $0.deleteWorkflowRoutine(workflow) }
+                    }
                 }
             }
         } message: { _ in Text("It won’t run again. Its space stays.") }
+    }
+
+    private func workflowRow(_ routine: T3WorkflowRoutine) -> some View {
+        let proposal = routine.proposal
+        let detail = T3RoutineSchedule.macSummary(proposal.schedule, showsChosenDays: true) + (routine.enabled ? "" : " · Paused")
+        return MacHairlineRow(title: proposal.name, detail: detail) {
+            HStack(spacing: 8) {
+                Toggle("Active", isOn: Binding(get: { routine.enabled }, set: { enabled in
+                    update(routine) {
+                        _ = try await store.withWorkflowRoutines { try await $0.setWorkflowRoutineEnabled(routine, enabled: enabled) }
+                    }
+                }))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+                .accessibilityLabel("\(proposal.name) active")
+                Button { deleting = .workflow(routine) } label: { Image(systemName: "trash") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Delete \(proposal.name)")
+            }
+            .disabled(updating.contains(routine.id))
+        }
+        .help(proposal.prompt)
+    }
+
+    private func update(_ routine: T3WorkflowRoutine, action: @escaping @MainActor () async throws -> Void) {
+        guard updating.insert(routine.id).inserted else { return }
+        error = nil
+        Task {
+            defer { updating.remove(routine.id) }
+            do {
+                try await action()
+                await reloadWorkflows()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 
     private func row(_ routine: T3ScheduledRoutine) -> some View {
@@ -384,7 +467,7 @@ private struct MacRoutinesPage: View {
                 .controlSize(.small)
                 .labelsHidden()
                 .accessibilityLabel("\(routine.name) active")
-                Button { deleting = routine } label: { Image(systemName: "trash") }
+                Button { deleting = .scheduled(routine) } label: { Image(systemName: "trash") }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Delete \(routine.name)")
@@ -396,20 +479,70 @@ private struct MacRoutinesPage: View {
 
 private struct MacRoutineForm: View {
     let store: MacBottoStore
+    let onWorkflowCreated: (T3WorkflowRoutine) -> Void
     let onDone: () -> Void
     @State private var name = ""
     @State private var prompt = ""
     @State private var time = Calendar.current.date(bySettingHour: 8, minute: 0, second: 0, of: .now) ?? .now
     @State private var days = T3RoutineSchedule.everyDay
+    @State private var chosenDays: Set<Int> = [1, 3, 5]
+    @State private var asksBeforeRunning = false
+    @State private var threadID: String?
+    @State private var proposal: T3WorkflowRoutineProposal?
     @State private var saving = false
     @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Name, like Morning brief", text: $name).textFieldStyle(.roundedBorder)
-            TextField("What should Botto do?", text: $prompt, axis: .vertical)
-                .textFieldStyle(.roundedBorder).lineLimit(2...5)
+            if let proposal {
+                Text(proposal.name).font(.headline)
+                Text(T3RoutineSchedule.macSummary(proposal.schedule, showsChosenDays: true))
+                if let space = store.channels.first(where: { $0.id == proposal.threadID }) {
+                    LabeledContent("Space", value: space.displayTitle)
+                }
+                Text(proposal.prompt)
+                Text("Botto will ask in this Space before each run.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                editor
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(MacTheme.error) }
             HStack {
+                Spacer()
+                Button(proposal == nil ? "Cancel" : "Back") {
+                    if proposal == nil { onDone() }
+                    else { proposal = nil; error = nil }
+                }
+                .buttonStyle(MacPillButtonStyle(prominent: false))
+                .disabled(saving)
+                if let proposal {
+                    Button(saving ? "Turning on…" : "Turn on") { turnOn(proposal) }
+                        .buttonStyle(MacPillButtonStyle())
+                        .disabled(saving)
+                } else {
+                    Button(asksBeforeRunning ? "Review" : "Add") { add() }
+                        .buttonStyle(MacPillButtonStyle())
+                        .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || prompt.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || (asksBeforeRunning && (threadID == nil || chosenDays.isEmpty)))
+                }
+            }
+        }
+        .padding(14)
+        .background(MacTheme.surface, in: .rect(cornerRadius: 16))
+    }
+
+    @ViewBuilder private var editor: some View {
+        TextField("Name, like Morning brief", text: $name).textFieldStyle(.roundedBorder)
+        TextField("What should Botto do?", text: $prompt, axis: .vertical)
+            .textFieldStyle(.roundedBorder).lineLimit(2...5)
+        if store.workflowRoutinesAvailable || asksBeforeRunning {
+            Toggle("Ask before each run", isOn: $asksBeforeRunning)
+                .onChange(of: asksBeforeRunning) { _, enabled in
+                    if enabled, threadID == nil { threadID = store.channels.first { !$0.isArchived }?.id }
+                }
+        }
+        HStack {
+            if !asksBeforeRunning {
                 Picker("Days", selection: $days) {
                     Text(verbatim: "Every day").tag(T3RoutineSchedule.everyDay)
                     Text(verbatim: "Weekdays").tag(T3RoutineSchedule.weekdays)
@@ -417,32 +550,60 @@ private struct MacRoutineForm: View {
                 }
                 .labelsHidden()
                 .fixedSize()
-                DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute).labelsHidden()
-                Spacer()
             }
-            if let error { Text(error).font(.caption).foregroundStyle(MacTheme.error) }
-            HStack {
-                Spacer()
-                Button("Cancel", action: onDone).buttonStyle(MacPillButtonStyle(prominent: false))
-                Button("Add") { add() }
-                    .buttonStyle(MacPillButtonStyle())
-                    .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty
-                              || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+            DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute).labelsHidden()
+            Spacer()
+        }
+        if asksBeforeRunning {
+            let calendar = Calendar.current
+            let order = (0..<7).map { (calendar.firstWeekday - 1 + $0) % 7 }
+            HStack(spacing: 4) {
+                ForEach(order, id: \.self) { day in
+                    Button(calendar.veryShortWeekdaySymbols[day]) {
+                        if chosenDays.contains(day) { chosenDays.remove(day) } else { chosenDays.insert(day) }
+                    }
+                    .buttonStyle(MacPillButtonStyle(prominent: chosenDays.contains(day)))
+                    .accessibilityLabel(calendar.weekdaySymbols[day])
+                    .accessibilityAddTraits(chosenDays.contains(day) ? [.isSelected] : [])
+                }
+            }
+            Picker("Space", selection: $threadID) {
+                ForEach(store.channels.filter { !$0.isArchived }) { channel in
+                    Text(channel.displayTitle).tag(Optional(channel.id))
+                }
             }
         }
-        .padding(14)
-        .background(MacTheme.surface, in: .rect(cornerRadius: 16))
     }
 
     private func add() {
         let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
-        guard let schedule = T3RoutineSchedule(hour: parts.hour ?? 8, minute: parts.minute ?? 0, days: days) else { return }
+        guard !saving, let schedule = T3RoutineSchedule(hour: parts.hour ?? 8, minute: parts.minute ?? 0,
+                                                         days: asksBeforeRunning ? chosenDays : days) else { return }
         saving = true
         error = nil
         Task {
             defer { saving = false }
             do {
+                if asksBeforeRunning, let threadID {
+                    proposal = try await store.withWorkflowRoutines {
+                        try $0.proposeWorkflowRoutine(name: name, prompt: prompt, schedule: schedule, threadID: threadID)
+                    }
+                    return
+                }
                 try await store.createRoutine(name: name, prompt: prompt, schedule: schedule)
+                onDone()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    private func turnOn(_ proposal: T3WorkflowRoutineProposal) {
+        guard !saving else { return }
+        saving = true
+        error = nil
+        Task {
+            defer { saving = false }
+            do {
+                let routine = try await store.withWorkflowRoutines { try await $0.turnOnWorkflowRoutine(proposal) }
+                onWorkflowCreated(routine)
                 onDone()
             } catch { self.error = error.localizedDescription }
         }

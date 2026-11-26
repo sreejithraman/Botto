@@ -11,8 +11,10 @@ import Testing
         let exchange = T3PairingExchange()
         var pairing = try await exchange.exchangePairingCredential(origin: parsed.origin, credential: parsed.credential,
                                                                     clientLabel: "Botto disposable Routine check").configuration
-        pairing.t3?.projectID = try #require(env["BOTTO_TEST_T3_WORKFLOW_PROJECT"])
-        pairing.t3?.workspaceRoot = try #require(env["BOTTO_TEST_T3_WORKFLOW_ROOT"])
+        let projectID = try #require(env["BOTTO_TEST_T3_WORKFLOW_PROJECT"])
+        let workspace = try #require(env["BOTTO_TEST_T3_WORKFLOW_ROOT"])
+        pairing.t3?.projectID = projectID
+        pairing.t3?.workspaceRoot = workspace
         let threadID = try #require(env["BOTTO_TEST_T3_WORKFLOW_SPACE"])
         let service = T3BotService()
         defer { service.disconnect() }
@@ -39,9 +41,15 @@ import Testing
 
         _ = try await service.connect(configuration: pairing)
         #expect(try await service.listWorkflowRoutines() == [installed])
-        let question = try await waitFor(seconds: 95, "scheduled question") {
-            try await service.workflowRoutineActivity(threadID: threadID).first?.question
+        let watched = try await service.watchWorkflowRoutineActivity(threadID: threadID)
+        var questionFromStream: T3WorkflowRoutineQuestion?
+        for try await activity in watched {
+            if let question = activity.first?.question {
+                questionFromStream = question
+                break
+            }
         }
+        let question = try #require(questionFromStream)
         #expect(question.choices == ["Run", "Skip"])
         let paused = try await service.setWorkflowRoutineEnabled(installed, enabled: false)
         #expect(!paused.enabled)

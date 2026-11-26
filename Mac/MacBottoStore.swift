@@ -559,6 +559,16 @@ final class MacBottoStore {
         channels = service.currentT3Channels
     }
 
+    var workflowRoutinesAvailable: Bool {
+        (service as? any T3WorkflowRoutineControlling)?.workflowRoutinesAvailable == true
+    }
+
+    func withWorkflowRoutines<Value>(_ action: @MainActor (any T3WorkflowRoutineControlling) async throws -> Value)
+        async throws -> Value {
+        guard let routines = service as? any T3WorkflowRoutineControlling else { throw T3ServiceError.unsupported }
+        return try await live { try await action(routines) }
+    }
+
     // MARK: Plumbing
 
     /// Runs one host call for the current connection, so a late reply can't land in a newer one.

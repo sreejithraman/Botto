@@ -164,6 +164,9 @@ struct MacChatPane: View {
                         ForEach(opened.snapshot.pendingRequests) { request in
                             MacRuntimeRequestCard(request: request, store: store)
                         }
+                        if store.workflowRoutinesAvailable, let threadID = chat?.id, !isArchived {
+                            MacRoutineActivityView(store: store, threadID: threadID).id(threadID)
+                        }
                         ForEach(opened.snapshot.queuedMessages) { message in
                             HStack {
                                 Spacer(minLength: 80)
@@ -435,6 +438,63 @@ struct MacTranscriptMessage: View {
     private func detail(_ attachment: ChatAttachment, kind: MacFileKind) -> String {
         let size = attachment.byteCount.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
         return [kind.label, size, "click to open"].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+private struct MacRoutineActivityView: View {
+    let store: MacBottoStore
+    let threadID: String
+    @State private var activities: [T3WorkflowRoutineActivity] = []
+    @State private var busy: Set<String> = []
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(activities) { activity in
+                if let question = activity.question {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(question.title).font(.body.weight(.semibold))
+                        HStack {
+                            ForEach(question.choices, id: \.self) { choice in
+                                Button(LocalizedStringKey(choice)) { answer(question, choice: choice, id: activity.id) }
+                                    .buttonStyle(MacPillButtonStyle(prominent: choice == question.choices.first))
+                            }
+                        }
+                        .disabled(!store.isConnected || busy.contains(activity.id))
+                    }
+                    .padding(15)
+                    .frame(maxWidth: 520, alignment: .leading)
+                    .background(MacTheme.selection, in: .rect(cornerRadius: 20))
+                    .accessibilityElement(children: .contain)
+                } else if let result = activity.result {
+                    Label("\(activity.routineName) · \(result)", systemImage: "clock")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if let error { Text(error).font(.callout).foregroundStyle(MacTheme.error) }
+        }
+        .task {
+            do {
+                let updates = try await store.withWorkflowRoutines { try await $0.watchWorkflowRoutineActivity(threadID: threadID) }
+                for try await update in updates {
+                    guard store.selectedChannelID == threadID else { return }
+                    activities = update
+                }
+            } catch {
+                // Routine activity is optional for opening a Space.
+            }
+        }
+    }
+
+    private func answer(_ question: T3WorkflowRoutineQuestion, choice: String, id: String) {
+        guard store.selectedChannelID == threadID, busy.insert(id).inserted else { return }
+        error = nil
+        Task {
+            defer { busy.remove(id) }
+            do { try await store.withWorkflowRoutines { try await $0.answerWorkflowRoutineQuestion(question, choice: choice) } }
+            catch where store.selectedChannelID == threadID { self.error = error.localizedDescription }
+            catch { }
+        }
     }
 }
 

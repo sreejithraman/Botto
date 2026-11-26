@@ -1,5 +1,18 @@
 import Foundation
 
+@MainActor public protocol T3WorkflowRoutineControlling {
+    var workflowRoutinesAvailable: Bool { get }
+    func proposeWorkflowRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String) throws
+        -> T3WorkflowRoutineProposal
+    func turnOnWorkflowRoutine(_ proposal: T3WorkflowRoutineProposal) async throws -> T3WorkflowRoutine
+    func listWorkflowRoutines() async throws -> [T3WorkflowRoutine]
+    func setWorkflowRoutineEnabled(_ routine: T3WorkflowRoutine, enabled: Bool) async throws -> T3WorkflowRoutine
+    func deleteWorkflowRoutine(_ routine: T3WorkflowRoutine) async throws
+    func watchWorkflowRoutineActivity(threadID: String) async throws
+        -> AsyncThrowingStream<[T3WorkflowRoutineActivity], Error>
+    func answerWorkflowRoutineQuestion(_ question: T3WorkflowRoutineQuestion, choice: String) async throws
+}
+
 /// The fixed schedule, prompt and existing Space the owner can approve together.
 public struct T3WorkflowRoutineProposal: Identifiable, Equatable, Sendable {
     public let id: UUID

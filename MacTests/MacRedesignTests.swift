@@ -199,6 +199,8 @@ struct MacPresentationTests {
         #expect(T3RoutineSchedule.macSummary(weekdays, calendar: calendar, locale: locale).hasPrefix("Weekdays · "))
         #expect(T3RoutineSchedule.macSummary(weekends, calendar: calendar, locale: locale).hasPrefix("Weekends · "))
         #expect(T3RoutineSchedule.macSummary(chosenDays, calendar: calendar, locale: locale).hasPrefix("Some days · "))
+        #expect(T3RoutineSchedule.macSummary(chosenDays, calendar: calendar, locale: locale, showsChosenDays: true)
+            .hasPrefix("Mon, Wed · "))
         #expect(T3RoutineSchedule.macSummary(nil, calendar: calendar, locale: locale) == "Custom schedule")
     }
 
