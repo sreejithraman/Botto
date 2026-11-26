@@ -77,7 +77,7 @@ public struct T3PushRegistration: Codable, Equatable, Sendable {
         public var isValid: Bool {
             (32...512).contains(token.utf8.count) && token.utf8.count.isMultiple(of: 2)
                 && PushEnvelope.validHex(token, count: token.utf8.count)
-                && (2...200).contains(bundleID.utf8.count)
+                && bundleID.utf8.count <= 200
                 && bundleID.range(of: #"^[A-Za-z0-9][A-Za-z0-9.-]+$"#, options: .regularExpression) != nil
         }
     }

@@ -1287,10 +1287,6 @@ import BottoCore
         pendingPushNotification = pending
         return pending.claim
     }
-    private func authorizesPushNavigation(_ intent: PushNavigationIntent) -> Bool {
-        t3Push.authorizes(intent, scope: t3PushScope)
-    }
-
     private static let unverifiedT3Notification = "This notification no longer has a verified destination."
     private static let t3PushReconnectNotice = "Reconnect to your Mac to open the notification’s Space."
 
@@ -1326,7 +1322,7 @@ import BottoCore
             notice = "This notification’s Space is no longer available."
             return
         }
-        guard authorizesPushNavigation(intent), bot(withID: destination.profileID) != nil,
+        guard t3Push.authorizes(intent, scope: t3PushScope), bot(withID: destination.profileID) != nil,
               let profile = try? ExactID(destination.profileID),
               let root = try? ExactID(destination.rootID), let stored = try? ExactID(destination.storedID) else {
             interruptSupersededOpening()
@@ -1339,7 +1335,7 @@ import BottoCore
         let authority = BotNavigationAuthority(workspace: workspace, connection: generation,
                                                recovery: attachmentRecoveryGeneration, claim: claim)
         let ownsTap: @MainActor () -> Bool = { [self] in
-            pendingPushNotification?.intent.id == intent.id && authorizesPushNavigation(intent) && !isDemo
+            pendingPushNotification?.intent.id == intent.id && t3Push.authorizes(intent, scope: t3PushScope) && !isDemo
         }
         let requested = SessionIdentity(profile: profile, root: root, stored: stored, aliases: [])
         let opened = await workspace.openNotificationChat(requested, claim: claim, exact: true,
