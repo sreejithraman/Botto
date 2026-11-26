@@ -1294,6 +1294,75 @@ import UIKit
         }
     }
 
+    /// The Spaces drawer is modal for VoiceOver, so while it is closed it must also be hidden from it. Otherwise
+    /// VoiceOver stays trapped in the off-screen drawer and can't reach the chat. XCUITest can't see this: its
+    /// tree lists accessibilityHidden elements, so this walks the tree the way VoiceOver does instead.
+    @Test func voiceOverReachesOnlyTheVisibleSideOfTheDrawer() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        try NativeAccessibilityRuntime.enable()
+        // A bare test window has no SwiftUI scene, so give the workspace the active phase the app's scene would.
+        let workspace = T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})
+        try await withHosted(workspace.environment(\.scenePhase, .active)) { window in
+            var reached = try await reach(window, "The chat opens with the drawer closed") { $0.identifiers.contains("t3-chat-header") }
+            #expect(!reached.identifiers.contains("t3-spaces-drawer"), "\(reached.identifiers.sorted())")
+
+            // The toolbar's bar button doesn't take accessibilityActivate() in a test host, so press it as a control.
+            try #require(reached.elements["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
+            reached = try await reach(window, "The drawer opens") { $0.identifiers.contains("t3-drawer-search") }
+            #expect(!reached.identifiers.contains("t3-chat-header"), "\(reached.identifiers.sorted())")
+            // The search icon is hidden from VoiceOver, so a walk that finds it is not reading what VoiceOver reads.
+            #expect(!reached.identifiers.contains("magnifyingglass"))
+        }
+    }
+
+    private func reach(_ window: UIWindow, _ reason: String, until ready: (Reached) -> Bool) async throws -> Reached {
+        var reached = Reached()
+        let settled = try await waitWhile(reason, diagnostics: { "\(reached.identifiers.sorted())" }) {
+            window.layoutIfNeeded()
+            reached = Reached(window)
+            if ready(reached) { return false }
+            try await Task.sleep(for: .milliseconds(50))
+            return true
+        }
+        try #require(settled, "Timed out: \(reason)")
+        return reached
+    }
+
+    /// What VoiceOver can reach: it skips hidden subtrees, stops at elements, and keeps only modal siblings.
+    @MainActor private struct Reached {
+        var identifiers: Set<String> = []
+        var elements: [String: NSObject] = [:]
+
+        init() {}
+        init(_ root: NSObject) {
+            var seen: Set<ObjectIdentifier> = []
+            walk(root, seen: &seen)
+        }
+
+        private mutating func walk(_ object: NSObject, seen: inout Set<ObjectIdentifier>) {
+            guard seen.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return }
+            if let view = object as? UIView, view.isHidden || view.alpha == 0 { return }
+            // SwiftUI's accessibility nodes answer accessibilityIdentifier without declaring UIAccessibilityIdentification.
+            let identify = NSSelectorFromString("accessibilityIdentifier")
+            if object.responds(to: identify), let id = object.perform(identify)?.takeUnretainedValue() as? String, !id.isEmpty {
+                identifiers.insert(id)
+                elements[id] = object
+            }
+            if object.isAccessibilityElement { return }
+            var children = (object.accessibilityElements ?? []).compactMap { $0 as? NSObject }
+            if children.isEmpty {
+                let count = object.accessibilityElementCount()
+                if count > 0, count != NSNotFound { children = (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject } }
+            }
+            if children.isEmpty { children = (object as? UIView)?.subviews ?? [] }
+            let modal = children.filter(\.accessibilityViewIsModal)
+            for child in modal.isEmpty ? children : modal { walk(child, seen: &seen) }
+        }
+    }
+
     @Test func aBotSomeoneAlreadyKnowsSkipsFirstRun() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
