@@ -14,7 +14,7 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertTrue(text.exists)
         XCTAssertFalse(app.descendants(matching: .any)["artifact-error"].exists)
         tapOutput("artifact-share", label: "Share", in: app)
-        XCTAssertTrue(app.cells["Copy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shareCopy(in: app).waitForExistence(timeout: 5))
         ArtifactOutputActions.dismissShare(in: app)
         assertOutputActions(in: app)
         capture("Completed local file after background recovery", app: app)
@@ -30,11 +30,22 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         let cards = app.buttons.matching(NSPredicate(format: "label == %@", "Open " + filename))
         let visibleCard = {
-            cards.allElementsBoundByIndex.first { $0.exists && $0.isEnabled && $0.isHittable }
+            let area = readingArea(of: transcript, in: app)
+            return cards.allElementsBoundByIndex.first {
+                $0.exists && $0.isEnabled && $0.isHittable && area.contains($0.frame)
+            }
         }
+        // A swipe's momentum can leave the card under the banner. Drag it to the
+        // reading area's upper third, clear of the Latest messages button, and hold.
         for _ in 0..<8 {
-            if visibleCard() != nil { break }
-            transcript.swipeDown()
+            guard visibleCard() == nil else { break }
+            guard let card = cards.allElementsBoundByIndex.first(where: \.exists) else { transcript.swipeDown(); continue }
+            let area = readingArea(of: transcript, in: app)
+            let distance = min(max(area.minY + area.height / 3 - card.frame.midY, -area.height / 2), area.height / 2)
+            let start = app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: area.midX - app.frame.minX, dy: area.midY - distance / 2 - app.frame.minY))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
         }
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             MainActor.assumeIsolated { visibleCard() != nil }
@@ -49,6 +60,11 @@ final class ArtifactExportUITests: XCTestCase {
         assertOutputActions(in: app)
         XCTAssertFalse(app.descendants(matching: .any)["artifact-error"].exists)
         return app
+    }
+
+    /// A photo's Share sheet labels only the action's title, not its cell.
+    @MainActor private func shareCopy(in app: XCUIApplication) -> XCUIElement {
+        app.otherElements["ActivityListView"].staticTexts["Copy"].firstMatch
     }
 
     @MainActor private func outputAction(_ identifier: String, label: String, in app: XCUIApplication) -> XCUIElement {
@@ -94,7 +110,7 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertGreaterThan(text.frame.width, original.width * 1.25, "The native PDF page must actually zoom.")
         capture("PDF after zoom", app: app)
         tapOutput("artifact-share", label: "Share", in: app)
-        XCTAssertTrue(app.cells["Copy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shareCopy(in: app).waitForExistence(timeout: 5))
         capture("Native PDF Share", app: app)
         ArtifactOutputActions.dismissShare(in: app)
         assertOutputActions(in: app)
@@ -337,7 +353,7 @@ final class ArtifactExportUITests: XCTestCase {
         capture("Native chart image preview", app: app)
         XCTAssertEqual(result, .completed, "Quick Look must display all three bars.")
         tapOutput("artifact-share", label: "Share", in: app)
-        XCTAssertTrue(app.cells["Copy"].waitForExistence(timeout: 5))
+        XCTAssertTrue(shareCopy(in: app).waitForExistence(timeout: 5))
         capture("Native image Share", app: app)
         assertConnectionReplacement(in: app)
     }
@@ -353,7 +369,7 @@ final class ArtifactExportUITests: XCTestCase {
         XCTAssertFalse(app.buttons["artifact-share"].exists)
         XCTAssertFalse(filesPicker(in: app).exists)
         XCTAssertFalse(app.textFields["DOCPicker.filenameTextField"].exists)
-        XCTAssertFalse(app.cells["Copy"].exists, "Connection replacement must retire native Share too.")
+        XCTAssertFalse(shareCopy(in: app).exists, "Connection replacement must retire native Share too.")
         let reviewed = app.staticTexts["https://replacement.example"].waitForExistence(timeout: 5)
         capture("Connection replaces artifact presentation", app: app)
         XCTAssertTrue(reviewed)
