@@ -1,15 +1,15 @@
 {
   "repository": "https://github.com/pingdotgg/t3code",
-  "ref": "refs/tags/v0.1.11",
-  "commit": "59651c1761f6c63e9b6056839067066968e6a406",
-  "version": "0.1.11",
+  "ref": "refs/tags/v0.1.12",
+  "commit": "ca81b7b97a1c4b91e5ac25768d0f6629f37732fd",
+  "version": "0.1.12",
   "runtime": {
     "name": "Node.js",
     "version": "26.13.1"
   },
   "licensePath": "LICENSE",
   "asset": {
-    "name": "t3-0.1.11-darwin-arm64.tar.gz",
-    "sha256": "4bc22e16a2e48d868ad8c4b9d6c8e031be1c566ce31c28267955c2986a70e95f"
+    "name": "t3-0.1.12-darwin-arm64.tar.gz",
+    "sha256": "1b78c9754160623661c5942a7e22f5a62a64bf1f96ab397f50bbc7c6b6115ca4"
   }
 }
