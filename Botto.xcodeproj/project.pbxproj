@@ -320,7 +320,6 @@
 		29DC2207A2C1B50544E355FD /* T3FreshPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T3FreshPage.swift; sourceTree = "<group>"; };
 		2AA4287B6EB83965FA95D80E /* RichContentDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichContentDocument.swift; sourceTree = "<group>"; };
 		2B3F21A8F140D68885EF63C5 /* HistoryJSONValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryJSONValidation.swift; sourceTree = "<group>"; };
-		2EB63ED67BEC996DF2B4582F /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		2F26503ECD05D7FFD7450F5A /* WorkspaceLibraryRetentionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLibraryRetentionTests.swift; sourceTree = "<group>"; };
 		300BEB2BC921574B035E823A /* AvatarGenerationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarGenerationStoreTests.swift; sourceTree = "<group>"; };
 		305B8D79928E1B8851292B21 /* pele-1.9.0.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "pele-1.9.0.js"; sourceTree = "<group>"; };
@@ -489,6 +488,7 @@
 		EB379C9D38970BD2367CC1AA /* TranscriptActiveRichMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptActiveRichMeasurementTests.swift; sourceTree = "<group>"; };
 		EB41FA3C7BA75D99F4BBE281 /* QueuedMessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueuedMessagesView.swift; sourceTree = "<group>"; };
 		EB5F02400EB5F7F334829C3D /* NativeTranscriptIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptIdentityTests.swift; sourceTree = "<group>"; };
+		ED6D716FEDEF38800CC353C1 /* BottoCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BottoCore; path = .; sourceTree = SOURCE_ROOT; };
 		EE5D527150572717C8A2FB38 /* BottoMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BottoMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EEA373B9E6B87DC6BB075C83 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EFEBD96B631B495C3094B053 /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
@@ -915,7 +915,7 @@
 		C81927C287378F51779036E1 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				2EB63ED67BEC996DF2B4582F /* BottoCore */,
+				ED6D716FEDEF38800CC353C1 /* BottoCore */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
