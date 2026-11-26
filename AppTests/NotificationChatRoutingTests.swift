@@ -5,15 +5,19 @@ import BottoCore
 
 @MainActor struct NotificationChatRoutingTests {
     @Test(arguments: ["current", "removed", "failure"])
-    func notificationOpensItsChatOnlyAfterAnAuthorizedOpen(outcome: String) async throws {
+    func notificationReopensAClosedChatOnlyAfterAnAuthorizedOpen(outcome: String) async throws {
         let service = try WorkspaceTestService()
+        var saved = ConversationBook()
+        saved.merge(service.summaries[0])
+        let other = saved.merge(service.summaries[1])
+        saved.update(other) { $0.isClosedLocally = true }
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
+            book: saved, service: service, onDirty: {})
         workspace.setOnline(true)
         await workspace.openBot(profile: service.profile)
         let main = try #require(workspace.screen(profile: service.profile))
         await workspace.refreshDirectory(main.owner)
-        let other = try #require(workspace.chats(service.profile).dropFirst().first?.id)
+        #expect(main.owner.chat != other && workspace.persisted().record(other)?.isClosedLocally == true)
 
         let gate = WorkspaceGate(); service.openGate = gate
         if outcome == "failure" { service.openError = ConversationServiceError.disconnected }
@@ -34,6 +38,7 @@ import BottoCore
 
         let result = try #require(workspace.screen(profile: service.profile))
         #expect(committed == (outcome == "current" ? [destination] : []))
+        #expect(workspace.persisted().record(other)?.isClosedLocally == (outcome == "current" ? nil : true))
         if outcome == "current" {
             #expect(result.owner.chat == other && result.canAct)
         } else {

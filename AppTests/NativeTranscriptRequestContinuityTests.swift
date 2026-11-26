@@ -386,15 +386,17 @@ import BottoCore
         }
     }
     @MainActor @Observable final class Coverage { var covered = false }
+    /// Mirrors T3Workspace: an open file covers the conversation.
     private struct Host: View {
         let store: AppStore
         let presentation: WorkspacePresentation
         let coverage: Coverage
         var body: some View {
             if let bot = store.selectedBot {
+                let covered = coverage.covered || presentation.artifact != nil
                 ChatView(store: store, bot: bot, presentation: presentation,
-                         isExposed: true, isEditingExposed: true, importPaneVisible: true,
-                         rootCovered: coverage.covered, onLocalModalPresentation: { _ in })
+                         isExposed: !covered, isEditingExposed: !covered, importPaneVisible: presentation.artifact == nil,
+                         rootCovered: covered, onLocalModalPresentation: { _ in })
                     .frame(width: 382, height: 434).environment(\.scenePhase, .active)
             }
         }

@@ -96,6 +96,51 @@ import BottoCore
         return find(root)
     }
 
+    @Test(arguments: [false, true])
+    func cancelAllStopsAHeldPasteAndKeepsItsNoticeUntilRetry(duringUpload: Bool) async throws {
+        let f = try await fixture()
+        defer { f.close() }
+        let owner = try #require(f.store.chats.screen(profile: f.service.profile)?.owner)
+        let gate = WorkspaceGate()
+        defer { gate.release() }
+        if duringUpload { f.service.uploadGate = gate }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { $0.fill(CGRect(x: 0, y: 0, width: 2, height: 2)) }
+        let bytes = try #require(image.pngData())
+        func item(_ name: String, held: Bool) -> PastedAttachment {
+            let provider = NSItemProvider(); provider.suggestedName = name
+            provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
+                if held { Task { @MainActor in await gate.wait(); completion(bytes, nil) } }
+                else { completion(bytes, nil) }
+                return nil
+            }
+            return PastedAttachment(provider: provider, type: .png)
+        }
+        let paste = try #require(f.editor?.pasteAttachments)
+        paste(owner, [item("first.png", held: !duringUpload), item("second.png", held: false)])
+        await gate.entered()
+        let notice = "Attachment import stopped. Check the attached files before sending."
+        try await ready("visible Cancel All control") { self.accessibilityNode("Cancel All", in: f.host.view) != nil }
+        let cancel = try #require(accessibilityNode("Cancel All", in: f.host.view))
+        try #require(cancel.accessibilityActivate())
+        try await ready("Cancel All shows its notice") { self.accessibilityNode(notice, in: f.host.view) != nil }
+        #expect(f.store.chats.screen(profile: f.service.profile)?.isUploading == duringUpload)
+        f.state.rootCovered = true
+        try await ready { f.editor?.isEditable == false }
+        f.state.rootCovered = false
+        try await ready("the notice outlasts a cover") { self.accessibilityNode(notice, in: f.host.view) != nil }
+        f.service.uploadGate = nil
+        gate.release()
+        try await Task.sleep(for: .milliseconds(150))
+        try await ready { f.store.chats.screen(profile: f.service.profile)?.isUploading == false }
+        #expect(f.store.chats.screen(profile: f.service.profile)?.attachments.isEmpty == true)
+        #expect(f.service.uploads.count == (duringUpload ? 1 : 0))
+        try await ready { f.editor?.isEditable == true }
+        let current = try #require(f.store.chats.screen(profile: f.service.profile))
+        f.editor?.pasteAttachments?(current.owner, [item("retry.png", held: false)])
+        try await ready { f.store.chats.screen(profile: f.service.profile)?.attachments.map(\.name) == ["retry.png"] }
+        try await ready("a retry clears the notice") { self.accessibilityNode(notice, in: f.host.view) == nil }
+    }
+
     @Test(arguments: ["root", "inactive", "file"])
     func semanticCoversStillEndNativeEditingAndFenceDraftWrites(cover: String) async throws {
         let f = try await fixture()
