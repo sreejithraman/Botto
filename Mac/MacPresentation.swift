@@ -66,30 +66,17 @@ enum MacBrainSummary {
     }
 }
 
-/// The 5-field cron that T3 routines accept, built from a time and a day choice.
-enum MacRoutineSchedule: String, CaseIterable, Identifiable {
-    case everyDay = "Every day", weekdays = "Weekdays", weekends = "Weekends"
-    var id: Self { self }
-
-    func cron(hour: Int, minute: Int) -> String {
-        let days = switch self {
-        case .everyDay: "*"
-        case .weekdays: "1-5"
-        case .weekends: "0,6"
+extension T3RoutineSchedule {
+    static func macSummary(_ schedule: Self?, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard let schedule, let date = calendar.date(from: DateComponents(hour: schedule.hour, minute: schedule.minute)) else {
+            return "Custom schedule"
         }
-        return "\(minute) \(hour) * * \(days)"
-    }
-
-    static func summary(_ cron: String, calendar: Calendar = .current, locale: Locale = .current) -> String {
-        let fields = cron.split(whereSeparator: \.isWhitespace)
-        guard fields.count == 5, let minute = Int(fields[0]), let hour = Int(fields[1]),
-              let date = calendar.date(from: DateComponents(hour: hour, minute: minute)) else { return "Custom schedule" }
         let time = date.formatted(Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
             .hour().minute())
-        let days = switch String(fields[4]) {
-        case "*", "0,1,2,3,4,5,6": "Every day"
-        case "1-5", "1,2,3,4,5": "Weekdays"
-        case "0,6", "6,0": "Weekends"
+        let days = switch schedule.days {
+        case Self.everyDay: "Every day"
+        case Self.weekdays: "Weekdays"
+        case Self.weekends: "Weekends"
         default: "Some days"
         }
         return "\(days) · \(time)"

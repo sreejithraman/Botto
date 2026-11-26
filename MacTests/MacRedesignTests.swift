@@ -189,13 +189,17 @@ struct MacPresentationTests {
         #expect(MacBrainSummary.skillFile("notes.md") == "skills/notes.md")
     }
 
-    @Test func routineSchedulesRoundTrip() {
-        let locale = Locale(identifier: "en_US_POSIX")
-        #expect(MacRoutineSchedule.weekdays.cron(hour: 8, minute: 30) == "30 8 * * 1-5")
-        #expect(MacRoutineSchedule.everyDay.cron(hour: 9, minute: 0) == "0 9 * * *")
-        #expect(MacRoutineSchedule.summary("0 9 * * *", calendar: calendar, locale: locale).hasPrefix("Every day · "))
-        #expect(MacRoutineSchedule.summary("30 17 * * 1,2,3,4,5", calendar: calendar, locale: locale).hasPrefix("Weekdays · "))
-        #expect(MacRoutineSchedule.summary("", calendar: calendar, locale: locale) == "Custom schedule")
+    @Test func routineScheduleSummaryPreservesExistingLabels() throws {
+        let calendar = Calendar(identifier: .gregorian), locale = Locale(identifier: "en_US")
+        let daily = try #require(T3RoutineSchedule(hour: 9, minute: 0))
+        let weekdays = try #require(T3RoutineSchedule(hour: 17, minute: 30, days: T3RoutineSchedule.weekdays))
+        let weekends = try #require(T3RoutineSchedule(hour: 10, minute: 15, days: T3RoutineSchedule.weekends))
+        let chosenDays = try #require(T3RoutineSchedule(hour: 8, minute: 0, days: [1, 3]))
+        #expect(T3RoutineSchedule.macSummary(daily, calendar: calendar, locale: locale).hasPrefix("Every day · "))
+        #expect(T3RoutineSchedule.macSummary(weekdays, calendar: calendar, locale: locale).hasPrefix("Weekdays · "))
+        #expect(T3RoutineSchedule.macSummary(weekends, calendar: calendar, locale: locale).hasPrefix("Weekends · "))
+        #expect(T3RoutineSchedule.macSummary(chosenDays, calendar: calendar, locale: locale).hasPrefix("Some days · "))
+        #expect(T3RoutineSchedule.macSummary(nil, calendar: calendar, locale: locale) == "Custom schedule")
     }
 
     @Test func rowTimesAreCalm() throws {

@@ -90,6 +90,27 @@ import Testing
         #expect(observer.shellActivity(in: child, now: now)?.kind == .approval)
     }
 
+    @Test func workflowStepsNeverEmitPushActivity() {
+        var observer = T3PushObserver(scope: scope, since: now.addingTimeInterval(-10))
+        var shell: JSONValue = .object([
+            "id": .string("space-42"), "status": .string("completed"), "latestRunId": .string("workflow-run"),
+            "latestRunCompletedAt": .string(timestamp), "lineage": .object(["workflowStep": .bool(true)])
+        ])
+        #expect(observer.shellActivity(in: shell, now: now) == nil)
+
+        shell["lineage"]["relationshipToParent"] = .string("subagent")
+        shell["activityRunStatus"] = .string("waiting")
+        shell["pendingRuntimeRequest"] = .object([
+            "id": .string("approve"), "kind": .string("command"), "createdAt": .string(timestamp)
+        ])
+        #expect(observer.shellActivity(in: shell, now: now) == nil)
+
+        for status in ["pending", "resolved"] {
+            let question = ["id": "ask", "status": status, "kind": "user_input", "createdAt": timestamp]
+            #expect(observer.requests(frame(question), in: shell, now: now).isEmpty)
+        }
+    }
+
     private func frame(_ fields: [String: String], space: String = "space-42") -> JSONValue {
         .object(["kind": .string("event"), "event": .object([
             "type": .string("runtime-request.updated"), "threadId": .string(space), "payload": .object(fields.mapValues(JSONValue.string))

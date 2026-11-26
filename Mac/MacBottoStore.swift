@@ -553,8 +553,8 @@ final class MacBottoStore {
     }
 
     /// A routine without a space gets its own, named after it.
-    func createRoutine(name: String, prompt: String, cron: String) async throws {
-        let routine = try await live { try await service.createRoutine(name: name, prompt: prompt, cron: cron, threadID: nil) }
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule) async throws {
+        let routine = try await live { try await service.createRoutine(name: name, prompt: prompt, schedule: schedule, threadID: nil) }
         routines = (routines ?? []).filter { $0.id != routine.id } + [routine]
         channels = service.currentT3Channels
     }

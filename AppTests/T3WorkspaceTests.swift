@@ -717,13 +717,15 @@ import UIKit
         await store.start()
 
         #expect(try await store.listT3Routines().isEmpty)
+        let weekdays = try #require(T3RoutineSchedule(hour: 8, minute: 30, days: T3RoutineSchedule.weekdays))
         let created = try await store.createT3Routine(name: "Standup", prompt: "Summarize yesterday.",
-                                                      cron: "30 8 * * 1-5", threadID: "release")
-        #expect(created.cron == "30 8 * * 1-5")
+                                                      schedule: weekdays, threadID: "release")
+        #expect(created.schedule == weekdays)
         #expect(created.threadID == "release")
         #expect(created.enabled)
         // Without a space, the routine gets its own.
-        let general = try await store.createT3Routine(name: "Digest", prompt: "Daily digest.", cron: "0 9 * * *", threadID: nil)
+        let daily = try #require(T3RoutineSchedule(hour: 9, minute: 0))
+        let general = try await store.createT3Routine(name: "Digest", prompt: "Daily digest.", schedule: daily, threadID: nil)
         #expect(general.threadID == "routine-Digest")
         #expect(try await store.listT3Routines().map(\.name) == ["Standup", "Digest"])
 
@@ -731,9 +733,6 @@ import UIKit
         #expect(try await store.listT3Routines().first { $0.id == created.id }?.enabled == false)
         try await store.deleteT3Routine(id: general.id)
         #expect(try await store.listT3Routines().map(\.id) == [created.id])
-        await #expect(throws: T3ServiceError.unsupportedRoutineSchedule) {
-            try await store.createT3Routine(name: "Bad", prompt: "Nope", cron: "*/5 * * * *", threadID: nil)
-        }
     }
 
     @Test func switchesChannelModelsAndMarksChannelsVisited() async throws {
@@ -1152,20 +1151,7 @@ import UIKit
         autosave.edited("original") // Cancels the test's debounce without dispatching a write.
     }
 
-    @Test func routineScheduleBuilderProducesCronTheServiceAccepts() throws {
-        #expect(T3RoutineSchedule.daily.cron(hour: 9, minute: 0) == "0 9 * * *")
-        #expect(T3RoutineSchedule.weekdays.cron(hour: 8, minute: 30) == "30 8 * * 1-5")
-        #expect(T3RoutineSchedule.days([5, 1, 3]).cron(hour: 18, minute: 5) == "5 18 * * 1,3,5")
-        #expect(T3RoutineSchedule.days(Set(0...6)).cron(hour: 7, minute: 15) == "15 7 * * *")
-        #expect(!T3RoutineSchedule.days([]).isValid)
-
-        #expect(T3RoutineSchedule.parse("30 8 * * 1-5")?.schedule == .weekdays)
-        #expect(T3RoutineSchedule.parse("0 9 * * 0,1,2,3,4,5,6")?.schedule == .daily)
-        #expect(T3RoutineSchedule.parse("0 9 * * MON,WED")?.schedule == .days([1, 3]))
-        #expect(T3RoutineSchedule.parse("0 9 * * 7")?.schedule == .days([0]))
-        #expect(T3RoutineSchedule.parse("*/5 * * * *") == nil)
-        #expect(T3RoutineSchedule.parse("0 9 1 * *") == nil)
-
+    @Test func routineScheduleSummaryPreservesExistingLabels() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
         calendar.locale = Locale(identifier: "en_GB")
@@ -1175,12 +1161,15 @@ import UIKit
             return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar,
                                                    timeZone: calendar.timeZone))
         }
-        #expect(T3RoutineSchedule.summary("0 9 * * *", calendar: calendar, locale: locale) == "Daily · \(try time(9, 0))")
-        #expect(T3RoutineSchedule.summary("30 8 * * 1-5", calendar: calendar, locale: locale) == "Weekdays · \(try time(8, 30))")
-        #expect(T3RoutineSchedule.summary("0 10 * * 0,6", calendar: calendar, locale: locale) == "Weekends · \(try time(10, 0))")
-        #expect(T3RoutineSchedule.summary("15 7 * * 1,3", calendar: calendar, locale: locale) == "Mon, Wed · \(try time(7, 15))")
-        #expect(T3RoutineSchedule.summary("", calendar: calendar, locale: locale) == "Custom schedule")
-        #expect(T3RoutineSchedule.summary("*/5 * * * *", calendar: calendar, locale: locale) == "Cron · */5 * * * *")
+        let daily = try #require(T3RoutineSchedule(hour: 9, minute: 0))
+        let weekdays = try #require(T3RoutineSchedule(hour: 8, minute: 30, days: T3RoutineSchedule.weekdays))
+        let weekends = try #require(T3RoutineSchedule(hour: 10, minute: 0, days: T3RoutineSchedule.weekends))
+        let chosenDays = try #require(T3RoutineSchedule(hour: 7, minute: 15, days: [3, 1]))
+        #expect(T3RoutineSchedule.summary(daily, calendar: calendar, locale: locale) == "Daily · \(try time(9, 0))")
+        #expect(T3RoutineSchedule.summary(weekdays, calendar: calendar, locale: locale) == "Weekdays · \(try time(8, 30))")
+        #expect(T3RoutineSchedule.summary(weekends, calendar: calendar, locale: locale) == "Weekends · \(try time(10, 0))")
+        #expect(T3RoutineSchedule.summary(chosenDays, calendar: calendar, locale: locale) == "Mon, Wed · \(try time(7, 15))")
+        #expect(T3RoutineSchedule.summary(nil, calendar: calendar, locale: locale) == "Custom schedule")
     }
 
     // MARK: First run
@@ -1504,9 +1493,8 @@ import UIKit
         return .init(data: Data("# Report".utf8), filename: output.name, mimeType: output.mimeType)
     }
     func listRoutines() async throws -> [T3ScheduledRoutine] { routines }
-    func createRoutine(name: String, prompt: String, cron: String, threadID: String?) async throws -> T3ScheduledRoutine {
-        guard T3RoutineSchedule.parse(cron) != nil else { throw T3ServiceError.unsupportedRoutineSchedule }
-        let routine = T3ScheduledRoutine(id: "routine-\(routines.count + 1)", name: name, prompt: prompt, cron: cron,
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
+        let routine = T3ScheduledRoutine(id: "routine-\(routines.count + 1)", name: name, prompt: prompt, schedule: schedule,
                                          enabled: true, threadID: threadID ?? "routine-\(name)",
                                          nextRunAt: nil, lastRunAt: nil)
         routines.append(routine)
@@ -1515,7 +1503,7 @@ import UIKit
     func setRoutineEnabled(id: String, enabled: Bool) async throws {
         guard let index = routines.firstIndex(where: { $0.id == id }) else { throw T3ServiceError.invalidResponse }
         let old = routines[index]
-        routines[index] = .init(id: old.id, name: old.name, prompt: old.prompt, cron: old.cron, enabled: enabled,
+        routines[index] = .init(id: old.id, name: old.name, prompt: old.prompt, schedule: old.schedule, enabled: enabled,
                                 threadID: old.threadID, nextRunAt: old.nextRunAt, lastRunAt: old.lastRunAt)
     }
     func deleteRoutine(id: String) async throws {

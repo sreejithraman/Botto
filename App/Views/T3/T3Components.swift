@@ -258,70 +258,21 @@ enum T3TimeLabel {
     }
 }
 
-/// Translates between the schedule builder and the 5-field cron accepted by T3 routines.
-enum T3RoutineSchedule: Equatable {
-    case daily
-    case weekdays
-    /// 0 is Sunday.
-    case days(Set<Int>)
-
-    static let weekdaySet: Set<Int> = [1, 2, 3, 4, 5]
-
-    var isValid: Bool {
-        if case .days(let days) = self { return !days.isEmpty && days.allSatisfy { (0...6).contains($0) } }
-        return true
-    }
-
-    func cron(hour: Int, minute: Int) -> String {
-        let field: String = switch self {
-        case .daily: "*"
-        case .weekdays: "1-5"
-        case .days(let days) where days.count == 7: "*"
-        case .days(let days): days.sorted().map(String.init).joined(separator: ",")
-        }
-        return "\(minute) \(hour) * * \(field)"
-    }
-
-    /// nil when the expression is not a fixed time of day.
-    static func parse(_ cron: String) -> (schedule: T3RoutineSchedule, hour: Int, minute: Int)? {
-        let fields = cron.split(whereSeparator: \.isWhitespace)
-        guard fields.count == 5, let minute = Int(fields[0]), (0...59).contains(minute),
-              let hour = Int(fields[1]), (0...23).contains(hour), fields[2] == "*", fields[3] == "*" else { return nil }
-        if fields[4] == "*" { return (.daily, hour, minute) }
-        var days: Set<Int> = []
-        for span in fields[4].split(separator: ",", omittingEmptySubsequences: false) {
-            let bounds = span.split(separator: "-", omittingEmptySubsequences: false)
-            guard (1...2).contains(bounds.count), let first = weekday(bounds[0]),
-                  let last = weekday(bounds[bounds.count - 1]), first <= last else { return nil }
-            days.formUnion((first...last).map { $0 % 7 })
-        }
-        if days.count == 7 { return (.daily, hour, minute) }
-        if days == weekdaySet { return (.weekdays, hour, minute) }
-        return (.days(days), hour, minute)
-    }
-
-    static func summary(_ cron: String, calendar: Calendar = .current, locale: Locale = .current) -> String {
-        if cron.isEmpty { return String(localized: "Custom schedule") }
-        guard let parsed = parse(cron) else { return String(localized: "Cron · \(cron)") }
-        var components = DateComponents()
-        components.hour = parsed.hour
-        components.minute = parsed.minute
-        let time = calendar.date(from: components).map {
+extension T3RoutineSchedule {
+    static func summary(_ schedule: Self?, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard let schedule else { return String(localized: "Custom schedule") }
+        let time = calendar.date(from: DateComponents(hour: schedule.hour, minute: schedule.minute)).map {
             $0.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar,
                                           timeZone: calendar.timeZone))
-        } ?? String(format: "%02d:%02d", parsed.hour, parsed.minute)
-        let days: String = switch parsed.schedule {
-        case .daily: String(localized: "Daily")
-        case .weekdays: String(localized: "Weekdays")
-        case .days(let set) where set == [0, 6]: String(localized: "Weekends")
-        case .days(let set):
-            set.sorted { ($0 + 6) % 7 < ($1 + 6) % 7 }.map { calendar.shortWeekdaySymbols[$0] }.joined(separator: ", ")
+        } ?? String(format: "%02d:%02d", schedule.hour, schedule.minute)
+        let days: String = switch schedule.days {
+        case Self.everyDay: String(localized: "Daily")
+        case Self.weekdays: String(localized: "Weekdays")
+        case Self.weekends: String(localized: "Weekends")
+        default:
+            schedule.days.sorted { ($0 + 6) % 7 < ($1 + 6) % 7 }
+                .map { calendar.shortWeekdaySymbols[$0] }.joined(separator: ", ")
         }
         return "\(days) · \(time)"
-    }
-
-    private static func weekday(_ field: Substring) -> Int? {
-        if let number = Int(field), (0...7).contains(number) { return number }
-        return ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].firstIndex(of: field.uppercased())
     }
 }

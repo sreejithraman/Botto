@@ -49,6 +49,7 @@ struct T3PushObserver {
     }
 
     mutating func shellActivity(in shell: JSONValue, now: Date = .now) -> T3PushActivity? {
+        guard !T3ProjectionMapper.isWorkflowStep(shell) else { return nil }
         if !Self.isListed(shell) { return childRequest(in: shell, now: now) }
         guard shell["settledOverride"].text != "settled",
               (shell["activityRunStatus"].text ?? shell["status"].text) == "completed",
@@ -66,7 +67,7 @@ struct T3PushObserver {
     }
 
     mutating func requests(_ item: JSONValue, in shell: JSONValue, now: Date = .now) -> [T3PushActivity] {
-        guard let spaceID = shell["id"].nonempty else { return [] }
+        guard !T3ProjectionMapper.isWorkflowStep(shell), let spaceID = shell["id"].nonempty else { return [] }
         let listed = Self.isListed(shell)
         let records: [JSONValue]
         switch item["kind"].text {
@@ -105,7 +106,7 @@ struct T3PushObserver {
     private static func isListed(_ shell: JSONValue) -> Bool {
         let lineage = shell["lineage"]
         return lineage["relationshipToParent"].text != "subagent" &&
-            lineage["sideChat"].flag != true && lineage["workflowStep"].flag != true
+            lineage["sideChat"].flag != true
     }
 
     private mutating func childRequest(in shell: JSONValue, now: Date) -> T3PushActivity? {
