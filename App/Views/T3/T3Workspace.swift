@@ -125,7 +125,8 @@ struct T3Workspace: View {
                     .shadow(color: .black.opacity(progress > 0 ? 0.12 : 0), radius: 24, x: 8)
                     .offset(x: (progress - 1) * (width + 32))
                     .accessibilityHidden(progress == 0)
-                    .accessibilityAddTraits(.isModal)
+                    // A closed drawer must not claim modality, or XCTest snapshots keep only it.
+                    .accessibilityAddTraits(progress > 0 ? .isModal : [])
                     .accessibilityAction(.escape) { setDrawer(open: false) }
                 // Keep the strip mounted until the drag settles or is cancelled.
                 Color.clear.frame(width: 18).contentShape(Rectangle())

@@ -628,7 +628,7 @@ final class ConversationUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Draft while following")
     }
 
-    @MainActor func testTypedDraftSurvivesSwitchingSpaces() {
+    @MainActor func testTypedDraftSurvivesSwitchingSpaces() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
@@ -637,6 +637,11 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         composer.tap()
         composer.typeText("A thought to keep")
+        WorkspaceNavigation.openDrawer(in: app)
+        let behindDrawer = try app.snapshot()
+        XCTAssertNil(behindDrawer.first { ["chat-composer", "t3-chat-header"].contains($0.identifier) },
+                     "The open drawer must keep the chat behind it out of reach.")
+        XCTAssertNotNil(behindDrawer.first { $0.identifier == "t3-drawer-search" })
         WorkspaceNavigation.openSpace("scout", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].waitForExistence(timeout: 3))
         WorkspaceNavigation.openSpace("milo", in: app)
