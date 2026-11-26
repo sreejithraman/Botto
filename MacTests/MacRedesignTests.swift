@@ -190,7 +190,7 @@ struct MacPresentationTests {
     }
 
     @Test func routineScheduleSummaryPreservesExistingLabels() throws {
-        let calendar = Calendar(identifier: .gregorian), locale = Locale(identifier: "en_US")
+        let locale = Locale(identifier: "en_US")
         let daily = try #require(T3RoutineSchedule(hour: 9, minute: 0))
         let weekdays = try #require(T3RoutineSchedule(hour: 17, minute: 30, days: T3RoutineSchedule.weekdays))
         let weekends = try #require(T3RoutineSchedule(hour: 10, minute: 15, days: T3RoutineSchedule.weekends))
