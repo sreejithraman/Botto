@@ -4,7 +4,7 @@ extension HapticEvent {
     static func failure(_ error: any Error) -> HapticEvent {
         switch error as? ConversationServiceError {
         case .uncertain, .steeringUnavailable,
-             .uncertainAvatar, .avatarRefresh, .avatarConflict,
+             .avatarRefresh, .avatarConflict,
              .partialProfile, .uncertainProfile, .profileConflict:
             .warning
         default:

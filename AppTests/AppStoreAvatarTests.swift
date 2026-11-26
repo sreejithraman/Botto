@@ -213,8 +213,8 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        service.saveError = .uncertainAvatar
-        await #expect(throws: ConversationServiceError.uncertainAvatar) { try await store.saveAvatar(.automatic, to: destination) }
+        service.saveError = .timeout
+        await #expect(throws: ConversationServiceError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1)
         service.saveError = nil
         #expect(await store.connect(connection))
