@@ -37,7 +37,6 @@ import BottoCore
     var connectCount = 0
     var connectedConfigurations: [ConnectionConfiguration] = []
     var profiles: [BotProfile]
-    var botsBarrier: StoreTestBarrier?
     var info = ServerInfo(version: "test", installID: "test-install")
     var chat = Conversation(id: "runtime", storedID: "stored", profileID: "milo")
     var uploadedConversations: [Conversation] = []
@@ -76,7 +75,7 @@ import BottoCore
         return info
     }
     func disconnect() { recovery?.cancel() }
-    func bots() async throws -> [BotProfile] { await botsBarrier?.wait(); return profiles }
+    func bots() async throws -> [BotProfile] { profiles }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
@@ -101,7 +100,6 @@ import BottoCore
 /// A provider or service may finish even after its caller is cancelled.
 @MainActor final class StoreTestBarrier {
     private var entered = false
-    var hasEntered: Bool { entered }
     private var entryWaiter: CheckedContinuation<Void, Never>?
     private var completion: CheckedContinuation<Void, Never>?
 

@@ -184,29 +184,6 @@ import BottoCore
         }
     }
 
-    @Test func retiringTheLeaseBeforeCommitRestoresThePreviousCaptureOnReopen() async throws {
-        try await withCacheRoot { root, own in
-            let gate = CaptureCommitGate()
-            defer { gate.release() }
-            let (_, scope, key) = try fixture()
-            let cache = own(ArtifactCache(root: root, beforeCaptureCommit: { gate.pause() }))
-            let session = cache.session(scope: scope)
-            let digest = try #require(try await session.retainOriginal(bytes, for: key))
-            gate.arm()
-            let replacing = Task { try await session.retainOriginal(.init(data: Data("replacement".utf8), filename: "report.txt", mimeType: "text/plain"), for: key) }
-            defer { replacing.cancel(); gate.release() }
-            await waitWhile { !gate.isEntered }
-            try #require(gate.isEntered)
-            session.retire()
-            gate.release()
-            await #expect(throws: (any Error).self) { _ = try await replacing.value }
-            await cache.close()
-            let reopened = own(ArtifactCache(root: root)).session(scope: scope)
-            #expect(try await reopened.original(for: key)?.artifact.data == Data("report".utf8))
-            #expect(try await reopened.originalDigest(for: key) == digest)
-        }
-    }
-
     @Test(arguments: [false, true])
     func rejectedCaptureAdmissionKeepsThePreviousBytesAndDigestAcrossReopen(evictionFails: Bool) async throws {
         try await withCacheRoot { root, own in

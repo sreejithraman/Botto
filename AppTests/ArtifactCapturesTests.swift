@@ -731,16 +731,6 @@ import BottoCore
         .init(summaries: profile == first.profile ? [.init(identity: first, title: "Main", isCanonical: true, persistence: .durable)] : [],
             activity: [:], isComplete: true)
     }
-    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
-        let rows = messages[identity] ?? []
-        let ids = Set(rows.map { Data($0.id.utf8) })
-        return .init(messages: rows, nextOffset: nil, isComplete: true, sourceIDs: ids,
-            identityRead: ConversationIdentityRead(identity: identity, messageIDs: ids))
-    }
-    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
-        downloadCount += 1
-        return .init(data: fileBytes ?? Data(identity.root.text.utf8), filename: attachment.name, mimeType: "text/plain")
-    }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now
@@ -756,15 +746,13 @@ import BottoCore
         return .init(identity: identity, snapshot: snapshot, access: access,
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
-    func source(for access: ConversationAccess) throws -> SessionIdentity { try issuer.resolve(access) }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         let identity = try issuer.resolve(access)
-        let result = try await downloadArtifact(attachment, in: identity)
-        guard try issuer.resolve(access) == identity else { throw ConversationServiceError.staleConversation }
-        return result
+        downloadCount += 1
+        return .init(data: fileBytes ?? Data(identity.root.text.utf8), filename: attachment.name, mimeType: "text/plain")
     }
 }

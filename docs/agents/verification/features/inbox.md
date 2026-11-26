@@ -4,7 +4,8 @@ Open **Spaces** on iOS or use the Mac sidebar. Run on a workspace with a Main
 Space, other Spaces, and one archived Space. Treat these checks as draft.
 
 - `inbox.find` — Search for a named Space and a known file. Open each matching
-  result and verify its owning workspace and conversation.
+  result and verify its owning workspace and conversation. Repeat with a query
+  that matches nothing.
 - `inbox.activity` — Start work in one Space and request a decision in another.
   Switch among them and observe each Space's own activity.
 - `inbox.pins` — Pin a Space and reopen the drawer. Verify it appears in the
