@@ -245,7 +245,7 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let service: any BotService
-    @ObservationIgnored var onAcceptedTranscript: (@MainActor (ChatTranscriptPublication) -> Void)?
+    @ObservationIgnored var onAcceptedTranscript: (@MainActor () -> Void)?
     @ObservationIgnored private let onDirty: @MainActor () -> Void
     @ObservationIgnored var onPresentationChange: (@MainActor () -> Void)?
     @ObservationIgnored var onVisibleChatChange: (@MainActor (SessionIdentity?) -> Void)?
@@ -828,10 +828,7 @@ private struct ReadObservationKey: Hashable, Sendable {
             return false
         }
         updateActivity(accepted, id: id, previous: previous); rebuildRequests(); onDirty()
-        let evidence: ChatTranscriptPublication.Evidence = accepted.historyReadStartedAt.map {
-            .read(startedAt: $0, observedSource: accepted.observedSource, identityRead: accepted.identityRead)
-        } ?? .incremental(previous: previous?.snapshot)
-        onAcceptedTranscript?(.init(identity: accepted.identity, snapshot: accepted.snapshot, title: title, evidence: evidence))
+        onAcceptedTranscript?()
         return true
     }
     @discardableResult private func attach(_ id: ChatID, selectionCommit: SelectionCommit = .immediate,
@@ -1012,18 +1009,11 @@ private struct ReadObservationKey: Hashable, Sendable {
                       opening?.chat != id, selected != id || live == nil else { return nil }
                 return current
             }
-            func publication(_ retained: Conversation, title: String) -> ChatTranscriptPublication {
-                var fetched = retained
-                fetched.messages = result.messages
-                fetched.hasEarlierMessages = result.hasEarlierMessages
-                return .init(identity: identity, snapshot: fetched, title: title,
-                    evidence: .window(startedAt: read.startedAt, observedSource: identity, identityRead: result.identityRead))
-            }
             guard let current = currentRecord(in: book),
                   let prepared = ConversationBook.cachedHistoryWindow(result, for: current) else { return }
-            let applied: (publication: ChatTranscriptPublication, retained: Conversation, changed: Bool)?
+            let applied: (retained: Conversation, changed: Bool)?
             if prepared.matches(current) {
-                applied = (publication(prepared.transcript, title: current.title), prepared.transcript, false)
+                applied = (prepared.transcript, false)
             } else {
                 applied = mutateBook { book in
                     // Recompute after Observation callbacks, against the current owner and content.
@@ -1031,7 +1021,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                           let prepared = ConversationBook.cachedHistoryWindow(result, for: current) else { return nil }
                     let changed = !prepared.matches(current)
                     if changed { book.update(id) { prepared.apply(to: &$0) } }
-                    return (publication(prepared.transcript, title: current.title), prepared.transcript, changed)
+                    return (prepared.transcript, changed)
                 }
             }
             if let applied {
@@ -1043,7 +1033,7 @@ private struct ReadObservationKey: Hashable, Sendable {
                       TranscriptContentRevision.sameSnapshotContent(current.transcript, applied.retained),
                       current.transcript?.hasEarlierMessages == applied.retained.hasEarlierMessages,
                       opening?.chat != id, selected != id || live == nil else { return }
-                onAcceptedTranscript?(applied.publication)
+                onAcceptedTranscript?()
             }
         } catch let failure as ConversationHistoryPage.Failure {
             publishDisputes(failure, from: read, in: id, profile: profile)
@@ -1066,15 +1056,10 @@ private struct ReadObservationKey: Hashable, Sendable {
             currentSource(in: book) != nil && book.dispute(disputes, from: failure.identity, in: id)
         }
         if changed { onDirty() }
-        guard let source = currentSource(in: book) else { return }
-        var snapshot = Conversation(id: source.identity.stored.text, storedID: source.identity.stored.text,
-            profileID: source.identity.profile.text, hasEarlierMessages: true)
-        snapshot.unavailableMessageIDs = disputes
-        onAcceptedTranscript?(.init(identity: source.identity, snapshot: snapshot, title: source.title,
-            evidence: .disputed(startedAt: read.startedAt)))
+        guard currentSource(in: book) != nil else { return }
+        onAcceptedTranscript?()
     }
-    /// Library reads run beside this workspace. Its coherent proof reaches Book here,
-    /// before a later seed or cold reopen could repeat what it resolved.
+    /// A coherent proof from the exact source resolves its disputes in Book.
     func resolveDisputes(_ messageIDs: Set<Data>, on source: SessionIdentity) {
         guard !retired, let id = book.chat(disputing: messageIDs, on: source) else { return }
         mutateBook { $0.resolveDisputes(messageIDs, in: id) }

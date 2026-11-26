@@ -4,12 +4,6 @@ import BottoCore
 @testable import Botto
 
 struct NativeMessageTextTests {
-    @Test func visibleTextProjectionCanBeDerivedOffMainActor() async {
-        let message = ChatMessage(id: "stored:fixture:detached", role: .assistant, text: "A **Café** update")
-        let text = await Task.detached(priority: .utility) { NativeMessageText.segments(for: message) }.value
-        #expect(text == ["A Café update"])
-    }
-
     @Test func fencedCodeBecomesItsOwnBlockAndKeepsItsBlankLines() {
         let blocks = NativeMessageText.markdownBlocks(in: "Intro\n\n```swift\n\nlet a = 1\n\nlet b = 2\n\n```\n\nOutro\n")
         #expect(blocks.map(\.code) == [false, true, false])

@@ -43,3 +43,4 @@ the next step. It would hide a row, not a chat.
 
 The Library and Search screens are retired, so these rows no longer appear as
 Search snippets or artifact cards.
+The index that held them is removed, and opening an older cache deletes its rows.

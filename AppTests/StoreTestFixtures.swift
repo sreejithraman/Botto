@@ -170,46 +170,6 @@ let slowReadiness = Duration.seconds(3)
     }
 }
 
-@MainActor func waitForLibraryFixture(_ label: String? = nil, diagnostics: () -> String = { "" },
-                                     fileID: String = #fileID, line: Int = #line,
-                                     _ ready: () async throws -> Bool) async throws -> Bool {
-    try await waitWhile(label, diagnostics: diagnostics, fileID: fileID, line: line) { try await !ready() }
-}
-
-/// Owns one database handle at a time across the warm and cold phases of a test.
-@MainActor final class LibraryCacheFixture {
-    let root: URL
-    private var cache: ArtifactCache?
-
-    private init(root: URL?) {
-        self.root = root ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    }
-
-    func openCache(afterChatLoad: (@Sendable () async throws -> Void)? = nil) -> ArtifactCache {
-        precondition(cache == nil)
-        let cache = ArtifactCache(root: root, afterChatLoad: afterChatLoad)
-        self.cache = cache
-        return cache
-    }
-
-    func closeCache() async {
-        await cache?.close()
-        cache = nil
-    }
-
-    static func run(root: URL? = nil, _ test: (LibraryCacheFixture) async throws -> Void) async throws {
-        let fixture = LibraryCacheFixture(root: root)
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        do {
-            try await test(fixture)
-        } catch {
-            await fixture.closeCache()
-            throw error
-        }
-        await fixture.closeCache()
-    }
-}
-
 nonisolated final class CaptureCommitGate: @unchecked Sendable {
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)

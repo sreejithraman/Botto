@@ -57,3 +57,9 @@ This favors retaining identity uncertainty over Library availability. A long
 returning tip without an exhaustive identity response may remain unavailable in
 Library without expiry. Fetched chat history still works. Unrelated retained
 chats remain usable unless a coarse recovery block necessarily includes them.
+
+## Update, 26 November 2026
+
+The Library index is removed, along with the disputes it resolved. T3 produces no
+rejected history page, so nothing records a new dispute. Book keeps its dispute
+fields until their removal.

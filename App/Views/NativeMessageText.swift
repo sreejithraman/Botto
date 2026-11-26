@@ -1,5 +1,4 @@
 import SwiftUI
-import BottoCore
 
 /// Shared projection of the text surfaces rendered by native message rows.
 nonisolated enum NativeMessageText {
@@ -7,31 +6,6 @@ nonisolated enum NativeMessageText {
         let id: Int
         let text: String
         let code: Bool
-    }
-
-    static func segments(for message: ChatMessage) -> [String] {
-        guard message.isVisible, message.notificationPresentation == nil else { return [] }
-        if message.botSender != nil { return nonempty([message.attributedText]) }
-        if message.role == .user { return nonempty([AttachmentPresentation.display(message).text]) }
-        if message.role == .assistant {
-            return ReplyContent(message: message).blocks.flatMap { block -> [String] in
-                switch block.kind {
-                case .code: return nonempty([block.source])
-                case .text:
-                    return ArtifactReferences.segments(in: block.source).flatMap { segment -> [String] in
-                        guard case .text(let source) = segment else { return [] }
-                        return markdownBlocks(in: source).map { native in
-                            native.code ? native.text : String(markdownAttributed(native.text, isReply: true).characters)
-                        }
-                    }
-                case .preview, .filePreview: return []
-                }
-            }
-        }
-        if message.role == .system, ["error:", "outcome:", "uncertain:"].contains(where: message.id.hasPrefix) {
-            return nonempty([message.text])
-        }
-        return []
     }
 
     static func markdownBlocks(in text: String) -> [MarkdownBlock] {
@@ -69,9 +43,5 @@ nonisolated enum NativeMessageText {
             result.append(attributed)
         }
         return result
-    }
-
-    private static func nonempty(_ texts: [String]) -> [String] {
-        texts.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }

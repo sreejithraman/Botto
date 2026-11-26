@@ -40,3 +40,7 @@ defines the activity-specific states and labels.
 The Artifacts and Search screens are retired, so no screen reads the maintained
 list described above. The Spaces drawer searches Space titles and workspace files.
 Whole-message search does not exist on T3; it would need to be rebuilt if wanted.
+
+The local index that restored that list is removed. Opening an older cache
+deletes its saved chat copies and thumbnails once; original file captures stay
+available offline. See [scoped artifact captures](0010-scoped-artifact-captures.md).

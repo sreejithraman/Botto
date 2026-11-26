@@ -32,7 +32,7 @@ import BottoCore
         fileprivate let workspace: ConversationWorkspace
         fileprivate let intent: ArtifactIntent?
         fileprivate let identity: SessionIdentity
-        fileprivate let library: WorkspaceLibrary
+        fileprivate let captures: ArtifactCaptures
         fileprivate let localOwner: ArtifactPresentationKey
         fileprivate let localEpoch: UUID
     }
@@ -61,7 +61,7 @@ import BottoCore
             guard let destination else { return }
             self.destination = nil
             if let intent = destination.intent { destination.workspace.finishArtifact(intent) }
-            destination.library.reconcileOriginalConsumers()
+            destination.captures.reconcileOriginalConsumers()
         }
     }
 
@@ -193,13 +193,13 @@ import BottoCore
         }
     }
     private var connection = ConnectionLifecycle() {
-        didSet { library.setOnline(connection.link == .online) }
+        didSet { captures.setOnline(connection.link == .online) }
     }
     var link: Link { pendingService != nil && connection.link != .online ? .connecting : connection.link }
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
     var serverInfo: ServerInfo? { connection.serverInfo }
-    private var cachedBots: [BotProfile] = [] { didSet { library.observeBots(cachedBots, evidence: .cached) } }
+    private var cachedBots: [BotProfile] = []
     private(set) var t3Channels: [T3ChannelSummary] = []
     private var pinned: Set<ExactID> = []
     private var unpinned: Set<ExactID> = []
@@ -242,7 +242,7 @@ import BottoCore
     @ObservationIgnored private var notificationRouting: UUID?
     /// A tap attached nothing after superseding the selected bot's opening.
     private var openingInterrupted = false
-    private(set) var library: WorkspaceLibrary
+    private(set) var captures: ArtifactCaptures
     private(set) var cacheLoadFailed = false
     @ObservationIgnored private var protectedCaches: Set<UUID> = []
     var history: LocalHistory {
@@ -371,7 +371,7 @@ import BottoCore
         self.makeService = makeService
         self.liveService = liveService
         self.service = liveService
-        self.library = WorkspaceLibrary(service: liveService)
+        self.captures = ArtifactCaptures()
         self.chats = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: liveService, onDirty: {})
         self.persistence = persistence ?? .keychain
@@ -439,25 +439,20 @@ import BottoCore
         t3ModelsGeneration = nil
         t3ComposerRequest = nil
         chats.retireWorkspace()
-        library.retire()
+        captures.retire()
         mountedArtifactScope = isDemo ? nil : configuration.map(Self.artifactScope)
-        let cache = mountedArtifactScope.map { artifactCache.session(scope: $0) }
-        library = WorkspaceLibrary(service: service, cache: cache)
-        library.seed(book: history.book, bots: history.bots)
-        library.setOnline(isConnected)
-        Task { [library] in await library.restore() }
+        captures = ArtifactCaptures(cache: mountedArtifactScope.map { artifactCache.session(scope: $0) })
+        captures.setOnline(isConnected)
         cachedBots = history.bots; pinned = history.pinned; unpinned = history.unpinned
         t3Channels = history.t3Channels ?? []
         let scope = WorkspaceScope(cacheID: configuration?.id ?? UUID(),
             exactAccount: configuration.map(Self.richReplyAccount) ?? [], incarnation: UUID())
         chats = ConversationWorkspace(scope: scope, book: history.book, service: service,
             onDirty: { [weak self] in self?.reconcileArtifactPresentation(); self?.scheduleSave() })
-        chats.onAcceptedTranscript = { [weak self, weak library] publication in
-            guard let self, let library, library === self.library else { return }
-            library.accept(publication)
-            library.reconcileOriginalConsumers()
+        chats.onAcceptedTranscript = { [weak self, weak captures] in
+            guard let self, let captures, captures === self.captures else { return }
+            captures.reconcileOriginalConsumers()
         }
-        library.onDisputesResolved = { [weak chats] in chats?.resolveDisputes($0, on: $1) }
         chats.onPresentationChange = { [weak self] in self?.retireArtifactDownloads() }
         chats.onUserNavigation = { [weak self] in self?.pendingPushNotification = nil }
         var chatWasVisible = false
@@ -1075,20 +1070,6 @@ import BottoCore
         }
     }
 
-    func refreshLibraryIfNeeded() async {
-        let library = library
-        library.seed(book: chats.persisted(), bots: cachedBots)
-        library.setOnline(isConnected)
-        await library.refreshIfNeeded(evidence: .cached, bots: cachedBots)
-    }
-
-    func refreshLibrary(force: Bool = false) async {
-        let library = library
-        library.seed(book: chats.persisted(), bots: cachedBots)
-        library.setOnline(isConnected)
-        await library.refresh(evidence: .cached, bots: cachedBots, force: force)
-    }
-
     private func refreshBots() async -> Bool {
         guard isConnected, !Task.isCancelled else { return false }
         let waiterID = UUID(), owner = generation
@@ -1130,7 +1111,6 @@ import BottoCore
             do {
                 let profiles = try await service.bots()
                 guard generation == owner, botRefresh === refresh else { return }
-                library.observeBots(profiles, evidence: .observed)
                 cachedBots = profiles
                 chats.observeProfiles(profiles)
                 publishT3Channels()
@@ -1335,7 +1315,7 @@ import BottoCore
         let intent = chats.captureArtifact(attachment, owner: screen.owner)
         return .init(attachment: attachment, siblings: producingMessage.map { AttachmentPresentation.display($0).attachments } ?? [],
                      conversation: conversation, producingMessage: producingMessage, workspace: chats, intent: intent,
-                     identity: source, library: library, localOwner: localOwner, localEpoch: artifactPresentationEpoch)
+                     identity: source, captures: captures, localOwner: localOwner, localEpoch: artifactPresentationEpoch)
     }
     func artifactDestination(adjacentTo destination: ArtifactDestination, by step: Int) -> ArtifactDestination? {
         guard let index = destination.siblings.firstIndex(where: { $0.id == destination.attachment.id }),
@@ -1363,12 +1343,12 @@ import BottoCore
         let key = currentArtifactPresentationKey()
         if key != artifactPresentationKey {
             artifactPresentationEpoch = UUID(); artifactPresentationKey = key
-            library.reconcileOriginalConsumers()
+            captures.reconcileOriginalConsumers()
         }
     }
     private func retireArtifactPresentation() {
         artifactPresentationEpoch = UUID(); artifactPresentationKey = currentArtifactPresentationKey()
-        library.reconcileOriginalConsumers()
+        captures.reconcileOriginalConsumers()
     }
     func canStartArtifactRead(_ destination: ArtifactDestination) -> Bool {
         isAuthorizedArtifactPresentation(destination)
@@ -1381,15 +1361,15 @@ import BottoCore
     }
     func renewedArtifactDestination(_ destination: ArtifactDestination) -> ArtifactDestination? {
         guard isConnected, isAuthorizedArtifactPresentation(destination), destination.workspace === chats,
-              destination.library === library, !isCurrentArtifactDestination(destination) else { return nil }
+              destination.captures === captures, !isCurrentArtifactDestination(destination) else { return nil }
         return artifactDestination(for: destination.attachment, botID: destination.identity.profile.text,
             producingMessage: destination.producingMessage)
     }
     func downloadArtifact(_ destination: ArtifactDestination, force: Bool = false) async throws -> DownloadedArtifact {
-        guard isAuthorizedArtifactPresentation(destination), destination.library === library else {
+        guard isAuthorizedArtifactPresentation(destination), destination.captures === captures else {
             throw ConversationServiceError.staleConversation
         }
-        let key = await WorkspaceLibrary.originalKey(identity: destination.identity, attachment: destination.attachment,
+        let key = await ArtifactCaptures.originalKey(identity: destination.identity, attachment: destination.attachment,
             messages: destination.conversation.messages, producingMessage: destination.producingMessage)
         guard isAuthorizedArtifactPresentation(destination) else { throw ConversationServiceError.staleConversation }
         let download: @MainActor () async throws -> DownloadedArtifact = { [weak self] in
@@ -1406,7 +1386,7 @@ import BottoCore
         }
         let artifact: DownloadedArtifact
         if let key {
-            artifact = try await destination.library.original(for: key, force: force, validateNetwork: { [weak self] in
+            artifact = try await destination.captures.original(for: key, force: force, validateNetwork: { [weak self] in
                 guard let self, self.isCurrentArtifactDestination(destination) else { throw ConversationServiceError.staleConversation }
             }, download: download)
         } else {
@@ -1418,13 +1398,13 @@ import BottoCore
     }
     func finishArtifact(_ destination: ArtifactDestination) {
         if let intent = destination.intent { destination.workspace.finishArtifact(intent) }
-        destination.library.reconcileOriginalConsumers()
+        destination.captures.reconcileOriginalConsumers()
     }
     private func retireArtifactDownloads() {
         reconcileArtifactPresentation()
         richReplies?.retire(); richReplies = nil
         artifactGeneration = UUID()
-        library.reconcileOriginalConsumers()
+        captures.reconcileOriginalConsumers()
     }
 
     fileprivate struct BotNavigationAuthority: Sendable {
@@ -1455,7 +1435,7 @@ import BottoCore
     private func ownsBotNavigation(_ authority: BotNavigationAuthority) -> Bool {
         isCurrentConnection(authority) && authority.workspace.ownsNavigation(authority.claim)
     }
-    /// Library attachments settle app selection inside their workspace commit,
+    /// Attachments settle app selection inside their workspace commit,
     /// before the workspace publishes the chat, its saved selection or its grant.
     private func commitAttachedSelection(_ profile: ExactID, authority: BotNavigationAuthority,
                                          while isCurrent: () -> Bool) -> Bool {
@@ -1585,12 +1565,10 @@ import BottoCore
             chats.applyActivity(updates)
         case .conversationDirectoryChanged(let profile):
             publishT3Channels()
-            library.invalidateRevalidation()
             chats.invalidateActivityDirectory(profile)
             Task { await refresh() }
         case .botsChanged:
             publishT3Channels()
-            library.invalidateRevalidation()
             refreshFromBotInvalidation()
         case .configuration(let updated):
             if connection.candidate != nil {
