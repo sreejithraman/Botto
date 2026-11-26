@@ -577,7 +577,8 @@ import BottoCore
         var loading: Task<DownloadedArtifact, Error>?
         if retirement == "close" {
             presentation.openArtifact(destination, store: store)
-            reader = try #require(presentation.artifact)
+            let opened = try #require(presentation.artifact)
+            reader = opened
         } else {
             loading = Task { try await store.downloadArtifact(destination) }
         }

@@ -387,10 +387,6 @@ struct CustomAvatarLayoutTests {
             guard (0..<width).contains(x), (0..<height).contains(y) else { return 0 }
             return bytes[(y * width + x) * 4 + 3]
         }
-        func isDark(_ x: Int, _ y: Int) -> Bool {
-            let index = (y * width + x) * 4
-            return bytes[index + 3] > 240 && (0..<3).allSatisfy { bytes[index + $0] < 65 }
-        }
     }
 }
 

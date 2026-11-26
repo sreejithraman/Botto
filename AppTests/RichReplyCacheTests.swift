@@ -212,7 +212,8 @@ import UIKit
             let bitmap = try #require(CGContext(data: nil, width: 1_024, height: 1_024, bitsPerComponent: 8,
                 bytesPerRow: 4_096, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
             bitmap.setFillColor(CGColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1)); bitmap.fill(CGRect(x: 0, y: 0, width: 1_024, height: 1_024))
-            let presentation = try #require(ticket.finishCapture(try #require(bitmap.makeImage()), height: 120))
+            let image = try #require(bitmap.makeImage())
+            let presentation = try #require(ticket.finishCapture(image, height: 120))
             presentations.append(presentation)
             drawings.append(try await retainedDrawing(presentation))
         }

@@ -20,7 +20,6 @@ import BottoCore
     var stopGate: WorkspaceGate?
     var responseGate: WorkspaceGate?
     var connectError: (any Error)?
-    private(set) var connectionAttempts = 0
     var stops: [UUID] = []
     var sendError: (any Error)?
     var deliveries: [MessageDelivery] = []
@@ -51,9 +50,7 @@ import BottoCore
     var directoryCalls = 0
     var rosterActivity: [SessionIdentity: ObservedActivity] = [:]
     var rosterStatus: BotStatus = .idle
-    var rosterBot: BotProfile?
     var rosterGate: WorkspaceGate?
-    private(set) var rosterCalls = 0
     var rosterError: (any Error)?
     var rosterProfiles: [BotProfile]?
     var previewGate: WorkspaceGate?
@@ -75,19 +72,17 @@ import BottoCore
         }
     }
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
-        connectionAttempts += 1
         if let connectError { throw connectError }
         return .init(version: "test")
     }
     func disconnect() { issuer.retireAttachment() }
     func bots() async throws -> [BotProfile] {
-        rosterCalls += 1
         await rosterGate?.wait()
         if let rosterError { throw rosterError }
         let changes = directoryChanges; directoryChanges = []
         for profile in changes { onEvent?(.conversationDirectoryChanged(profile: profile)) }
         if !rosterActivity.isEmpty { onEvent?(.activity(profile: profile, observations: rosterActivity)) }
-        return rosterProfiles ?? [rosterBot ?? .init(id: profile.text, name: "Milo", status: rosterStatus)]
+        return rosterProfiles ?? [.init(id: profile.text, name: "Milo", status: rosterStatus)]
     }
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { bot }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {

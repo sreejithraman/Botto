@@ -3,16 +3,13 @@ import Vision
 
 nonisolated enum NativeTextRecognition {
     @concurrent
-    static func recognize(_ image: CGImage, languages: [String]? = nil,
-                          usesLanguageCorrection: Bool = false,
-                          onRecognition: @Sendable (_ isMainThread: Bool) -> Void = { _ in }) async throws -> [String] {
+    static func recognize(_ image: CGImage, languages: [String]? = nil) async throws -> [String] {
         try Task.checkCancellation()
         return try autoreleasepool {
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = usesLanguageCorrection
+            request.usesLanguageCorrection = false
             if let languages { request.recognitionLanguages = languages }
-            onRecognition(Thread.isMainThread)
             try VNImageRequestHandler(cgImage: image).perform([request])
             try Task.checkCancellation()
             return request.results?.compactMap { $0.topCandidates(1).first?.string } ?? []

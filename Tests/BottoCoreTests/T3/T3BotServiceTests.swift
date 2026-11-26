@@ -1061,7 +1061,6 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var replaysDeletedProject = false
     private(set) var projectCreations: [JSONValue] = []
     private(set) var createdThreads: [JSONValue] = []
-    private(set) var dispatchedMessages: [JSONValue] = []
     private var files: [String: String] = [:]
     private var threads: [String: JSONValue] = [:]
     private var deletedThreadIDs: Set<String> = []
@@ -1527,7 +1526,6 @@ private actor T3ServiceHost: T3WebSocketTransport {
                                        "updatedAt": .string("2026-11-24T12:00:0\(createdThreads.count)Z")])
             try shellUpdate(thread)
         case "message.dispatch":
-            dispatchedMessages.append(command)
             switch command["text"].text {
             case "Start":
                 #expect(command["attachments"].list?.first?["id"].text == "uploaded")

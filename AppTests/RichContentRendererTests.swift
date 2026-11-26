@@ -399,9 +399,10 @@ struct RichContentRendererTests {
         let window = try await attach(renderer)
         defer { renderer.stop(); detach(window) }
         try await wait { probe.started != nil || renderer.webView == nil }
-        let started = try #require(probe.started, "A startup failure is not evidence of retiring running JavaScript")
+        _ = try #require(probe.started, "A startup failure is not evidence of retiring running JavaScript")
         try await wait { if case .failed = renderer.state { true } else { false } }
-        #expect(ContinuousClock.now - started < .seconds(7))
+        let failure = try #require(renderer.lastWatchdogFailure)
+        #expect(failure.contains("awaitingHostCommit=false") && failure.contains("loadingExpired=true"), "\(failure)")
         #expect(renderer.webView == nil)
         try await wait { retired == nil }
         #expect(source.source.contains("while(true)"))
@@ -418,9 +419,9 @@ struct RichContentRendererTests {
         let window = try await attach(renderer)
         defer { renderer.stop(); detach(window) }
         try await ready(renderer)
-        let ready = ContinuousClock.now
         try await wait { if case .failed = renderer.state { true } else { false } }
-        #expect(ContinuousClock.now - ready < .seconds(7))
+        let failure = try #require(renderer.lastWatchdogFailure)
+        #expect(failure.contains("heartbeatExpired=true"), "\(failure)")
         #expect(renderer.webView == nil)
         try await wait { retired == nil }
     }
@@ -505,7 +506,7 @@ struct RichContentRendererTests {
 
         model.target = "top"
         try await wait { !webViews(in: host.view).isEmpty }
-        var web: WKWebView? = try #require(webViews(in: host.view).first)
+        var web = webViews(in: host.view).first
         try await waitForFrame(try #require(web))
         #expect(try await childReport(try #require(web))["value"] == "local JS alive")
         let visibleHeight = try #require(web).bounds.height
