@@ -292,7 +292,7 @@ import BottoCore
         let profile: Profile
         @State private var presentation = WorkspacePresentation()
         var body: some View {
-            transcriptFixture(store: store, bot: profile.bot, presentation: presentation, native: true)
+            transcriptFixture(store: store, bot: profile.bot, presentation: presentation)
                 .frame(width: 382, height: 434)
                 .environment(\.scenePhase, .active)
         }

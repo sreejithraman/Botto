@@ -166,8 +166,7 @@ struct RequestCard: View {
                     Button {
                         guard actions.enabled, requireConnection() else { return }
                         if let confirmation = actions.choose(choice) {
-                            if let nativeRow { nativeRow.presentRequestConfirmation?(confirmation, reportModal) }
-                            else { reportModal(lifetime.modalID, true) }
+                            nativeRow?.presentRequestConfirmation?(confirmation, reportModal)
                         }
                     } label: {
                         HStack(spacing: 12) {
@@ -222,20 +221,6 @@ struct RequestCard: View {
             lifetime.dismissConfirmation()
         }
         .onChange(of: lifetime.input.owner) { _, _ in lifetime.dismissConfirmation() }
-        .onChange(of: lifetime.confirmation == nil) { _, dismissed in
-            if dismissed && nativeRow == nil { reportModal(lifetime.modalID, false) }
-        }
-        .onDisappear { if nativeRow == nil { reportModal(lifetime.modalID, false) } }
-        .confirmationDialog("Allow future actions?", isPresented: Binding(get: { nativeRow == nil && lifetime.confirmation != nil }, set: { if !$0 && nativeRow == nil { lifetime.dismissConfirmation() } }), titleVisibility: .visible) {
-            if let confirmation = lifetime.confirmation {
-                Button(confirmation.choice.label) {
-                    confirmation.confirm()
-                }
-            }
-            Button("Cancel", role: .cancel) { lifetime.dismissConfirmation() }
-        } message: {
-            Text("This choice can let your bot run matching actions again without asking you. Only continue if you trust the scope described in this request.")
-        }
     }
     private func requireConnection() -> Bool {
         guard lifetime.isCurrent else { return false }

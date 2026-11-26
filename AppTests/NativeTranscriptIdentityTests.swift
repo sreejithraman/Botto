@@ -455,7 +455,7 @@ import WebKit
         @State private var presentation = WorkspacePresentation()
         var body: some View {
             if let bot = store.selectedBot {
-                transcriptFixture(store: store, bot: bot, presentation: presentation, native: true)
+                transcriptFixture(store: store, bot: bot, presentation: presentation)
                     .frame(width: 382, height: 434).environment(\.scenePhase, .active)
             }
         }
