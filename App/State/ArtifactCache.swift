@@ -315,8 +315,6 @@ fileprivate actor ArtifactCacheBackend {
             try insert(scope: scope, kind: 1, key: target.key, payload: payload, blob: name, size: artifact.data.count)
             try insert(scope: scope, kind: 3, key: target.key, payload: digest, size: digest.count)
             try enforceLimits(keeping: target)
-            guard try row(scope: scope, kind: 1, key: target.key)?.first?.data == payload,
-                  try row(scope: scope, kind: 3, key: target.key)?.first?.data == digest else { throw ArtifactCacheError.quota }
             beforeCaptureCommit?()
             try Task.checkCancellation()
             // Claim publication immediately before COMMIT; later presentation

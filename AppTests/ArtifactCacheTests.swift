@@ -215,13 +215,18 @@ import BottoCore
             _ = own(cache)
             let session = cache.session(scope: scope)
             let previousDigest = try #require(try await session.retainOriginal(bytes, for: key))
+            // An older capture of another key, so the oversized replacement has something to evict.
+            let other = ArtifactOriginalKey(identity: key.identity, messageID: key.messageID, path: Data("/other".utf8), sourceRevision: key.sourceRevision)
+            let otherDigest = try #require(try await session.retainOriginal(.init(data: Data("other".utf8), filename: "other.txt", mimeType: "text/plain"), for: other))
             var handle: OpaquePointer?
             #expect(sqlite3_open(root.appendingPathComponent("index.sqlite").path, &handle) == SQLITE_OK)
             defer { sqlite3_close(handle) }
             if evictionFails {
                 #expect(sqlite3_exec(handle, "CREATE TRIGGER reject_eviction BEFORE DELETE ON entries WHEN OLD.kind=1 BEGIN SELECT RAISE(ABORT,'injected eviction failure'); END", nil, nil, nil) == SQLITE_OK)
             }
-            await #expect(throws: (any Error).self) {
+            // Evicting the other key fails mid-transaction, or succeeds and the replacement still doesn't fit.
+            let refusal: ArtifactCacheError = evictionFails ? .unavailable : .quota
+            await #expect(throws: refusal) {
                 _ = try await session.retainOriginal(.init(data: Data("replacement".utf8),
                     filename: String(repeating: "metadata", count: 1_000), mimeType: "text/plain"), for: key)
             }
@@ -230,6 +235,8 @@ import BottoCore
             let reopened = own(ArtifactCache(root: root, limits: limits)).session(scope: scope)
             #expect(try await reopened.original(for: key)?.artifact.data == Data("report".utf8))
             #expect(try await reopened.originalDigest(for: key) == previousDigest)
+            #expect(try await reopened.original(for: other)?.artifact.data == Data("other".utf8))
+            #expect(try await reopened.originalDigest(for: other) == otherDigest)
         }
     }
 
