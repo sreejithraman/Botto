@@ -205,7 +205,8 @@ import BottoCore
         service.directories[profile] = .init(summaries: [
             .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
                   preview: "Fresh preview", updatedAt: newer, messageCount: 1)
-        ], activity: [:], isComplete: false)
+        ], activity: [:])
+        store.chats.invalidateActivityDirectory(profile)
         await store.refresh()
         await store.chats.refreshInboxHistory(profiles: [profile])
         #expect(store.bots.map(\.id) == ["recent", "unread", "waiting"])

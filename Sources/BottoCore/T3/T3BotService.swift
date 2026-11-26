@@ -1549,7 +1549,7 @@ private extension T3BotService {
         payload["threadId"] = .string(identity.stored.text)
         let result = try await mutationReply("orchestration.dispatchCommand", payload: .object(payload), in: session)
         guard let sequence = result["sequence"].integer, sequence >= 0 else { throw ConversationServiceError.uncertain }
-        return MutationReceipt(operationID: operationID, source: identity, admissionID: admissionID, journal: .saved)
+        return MutationReceipt(operationID: operationID, source: identity, admissionID: admissionID)
     }
 
     func mutationReply(_ method: String, payload: JSONValue, in session: Session) async throws -> JSONValue {

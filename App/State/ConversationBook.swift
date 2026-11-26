@@ -302,10 +302,8 @@ struct ConversationBook: Codable, Sendable {
     func reconciled(_ publication: OpenedConversation, for id: ChatID) -> OpenedConversation {
         let completeRead = !publication.snapshot.hasEarlierMessages
             && (publication.historyReadStartedAt != nil || publication.readEvidence != nil)
-        let resolved = completeRead && publication.identityRead?.matches(publication.identity) == true
-            ? publication.identityRead?.messageIDs ?? [] : []
         let snapshot = Self.reconciled(publication.snapshot, previous: record(id)?.transcript,
-            resolvingMessageIDs: resolved, retainEarlierMessages: !completeRead)
+            retainEarlierMessages: !completeRead)
         return .init(identity: publication.identity, snapshot: snapshot, access: publication.access,
             readEvidence: publication.readEvidence, activity: publication.activity,
             historyReadStartedAt: publication.historyReadStartedAt, observedSource: publication.observedSource,
@@ -317,20 +315,17 @@ struct ConversationBook: Codable, Sendable {
         return accepted
     }
     private static func reconciled(_ incoming: Conversation, previous: Conversation?,
-                                   resolvingMessageIDs: Set<Data>, retainEarlierMessages: Bool) -> Conversation {
-        guard let previous,
+                                   retainEarlierMessages: Bool) -> Conversation {
+        guard retainEarlierMessages, let previous,
               Data(previous.profileID.utf8) == Data(incoming.profileID.utf8),
               Data(previous.storedID.utf8) == Data(incoming.storedID.utf8) else { return incoming }
         var snapshot = incoming
-        let unresolved = (previous.unavailableMessageIDs ?? []).subtracting(resolvingMessageIDs)
-        if !unresolved.isEmpty { snapshot.unavailableMessageIDs = (snapshot.unavailableMessageIDs ?? []).union(unresolved) }
-        if retainEarlierMessages { snapshot.hasEarlierMessages = snapshot.hasEarlierMessages || previous.hasEarlierMessages }
+        snapshot.hasEarlierMessages = snapshot.hasEarlierMessages || previous.hasEarlierMessages
         return snapshot
     }
     mutating func cache(_ incoming: Conversation, for id: ChatID) {
         update(id) { record in
             let snapshot = Self.reconciled(incoming, previous: record.transcript,
-                resolvingMessageIDs: incoming.hasEarlierMessages ? [] : Set(incoming.messages.map { Data($0.id.utf8) }),
                 retainEarlierMessages: incoming.hasEarlierMessages)
             if !snapshot.messages.isEmpty || record.transcript?.messages.isEmpty == false { record.hasContentHistory = true }
             record.transcript = Self.inert(snapshot)
@@ -370,7 +365,6 @@ struct ConversationBook: Codable, Sendable {
         if window.hasEarlierMessages,
            let previous,
            let first = messages.first, first.hasStableIdentity(storedID: identity.stored.text),
-           previous.unavailableMessageIDs?.contains(Data(first.id.utf8)) != true,
            let anchor = previous.messages.firstIndex(where: { Data($0.id.utf8) == Data(first.id.utf8) }),
            previous.messages.filter({ Data($0.id.utf8) == Data(first.id.utf8) }).count == 1,
            Set(previous.messages[..<anchor].map { Data($0.id.utf8) })
@@ -384,36 +378,8 @@ struct ConversationBook: Codable, Sendable {
         let snapshot = Conversation(id: previous?.id ?? identity.stored.text, storedID: identity.stored.text,
             profileID: identity.profile.text, messages: messages, queuedMessages: previous?.queuedMessages ?? [],
             hasEarlierMessages: hasEarlierMessages)
-        let proof = window.hasEarlierMessages ? nil : window.identityRead.flatMap { $0.matches(identity) ? $0 : nil }
-        let transcript = Self.reconciled(snapshot, previous: previous,
-            resolvingMessageIDs: proof?.messageIDs ?? [], retainEarlierMessages: window.hasEarlierMessages)
+        let transcript = Self.reconciled(snapshot, previous: previous, retainEarlierMessages: window.hasEarlierMessages)
         return .init(transcript: transcript, hasContentHistory: hasContentHistory)
-    }
-    /// Retains a rejected read's disputes on the cached tip they name.
-    /// Without that tip there are no retained rows for them to withdraw.
-    mutating func dispute(_ messageIDs: Set<Data>, from source: SessionIdentity, in id: ChatID) -> Bool {
-        guard let transcript = record(id)?.transcript,
-              Data(transcript.profileID.utf8) == source.profile.bytes,
-              Data(transcript.storedID.utf8) == source.stored.bytes,
-              !messageIDs.isSubset(of: transcript.unavailableMessageIDs ?? []) else { return false }
-        update(id) { $0.transcript?.unavailableMessageIDs = (transcript.unavailableMessageIDs ?? []).union(messageIDs) }
-        return true
-    }
-    /// The chat still retaining one of these disputes on this exact cached tip.
-    func chat(disputing messageIDs: Set<Data>, on source: SessionIdentity) -> ChatID? {
-        records.first { record in
-            guard let transcript = record.transcript, transcript.unavailableMessageIDs?.isDisjoint(with: messageIDs) == false,
-                  let identity = record.binding.identity else { return false }
-            return identity.profile == source.profile && identity.root == source.root && identity.stored == source.stored
-                && Data(transcript.profileID.utf8) == source.profile.bytes
-                && Data(transcript.storedID.utf8) == source.stored.bytes
-        }?.id
-    }
-    mutating func resolveDisputes(_ messageIDs: Set<Data>, in id: ChatID) {
-        update(id) { record in
-            let remaining = record.transcript?.unavailableMessageIDs?.subtracting(messageIDs) ?? []
-            record.transcript?.unavailableMessageIDs = remaining.isEmpty ? nil : remaining
-        }
     }
     mutating func cache(_ window: ConversationHistoryWindow, for id: ChatID) {
         update(id) { record in

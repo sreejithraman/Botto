@@ -599,7 +599,7 @@ import BottoCore
     func bots() async throws -> [BotProfile] { profiles }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         .init(summaries: profile == first.profile ? [.init(identity: first, title: "Main", isCanonical: true, persistence: .durable)] : [],
-            activity: [:], isComplete: true)
+            activity: [:])
     }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {

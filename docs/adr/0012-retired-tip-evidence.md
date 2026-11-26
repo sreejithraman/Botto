@@ -63,3 +63,9 @@ chats remain usable unless a coarse recovery block necessarily includes them.
 The Library index is removed, along with the disputes it resolved. T3 produces no
 rejected history page, so nothing records a new dispute. Book keeps its dispute
 fields until their removal.
+
+## Update, 27 November 2026
+
+Superseded by [T3 thread IDs are chat identity](0015-t3-thread-ids-are-chat-identity.md).
+Book's dispute fields are removed. Saved chats that still hold them load, and the
+fields are ignored.

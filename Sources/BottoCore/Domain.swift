@@ -135,10 +135,9 @@ public struct PendingRequest: Identifiable, Codable, Equatable, Sendable {
     public var title: String
     public var detail: String
     public var choices: [RequestChoice]
-    public var queueID: String?
-    public init(id: String, kind: Kind, title: String, detail: String = "", choices: [RequestChoice] = [], queueID: String? = nil) {
+    public init(id: String, kind: Kind, title: String, detail: String = "", choices: [RequestChoice] = []) {
         self.id = id; self.kind = kind; self.title = title; self.detail = detail
-        self.choices = choices; self.queueID = queueID
+        self.choices = choices
     }
 
     /// Wire revisions preserve UTF-8 spelling, including canonically equivalent strings.
@@ -151,7 +150,7 @@ public struct PendingRequest: Identifiable, Codable, Equatable, Sendable {
             }
         }
         return kind == other.kind && sameBytes(id, other.id) && sameBytes(title, other.title) &&
-            sameBytes(detail, other.detail) && sameBytes(queueID, other.queueID) && choices.count == other.choices.count &&
+            sameBytes(detail, other.detail) && choices.count == other.choices.count &&
             zip(choices, other.choices).allSatisfy { sameBytes($0.id, $1.id) && sameBytes($0.label, $1.label) }
     }
 }
@@ -175,7 +174,6 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var storedID: String
     public var profileID: String
     public var messages: [ChatMessage]
-    public var unavailableMessageIDs: Set<Data>?
     /// Stored history is incomplete; live updates do not prove the missing content was restored.
     public var hasEarlierMessages: Bool
     public var pendingRequests: [PendingRequest]
@@ -191,7 +189,7 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, storedID, profileID, messages, unavailableMessageIDs, hasEarlierMessages, pendingRequests, queuedMessages, isWorking, lastSequence
+        case id, storedID, profileID, messages, hasEarlierMessages, pendingRequests, queuedMessages, isWorking, lastSequence
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -199,7 +197,6 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
         storedID = try values.decode(String.self, forKey: .storedID)
         profileID = try values.decode(String.self, forKey: .profileID)
         messages = try values.decode([ChatMessage].self, forKey: .messages)
-        unavailableMessageIDs = try values.decodeIfPresent(Set<Data>.self, forKey: .unavailableMessageIDs)
         hasEarlierMessages = try values.decodeIfPresent(Bool.self, forKey: .hasEarlierMessages) ?? false
         pendingRequests = try values.decode([PendingRequest].self, forKey: .pendingRequests)
         queuedMessages = try values.decodeIfPresent([QueuedMessage].self, forKey: .queuedMessages) ?? []

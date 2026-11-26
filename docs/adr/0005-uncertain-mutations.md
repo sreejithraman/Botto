@@ -15,3 +15,10 @@ offline outbox or a promise of exactly-once execution.
 Contract and recovery rationale: [core integration](../core-integration.md).
 Implementation evidence: [gateway failure handling](../../Sources/BottoCore/Networking/HermesGateway.swift)
 and [submission journal](../../Sources/BottoCore/Networking/HermesSubmissionJournal.swift).
+
+## Update, 27 November 2026
+
+The Hermes submission journal and gateway linked above were removed with the
+Hermes engine. T3 keeps no local journal, so a receipt no longer reports one that
+needs repair ([T3 thread IDs are chat identity](0015-t3-thread-ids-are-chat-identity.md)).
+The rule against automatic replay still holds.

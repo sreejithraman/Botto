@@ -44,7 +44,7 @@ enum T3ProjectionMapper {
         let activity = Dictionary(uniqueKeysWithValues: zip(entries, channels).map {
             ($0.identity, ObservedActivity.known($1.status, observedAt))
         })
-        return (ConversationDirectory(summaries: entries, activity: activity, isComplete: true), channels)
+        return (ConversationDirectory(summaries: entries, activity: activity), channels)
     }
 
     /// Live spaces first: the main space, then pinned ones, then the most recently active.

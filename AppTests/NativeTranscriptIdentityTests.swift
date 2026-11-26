@@ -6,7 +6,7 @@ import WebKit
 @testable import Botto
 
 @Suite(.serialized, RichReplyRuntime()) @MainActor struct NativeTranscriptIdentityTests {
-    @Test func rawAmbiguityRevokesActionsEvenWhenOnlyOneVisibleRowSurvivesProjection() async throws {
+    @Test func aRepeatedRowIDRevokesActionsGrantedBeforeTheRepeatArrived() async throws {
         let service = try WorkspaceTestService(), source = service.summaries[0].identity
         let message = ChatMessage(id: source.stored.text + ":row:7", role: .assistant, text: "::preview{file='report.html'}")
         service.snapshots[source.root]?.messages = [message]
@@ -20,13 +20,13 @@ import WebKit
         let attachment = try #require(block.filePreview?.attachment)
         let destination = try #require(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message))
         defer { store.finishArtifact(destination) }
-        service.snapshots[source.root]?.unavailableMessageIDs = [Data(message.id.utf8)]
+        service.snapshots[source.root]?.messages = [message, message]
         service.onEvent?(.conversation(try service.publication(source)))
         #expect(!context.permits(block))
         #expect(!store.isAuthorizedArtifactPresentation(destination))
         #expect(store.artifactDestination(for: attachment, botID: source.profile.text, producingMessage: message) == nil)
         let snapshot = try #require(store.conversation(for: source.profile.text))
-        #expect(NativeTranscriptMessagePlan(snapshot.messages, unavailableMessageIDs: snapshot.unavailableMessageIDs ?? []).entries.first?.isAmbiguous == true)
+        #expect(NativeTranscriptMessagePlan(snapshot.messages).entries.first?.isAmbiguous == true)
     }
 
     @Test func consecutiveToolResultsShareOneNativeRowWithoutChangingStoredHistory() async throws {

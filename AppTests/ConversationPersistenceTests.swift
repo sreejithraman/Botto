@@ -55,6 +55,39 @@ struct ConversationPersistenceTests {
         #expect(loaded.book.record(chat)?.inboxMessage?.text == "Report ready.")
     }
 
+    /// Builds that tracked disputed rows saved them beside the transcript, and requests carried a queue ID.
+    @Test func historyWithOldDisputeAndQueueKeysStillLoads() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var history = LocalHistory(), connection = UUID()
+        let chat = history.book.ensureProfile(try ExactID("milo"))
+        history.book.cache(Conversation(id: "runtime", storedID: "milo", profileID: "milo", messages: [
+            .init(id: "milo:row:1", role: .assistant, text: "Kept answer")]), for: chat)
+        var file = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(history)) as? [String: Any])
+        var book = try #require(file["book"] as? [String: Any])
+        var records = try #require(book["records"] as? [[String: Any]])
+        var transcript = try #require(records[0]["transcript"] as? [String: Any])
+        transcript["unavailableMessageIDs"] = [Data("milo:row:1".utf8).base64EncodedString()]
+        transcript["pendingRequests"] = [["id": "approval", "kind": "approval", "title": "Send it?", "detail": "",
+            "choices": [["id": "once", "label": "Allow once"]], "queueID": "queue-1"]]
+        records[0]["transcript"] = transcript; book["records"] = records; file["book"] = book
+        let bytes = try JSONSerialization.data(withJSONObject: file)
+        try bytes.write(to: LocalHistory.file(for: connection, directory: directory))
+
+        let loaded = try LocalHistory.load(for: connection, directory: directory)
+        let restored = try #require(loaded.book.record(chat)?.transcript)
+        #expect(restored.messages.map(\.text) == ["Kept answer"])
+        #expect(restored.pendingRequests.isEmpty, "A loaded cache never restores request authority")
+        #expect(NativeTranscriptMessagePlan(restored.messages).entries.first?.isAmbiguous == false,
+            "Only a Hermes read could record a dispute; the row now reads like any other")
+        let requests = try JSONDecoder().decode([PendingRequest].self,
+            from: JSONSerialization.data(withJSONObject: try #require(transcript["pendingRequests"])))
+        #expect(requests == [.init(id: "approval", kind: .approval, title: "Send it?", choices: [.init(id: "once", label: "Allow once")])])
+        let resaved = String(decoding: try JSONEncoder().encode(loaded), as: UTF8.self)
+        #expect(!resaved.contains("unavailableMessageIDs") && !resaved.contains("queueID"))
+    }
+
     @Test func identityMatchingRequiresOneProfileOwnedLineage() throws {
         let profile = try ExactID("milo"), foreign = try ExactID("scout"), alias = try ExactID("shared-tip")
         let source = SessionIdentity(profile: profile, root: try ExactID("source"), stored: alias, aliases: [alias])

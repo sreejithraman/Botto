@@ -87,13 +87,13 @@ import BottoCore
         await workspace.refreshDirectory(owner)
         #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .idle)
 
-        service.directoryComplete = false
+        service.directoryError = ConversationServiceError.timeout
         await workspace.refreshDirectory(owner)
         #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .waiting)
         #expect(workspace.aggregate(profile: profile).attentionChat == nil)
 
         workspace.observeProfiles([.init(id: profile.text, name: "Milo", status: .idle)])
-        service.directoryComplete = true
+        service.directoryError = nil
         service.directoryActivity[sibling] = .unknown("Activity unavailable")
         await workspace.refreshDirectory(owner)
         #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .unavailable)

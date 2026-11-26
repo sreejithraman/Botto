@@ -54,14 +54,14 @@ public struct ProfileActivityUpdate: Sendable {
         self.profile = profile; self.observations = observations
     }
 }
+/// Botto's current inventory of the Spaces it can list for one bot. A Space missing from it
+/// is unavailable here until a later directory lists it; that says nothing about whether its
+/// thread still exists on the host.
 public struct ConversationDirectory: Sendable {
     public let summaries: [SessionSummary]
     public let activity: [SessionIdentity: ObservedActivity]
-    public let isComplete: Bool
-    public let warning: String?
-    public init(summaries: [SessionSummary], activity: [SessionIdentity: ObservedActivity], isComplete: Bool,
-                warning: String? = nil) {
-        self.summaries = summaries; self.activity = activity; self.isComplete = isComplete; self.warning = warning
+    public init(summaries: [SessionSummary], activity: [SessionIdentity: ObservedActivity]) {
+        self.summaries = summaries; self.activity = activity
     }
 }
 public enum SessionTarget: Sendable {
@@ -144,14 +144,12 @@ public struct CreatedSession: Sendable {
         self.operationID = operationID; self.summary = summary
     }
 }
-public enum JournalDurability: Sendable { case saved, needsLocalRepair }
 public struct MutationReceipt: Sendable {
     public let operationID: UUID
     public let source: SessionIdentity
     public let admissionID: String?
-    public let journal: JournalDurability
     // Receipt is created only after validating a positive host ACK, not turn completion.
-    public init(operationID: UUID, source: SessionIdentity, admissionID: String?, journal: JournalDurability) {
-        self.operationID = operationID; self.source = source; self.admissionID = admissionID; self.journal = journal
+    public init(operationID: UUID, source: SessionIdentity, admissionID: String?) {
+        self.operationID = operationID; self.source = source; self.admissionID = admissionID
     }
 }

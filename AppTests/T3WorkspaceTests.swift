@@ -1523,7 +1523,7 @@ import UIKit
             return SessionSummary(identity: .init(profile: profile, root: thread, stored: thread, aliases: []),
                                   title: channel.displayTitle, isCanonical: false, persistence: .durable)
         }
-        return .init(summaries: summaries, activity: [:], isComplete: true)
+        return .init(summaries: summaries, activity: [:])
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         if let openError { throw openError }
@@ -1635,7 +1635,7 @@ import UIKit
               operationID: UUID) async throws -> MutationReceipt {
         let identity = try issuer.resolve(access)
         sent[identity.stored.text, default: []].append(text)
-        return .init(operationID: operationID, source: identity, admissionID: operationID.uuidString, journal: .saved)
+        return .init(operationID: operationID, source: identity, admissionID: operationID.uuidString)
     }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,

@@ -269,7 +269,7 @@ import Testing
                      access: try issuer.issue(identity))
     }
 
-    func conversations(profile: ExactID) async throws -> ConversationDirectory { .init(summaries: [], activity: [:], isComplete: true) }
+    func conversations(profile: ExactID) async throws -> ConversationDirectory { .init(summaries: [], activity: [:]) }
     func saveSoul(_ markdown: String, replacing expected: String?) async throws {}
     func saveMemory(_ markdown: String, replacing expected: String?) async throws {}
     func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest { throw T3ServiceError.unsupported }
@@ -292,7 +292,7 @@ import Testing
               operationID: UUID) async throws -> MutationReceipt {
         let identity = try issuer.resolve(access)
         sent[identity.stored.text] = text
-        return .init(operationID: operationID, source: identity, admissionID: nil, journal: .saved)
+        return .init(operationID: operationID, source: identity, admissionID: nil)
     }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,
