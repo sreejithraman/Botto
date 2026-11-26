@@ -513,11 +513,18 @@ import XCTest
     var dirtyCount = 0
     var displayChanges = 0
     var enteredCallback = false
-    var publications: [ChatTranscriptPublication] = []
+    var insideCallback = false
+    var publications = 0
+    /// What a file card would see when it rechecks: the chat's cached transcript as each notification fired.
+    var observed: [(text: String?, unavailable: Set<Data>?, insideCallback: Bool)] = []
+    func record(_ transcript: Conversation?) {
+        publications += 1
+        observed.append((transcript?.messages.last?.text, transcript?.unavailableMessageIDs, insideCallback))
+    }
 }
 
 extension InboxMessagePreviewTests {
-    @Test func identicalHistoryWindowKeepsDisplayQuietAndPublishesFreshReadEvidence() async throws {
+    @Test func identicalHistoryWindowKeepsDisplayQuietAndStillNotifiesCaptures() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let probe = InboxWindowPublicationProbe()
         var book = ConversationBook()
@@ -530,13 +537,12 @@ extension InboxMessagePreviewTests {
             book: book, service: service, onDirty: { probe.dirtyCount += 1 })
         workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
         workspace.setOnline(true)
-        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        workspace.onAcceptedTranscript = { probe.publications += 1 }
         defer { workspace.retireWorkspace() }
 
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(probe.dirtyCount == 1)
-        #expect(probe.publications.count == 1)
-        let first = try #require(probe.publications.first?.evidence.readContext)
+        #expect(probe.publications == 1)
         withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
             MainActor.assumeIsolated { probe.displayChanges += 1 }
         }
@@ -544,23 +550,14 @@ extension InboxMessagePreviewTests {
         #expect(probe.displayChanges == 0)
         #expect(probe.dirtyCount == 1)
         #expect(service.previewReads.count == 2)
-        #expect(probe.publications.count == 2)
-        let secondPublication = try #require(probe.publications.last)
-        guard case .window(let startedAt, let source, let identityRead) = secondPublication.evidence else {
-            Issue.record("A repeated history read must still publish window evidence")
-            return
-        }
-        #expect(startedAt > first.startedAt)
-        #expect(source == service.previewReads.last)
-        #expect(identityRead?.matches(identity) == true)
-        #expect(identityRead?.messageIDs == proof.messageIDs)
+        #expect(probe.publications == 2, "A repeated history read still lets file cards recheck their rows")
 
         service.previewResult = .init(messages: [.init(id: rowID, role: .assistant, text: "Cafe\u{301}")],
             hasEarlierMessages: false, identityRead: proof)
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(probe.displayChanges == 1)
         #expect(probe.dirtyCount == 2)
-        #expect(probe.publications.count == 3)
+        #expect(probe.publications == 3)
         #expect(workspace.persisted().record(id)?.transcript?.messages.first.map { Data($0.text.utf8) }
             == Data("Cafe\u{301}".utf8))
     }
@@ -588,11 +585,12 @@ extension InboxMessagePreviewTests {
         service.snapshots[sibling.root]?.queuedMessages = [queued]
         let siblingPublication = try service.publication(sibling)
         service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "Fresh answer")], hasEarlierMessages: false)
-        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        workspace.onAcceptedTranscript = { [weak workspace] in probe.record(workspace?.persisted().record(mainID)?.transcript) }
         withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
             MainActor.assumeIsolated {
                 guard !probe.enteredCallback else { return }
                 probe.enteredCallback = true
+                probe.insideCallback = true; defer { probe.insideCallback = false }
                 workspace.editDraft("Keep the callback draft", owner: siblingOwner)
                 workspace.receive(siblingPublication)
             }
@@ -602,7 +600,11 @@ extension InboxMessagePreviewTests {
         #expect(workspace.draft(siblingOwner) == "Keep the callback draft")
         #expect(workspace.persisted().record(siblingID)?.transcript?.queuedMessages == [queued])
         #expect(workspace.persisted().record(mainID)?.transcript?.messages.last?.text == "Fresh answer")
-        #expect(probe.publications.contains { $0.identity == service.previewReads.last && $0.snapshot.messages.last?.text == "Fresh answer" })
+        #expect(service.previewReads.contains { $0.profile == identity.profile && $0.root == identity.root },
+            "The main chat's history was read: \(service.previewReads)")
+        // The sibling's publication notifies from inside the callback; the fresh read must notify on its own.
+        #expect(probe.observed.contains { !$0.insideCallback && $0.text == "Fresh answer" },
+            "The accepted fresh read lets file cards recheck against it")
     }
 
     @Test func changedHistoryWindowCannotCrossCallbackRecovery() async throws {
@@ -618,7 +620,7 @@ extension InboxMessagePreviewTests {
         workspace.setOnline(true)
         defer { workspace.retireWorkspace() }
         service.previewResult = .init(messages: [.init(id: "new", role: .assistant, text: "Retired read")], hasEarlierMessages: false)
-        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        workspace.onAcceptedTranscript = { probe.publications += 1 }
         withObservationTracking { _ = workspace.aggregate(profile: service.profile).preview } onChange: {
             MainActor.assumeIsolated {
                 guard !probe.enteredCallback else { return }
@@ -630,7 +632,7 @@ extension InboxMessagePreviewTests {
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(probe.enteredCallback)
         #expect(workspace.persisted().record(id)?.transcript?.messages.last?.text == "Keep the original answer")
-        #expect(probe.publications.isEmpty)
+        #expect(probe.publications == 0)
         #expect(probe.dirtyCount == 0)
     }
 }
@@ -653,36 +655,27 @@ extension InboxMessagePreviewTests {
             book: book, service: service, onDirty: { probe.dirtyCount += 1 })
         workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
         workspace.setOnline(true)
-        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        workspace.onAcceptedTranscript = { [weak workspace] in probe.record(workspace?.persisted().record(chat)?.transcript) }
         return (workspace, chat)
     }
 
-    @Test func rejectedHistoryPublishesOnlyItsDisputesUnderTheReadStart() async throws {
+    @Test func rejectedHistoryRecordsOnlyItsDisputes() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let probe = InboxWindowPublicationProbe(), disputed = Data("disputed".utf8)
         let (workspace, chat) = disputedFixture(service, probe: probe)
         defer { workspace.retireWorkspace() }
-        let requested = ContinuousClock.now
         // Evidence for one row cannot widen to the other rows of its rejected response.
         service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [disputed],
             sourceIDs: [Data("sibling".utf8)], exceedsRowLimit: true)
         await workspace.refreshInboxHistory(profiles: [service.profile])
-        let publication = try #require(probe.publications.first)
-        #expect(probe.publications.count == 1)
+        #expect(probe.observed.map(\.unavailable) == [[disputed]], "The notification follows the recorded dispute, and only its row")
         #expect(probe.dirtyCount == 1)
-        #expect(publication.identity == workspace.persisted().record(chat)?.binding.identity)
-        #expect(publication.snapshot.messages.isEmpty, "A rejected read vouches for no rows")
-        #expect(publication.snapshot.unavailableMessageIDs == [disputed])
-        let read = try #require(publication.evidence.readContext)
-        #expect(read.startedAt >= requested)
-        #expect(read.identityRead == nil)
-        #expect(read.observedSource == nil, "A rejected read cannot adopt a source")
         let retained = workspace.persisted().record(chat)?.transcript
         #expect(retained?.unavailableMessageIDs == [disputed])
         #expect(retained?.messages.map(\.text) == ["Cached answer", "Sibling answer"], "Disputed rows stay in the chat as ambiguous")
 
         await workspace.refreshInboxHistory(profiles: [service.profile])
-        #expect(probe.publications.count == 2, "Repeated evidence still reaches a consumer that restarted")
+        #expect(probe.publications == 2, "Repeated evidence still reaches a consumer that restarted")
         #expect(probe.dirtyCount == 1, "Unchanged evidence writes nothing")
     }
 
@@ -707,7 +700,7 @@ extension InboxMessagePreviewTests {
         #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs?.contains(disputed) != true)
     }
 
-    @Test func rejectedHistoryWithoutACachedTranscriptOnlyReachesLibrary() async throws {
+    @Test func rejectedHistoryWithoutACachedTranscriptInventsNone() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
         let probe = InboxWindowPublicationProbe()
         var book = ConversationBook()
@@ -717,11 +710,10 @@ extension InboxMessagePreviewTests {
         defer { workspace.retireWorkspace() }
         workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
         workspace.setOnline(true)
-        workspace.onAcceptedTranscript = { probe.publications.append($0) }
+        workspace.onAcceptedTranscript = { probe.publications += 1 }
         service.previewError = ConversationHistoryPage.Failure(identity: identity, unavailableMessageIDs: [Data("disputed".utf8)])
         await workspace.refreshInboxHistory(profiles: [service.profile])
-        let publication = try #require(probe.publications.first)
-        #expect(publication.snapshot.unavailableMessageIDs == [Data("disputed".utf8)])
+        #expect(probe.publications == 1)
         #expect(workspace.persisted().record(chat)?.transcript == nil, "Evidence cannot invent a cached transcript")
         #expect(probe.dirtyCount == 0)
     }
@@ -759,8 +751,8 @@ extension InboxMessagePreviewTests {
         default: break
         }
         gate.release(); await refreshing.value
-        let disputes = probe.publications.filter { $0.evidence.readContext?.identityRead == nil && $0.snapshot.messages.isEmpty }
-        #expect(disputes.isEmpty)
+        // Opening the chat may still notify for its accepted transcript; no notification may follow a dispute.
+        #expect(probe.observed.allSatisfy { $0.unavailable == nil })
         #expect(workspace.persisted().record(chat)?.transcript?.unavailableMessageIDs == nil)
     }
 

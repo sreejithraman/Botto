@@ -103,3 +103,12 @@ access.
 The Library and Search screens are retired. Nothing makes a deliberate library
 entry or reads Search references, so those retries and references have no caller.
 Chat file cards still open original captures as described here.
+
+The index behind those screens is now gone too. The artifact cache keeps only
+original captures and their digests, with their per-device byte and file limits,
+cleanup and startup pruning. Chat copies, gallery thumbnails, metadata
+restrictions and the recovery ledger described above no longer exist. On first
+open, a version 1 cache deletes its chat-copy and thumbnail rows and moves to
+version 2 in one transaction, then compacts the file. Every open removes files
+that no row names, which takes the thumbnails and the old ledger even if the app
+stopped partway. An unreadable or newer cache is still kept and left unavailable.
