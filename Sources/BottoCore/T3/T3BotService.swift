@@ -2,7 +2,7 @@ import Foundation
 
 public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     case missingConnection, differentEnvironment, differentWorkspace, disconnected, invalidProject, invalidResponse
-    case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported, unknownHistoryOffset
+    case missingModel, missingChannel, mainSpaceSynchronizing, invalidName, unsupported
     case mainSpaceRecoveryRequired
     case invalidPath, proseChanged
     case protectedMainSpace
@@ -22,7 +22,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             "T3 Code has reserved the Main Space’s replacement ID. Set mainThreadID in the Botto project’s bot.json to an active Space’s T3 thread ID, then reopen Botto."
         case .invalidName: "Enter a name."
         case .unsupported: "This action requires T3 Code."
-        case .unknownHistoryOffset: "Reload the latest messages before requesting older history."
         case .invalidPath: "Choose a file inside the bot project."
         case .proseChanged: "This file changed elsewhere. Copy your edits before reloading it from the host."
         case .protectedMainSpace: "The main space stays. You can rename it instead."
@@ -70,8 +69,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         var selection: Selection?
         var selectedIdentity: SessionIdentity?
         var openAttempt = UUID()
-        var cursors: [ExactID: [Int: String]] = [:]
-        var historyReads: [ExactID: UUID] = [:]
         var previews: [String: ConversationPreview] = [:]
         var attachments: [UUID: StagedAttachment] = [:]
 
@@ -771,57 +768,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                                          identityRead: page.more ? nil : historyIdentity(identity, messages: messages))
     }
 
-    public func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
-        let session = try requireSession()
-        try validate(identity, in: session)
-        guard offset >= 0 else { throw T3ServiceError.unknownHistoryOffset }
-        let thread = identity.stored
-        let encodedThread = try Self.pathSegment(thread.text)
-        let endpoint = "/api/orchestration/threads/" + encodedThread
-        let headers = ["x-t3-orchestration-protocol": "2"]
-        let start: UUID
-        let rows: [JSONValue]
-        let messagesByID: [String: String]
-        let cursor: String?
-        let more: Bool
-        if offset == 0 {
-            start = UUID()
-            session.historyReads[thread] = start
-            session.cursors[thread] = nil
-            let firstPage = try await newestHistory(identity, in: session)
-            rows = firstPage.rows
-            messagesByID = firstPage.messagesByID
-            cursor = firstPage.cursor
-            more = firstPage.more
-        } else {
-            guard let read = session.historyReads[thread], let previous = session.cursors[thread]?[offset] else {
-                throw T3ServiceError.unknownHistoryOffset
-            }
-            start = read
-            let reply = try await httpJSON(session, path: endpoint + "/history", headers: headers,
-                                           query: [URLQueryItem(name: "cursor", value: previous)])
-            guard let items = reply["items"].list, let hasMore = reply["hasMoreHistory"].flag else {
-                throw T3ServiceError.invalidResponse
-            }
-            rows = items
-            messagesByID = [:]
-            cursor = reply["nextCursor"].nonempty
-            more = hasMore
-        }
-        try validate(identity, in: session)
-        let items = T3ProjectionMapper.visibleItems(rows)
-        let messages = items.compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: messagesByID) }
-        guard !more || cursor != nil else { throw T3ServiceError.invalidResponse }
-        let nextOffset = more ? offset.addingReportingOverflow(max(messages.count, 1)) : nil
-        guard nextOffset?.overflow != true else { throw T3ServiceError.invalidResponse }
-        let next = nextOffset?.partialValue
-        guard session.historyReads[thread] == start else { throw T3ServiceError.unknownHistoryOffset }
-        if let next, let cursor { session.cursors[thread, default: [:]][next] = cursor }
-        let evidence = offset == 0 && !more ? historyIdentity(identity, messages: messages) : nil
-        return ConversationHistoryPage(messages: messages, nextOffset: next, isComplete: true,
-                                       sourceIDs: Set(messages.map { Data($0.id.utf8) }), identityRead: evidence)
-    }
-
     public func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery,
                      access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let (session, selection) = try resolve(access)
@@ -938,14 +884,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let artifact = try await download(attachment, identity: selection.identity, in: session, access: access)
         _ = try resolve(access)
         return artifact
-    }
-
-    public func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
-        let session = try requireSession()
-        try validate(identity, in: session)
-        let result = try await download(attachment, identity: identity, in: session)
-        try validate(identity, in: session)
-        return result
     }
 }
 
@@ -1625,7 +1563,7 @@ private extension T3BotService {
     }
 
     func download(_ attachment: ChatAttachment, identity: SessionIdentity, in session: Session,
-                  access: ConversationAccess? = nil) async throws -> DownloadedArtifact {
+                  access: ConversationAccess) async throws -> DownloadedArtifact {
         let marker = "t3-attachment:"
         let resource: JSONValue
         if attachment.path.hasPrefix(marker) {
@@ -1638,8 +1576,7 @@ private extension T3BotService {
                                 "path": .string(attachment.path)])
         }
         let path = try await signedAssetPath(for: resource, in: session)
-        if let access { _ = try resolve(access) }
-        else { try validate(identity, in: session) }
+        _ = try resolve(access)
         let data = try await fetchAsset(path, in: session)
         return DownloadedArtifact(data: data, filename: attachment.name, mimeType: attachment.mimeType)
     }
@@ -1711,19 +1648,18 @@ private extension T3BotService {
     }
 
     func newestHistory(_ identity: SessionIdentity, in session: Session) async throws
-        -> (rows: [JSONValue], messagesByID: [String: String], cursor: String?, more: Bool) {
+        -> (rows: [JSONValue], messagesByID: [String: String], more: Bool) {
         let thread = try Self.pathSegment(identity.stored.text)
         let reply = try await httpJSON(session, path: "/api/orchestration/threads/" + thread + "/bounded",
                                        headers: ["x-t3-orchestration-protocol": "2"])
         try validate(identity, in: session)
         let projection = reply["projection"]
-        let cursor = reply["historyCursor"].nonempty
         guard projection["thread"]["id"].text == identity.stored.text, let rows = projection["visibleTurnItems"].list,
-              let more = reply["hasMoreHistory"].flag, !more || cursor != nil else {
+              let more = reply["hasMoreHistory"].flag, !more || reply["historyCursor"].nonempty != nil else {
             throw T3ServiceError.invalidResponse
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(projection["messages"].list ?? [])
-        return (rows, messagesByID, cursor, more)
+        return (rows, messagesByID, more)
     }
 
     func historyIdentity(_ identity: SessionIdentity, messages: [ChatMessage]) -> ConversationIdentityRead? {
@@ -1734,8 +1670,8 @@ private extension T3BotService {
         return ConversationIdentityRead(identity: identity, messageIDs: ids)
     }
 
-    func httpJSON(_ session: Session, path: String, headers: [String: String], query: [URLQueryItem] = []) async throws -> JSONValue {
-        let data = try await http.request(origin: session.origin, path: path, token: session.token, headers: headers, query: query)
+    func httpJSON(_ session: Session, path: String, headers: [String: String]) async throws -> JSONValue {
+        let data = try await http.request(origin: session.origin, path: path, token: session.token, headers: headers)
         try check(session)
         return try JSONDecoder().decode(JSONValue.self, from: data)
     }

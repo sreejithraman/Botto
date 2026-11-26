@@ -1,8 +1,7 @@
 import Foundation
 
-/// Read-only chat history. Messages are chronological within a page; the next
-/// offset reads older messages. Completeness does not acknowledge a chat as read.
-public struct ConversationHistoryPage: Sendable {
+/// Holds the history-read failure that the version-dispute handling catches.
+public enum ConversationHistoryPage {
     public struct Failure: Error, LocalizedError, Sendable {
         public let identity: SessionIdentity
         public let unavailableMessageIDs: Set<Data>
@@ -15,25 +14,5 @@ public struct ConversationHistoryPage: Sendable {
             self.sourceIDs = sourceIDs; self.exceedsRowLimit = exceedsRowLimit
         }
         public var errorDescription: String? { ConversationServiceError.incompatible.errorDescription }
-    }
-    public let messages: [ChatMessage]
-    public let nextOffset: Int?
-    /// False when content is known to be missing. Older pages can still exist
-    /// when this is true; callers must also follow nextOffset.
-    public let isComplete: Bool
-    /// Message IDs before visible filtering, including omitted rows.
-    public let sourceIDs: Set<Data>?
-    public let unavailableMessageIDs: Set<Data>
-    /// Producer-checked identity evidence; completeness and sourceIDs alone do not certify uniqueness.
-    public let identityRead: ConversationIdentityRead?
-
-    public init(messages: [ChatMessage], nextOffset: Int?, isComplete: Bool, sourceIDs: Set<Data>? = nil,
-                unavailableMessageIDs: Set<Data> = [], identityRead: ConversationIdentityRead? = nil) {
-        self.messages = messages
-        self.nextOffset = nextOffset
-        self.isComplete = isComplete
-        self.sourceIDs = sourceIDs
-        self.unavailableMessageIDs = unavailableMessageIDs
-        self.identityRead = identityRead
     }
 }

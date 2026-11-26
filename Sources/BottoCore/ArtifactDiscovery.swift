@@ -1,5 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
 
 /// A transcript-derived item, scoped to one chat by its caller. Discovery never grants file access.
 public struct DiscoveredArtifact: Identifiable, Equatable, Sendable {
@@ -13,7 +12,6 @@ public struct DiscoveredArtifact: Identifiable, Equatable, Sendable {
     }
 
     public enum Category: String, CaseIterable, Sendable { case output, reference }
-    public enum Kind: String, CaseIterable, Sendable { case image, document, audio, video, preview }
     public enum Payload: Equatable, Sendable {
         case file(ChatAttachment)
         case inline(ReplyContent.Block)
@@ -22,33 +20,12 @@ public struct DiscoveredArtifact: Identifiable, Equatable, Sendable {
     public let id: ID
     public let messageID: String
     public let timestamp: Date?
-    public let title: String
     public let category: Category
     public let payload: Payload
 
     public var attachment: ChatAttachment? {
         if case .file(let attachment) = payload { return attachment }
         return nil
-    }
-    public var block: ReplyContent.Block? {
-        if case .inline(let block) = payload { return block }
-        return nil
-    }
-    public var kind: Kind {
-        guard let attachment else { return .preview }
-        let mime = attachment.mimeType == "application/octet-stream"
-            ? UTType(filenameExtension: (attachment.path as NSString).pathExtension)?.preferredMIMEType ?? attachment.mimeType
-            : attachment.mimeType
-        if mime.hasPrefix("image/") { return .image }
-        if mime.hasPrefix("audio/") { return .audio }
-        if mime.hasPrefix("video/") { return .video }
-        return .document
-    }
-    public var searchableText: String {
-        switch payload {
-        case .file(let attachment): title + "\n" + attachment.path
-        case .inline(let block): title + "\n" + block.source
-        }
     }
 }
 
@@ -72,8 +49,7 @@ public enum ArtifactDiscovery {
             if files[path] == nil { order.append(path) }
             if supplied { suppliedMetadata.insert(path) } else { suppliedMetadata.remove(path) }
             files[path] = DiscoveredArtifact(id: .init(message: Data(message.id.utf8), content: .file(path)),
-                messageID: message.id, timestamp: message.timestamp, title: attachment.name,
-                category: category, payload: .file(attachment))
+                messageID: message.id, timestamp: message.timestamp, category: category, payload: .file(attachment))
         }
         for message in messages {
             guard message.isVisible, message.displayKind != "hidden", message.isSilent != true,
@@ -106,16 +82,9 @@ public enum ArtifactDiscovery {
                     if block.isComplete { add(reference.attachment, from: message, category: .output) }
                 case .preview(let format):
                     guard block.isComplete else { continue }
-                    let title: String
-                    switch format {
-                    case .html: title = "HTML preview"
-                    case .svg: title = "SVG illustration"
-                    case .mermaid: title = "Mermaid diagram"
-                    }
                     previews.append(DiscoveredArtifact(id: .init(message: Data(message.id.utf8),
                         content: .inline(offset: block.id, format: format.rawValue, source: Data(block.source.utf8))),
-                        messageID: message.id, timestamp: message.timestamp, title: title,
-                        category: .output, payload: .inline(block)))
+                        messageID: message.id, timestamp: message.timestamp, category: .output, payload: .inline(block)))
                 case .code: continue
                 }
             }

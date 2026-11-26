@@ -233,24 +233,6 @@ import BottoCore
         return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
     }
 
-    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
-        try Task.checkCancellation()
-        try requireProfile(identity.profile)
-        guard offset >= 0, offset.isMultiple(of: 100), identities[identity.root.bytes] == identity,
-              let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
-        let end = max(0, chat.messages.count - offset)
-        let start = max(0, end - 100)
-        let messages = Array(chat.messages[start..<end])
-        let sourceIDs = Set(messages.map { Data($0.id.utf8) })
-        let identityRead = offset == 0 && start == 0 && !chat.hasEarlierMessages
-            && (chat.unavailableMessageIDs ?? []).isEmpty && sourceIDs.count == messages.count
-            && messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
-            ? ConversationIdentityRead(identity: identity, messageIDs: sourceIDs) : nil
-        return ConversationHistoryPage(messages: messages,
-            nextOffset: start > 0 ? offset + 100 : nil, isComplete: true,
-            sourceIDs: sourceIDs, identityRead: identityRead)
-    }
-
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         try requireProfile(profile)
         #if DEBUG
@@ -544,26 +526,6 @@ import BottoCore
             path = url.path
         }
         guard let artifact = artifacts[source.root.bytes]?[path] else { throw ConversationServiceError.invalidAttachment }
-        return artifact
-    }
-
-    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
-        try Task.checkCancellation()
-        try requireProfile(identity.profile)
-        guard identities[identity.root.bytes] == identity else { throw ConversationServiceError.wrongConversation }
-        let epoch = connection
-        #if DEBUG
-        try await waitForUITestFixture("download")
-        #endif
-        try Task.checkCancellation()
-        guard connected, connection == epoch, identities[identity.root.bytes] == identity else {
-            throw ConversationServiceError.staleConversation
-        }
-        var path = attachment.path
-        if let url = URL(string: path), url.scheme == "file", url.host == nil || url.host == "" || url.host == "localhost" {
-            path = url.path
-        }
-        guard let artifact = artifacts[identity.root.bytes]?[path] else { throw ConversationServiceError.invalidAttachment }
         return artifact
     }
 

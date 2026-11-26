@@ -30,29 +30,6 @@ private let compactionCarrier = "[PRIOR CONTEXT — for reference only; not a ne
     #expect(decoded.text == "Saved words" && decoded.displayText == "Title")
 }
 
-@Test func retainedTextBytesChargeEveryRetainedUTF8ByteOnce() {
-    func bytes(_ text: String, _ canonicalText: String? = nil) -> Int {
-        ChatMessage(id: "row", role: .user, text: text, canonicalText: canonicalText).retainedTextBytes
-    }
-    #expect(bytes("") == 0)
-    #expect(bytes("four") == 4)
-    #expect(bytes("four", "") == 4)
-    #expect(bytes("", "four") == 4)
-    #expect(bytes("four", "four") == 8)
-    // These two strings render alike and cost 2 and 3 bytes.
-    #expect(bytes("\u{E9}") == 2)
-    #expect(bytes("e\u{301}") == 3)
-    #expect(bytes("\u{E9}", "e\u{301}") == 5)
-    #expect(bytes("\u{1F916}", "\u{1F916}") == 8)
-
-    let ordinary = ChatMessage(id: "1", role: .user, text: "Plain words")
-    #expect(ordinary.retainedTextBytes == "Plain words".utf8.count)
-    let cleared = ChatMessage(id: "2", role: .user, text: "", canonicalText: compactionCarrier)
-    #expect(cleared.retainedTextBytes == compactionCarrier.utf8.count)
-    let projected = ChatMessage(id: "3", role: .user, text: recoveredAsk, canonicalText: compactionCarrier)
-    #expect(projected.retainedTextBytes == recoveredAsk.utf8.count + compactionCarrier.utf8.count)
-}
-
 @Test func presentationAndDiscoveryNeverReadCanonicalText() {
     let scaffolding = "MEDIA:/home/u/handoff-summary.pdf"
     let control = ChatMessage(id: "1", role: .assistant, text: scaffolding)

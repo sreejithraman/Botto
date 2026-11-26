@@ -120,8 +120,6 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     /// Unprojected response text retained alongside a different host display projection. Never rendered.
     /// Nil means no separate canonical copy is stored, including legacy display-only saved rows.
     public var canonicalText: String?
-    /// UTF-8 bytes this message adds to retained history. Every retained-text budget charges this cost.
-    public nonisolated var retainedTextBytes: Int { text.utf8.count + (canonicalText?.utf8.count ?? 0) }
     /// Presentation only; the original text and row remain in the cached transcript.
     /// Exact control matching repairs stale partial-marker projections in older caches.
     public var isSilent: Bool?
@@ -242,7 +240,6 @@ public enum MessageDelivery: Equatable, Sendable {
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
-    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
@@ -254,18 +251,9 @@ public enum MessageDelivery: Equatable, Sendable {
                  operationID: UUID) async throws -> MutationReceipt
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact
-    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact
 }
 
 public extension BotService {
-    func conversationHistory(_ identity: SessionIdentity, offset: Int) async throws -> ConversationHistoryPage {
-        throw ConversationServiceError.rejected(-32601)
-    }
-
-    func downloadArtifact(_ attachment: ChatAttachment, in identity: SessionIdentity) async throws -> DownloadedArtifact {
-        throw ConversationServiceError.rejected(-32601)
-    }
-
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         nil
     }
