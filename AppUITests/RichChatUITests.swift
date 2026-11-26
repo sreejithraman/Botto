@@ -4,7 +4,7 @@ final class RichChatUITests: XCTestCase {
     @MainActor func testCachedRichReplyHasShortReadableSpaceLabel() {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "--demo-offline", "--rich-inbox-demo"]
+        app.launchArguments = ["--demo", "--demo-offline"]
         app.launch()
         WorkspaceNavigation.openDrawer(in: app)
         let row = WorkspaceNavigation.space("canvas", in: app)

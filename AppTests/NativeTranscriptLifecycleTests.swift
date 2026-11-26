@@ -76,7 +76,8 @@ import BottoCore
             let web = try #require(webViews(source.view).first)
             let report = try await childReport(web)
             #expect(report["counter"] == "1")
-            documentNonce = try #require(report["nonce"])
+            let nonce = try #require(report["nonce"])
+            documentNonce = nonce
             expandedDocument = web
         } else {
             #expect(accessibilityElement("Preview source", in: source.view) != nil)

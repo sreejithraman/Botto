@@ -35,7 +35,6 @@ import BottoCore
     var duringConnect: ((ConnectionConfiguration) -> Void)?
     var connectBarrier: StoreTestBarrier?
     var connectCount = 0
-    var connectedConfigurations: [ConnectionConfiguration] = []
     var profiles: [BotProfile]
     var info = ServerInfo(version: "test", installID: "test-install")
     var chat = Conversation(id: "runtime", storedID: "stored", profileID: "milo")
@@ -68,7 +67,6 @@ import BottoCore
     }
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
         connectCount += 1
-        connectedConfigurations.append(configuration)
         duringConnect?(configuration)
         await connectBarrier?.wait()
         if let connectError { throw connectError }

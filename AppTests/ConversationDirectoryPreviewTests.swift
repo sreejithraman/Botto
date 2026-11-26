@@ -2,8 +2,6 @@ import Foundation
 import Observation
 import Testing
 import BottoCore
-import SwiftUI
-import XCTest
 @testable import Botto
 
 /// Directory text can come from the first user message and does not identify the latest message.
@@ -178,52 +176,6 @@ import XCTest
         #expect(workspace.persisted().record(screen.selectedChatID)?.seen?.observedAt == seenAt)
     }
 
-}
-
-@MainActor final class InboxPreviewRenderingTests: XCTestCase {
-    private func renderedText(expected: [String], scheme: ColorScheme, render: () -> UIImage?) async throws -> String {
-        let deadline = ContinuousClock.now + .seconds(30)
-        var firstImage: UIImage?, lastImage: UIImage?
-        var text = "", attempts = 0
-        defer {
-            if attempts > 1, let firstImage { attach(firstImage, named: "Initial inbox previews - \(scheme)") }
-            if let lastImage { attach(lastImage, named: "Readable inbox previews - \(scheme)") }
-            let diagnostic = XCTAttachment(string: "scheme=\(scheme) attempts=\(attempts) text=\(text)")
-            diagnostic.name = "Inbox render readiness"
-            diagnostic.lifetime = .keepAlways
-            add(diagnostic)
-        }
-        while ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-            attempts += 1
-            if let image = render(), let cgImage = image.cgImage {
-                if firstImage == nil { firstImage = image }
-                lastImage = image
-                let recognized: Result<[String], Error>? = await NativeRecognitionDeadline.run(until: deadline) {
-                    do {
-                        return .success(try await NativeTextRecognition.recognize(cgImage,
-                            usesLanguageCorrection: true, onRecognition: { isMainThread in
-                                XCTAssertFalse(isMainThread, "Vision recognition must not block the native UI thread")
-                            }))
-                    } catch { return .failure(error) }
-                }
-                try Task.checkCancellation()
-                guard let recognized else { break }
-                text = try recognized.get().joined(separator: " ")
-                XCTAssertFalse(text.contains("SILENT") || text.contains("NO_REPLY") || text.contains("IMPORTANT") || text.contains("proc_example"))
-                if expected.allSatisfy({ text.contains($0) }) { return text }
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        return text
-    }
-
-    private func attach(_ image: UIImage, named name: String) {
-        let attachment = XCTAttachment(image: image)
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
 }
 
 @MainActor struct InboxMessagePreviewTests {

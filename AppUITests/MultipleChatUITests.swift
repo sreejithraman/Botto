@@ -1,15 +1,7 @@
 import XCTest
-import Vision
 
 /// Public multi-chat workflows. These tests do not select chats through store setters.
 final class MultipleChatUITests: XCTestCase {
-    @MainActor private func keepScreenshot(_ name: String, app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
-
     @MainActor func testWorkingComposerSteersByDefaultAndStopsFromSendButton() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -242,14 +234,11 @@ final class MultipleChatUITests: XCTestCase {
         return found
     }
 
-    @MainActor private func launch(largeText: Bool = false, gateDirectory: URL? = nil) -> XCUIApplication {
+    @MainActor private func launch(gateDirectory: URL? = nil) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         if let gateDirectory { app.launchEnvironment["BOTTO_UI_TEST_BOT_GATE"] = gateDirectory.path }
-        if largeText {
-            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
-        }
         app.launch()
         WorkspaceNavigation.openSpace("milo", in: app)
         return app
@@ -265,15 +254,6 @@ final class MultipleChatUITests: XCTestCase {
             app.buttons["t3-chat-header"].label.hasPrefix(title == "Main" ? "Main Space" : title)
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed, file: file, line: line)
-    }
-
-    @MainActor private func picker(_ app: XCUIApplication) {
-        WorkspaceNavigation.openDrawer(in: app)
-    }
-
-    @MainActor private func card(_ title: String, app: XCUIApplication) -> XCUIElement {
-        let id = title == "Main" ? "milo" : "demo-milo-weekend"
-        return WorkspaceNavigation.space(id, in: app)
     }
 
     @MainActor private func select(_ title: String, app: XCUIApplication) {
@@ -332,12 +312,4 @@ final class MultipleChatUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Draft with a file"].waitForExistence(timeout: 5))
         XCTAssertFalse(remove.exists, "Positive admission clears only this source’s staging")
     }
-    private func waitForMarker(_ name: String, directory: URL) {
-        let marker = directory.appendingPathComponent(name)
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            FileManager.default.fileExists(atPath: marker.path)
-        }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
-    }
-
 }
