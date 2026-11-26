@@ -286,7 +286,6 @@ import Testing
     func setChannelPinned(threadID: String, pinned: Bool) async throws {}
     func archiveChannel(threadID: String, archived: Bool) async throws {}
     func readProjectFile(relativePath: String) async throws -> String { throw T3ServiceError.unsupported }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw T3ServiceError.unsupported }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw T3ServiceError.unsupported }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,

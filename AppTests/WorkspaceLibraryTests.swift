@@ -6780,7 +6780,6 @@ private actor NextLibraryProjectionPause {
         if let botsError { throw botsError }
         return rosterProfiles ?? profiles
     }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw ConversationServiceError.rejected(-32601) }
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
         directoryCount += 1
         await (directoryBarriers[profile] ?? directoryBarrier)?.wait()

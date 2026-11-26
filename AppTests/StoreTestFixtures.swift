@@ -38,9 +38,6 @@ import BottoCore
     var connectedConfigurations: [ConnectionConfiguration] = []
     var profiles: [BotProfile]
     var botsBarrier: StoreTestBarrier?
-    var createdBot: BotProfile?
-    var avatarGenerator: ((String, BotProfile) async throws -> BotAvatarGeometry)?
-    var createCount = 0
     var info = ServerInfo(version: "test", installID: "test-install")
     var chat = Conversation(id: "runtime", storedID: "stored", profileID: "milo")
     var uploadedConversations: [Conversation] = []
@@ -80,15 +77,6 @@ import BottoCore
     }
     func disconnect() { recovery?.cancel() }
     func bots() async throws -> [BotProfile] { await botsBarrier?.wait(); return profiles }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile {
-        createCount += 1
-        guard let createdBot else { throw ConversationServiceError.disconnected }
-        return createdBot
-    }
-    func generateAvatar(description: String, for bot: BotProfile) async throws -> BotAvatarGeometry {
-        guard let avatarGenerator else { throw BotAvatarGenerationError.unsupportedHost }
-        return try await avatarGenerator(description, bot)
-    }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")

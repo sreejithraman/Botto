@@ -1528,7 +1528,6 @@ import UIKit
     }
     func markChannelVisited(threadID: String) async throws { visitedThreads.append(threadID) }
 
-    func createBot(_ draft: BotDraft) async throws -> BotProfile { throw T3ServiceError.unsupported }
     func createChat(title: String?) async throws -> CreatedSession {
         await createGate?.wait()
         let id = "chat-\(createdThreads.count + 1)"

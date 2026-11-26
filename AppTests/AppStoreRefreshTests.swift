@@ -483,9 +483,7 @@ import BottoCore
     var profiles = [BotProfile(id: "milo", name: "Milo")]
     var previewMessages: [String: [ChatMessage]] = [:]
     var directories: [ExactID: ConversationDirectory] = [:]
-    var createdDrafts: [BotDraft] = []
     var readError: (any Error)?
-    var omitsCreatedProfile = false
     private var gates: [RefreshGate] = []
     private var pendingGates: [RefreshGate] = []
     private(set) var readCount = 0
@@ -504,20 +502,13 @@ import BottoCore
     }
     func disconnect() {}
     func bots() async throws -> [BotProfile] {
-        let snapshot = profiles.filter { !omitsCreatedProfile || $0.id != "orbit" }
+        let snapshot = profiles
         let error = readError
         readCount += 1
         defer { finishedReads += 1 }
         if !pendingGates.isEmpty { await pendingGates.removeFirst().wait() }
         if let error { throw error }
         return snapshot
-    }
-    func createBot(_ draft: BotDraft) async throws -> BotProfile {
-        createdDrafts.append(draft)
-        let bot = BotProfile(id: "orbit", name: draft.name)
-        profiles.append(bot)
-        onEvent?(.botsChanged)
-        return bot
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
