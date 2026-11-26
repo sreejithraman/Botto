@@ -53,10 +53,11 @@ final class ConversationUITests: XCTestCase {
         app.launchArguments = ["--demo"]
         app.launch()
         WorkspaceNavigation.openSpace("iris", in: app)
-        let opening = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Here’s a lighter opening:")).firstMatch
+        let reply = app.otherElements["transcript-message-i2"]
+        // The closed Spaces drawer repeats this first line off-screen; select it in the reply.
+        let opening = reply.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Here’s a lighter opening:")).firstMatch
         XCTAssertTrue(opening.waitForExistence(timeout: 5))
         opening.press(forDuration: 1)
-        let reply = app.otherElements["transcript-message-i2"]
         let leading = app.otherElements["com.apple.text.grabber.leading"]
         let trailing = app.otherElements["com.apple.text.grabber.trailing"]
         XCTAssertTrue(leading.waitForExistence(timeout: 3) && trailing.exists)
@@ -64,9 +65,19 @@ final class ConversationUITests: XCTestCase {
             .press(forDuration: 0.1, thenDragTo: reply.coordinate(withNormalizedOffset: CGVector(dx: 0.001, dy: 0.03)))
         trailing.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: reply.coordinate(withNormalizedOffset: CGVector(dx: 0.999, dy: 1.2)))
-        app.typeKey("c", modifierFlags: .command)
+        // Synthesized ⌘C and ⌘V can be dropped, so use the edit menus. Seed the pasteboard so a
+        // copy that never happens can't pass on whatever it held before.
+        UIPasteboard.general.string = "Not the selected reply"
+        NativeMenu.choose(app.menuItems["Copy"])
         let composer = app.descendants(matching: .any)["chat-composer"]
-        composer.tap(); composer.typeKey("v", modifierFlags: .command)
+        composer.tap()
+        // A tap on the focused composer opens its edit menu. A tap while the keyboard is still
+        // animating can miss it, so allow a few.
+        let paste = app.menuItems["Paste"]
+        for _ in 0..<3 where !paste.exists {
+            composer.tap(); _ = paste.waitForExistence(timeout: 2)
+        }
+        NativeMenu.choose(paste)
         let allowPaste = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow Paste"]
         if allowPaste.waitForExistence(timeout: 1) { allowPaste.tap() }
         let expected = "Here’s a lighter opening:\n\n“We’ve been thinking about a simpler way to do this. Here’s what we tried, what surprised us, and where we’re going next.”\n\nIt gets to the idea sooner and gives people a reason to keep reading."
