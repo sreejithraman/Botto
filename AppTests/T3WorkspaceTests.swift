@@ -1294,6 +1294,94 @@ import UIKit
         }
     }
 
+    /// The Spaces drawer is modal for VoiceOver, so while it is closed it must also stay out of the accessibility
+    /// tree, or VoiceOver could be held in the off-screen drawer. XCUITest can't check this: its snapshot lists
+    /// the closed drawer at x = -372 along with elements marked accessibilityHidden. This reads the hosted
+    /// tree the app exposes to assistive technology instead. It doesn't model how VoiceOver arbitrates modal views.
+    @Test func accessibilityExposesOnlyTheVisibleSideOfTheDrawer() async throws {
+        let configuration = t3Configuration()
+        defer { LocalHistory.remove(for: configuration.id) }
+        let store = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
+        await store.start()
+        try NativeAccessibilityRuntime.enable()
+        // The window belongs to the test host's foreground scene, but SwiftUI's scene phase comes from an App
+        // scene, which a bare window lacks; the toolbar acts only while it is active.
+        let workspace = T3Workspace(store: store, presentation: WorkspacePresentation(), rootCovered: false, onSettings: {})
+        try await withHosted(workspace.environment(\.scenePhase, .active)) { window in
+            var exposed = try await expose(window, "The chat opens with the drawer closed") {
+                $0.byID["t3-chat-header"] != nil && $0.byID["t3-open-drawer"] != nil
+            }
+            #expect(!exposed.reached.contains("t3-spaces-drawer"), "\(exposed.reached.sorted())")
+            // In this fixture the closed drawer is the only thing laid out left of the window, so this also catches
+            // a leaked drawer element that has no identifier, such as the Spaces heading.
+            #expect(exposed.leftOfWindow.isEmpty, "\(exposed.leftOfWindow)")
+
+            // The toolbar's bar button doesn't take accessibilityActivate() in a test host, so press it as a control.
+            try #require(exposed.byID["t3-open-drawer"] as? UIControl).sendActions(for: .primaryActionTriggered)
+            exposed = try await expose(window, "The drawer opens") { $0.byID["t3-drawer-search"] != nil }
+            #expect(exposed.reached.contains("t3-spaces-drawer"))
+            #expect(exposed.byID["t3-chat-header"] == nil, "\(exposed.byID.keys.sorted())")
+            // The open drawer's search icon is hidden, so a tree that shows it isn't honoring accessibilityHidden. iOS 27 names
+            // it "magnifyingglass" after its symbol; recheck this control if a runtime names it differently.
+            #expect(exposed.byID["magnifyingglass"] == nil)
+        }
+    }
+
+    private struct Exposed {
+        /// The window's left edge in screen coordinates, which accessibility frames use.
+        var windowMinX: CGFloat = 0
+        /// Accessibility elements, by identifier.
+        var byID: [String: NSObject] = [:]
+        /// Identifiers of every node reached, containers included.
+        var reached: Set<String> = []
+        /// Elements lying wholly left of the window, by identifier or label.
+        var leftOfWindow: [String] = []
+    }
+
+    /// The accessibility elements the hosted view exposes, once `ready` holds.
+    private func expose(_ window: UIWindow, _ reason: String, until ready: (Exposed) -> Bool) async throws -> Exposed {
+        var exposed = Exposed()
+        let settled = try await waitWhile(reason, diagnostics: { "\(exposed.reached.sorted()) left=\(exposed.leftOfWindow)" }) {
+            window.layoutIfNeeded()
+            exposed = Exposed(windowMinX: window.convert(window.bounds, to: window.screen.coordinateSpace).minX)
+            var seen: Set<ObjectIdentifier> = []
+            collectExposedElements(window, into: &exposed, seen: &seen)
+            if ready(exposed) { return false }
+            try await Task.sleep(for: .milliseconds(50))
+            return true
+        }
+        try #require(settled, "Timed out: \(reason)")
+        return exposed
+    }
+
+    /// Skips hidden subtrees and stops at elements. A container's own element list, even an empty one, wins over its subviews.
+    private func collectExposedElements(_ object: NSObject, into exposed: inout Exposed, seen: inout Set<ObjectIdentifier>) {
+        guard seen.insert(ObjectIdentifier(object)).inserted, !object.accessibilityElementsHidden else { return }
+        if let view = object as? UIView, view.isHidden || view.alpha == 0 { return }
+        // SwiftUI's accessibility nodes answer accessibilityIdentifier without declaring UIAccessibilityIdentification.
+        let identify = NSSelectorFromString("accessibilityIdentifier")
+        let id = (object.responds(to: identify) ? object.perform(identify)?.takeUnretainedValue() as? String : nil)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        if let id { exposed.reached.insert(id) }
+        if object.isAccessibilityElement {
+            if let id { exposed.byID[id] = object }
+            let frame = object.accessibilityFrame
+            if !frame.isEmpty, frame.maxX <= exposed.windowMinX {
+                exposed.leftOfWindow.append(id ?? object.accessibilityLabel ?? "\(type(of: object))")
+            }
+            return
+        }
+        let children: [NSObject]
+        if let elements = object.accessibilityElements {
+            children = elements.compactMap { $0 as? NSObject }
+        } else if case let count = object.accessibilityElementCount(), count > 0, count != NSNotFound {
+            children = (0..<count).compactMap { object.accessibilityElement(at: $0) as? NSObject }
+        } else {
+            children = (object as? UIView)?.subviews ?? []
+        }
+        for child in children { collectExposedElements(child, into: &exposed, seen: &seen) }
+    }
+
     @Test func aBotSomeoneAlreadyKnowsSkipsFirstRun() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
