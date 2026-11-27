@@ -74,7 +74,7 @@ final class MacBottoStore {
     var showsProviderGuide: Bool { !providersNeedingSetup.isEmpty && !hasStartedTalking && !fresh.ownsFirstSend }
     var canStartSpace: Bool { isConnected && !showsProviderGuide }
 
-    private let service: any T3BotBrainControlling
+    private let service: any BotService
     private var pushService: T3BotService? { service as? T3BotService }
 
     func observePush(_ activity: @escaping (T3PushActivity) -> Void) {
@@ -88,7 +88,7 @@ final class MacBottoStore {
     private var openID = UUID()
     private var sessionWrite: Task<Void, Never>?
 
-    init(session: MacSessionPersistence = MacSessionPersistence(), service: any T3BotBrainControlling = T3BotService(),
+    init(session: MacSessionPersistence = MacSessionPersistence(), service: any BotService = T3BotService(),
          exchange: T3PairingExchange = T3PairingExchange()) {
         self.session = session
         self.exchange = exchange

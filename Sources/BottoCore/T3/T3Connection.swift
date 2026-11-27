@@ -208,59 +208,6 @@ public struct T3ScheduledRoutine: Identifiable, Equatable, Sendable {
     }
 }
 
-@MainActor public protocol T3BotBrainControlling: BotService {
-    var currentBotWorkspaceRoot: String? { get }
-    var currentT3Channels: [T3ChannelSummary] { get }
-    func loadBotBrain() async throws -> T3BotBrainSnapshot
-    func saveSoul(_ markdown: String, replacing expected: String?) async throws
-    func saveMemory(_ markdown: String, replacing expected: String?) async throws
-    func saveManifest(_ manifest: T3BotManifest) async throws
-    @discardableResult func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest
-    /// Creates a space. A title is kept as given; without one, T3 names the space from its first message.
-    func createChat(title: String?) async throws -> CreatedSession
-    func renameChannel(threadID: String, title: String) async throws
-    func setChannelPinned(threadID: String, pinned: Bool) async throws
-    func archiveChannel(threadID: String, archived: Bool) async throws
-    func markChannelVisited(threadID: String) async throws
-    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws
-    func availableModels() async throws -> [T3ModelOption]
-    /// The host's model providers, looked for anew. What it remembers can miss a sign-in or sign-out.
-    func providers() async throws -> [T3ProviderStatus]
-    func readProjectFile(relativePath: String) async throws -> String
-    func listOutputs() async throws -> [T3OutputFile]
-    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact
-    func listRoutines() async throws -> [T3ScheduledRoutine]
-    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine
-    func setRoutineEnabled(id: String, enabled: Bool) async throws
-    func deleteRoutine(id: String) async throws
-}
-
-public extension T3BotBrainControlling {
-    func markChannelVisited(threadID: String) async throws { throw T3ServiceError.unsupported }
-
-    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
-        throw T3ServiceError.unsupported
-    }
-
-    func providers() async throws -> [T3ProviderStatus] { [] }
-
-    func listOutputs() async throws -> [T3OutputFile] { [] }
-
-    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact {
-        throw T3ServiceError.unsupported
-    }
-
-    func listRoutines() async throws -> [T3ScheduledRoutine] { [] }
-
-    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
-        throw T3ServiceError.unsupported
-    }
-
-    func setRoutineEnabled(id: String, enabled: Bool) async throws { throw T3ServiceError.unsupported }
-
-    func deleteRoutine(id: String) async throws { throw T3ServiceError.unsupported }
-}
-
 public enum T3BotBootstrap {
     public static let workspaceRoot = "~/.botto/bots/main"
     public static let defaultManifest = T3BotManifest(displayName: "Botto")

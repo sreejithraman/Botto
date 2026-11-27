@@ -574,7 +574,7 @@ import BottoCore
     }
 }
 
-@MainActor private final class CaptureTestService: BotService {
+@MainActor private final class CaptureTestService: ConversationTestService {
     var onEvent: ((BotServiceEvent) -> Void)?
     let profiles = [BotProfile(id: "helper", name: "Helper")]
     let first = SessionIdentity(profile: try! ExactID("helper"), root: try! ExactID("main"),
@@ -601,7 +601,6 @@ import BottoCore
         .init(summaries: profile == first.profile ? [.init(identity: first, title: "Main", isCanonical: true, persistence: .durable)] : [],
             activity: [:])
     }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now

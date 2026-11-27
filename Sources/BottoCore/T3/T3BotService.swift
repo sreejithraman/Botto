@@ -29,7 +29,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
-@MainActor public final class T3BotService: T3BotBrainControlling {
+@MainActor public final class T3BotService: BotService {
     public typealias WebSocketFactory = @Sendable (URLRequest) throws -> any T3WebSocketTransport
     public var onEvent: ((BotServiceEvent) -> Void)?
     public var onPushActivity: ((T3PushActivity) -> Void)?
@@ -667,10 +667,6 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     public func conversations(profile: ExactID) async throws -> ConversationDirectory {
         try directory(requireSession(profile: profile)).directory
-    }
-
-    public func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession {
-        try await createThread(title: nil, operationID: operationID, in: requireSession(profile: profile))
     }
 
     public func createChat(title: String?) async throws -> CreatedSession {

@@ -533,11 +533,10 @@ import UniformTypeIdentifiers
     }
 }
 
-@MainActor private final class ArtifactService: BotService {
+@MainActor private final class ArtifactService: ConversationTestService {
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     let profiles = [BotProfile(id: "canvas", name: "Canvas"), BotProfile(id: "other", name: "Other")]

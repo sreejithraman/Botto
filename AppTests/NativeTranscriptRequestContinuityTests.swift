@@ -403,7 +403,7 @@ import BottoCore
 
 /// The protocol is the external boundary. Keep real workspace/publication and
 /// file authority underneath it; record only outgoing responses and roster data.
-@MainActor final class NativeTranscriptReviewService: BotService {
+@MainActor final class NativeTranscriptReviewService: ConversationTestService {
     let base: WorkspaceTestService
     var profile: BotProfile
     var responseValues: [RequestResponse] = []
@@ -418,7 +418,6 @@ import BottoCore
     func disconnect() { base.disconnect() }
     func bots() async throws -> [BotProfile] { [profile] }
     func conversations(profile: ExactID) async throws -> ConversationDirectory { try await base.conversations(profile: profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { try await base.createConversation(profile: profile, operationID: operationID) }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation { try await base.openChat(target) }
     func markVisited(through mark: VisitMark, access: ConversationAccess) async throws { try await base.markVisited(through: mark, access: access) }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {

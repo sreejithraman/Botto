@@ -423,7 +423,7 @@ private actor StartupPairingAttempts {
 }
 
 /// A host with one new bot, as a first launch finds it.
-@MainActor private final class FirstRunHost: T3BotBrainControlling {
+@MainActor private final class FirstRunHost: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
     var failsRename = false
     var failsProviders = false
@@ -510,7 +510,6 @@ private actor StartupPairingAttempts {
     func archiveChannel(threadID: String, archived: Bool) async throws {}
     func readProjectFile(relativePath: String) async throws -> String { throw T3ServiceError.unsupported }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw T3ServiceError.unsupported }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt {
         let identity = try issuer.resolve(access)
@@ -529,4 +528,17 @@ private actor StartupPairingAttempts {
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         throw T3ServiceError.unsupported
     }
+    func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? { nil }
+    func replaceQueuedMessage(_ message: QueuedMessage, text: String, access: ConversationAccess,
+                              operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+    func markChannelVisited(threadID: String) async throws { throw T3ServiceError.unsupported }
+    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws { throw T3ServiceError.unsupported }
+    func listOutputs() async throws -> [T3OutputFile] { [] }
+    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact { throw T3ServiceError.unsupported }
+    func listRoutines() async throws -> [T3ScheduledRoutine] { [] }
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule,
+                       threadID: String?) async throws -> T3ScheduledRoutine { throw T3ServiceError.unsupported }
+    func setRoutineEnabled(id: String, enabled: Bool) async throws { throw T3ServiceError.unsupported }
+    func deleteRoutine(id: String) async throws { throw T3ServiceError.unsupported }
 }

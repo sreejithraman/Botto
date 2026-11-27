@@ -9,6 +9,26 @@ import BottoCore
         return service
     }
 
+    /// The Demo has no host, so it offers no providers or routines and refuses a space's own model.
+    func testDemoOffersNoRoutinesOrSpaceModels() async throws {
+        let service = try await connected()
+        let providers = try await service.providers(), routines = try await service.listRoutines()
+        XCTAssertTrue(providers.isEmpty)
+        XCTAssertTrue(routines.isEmpty)
+        let daily = try XCTUnwrap(T3RoutineSchedule(hour: 9, minute: 0))
+        let refusals: [() async throws -> Void] = [
+            { try await service.setChannelModel(threadID: "milo", providerInstanceID: "claude", model: "claude-test") },
+            { _ = try await service.createRoutine(name: "Daily", prompt: "Hi", schedule: daily, threadID: nil) },
+            { try await service.setRoutineEnabled(id: "any", enabled: false) },
+            { try await service.deleteRoutine(id: "any") },
+        ]
+        for refusal in refusals {
+            do { try await refusal(); XCTFail("The Demo should refuse this") } catch {
+                XCTAssertEqual(error as? T3ServiceError, .unsupported)
+            }
+        }
+    }
+
     func testQueuedAdmissionsDrainInFIFOOrderWithoutRestartingActiveReply() async throws {
         let directory = try makeGateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -337,9 +357,7 @@ import BottoCore
         let main = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
         XCTAssertEqual(main.snapshot.messages.first?.text, "Help me get a handle on tomorrow.")
         XCTAssertEqual(main.snapshot.pendingRequests.first?.id, "demo-approval")
-        let operation = UUID()
-        let created = try await service.createConversation(profile: profile, operationID: operation)
-        XCTAssertEqual(created.operationID, operation)
+        let created = try await service.createChat(title: nil)
         XCTAssertFalse(created.summary.isCanonical)
         XCTAssertNotEqual(created.summary.identity.root, main.identity.root)
         let side = try await service.openChat(.stored(created.summary.identity))
@@ -378,7 +396,7 @@ import BottoCore
         let report = ChatAttachment(name: "report.pdf", path: "/demo/canvas/report.pdf", mimeType: "application/pdf")
         let data = try await service.downloadArtifact(report, access: canvas.access)
         XCTAssertTrue(data.data.starts(with: Data("%PDF".utf8)))
-        let created = try await service.createConversation(profile: canvas.identity.profile, operationID: UUID())
+        let created = try await service.createChat(title: nil)
         let side = try await service.openChat(.stored(created.summary.identity))
         do {
             _ = try await service.downloadArtifact(report, access: side.access)
@@ -418,7 +436,7 @@ import BottoCore
         let service = try await connected()
         let main = try await service.openChat(.canonical(profile: try ExactID("milo"), expectedRoot: nil))
         let request = try XCTUnwrap(main.snapshot.pendingRequests.first)
-        let side = try await service.createConversation(profile: main.identity.profile, operationID: UUID())
+        let side = try await service.createChat(title: nil)
         let other = try await service.openChat(.stored(side.summary.identity))
         do {
             _ = try await service.respond(to: request, response: .choice("once"), access: other.access, operationID: UUID())
@@ -439,7 +457,7 @@ import BottoCore
         let service: any BotService = DemoBotService(gateDirectory: directory)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         let main = try await service.openChat(.canonical(profile: try ExactID("milo"), expectedRoot: nil))
-        let side = try await service.createConversation(profile: main.identity.profile, operationID: UUID())
+        let side = try await service.createChat(title: nil)
         let hold = directory.appendingPathComponent("send-ack.hold")
         try Data().write(to: hold)
         let operation = UUID()
@@ -463,7 +481,7 @@ import BottoCore
         let service: any BotService = DemoBotService(gateDirectory: directory)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         let main = try await service.openChat(.canonical(profile: try ExactID("milo"), expectedRoot: nil))
-        let side = try await service.createConversation(profile: main.identity.profile, operationID: UUID())
+        let side = try await service.createChat(title: nil)
         let hold = directory.appendingPathComponent("open-2.hold")
         try Data().write(to: hold)
         let oldOpen = Task { try await service.openChat(.stored(main.identity)) }
@@ -481,7 +499,7 @@ import BottoCore
         let source = try await service.openChat(.stored(demoSpaceIdentity("canvas")))
         let uploaded = try await service.upload(data: Data("hello".utf8), filename: "hello.txt", mimeType: "text/plain", access: source.access)
         XCTAssertNotNil(uploaded.stagingID)
-        let side = try await service.createConversation(profile: source.identity.profile, operationID: UUID())
+        let side = try await service.createChat(title: nil)
         let b = try await service.openChat(.stored(side.summary.identity))
         do {
             _ = try await service.send(text: "Wrong source", attachments: [uploaded], access: b.access, operationID: UUID())
@@ -522,7 +540,7 @@ import BottoCore
         let service: any BotService = DemoBotService(gateDirectory: directory)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         let source = try await service.openChat(.stored(demoSpaceIdentity("canvas")))
-        let side = try await service.createConversation(profile: source.identity.profile, operationID: UUID())
+        let side = try await service.createChat(title: nil)
         let hold = directory.appendingPathComponent("upload.hold")
         try Data().write(to: hold)
         let upload = Task { try await service.upload(data: Data("late".utf8), filename: "late.txt", mimeType: "text/plain", access: source.access) }
@@ -545,7 +563,7 @@ import BottoCore
         let profile = try ExactID("milo")
         let hold = directory.appendingPathComponent("create-chat.hold")
         try Data().write(to: hold)
-        let create = Task { try await service.createConversation(profile: profile, operationID: UUID()) }
+        let create = Task { try await service.createChat(title: nil) }
         try await waitForMarker("create-chat.started", directory: directory)
         service.disconnect()
         _ = try await service.connect(configuration: configuration)
@@ -559,8 +577,8 @@ import BottoCore
     func testConcurrentWorkAndStopRemainIndependentPerChat() async throws {
         let service = try await connected()
         let profile = try ExactID("milo")
-        let a = try await service.createConversation(profile: profile, operationID: UUID())
-        let b = try await service.createConversation(profile: profile, operationID: UUID())
+        let a = try await service.createChat(title: nil)
+        let b = try await service.createChat(title: nil)
         let first = try await service.openChat(.stored(a.summary.identity))
         _ = try await service.send(text: "A work", attachments: [], access: first.access, operationID: UUID())
         let second = try await service.openChat(.stored(b.summary.identity))
@@ -579,7 +597,7 @@ import BottoCore
     func testRosterRefreshSamplesCompletedSiblingActivityWithoutChangingSelection() async throws {
         let service = try await connected()
         let profile = try ExactID("milo")
-        let created = try await service.createConversation(profile: profile, operationID: UUID())
+        let created = try await service.createChat(title: nil)
         let source = try await service.openChat(.stored(created.summary.identity))
         _ = try await service.send(text: "Work in A", attachments: [], access: source.access, operationID: UUID())
         let directory = try await service.conversations(profile: profile)
@@ -691,7 +709,7 @@ import BottoCore
 
     private func emptyConversation(_ service: DemoBotService) async throws -> OpenedConversation {
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
-        let created = try await service.createConversation(profile: ExactID("milo"), operationID: UUID())
+        let created = try await service.createChat(title: nil)
         return try await service.openChat(.stored(created.summary.identity))
     }
 

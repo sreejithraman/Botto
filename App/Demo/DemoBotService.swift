@@ -2,7 +2,7 @@ import Foundation
 import BottoCore
 
 /// A separate, labeled workspace. It never connects to a host or performs work.
-@MainActor final class DemoBotService: T3BotBrainControlling {
+@MainActor final class DemoBotService: BotService {
     static let profileID = "milo"
     var onEvent: ((BotServiceEvent) -> Void)?
     private var bot = BotProfile(id: "milo", name: "Milo",
@@ -160,10 +160,6 @@ import BottoCore
         return manifest
     }
 
-    func createChat(title: String?) async throws -> CreatedSession {
-        try await createConversation(profile: ExactID(bot.id), operationID: UUID(), title: title)
-    }
-
     func renameChannel(threadID: String, title: String) async throws {
         let key = try spaceKey(threadID)
         titles[key] = title
@@ -185,7 +181,13 @@ import BottoCore
         visited[threadID] = .now
     }
 
+    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws {
+        throw T3ServiceError.unsupported
+    }
+
     func availableModels() async throws -> [T3ModelOption] { [] }
+
+    func providers() async throws -> [T3ProviderStatus] { [] }
 
     func readProjectFile(relativePath: String) async throws -> String {
         switch relativePath {
@@ -205,6 +207,16 @@ import BottoCore
         guard let file = sampleFiles[output.relativePath] else { throw ConversationServiceError.invalidAttachment }
         return file
     }
+
+    func listRoutines() async throws -> [T3ScheduledRoutine] { [] }
+
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine {
+        throw T3ServiceError.unsupported
+    }
+
+    func setRoutineEnabled(id: String, enabled: Bool) async throws { throw T3ServiceError.unsupported }
+
+    func deleteRoutine(id: String) async throws { throw T3ServiceError.unsupported }
 
     private var sampleFiles: [String: DownloadedArtifact] { artifacts[Data("canvas".utf8)] ?? [:] }
 
@@ -239,13 +251,9 @@ import BottoCore
         return ConversationDirectory(summaries: keys.compactMap(summary), activity: observations(profile))
     }
 
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession {
-        try await createConversation(profile: profile, operationID: operationID, title: nil)
-    }
-
-    private func createConversation(profile: ExactID, operationID: UUID, title: String?) async throws -> CreatedSession {
+    func createChat(title: String?) async throws -> CreatedSession {
+        let profile = try ExactID(bot.id), operationID = UUID()
         try requireProfile(profile)
-        try claim(operationID)
         let epoch = connection
         #if DEBUG
         try await waitForUITestFixture("create-chat")

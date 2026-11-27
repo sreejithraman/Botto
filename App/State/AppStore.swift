@@ -517,7 +517,6 @@ import BottoCore
         return configuration?.t3?.label ?? configuration?.serverURL.host ?? "Your Mac"
     }
 
-    private var t3BrainService: (any T3BotBrainControlling)? { service as? any T3BotBrainControlling }
     var primaryT3Bot: BotProfile? { cachedBots.first }
 
     var selectedT3ChannelTitle: String? {
@@ -718,7 +717,7 @@ import BottoCore
     }
 
     var workflowRoutinesAvailable: Bool {
-        isConnected && !showsConnection && active && (t3BrainService as? T3BotService)?.workflowRoutinesAvailable == true
+        isConnected && !showsConnection && active && (service as? T3BotService)?.workflowRoutinesAvailable == true
     }
 
     func withWorkflowRoutines<Value>(_ action: @MainActor (T3BotService) async throws -> Value)
@@ -739,8 +738,7 @@ import BottoCore
         try await withT3Service { try await $0.markChannelVisited(threadID: threadID) }
     }
 
-    private func withT3Service<Value>(_ action: @MainActor (any T3BotBrainControlling) async throws -> Value) async throws -> Value {
-        guard let service = t3BrainService else { throw T3ServiceError.unsupported }
+    private func withT3Service<Value>(_ action: @MainActor (any BotService) async throws -> Value) async throws -> Value {
         guard active, isConnected, !showsConnection else { throw T3ServiceError.disconnected }
         let owner = generation, recovery = attachmentRecoveryGeneration
         try Task.checkCancellation()
@@ -754,7 +752,7 @@ import BottoCore
     }
 
     private func publishT3Channels() {
-        guard isConnected, let service = t3BrainService else { return }
+        guard isConnected else { return }
         let priorPreviews = Dictionary(uniqueKeysWithValues: t3Channels.compactMap { channel -> (String, String)? in
             channel.preview.isEmpty ? nil : (channel.id, channel.preview)
         })
