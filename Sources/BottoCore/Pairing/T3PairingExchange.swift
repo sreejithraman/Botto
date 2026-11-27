@@ -28,6 +28,7 @@ public struct T3WebSocketTicket: Equatable, Sendable {
 
 public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
     case invalidOrigin, missingCredential, redirected, incompatibleProtocol, invalidResponse, unsupportedToken
+    case tooManyRoutes
     case httpStatus(Int)
 
     public var errorDescription: String? {
@@ -38,6 +39,7 @@ public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
         case .incompatibleProtocol: "This environment must support T3 orchestration protocol 2."
         case .invalidResponse: "The T3 Code environment returned an invalid response."
         case .unsupportedToken: "This pairing credential requires a different authentication method."
+        case .tooManyRoutes: "That pairing link lists more addresses than Botto accepts. Get a fresh link from Botto on your Mac."
         case .httpStatus(let status): "The T3 Code environment returned HTTP \(status)."
         }
     }
@@ -90,7 +92,7 @@ public struct T3PairingExchange: Sendable {
         guard let credential = credential?.trimmingCharacters(in: .whitespacesAndNewlines),
               !credential.isEmpty else { throw T3PairingError.missingCredential }
         return T3PairingInput(origin: origin, credential: credential,
-                              routes: PairingRoutes.routes(primary: origin, items: items))
+                              routes: try PairingRoutes.routes(primary: origin, items: items))
     }
 
     public func probeEnvironment(origin: URL) async throws -> T3EnvironmentDescriptor {
