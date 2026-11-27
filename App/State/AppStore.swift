@@ -860,7 +860,8 @@ import BottoCore
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         guard candidate.t3 != nil || injectedService != nil else { return false }
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
-        let candidate = isDemo ? candidate : Self.keepingPrimary(of: configuration, in: candidate)
+        let paired = candidate
+        let candidate = isDemo ? candidate : Self.keepingSetup(of: configuration, in: candidate)
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
         discardPendingService()
@@ -904,13 +905,16 @@ import BottoCore
             saved.installID = info.installID ?? saved.installID
             let previousID = configuration?.id
             let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
-            let changedCache = previousID != saved.id || changedBackendAccount
-            let preservesHistory = changedCache && canPreserveHistory(for: saved, confirmedBy: info)
+            // A re-pairing that kept the saved setup's ID carries its history only to the same workspace.
+            let keptSetup = candidate.id != paired.id
+            let confirmsWorkspace = canPreserveHistory(for: saved, confirmedBy: info)
+            let changedCache = previousID != saved.id || changedBackendAccount || (keptSetup && !confirmsWorkspace)
+            let preservesHistory = (changedCache || keptSetup) && confirmsWorkspace
             let replacementHistory: LocalHistory
             if preservesHistory {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = history.readOnly
-            } else if previousID == saved.id, changedBackendAccount {
+            } else if previousID == saved.id, changedCache {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = .init()
             } else if previousID == saved.id { replacementHistory = history.readOnly }
@@ -924,6 +928,9 @@ import BottoCore
                         try history.save(for: previousID)
                     }
                     replacement = try replacementHistory.prepareReplacement(for: saved.id)
+                } else if keptSetup, !protectedCaches.contains(saved.id) {
+                    // As with a new setup, the history it carries is on disk before the credentials change.
+                    try history.save(for: saved.id)
                 }
                 do { try persistence.save(saved) }
                 catch {
@@ -1020,18 +1027,21 @@ import BottoCore
         pending.service.disconnect()
     }
 
-    /// A new pairing with the same environment keeps the saved setup's primary route when that route
-    /// is still one of the reviewed ones, so the account, history and file cache built from it carry
-    /// over. A Mac's code leads with its LAN route, which may not be the route the phone first paired by.
-    static func keepingPrimary(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
+    /// A new pairing with the same environment keeps the saved setup's ID and primary route when that
+    /// route is still one of the reviewed ones, so the account, history and file cache built from them
+    /// carry over. A Mac's code leads with its LAN route, which may not be the route the phone first
+    /// paired by. Whether the workspace is the same is confirmed once the pairing connects.
+    static func keepingSetup(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
         guard let saved, saved.id != candidate.id, let paired = saved.t3, !paired.environmentID.isEmpty,
               candidate.t3?.environmentID == paired.environmentID,
-              !PairingRoutes.same(saved.serverURL, candidate.serverURL),
               candidate.connectionRoutes.contains(where: { PairingRoutes.same($0, saved.serverURL) }) else { return candidate }
         var kept = candidate
+        kept.id = saved.id
         kept.serverURL = saved.serverURL
-        kept.alternateRoutes = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
+        let alternates = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
             .filter { !PairingRoutes.same($0, saved.serverURL) }
+        kept.alternateRoutes = alternates.isEmpty ? nil : alternates
+        if alternates.isEmpty { kept.lastReachedRoute = nil }
         return kept
     }
 

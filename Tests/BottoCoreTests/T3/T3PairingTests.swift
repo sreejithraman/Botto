@@ -83,7 +83,8 @@ extension T3PairingTests {
             let headers = status == 307 ? ["Location": "https://other.example"] : nil
             return (Data(body.utf8), try #require(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers)))
         }
-        await #expect(throws: T3PairingError.redirected) {
+        // A redirect isn't T3 refusing the code, so the code may be spent.
+        await #expect(throws: T3PairingError.codeMayBeUsed) {
             try await redirect.exchangePairingCredential(origin: origin, credential: "code", clientLabel: "Botto")
         }
         await #expect(throws: T3PairingError.redirected) {

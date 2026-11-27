@@ -5,6 +5,7 @@ import BottoCore
 /// Nothing is sent until the address has been reviewed.
 struct T3PairingView: View {
     let store: AppStore
+    let exchange: T3PairingExchange
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var input: String
@@ -20,8 +21,9 @@ struct T3PairingView: View {
     @State private var connectionTask: Task<Void, Never>?
     @State private var attemptID = UUID()
 
-    init(store: AppStore, input: String = "") {
+    init(store: AppStore, input: String = "", exchange: T3PairingExchange = T3PairingExchange()) {
         self.store = store
+        self.exchange = exchange
         let saved = store.configuration?.serverURL.absoluteString ?? ""
         _input = State(initialValue: input.isEmpty ? saved : input)
         _typesAddress = State(initialValue: !input.isEmpty)
@@ -304,12 +306,14 @@ struct T3PairingView: View {
                 let candidate: ConnectionConfiguration
                 if let existing { candidate = existing }
                 else {
-                    candidate = try await T3PairingExchange().exchangePairingCredential(
+                    candidate = try await exchange.exchangePairingCredential(
                         routes: destinations, credential: review.credential, clientLabel: "Botto"
                     ).configuration
+                    // The code is spent. A later Connect for this review uses what it bought, even when this
+                    // attempt was cancelled meanwhile.
+                    if self.review == review { paired = candidate }
                     try Task.checkCancellation()
                     guard attemptID == owner else { return }
-                    paired = candidate
                 }
                 try Task.checkCancellation()
                 guard attemptID == owner, scenePhase == .active else { return }
@@ -329,17 +333,25 @@ struct T3PairingView: View {
             } catch is CancellationError {
                 return
             } catch {
+                // Even when the attempt was cancelled meanwhile, as when the app went to the background.
+                if T3PairingReview.needsFreshLink(after: error) { retire(review, after: error) }
                 guard !Task.isCancelled, attemptID == owner else { return }
-                if T3PairingReview.needsFreshLink(after: error) {
-                    // The code may be spent, so it is never offered again.
-                    self.review = nil
-                    allowsHTTP = false
-                    input = ""
-                }
                 self.error = T3PairingReview.message(for: error)
                 if scenePhase == .active { BottoHaptics.shared.play(.failure(error)) }
             }
         }
+    }
+
+    /// The code `spent` carries may already be redeemed, so neither its review nor any copy of the code
+    /// is offered again. A typed address stays for a fresh code.
+    private func retire(_ spent: T3PairingReview, after failure: any Error) {
+        guard review == spent else { return }
+        review = nil
+        paired = nil
+        allowsHTTP = false
+        code = ""
+        if T3PairingReview.isPairingLink(input) { input = "" }
+        error = T3PairingReview.message(for: failure)
     }
 
     private func cancelAttempt() {

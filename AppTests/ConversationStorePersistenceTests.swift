@@ -66,7 +66,7 @@ import BottoCore
         #expect(try draft(for: "", preferred: saved, lastSelected: main) == "")
     }
 
-    @Test func verifiedReauthenticationMovesAllChatUUIDsAndPreferencesBeforeKeychainCommit() async throws {
+    @Test func verifiedReauthenticationKeepsAllChatUUIDsAndPreferencesThroughKeychainCommit() async throws {
         let old = t3Setup()
         let candidate = t3Setup(token: "replacement")
         defer { LocalHistory.remove(for: old.id); LocalHistory.remove(for: candidate.id) }
@@ -89,7 +89,9 @@ import BottoCore
         let service = StoreTestService()
         var checkedBeforeKeychain = false
         storage.beforeSave = { saved in
-            guard saved.id == candidate.id else { return }
+            // Re-pairing the same workspace keeps its setup, so its history is already in place.
+            guard saved.t3?.accessToken == candidate.t3?.accessToken else { return }
+            #expect(saved.id == old.id)
             let fresh = try? LocalHistory.load(for: saved.id)
             #expect(Set(fresh?.book.records.map(\.id) ?? []) == [a, b])
             #expect(fresh?.book.preference(profile)?.preferred == b)
@@ -98,7 +100,7 @@ import BottoCore
         let store = AppStore(service: service, persistence: storage.persistence)
         #expect(await store.connect(candidate))
         #expect(checkedBeforeKeychain)
-        let fresh = try LocalHistory.load(for: candidate.id)
+        let fresh = try LocalHistory.load(for: old.id)
         #expect(Set(fresh.book.records.map(\.id)) == [a, b])
         #expect(fresh.book.record(a)?.draft.text == " A draft \n" && fresh.book.record(b)?.draft.text == " B draft \t")
         #expect(fresh.book.record(a)?.transcript?.messages.first?.text == "A transcript")

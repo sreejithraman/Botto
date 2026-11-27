@@ -155,13 +155,14 @@ public struct T3UnreachableRoutes: Error, Equatable, LocalizedError, Sendable {
     }
 
     /// Whether a failure after a route answered as the paired environment belongs to that route, so
-    /// the next one is worth trying. A refused token, a superseded attempt and an RPC error from T3
-    /// itself would be the same on every route.
+    /// the next one is worth trying. That includes an RPC error or a malformed reply to
+    /// `server.getConfig`: the route isn't confirmed until its own config names the environment. A
+    /// refused token and a superseded attempt would be the same on every route.
     nonisolated static func isRouteFailure(_ error: any Error) -> Bool {
         switch error {
-        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403), T3RPCError.remote, T3RPCError.defect: false
+        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): false
         case is URLError, is T3RPCError, T3PairingError.httpStatus, T3PairingError.invalidResponse,
-             T3PairingError.redirected, T3ServiceError.differentEnvironment: true
+             T3PairingError.redirected, T3ServiceError.differentEnvironment, T3ServiceError.invalidResponse: true
         default: false
         }
     }
@@ -189,8 +190,11 @@ extension T3PairingExchange {
                 answered = true
                 return try await use(origin, descriptor)
             } catch {
+                // What a route that answered says about the attempt stands even when it was cancelled
+                // meanwhile, such as a pairing code that may now be spent.
+                if answered && !isRouteFailure(error) { throw error }
                 try Task.checkCancellation()
-                if routes.count == 1 || error is CancellationError || (answered && !isRouteFailure(error)) { throw error }
+                if routes.count == 1 || error is CancellationError { throw error }
                 attempts.append(.init(route: route, reason: T3UnreachableRoutes.reason(for: error, answered: answered)))
             }
         }

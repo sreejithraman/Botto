@@ -52,7 +52,9 @@ private let token = #"{"token_type":"Bearer","access_token":"access"}"#
         #expect(paired.configuration.lastReachedRoute == lan)
     }
 
-    enum UnknownOutcome: CaseIterable { case timedOut, connectionLost, gateway, unreadableSuccess }
+    enum UnknownOutcome: CaseIterable {
+        case timedOut, connectionLost, gateway, unavailable, serverError, requestError, redirected, unreadableSuccess, unsupportedToken
+    }
 
     @Test(arguments: UnknownOutcome.allCases)
     func aCodeWhoseExchangeOutcomeIsUnknownIsNeverSentAgain(_ outcome: UnknownOutcome) async throws {
@@ -64,7 +66,16 @@ private let token = #"{"token_type":"Bearer","access_token":"access"}"#
             case .timedOut: throw URLError(.timedOut)
             case .connectionLost: throw URLError(.networkConnectionLost)
             case .gateway: return try routeReply(request, "", status: 504)
+            case .unavailable: return try routeReply(request, "Service Unavailable", status: 503)
+            // T3 can fail after it consumed the code.
+            case .serverError:
+                return try routeReply(request, #"{"code":"internal_error","reason":"access_token_issuance_failed","traceId":"t"}"#,
+                                      status: 500)
+            case .requestError:
+                return try routeReply(request, #"{"code":"invalid_request","reason":"invalid_scope","traceId":"t"}"#, status: 400)
+            case .redirected: return try routeReply(request, "", status: 307)
             case .unreadableSuccess: return try routeReply(request, "<html>")
+            case .unsupportedToken: return try routeReply(request, #"{"token_type":"DPoP","access_token":"access"}"#)
             }
         }
         await #expect(throws: T3PairingError.codeMayBeUsed) {
@@ -74,14 +85,48 @@ private let token = #"{"token_type":"Bearer","access_token":"access"}"#
         #expect(T3PairingError.codeMayBeUsed.localizedDescription.contains("may already have used this pairing code"))
     }
 
-    @Test func aCodeTheMacRefusedIsReportedAsBefore() async throws {
+    enum Cancelled: CaseIterable { case whileProbing, afterSendingTheCode }
+
+    /// URLSession reports a cancelled request as URLError.cancelled; a test transport as CancellationError.
+    @Test(arguments: Cancelled.allCases, [true, false])
+    func aCancelledExchangeIsSpentOnceTheCodeWasSent(_ stage: Cancelled, asURLError: Bool) async throws {
+        let requests = RouteRequests()
+        let (waiting, waiter) = AsyncStream<Void>.makeStream()
         let exchange = T3PairingExchange { request in
-            try routeReply(request, request.url?.path == "/oauth/token" ? "" : environment,
-                           status: request.url?.path == "/oauth/token" ? 400 : 200)
+            await requests.record(request)
+            let held = (stage == .whileProbing) == (request.url?.path != "/oauth/token")
+            if held {
+                waiter.yield()
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { throw asURLError ? URLError(.cancelled) : error }
+            }
+            return try routeReply(request, request.url?.path == "/oauth/token" ? token : environment)
         }
-        await #expect(throws: T3PairingError.httpStatus(400)) {
+        let attempt = Task {
             try await exchange.exchangePairingCredential(routes: [lan, tunnel], credential: "code", clientLabel: "Botto")
         }
+        for await _ in waiting { break }
+        attempt.cancel()
+        switch stage {
+        case .whileProbing: await #expect(throws: CancellationError.self) { try await attempt.value }
+        case .afterSendingTheCode: await #expect(throws: T3PairingError.codeMayBeUsed) { try await attempt.value }
+        }
+        #expect(await requests.at("/oauth/token") == (stage == .whileProbing ? [] : ["botto.example.com"]))
+    }
+
+    /// T3 answers a credential it doesn't know, or one already used, with 401 `auth_invalid`.
+    @Test func aCodeT3RefusedIsReportedAsBefore() async throws {
+        let requests = RouteRequests()
+        let exchange = T3PairingExchange { request in
+            await requests.record(request)
+            guard request.url?.path == "/oauth/token" else { return try routeReply(request, environment) }
+            return try routeReply(request, #"{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential","traceId":"t"}"#,
+                                  status: 401)
+        }
+        await #expect(throws: T3PairingError.httpStatus(401)) {
+            try await exchange.exchangePairingCredential(routes: [lan, tunnel], credential: "code", clientLabel: "Botto")
+        }
+        #expect(await requests.at("/oauth/token") == ["botto.example.com"])
     }
 
     @Test func whenNoRouteAnswersTheFailureNamesEachOneTried() async throws {

@@ -27,7 +27,7 @@ public struct T3WebSocketTicket: Equatable, Sendable {
 }
 
 public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
-    case invalidOrigin, missingCredential, redirected, incompatibleProtocol, invalidResponse, unsupportedToken
+    case invalidOrigin, missingCredential, redirected, incompatibleProtocol, invalidResponse
     case tooManyRoutes
     /// The code was sent, but whether it was redeemed is unknown, so it can't be tried again.
     case codeMayBeUsed
@@ -40,7 +40,6 @@ public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
         case .redirected: "The T3 Code environment redirected the request."
         case .incompatibleProtocol: "This environment must support T3 orchestration protocol 2."
         case .invalidResponse: "The T3 Code environment returned an invalid response."
-        case .unsupportedToken: "This pairing credential requires a different authentication method."
         case .codeMayBeUsed: "Your Mac may already have used this pairing code. Get a fresh link from Botto on your Mac, then try again."
         case .tooManyRoutes: "That pairing link lists more addresses than Botto accepts. Get a fresh link from Botto on your Mac."
         case .httpStatus(let status): "The T3 Code environment returned HTTP \(status)."
@@ -117,8 +116,9 @@ public struct T3PairingExchange: Sendable {
 
     /// Exchanges the one-time credential at the first route that answers, HTTPS routes first. The
     /// credential works at every route, but only once. Once it may have reached T3, it is never sent
-    /// again: an exchange whose outcome is unknown ends with `codeMayBeUsed`. Only an exchange that
-    /// couldn't be sent moves on to the next route.
+    /// again: anything but a usable token or T3's own refusal of the credential ends with
+    /// `codeMayBeUsed`, including a cancellation after sending. Only an exchange that couldn't be sent
+    /// moves on to the next route.
     public func exchangePairingCredential(routes: [URL], credential: String, clientLabel: String) async throws -> T3PairingResult {
         guard let primary = routes.first else { throw T3PairingError.invalidOrigin }
         let input = try Self.parse(primary.absoluteString, credential: credential)
@@ -134,19 +134,24 @@ public struct T3PairingExchange: Sendable {
         let form = fields.map { Self.formEncode($0.0) + "=" + Self.formEncode($0.1) }.joined(separator: "&")
         let ordered = PairingRoutes.ordered([input.origin] + alternates, lastReached: nil)
         let (origin, descriptor, token) = try await reach(ordered, environmentID: nil, isRouteFailure: Self.wasNotSent) { origin, descriptor in
-            let data: Data
-            do {
-                data = try await request(origin: origin, path: "/oauth/token", method: "POST", body: Data(form.utf8),
-                                         headers: ["Content-Type": "application/x-www-form-urlencoded"])
-            } catch {
-                guard !Self.wasNotSent(error), !Self.wasRefused(error) else { throw error }
+            let post = try Self.prepare(origin: origin, path: "/oauth/token", method: "POST", body: Data(form.utf8),
+                                        headers: ["Content-Type": "application/x-www-form-urlencoded"])
+            try Task.checkCancellation()
+            let data: Data, response: HTTPURLResponse
+            do { (data, response) = try await transport(post) }
+            catch {
+                if Self.wasNotSent(error) { throw error }
+                throw T3PairingError.codeMayBeUsed
+            }
+            // From here T3 may have redeemed the code, unless the reply is its own refusal.
+            guard response.url == post.url, (200..<300).contains(response.statusCode) else {
+                if Self.isCredentialRefusal(data, status: response.statusCode) { throw T3PairingError.httpStatus(response.statusCode) }
                 throw T3PairingError.codeMayBeUsed
             }
             struct Token: Decodable { let access_token: String; let token_type: String }
-            // T3 answered with success, so the code is spent even if the reply can't be read.
-            guard let token = try? JSONDecoder().decode(Token.self, from: data),
-                  !token.access_token.isEmpty else { throw T3PairingError.codeMayBeUsed }
-            guard token.token_type == "Bearer" else { throw T3PairingError.unsupportedToken }
+            // A success spends the code, even when its token can't be read or used.
+            guard let token = try? JSONDecoder().decode(Token.self, from: data), !token.access_token.isEmpty,
+                  token.token_type == "Bearer" else { throw T3PairingError.codeMayBeUsed }
             return (origin, descriptor, token.access_token)
         }
         let t3 = T3Connection(environmentID: descriptor.environmentId, label: descriptor.label, accessToken: token)
@@ -166,11 +171,15 @@ public struct T3PairingExchange: Sendable {
                 .internationalRoamingOff, .dataNotAllowed, .callIsActive].contains(error.code)
     }
 
-    /// The host answered and refused, so the outcome is known. A gateway error from a relay is not
-    /// T3's answer: the relay may have passed the request on.
-    nonisolated static func wasRefused(_ error: any Error) -> Bool {
-        guard case T3PairingError.httpStatus(let status) = error else { return error is T3PairingError }
-        return ![502, 504].contains(status)
+    /// T3 itself refused the credential, so this request didn't redeem it. T3's token endpoint answers
+    /// an unknown or already used credential with 401 `auth_invalid` (`EnvironmentAuthInvalidError` in
+    /// packages/contracts/src/environmentHttp.ts, raised from the token handler in
+    /// apps/server/src/auth/http.ts). Other errors aren't this: T3 can return 400 `invalid_request` or
+    /// 500 `internal_error` after the credential was consumed, and a relay's error may follow a request
+    /// it passed on.
+    nonisolated static func isCredentialRefusal(_ data: Data, status: Int) -> Bool {
+        struct Refusal: Decodable { let code: String }
+        return status == 401 && (try? JSONDecoder().decode(Refusal.self, from: data))?.code == "auth_invalid"
     }
 
     public func mintWebSocketTicket(origin: URL, accessToken: String) async throws -> T3WebSocketTicket {
@@ -205,10 +214,20 @@ public struct T3PairingExchange: Sendable {
 
     func request(origin: URL, path: String, method: String = "GET", token: String? = nil,
                  body: Data? = nil, headers: [String: String] = [:], timeout: TimeInterval = requestTimeout) async throws -> Data {
-        let origin = try Self.validatedOrigin(origin.absoluteString)
+        let request = try Self.prepare(origin: origin, path: path, method: method, token: token, body: body,
+                                       headers: headers, timeout: timeout)
+        let (data, response) = try await transport(request)
+        if (300..<400).contains(response.statusCode) || response.url != request.url { throw T3PairingError.redirected }
+        guard (200..<300).contains(response.statusCode) else { throw T3PairingError.httpStatus(response.statusCode) }
+        return data
+    }
+
+    nonisolated static func prepare(origin: URL, path: String, method: String, token: String? = nil, body: Data?,
+                                    headers: [String: String], timeout: TimeInterval = requestTimeout) throws -> URLRequest {
+        let origin = try validatedOrigin(origin.absoluteString)
         guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains("\\"),
               let endpoint = URL(string: path, relativeTo: origin)?.absoluteURL,
-              try Self.validatedOrigin(endpoint.absoluteString) == origin,
+              try validatedOrigin(endpoint.absoluteString) == origin,
               let components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
               components.fragment == nil else { throw T3PairingError.invalidOrigin }
         guard let url = components.url else { throw T3PairingError.invalidOrigin }
@@ -217,10 +236,7 @@ public struct T3PairingExchange: Sendable {
         request.httpBody = body
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await transport(request)
-        if (300..<400).contains(response.statusCode) || response.url != url { throw T3PairingError.redirected }
-        guard (200..<300).contains(response.statusCode) else { throw T3PairingError.httpStatus(response.statusCode) }
-        return data
+        return request
     }
 
     private static func parameter(_ name: String, from items: [URLQueryItem]?) -> String? {

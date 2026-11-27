@@ -133,8 +133,9 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         try checkAttempt(attempt)
         let token = paired.accessToken
         // The token is sent only once a route has answered as the paired environment. A route that
-        // answers but can't mint a ticket or open the socket counts as failed, and the next is tried.
-        // Nothing about the workspace is read or written until a route has connected.
+        // answers but can't mint a ticket, open the socket, or return its config as that environment
+        // counts as failed, and the next is tried. Nothing about the workspace is read or written
+        // until a route has connected.
         let (origin, descriptor, rpc, config) = try await http.reach(
             configuration.connectionRoutes, environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID,
             isRouteFailure: T3UnreachableRoutes.isRouteFailure
@@ -147,8 +148,11 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             connectingRPC = rpc
             do {
                 let config = try await rpc.call("server.getConfig")
-                if let environmentID = config["environment"]["environmentId"].text, environmentID != descriptor.environmentId {
-                    throw T3ServiceError.differentEnvironment
+                // A route is chosen only once its own config names the environment it answered as.
+                switch config["environment"]["environmentId"].text {
+                case descriptor.environmentId: break
+                case nil: throw T3ServiceError.invalidResponse
+                default: throw T3ServiceError.differentEnvironment
                 }
                 try checkAttempt(attempt)
                 return (origin, descriptor, rpc, config)

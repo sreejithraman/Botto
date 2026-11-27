@@ -1280,6 +1280,62 @@ extension T3BotServiceTests {
     }
 }
 
+extension T3BotServiceTests {
+    @Test(arguments: BrokenConfigSocket.Reply.allCases)
+    func aRouteWhoseConfigFailsOrLacksTheEnvironmentIsSkippedForTheNext(_ reply: BrokenConfigSocket.Reply) async throws {
+        let host = T3ServiceHost(existing: true)
+        let broken = BrokenConfigSocket(reply)
+        let requests = RouteRequests()
+        let sockets = SocketHosts()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            return try await host.http(request)
+        }, webSocket: { request in
+            sockets.record(request)
+            return request.url?.host == "botto.example.com" ? broken : host
+        })
+        var saved: ConnectionConfiguration?
+        service.onEvent = { (event: BotServiceEvent) in if case .configuration(let updated) = event { saved = updated } }
+        defer { service.disconnect() }
+
+        _ = try await service.connect(configuration: paired(lan, [tunnel]))
+        #expect(sockets.hosts == ["botto.example.com", "192.168.1.20"])
+        // Nothing about the workspace is read, created or written at the route that failed.
+        #expect(await broken.tags == ["server.getConfig"])
+        #expect(await requests.at("/api/projects") == ["192.168.1.20"])
+        #expect(saved?.lastReachedRoute == lan)
+    }
+}
+
+/// A socket that answers `server.getConfig` with an RPC error, or with a config that doesn't name
+/// the environment.
+actor BrokenConfigSocket: T3WebSocketTransport {
+    enum Reply: CaseIterable, Sendable { case failure, defect, missingEnvironment }
+    private let reply: Reply
+    private(set) var tags: [String] = []
+    private let (replies, replier) = AsyncStream<Data>.makeStream()
+    init(_ reply: Reply) { self.reply = reply }
+
+    func send(_ data: Data) async throws {
+        let frame = try JSONDecoder().decode(JSONValue.self, from: data)
+        guard frame["_tag"].text == "Request", let id = frame["id"].text else { return }
+        tags.append(frame["tag"].text ?? "")
+        let exit = switch reply {
+        case .failure: #"{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"ConfigError","message":"Unavailable"}}]}"#
+        case .defect: #"{"_tag":"Failure","cause":[{"_tag":"Die","defect":"Lost"}]}"#
+        case .missingEnvironment: #"{"_tag":"Success","value":{"cwd":"/srv","providers":[]}}"#
+        }
+        replier.yield(Data(#"{"_tag":"Exit","requestId":"\#(id)","exit":\#(exit)}"#.utf8))
+    }
+
+    func receive() async throws -> Data {
+        for await data in replies { return data }
+        throw T3RPCError.closed
+    }
+
+    func close() async { replier.finish() }
+}
+
 /// A WebSocket whose upgrade the server refused.
 private actor RefusedSocket: T3WebSocketTransport {
     func send(_ data: Data) async throws { throw URLError(.badServerResponse) }

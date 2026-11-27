@@ -502,7 +502,7 @@ import UIKit
         }
         let storage = MemoryConnectionStorage(saved: previous)
         let store = AppStore(persistence: storage.persistence, makeService: {
-            $0?.id == next.id ? replacement : original
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : original
         })
         await store.start()
         let bot = try #require(store.primaryT3Bot)
@@ -514,14 +514,15 @@ import UIKit
 
         #expect(await store.connect(next))
         #expect(store.chats !== workspace)
-        #expect(storage.saved?.id == next.id)
+        // The same workspace keeps its setup, and with it the history and file cache built on its ID.
+        #expect(storage.saved?.id == previousID)
         #expect(storage.saved?.t3?.projectID == resolved.projectID)
         #expect(storage.saved?.t3?.accessToken == "new-fixture-token")
         #expect(store.draft(for: bot.id) == "Keep the typed draft")
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
     }
 
-    @Test func rePairingTheSameMacThroughANewLinkKeepsItsPrimaryRouteAndHistory() async throws {
+    @Test func rePairingTheSameMacThroughANewLinkKeepsItsSetupHistoryAndFileCache() async throws {
         var previous = t3Configuration()
         previous.t3?.workspaceRoot = "/host/.botto/bots/main"
         let previousID = previous.id
@@ -539,9 +540,17 @@ import UIKit
             bound.workspaceRoot = resolved.workspaceRoot
             return bound
         }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ArtifactCache(root: root)
+        let file = DownloadedArtifact(data: Data("Cached plan".utf8), filename: "plan.txt", mimeType: "text/plain")
+        let key = ArtifactOriginalKey(identity: SessionIdentity(profile: try ExactID("bot-project"), root: try ExactID("release"),
+                                                                stored: try ExactID("release"), aliases: []),
+                                      messageID: Data("m1".utf8), path: Data("/plan.txt".utf8), sourceRevision: Data("r1".utf8))
+        try await cache.session(scope: AppStore.artifactScope(previous)).retainOriginal(file, for: key)
         let storage = MemoryConnectionStorage(saved: previous)
-        let store = AppStore(persistence: storage.persistence, makeService: {
-            $0?.id == next.id ? replacement : T3WorkspaceService()
+        let store = AppStore(persistence: storage.persistence, artifactCache: cache, makeService: {
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : T3WorkspaceService()
         })
         await store.start()
         let bot = try #require(store.primaryT3Bot)
@@ -551,28 +560,40 @@ import UIKit
 
         #expect(await store.connect(next))
         let saved = try #require(storage.saved)
-        #expect(saved.id == next.id)
+        #expect(saved.id == previousID)
         #expect(saved.serverURL == previous.serverURL)
         #expect(saved.alternateRoutes == [lan])
         #expect(saved.lastReachedRoute == lan)
-        #expect(AppStore.artifactScope(saved).serverURL == AppStore.artifactScope(previous).serverURL)
         #expect(store.draft(for: bot.id) == "Keep the typed draft")
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
+        // A file read before re-pairing is still in the cache afterwards, including after the next launch prunes it.
+        let relaunched = AppStore(persistence: storage.persistence, artifactCache: cache, makeService: { _ in T3WorkspaceService() })
+        try await cache.drainMaintenance()
+        #expect(relaunched.configuration?.id == previousID)
+        #expect(try await cache.session(scope: AppStore.artifactScope(saved)).original(for: key)?.artifact.data == file.data)
+        await cache.close()
     }
 
-    @Test func aNewPairingKeepsItsOwnPrimaryUnlessItIsTheSameMacByAReviewedRoute() throws {
+    @Test func aNewPairingKeepsItsOwnSetupUnlessItIsTheSameMacByAReviewedRoute() throws {
         let saved = t3Configuration()
         let lan = try #require(URL(string: "http://192.168.1.10:3774"))
         let tunnel = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"),
-                                             alternateRoutes: [saved.serverURL])
-        #expect(AppStore.keepingPrimary(of: saved, in: tunnel).serverURL == saved.serverURL)
+                                             alternateRoutes: [URL(string: "https://Studio.example:443")!])
+        let kept = AppStore.keepingSetup(of: saved, in: tunnel)
+        #expect(kept.id == saved.id)
+        #expect(kept.serverURL == saved.serverURL)
+        #expect(kept.alternateRoutes == [lan])
+        // Through the same primary route, too.
+        let samePrimary = ConnectionConfiguration(serverURL: saved.serverURL, t3: .init(environmentID: "studio-id", accessToken: "new"))
+        #expect(AppStore.keepingSetup(of: saved, in: samePrimary).id == saved.id)
+        #expect(AppStore.keepingSetup(of: saved, in: samePrimary).alternateRoutes == nil)
         // The saved primary isn't one of the reviewed routes, for example HTTP the person didn't allow.
         let lanOnly = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"))
-        #expect(AppStore.keepingPrimary(of: saved, in: lanOnly) == lanOnly)
+        #expect(AppStore.keepingSetup(of: saved, in: lanOnly) == lanOnly)
         var otherMac = tunnel
         otherMac.t3?.environmentID = "other-environment"
-        #expect(AppStore.keepingPrimary(of: saved, in: otherMac) == otherMac)
-        #expect(AppStore.keepingPrimary(of: nil, in: tunnel) == tunnel)
+        #expect(AppStore.keepingSetup(of: saved, in: otherMac) == otherMac)
+        #expect(AppStore.keepingSetup(of: nil, in: tunnel) == tunnel)
     }
 
     enum Replacement: CaseIterable {
@@ -617,7 +638,9 @@ import UIKit
             #expect(!FileManager.default.fileExists(atPath: candidateCache.path))
         } else {
             try #require(replaced)
-            #expect(storage.saved?.id == candidate.id)
+            // The same Mac by the same route keeps the saved setup; a different project then starts fresh in it.
+            let keepsSetup = replacement == .sameWorkspace || replacement == .differentProject
+            #expect(storage.saved?.id == (keepsSetup ? original.id : candidate.id))
             try #require(await store.openT3Channel(general))
             let current = try #require(store.chats.screen(profile: profile)?.owner)
             #expect(store.chats.draft(current) == (replacement == .sameWorkspace ? draft : ""))
@@ -1317,6 +1340,117 @@ import UIKit
         #expect(!T3PairingReview.needsFreshLink(after: URLError(.cannotConnectToHost)))
     }
 
+    /// The phone goes to the background after the code was sent, which cancels the exchange.
+    @Test func backgroundingAfterTheCodeWasSentRetiresTheReview() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let (sent, sending) = AsyncStream<Void>.makeStream()
+        let exchange = pairingExchange(tokens) {
+            sending.yield()
+            try await Task.sleep(for: .seconds(60))
+            return 200
+        }
+        let host = PairingHost()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        let hosted = HostedPairing(store: store, input: "https://studio.example/pair#token=sent-code", exchange: exchange, host: host)
+        try await withHosted(hosted) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            for await _ in sent { break }
+            host.phase = .background
+            let page = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+            host.phase = .active
+            #expect(!page.contains("Is this your Mac?"))
+            // The link, which carries the code, is gone too.
+            let form = try await expose(window, "The link page settles") { $0.byID["t3-pair-review"] != nil }
+            #expect(form.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == true)
+        }
+        #expect(tokens.sent == ["sent-code"])
+    }
+
+    /// A typed code is retired with its review; the typed address stays for a fresh code.
+    @Test func aTypedCodeThatMayBeSpentIsClearedAndItsAddressKept() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        // A 500 may come after T3 redeemed the code.
+        let exchange = pairingExchange(tokens) { 500 }
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        let hosted = HostedPairing(store: store, input: "https://studio.example", exchange: exchange, host: PairingHost())
+        try await withHosted(hosted) { window in
+            _ = try await expose(window, "The code field shows") { $0.byID["t3-pair-code"] != nil }
+            let secureFields = textInputs(in: window).compactMap { $0 as? UITextField }.filter(\.isSecureTextEntry)
+            let codeField = try #require(secureFields.first)
+            try #require(codeField.becomeFirstResponder())
+            codeField.insertText("typed-code")
+            let typed = try await expose(window, "The typed code can be reviewed") {
+                $0.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == false
+            }
+            try #require(typed.byID["t3-pair-review"]?.accessibilityActivate() == true)
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            _ = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+            let fields = textInputs(in: window)
+            #expect(fields.compactMap { $0 as? UITextField }.filter(\.isSecureTextEntry).allSatisfy { $0.text?.isEmpty != false })
+            #expect(fields.contains { ($0 as? UITextField)?.text == "https://studio.example" || ($0 as? UITextView)?.text == "https://studio.example" })
+        }
+        #expect(tokens.sent == ["typed-code"])
+    }
+
+    @Test func aLinkWithTooManyRoutesSaysSoWhenPastedOrHandedOver() async throws {
+        let link = "https://studio.example/pair#token=A" + (1...4).map { "&route=https%3A%2F%2Froute\($0).example" }.joined()
+        let message = "That link lists more addresses than Botto accepts. Get a fresh one from Botto on your Mac."
+        #expect(T3PairingReview.isPairingLink(link))
+        // Pasting or scanning reviews the link with nothing typed in the code field.
+        #expect(throws: T3PairingError.tooManyRoutes) { try T3PairingReview(link, code: "") }
+        #expect(T3PairingReview.message(for: T3PairingError.tooManyRoutes) == message)
+        try NativeAccessibilityRuntime.enable()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        try await withHosted(ConnectionView(store: store, input: link)) { window in
+            let page = try await labels(in: window) { $0.contains { $0.contains(message) } }
+            #expect(!page.contains("Is this your Mac?"))
+            // The link carries its own code, so the form doesn't ask for one.
+            let form = try await expose(window, "The link page settles") { $0.byID["t3-pair-address"] != nil }
+            #expect(form.byID["t3-pair-code"] == nil)
+        }
+    }
+
+    @Observable @MainActor final class PairingHost { var phase: ScenePhase = .active }
+
+    private struct HostedPairing: View {
+        let store: AppStore
+        let input: String
+        let exchange: T3PairingExchange
+        let host: PairingHost
+        var body: some View {
+            NavigationStack { T3PairingView(store: store, input: input, exchange: exchange) }
+                .environment(\.scenePhase, host.phase)
+        }
+    }
+
+    /// An exchange whose environment answers, and whose token request ends with `tokenStatus`.
+    private func pairingExchange(_ tokens: PairingTokenRequests,
+                                 tokenStatus: @escaping @Sendable () async throws -> Int) -> T3PairingExchange {
+        T3PairingExchange { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            var body = #"{"environmentId":"studio-id","label":"Studio","serverVersion":"2.0","orchestrationProtocolVersion":2}"#
+            var status = 200
+            if url.path == "/oauth/token" {
+                tokens.record(request)
+                status = try await tokenStatus()
+                body = #"{"code":"internal_error","reason":"access_token_issuance_failed","traceId":"t"}"#
+            }
+            return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+
+    private func textInputs(in view: UIView) -> [UIView] {
+        (view is UITextField || view is UITextView ? [view] : []) + view.subviews.flatMap { textInputs(in: $0) }
+    }
+
     @Test func pairingNamesEachRouteItCouldNotReach() {
         let failure = T3UnreachableRoutes(attempts: [
             .init(route: URL(string: "http://192.168.1.10:3774")!, reason: .noAnswer),
@@ -1547,6 +1681,18 @@ import UIKit
     private func t3Configuration() -> ConnectionConfiguration {
         .init(serverURL: URL(string: "https://studio.example")!, installID: "studio-id",
               t3: .init(environmentID: "studio-id", label: "Studio", accessToken: "fixture-only", projectID: "bot-project"))
+    }
+}
+
+/// The codes the token endpoint received.
+private final class PairingTokenRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var codes: [String] = []
+    var sent: [String] { lock.withLock { codes } }
+    func record(_ request: URLRequest) {
+        let form = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+        let code = form.split(separator: "&").first { $0.hasPrefix("subject_token=") }?.dropFirst("subject_token=".count)
+        lock.withLock { codes.append(code.map(String.init) ?? "") }
     }
 }
 

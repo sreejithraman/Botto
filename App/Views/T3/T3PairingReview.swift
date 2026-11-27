@@ -30,9 +30,14 @@ struct T3PairingReview: Equatable {
         return routes
     }
 
+    /// Whether `input` is a whole pairing link rather than an address with its code typed separately.
+    /// A link with more routes than Botto accepts is still a link, so the review can say so.
     static func isPairingLink(_ input: String) -> Bool {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        return URLComponents(string: text)?.scheme?.lowercased() == "t3code" || (try? T3PairingExchange.parse(text)) != nil
+        if URLComponents(string: text)?.scheme?.lowercased() == "t3code" { return true }
+        do { _ = try T3PairingExchange.parse(text); return true }
+        catch T3PairingError.tooManyRoutes { return true }
+        catch { return false }
     }
 
     /// Whether the code may already be spent, so the review can't offer it again.
@@ -47,6 +52,8 @@ struct T3PairingReview: Equatable {
             String(localized: "That address isn’t protected, and it isn’t on your own network. Use your Mac’s LAN or Tailscale link, or an https address.")
         case T3PairingError.missingCredential:
             String(localized: "That link is missing its pairing code. Copy a fresh link from Botto on your Mac.")
+        case T3PairingError.tooManyRoutes:
+            String(localized: "That link lists more addresses than Botto accepts. Get a fresh one from Botto on your Mac.")
         case T3PairingError.invalidOrigin, is PairingAddress.Failure:
             String(localized: "That doesn’t look like a pairing link from Botto on your Mac.")
         case T3PairingError.httpStatus(400), T3PairingError.httpStatus(401), T3PairingError.httpStatus(403):

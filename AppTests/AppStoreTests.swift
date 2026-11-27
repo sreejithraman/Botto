@@ -183,8 +183,9 @@ import BottoCore
         let old = ConnectionConfiguration(serverURL: URL(string: "https://mac.example")!, installID: "test-install",
             t3: .init(environmentID: "test-install", accessToken: "old", projectID: "milo",
                       workspaceRoot: "/host/.botto/bots/milo"))
-        let candidate = ConnectionConfiguration(serverURL: old.serverURL,
-            t3: .init(environmentID: "test-install", accessToken: "new", projectID: "milo",
+        // Another Mac gets a setup of its own, with its own cache. (Re-pairing the same Mac keeps the saved setup.)
+        let candidate = ConnectionConfiguration(serverURL: URL(string: "https://other-mac.example")!,
+            t3: .init(environmentID: "other-install", accessToken: "new", projectID: "milo",
                       workspaceRoot: "/host/.botto/bots/milo"))
         let cacheURL = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                   appropriateFor: nil, create: true)
