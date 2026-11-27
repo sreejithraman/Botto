@@ -276,6 +276,29 @@ import Testing
             #expect(visitedAt.hasSuffix("Z"))
             #expect(T3PairingExchange.date(visitedAt) != nil)
         }
+        #expect(opened.snapshot.visitMark?.hostTime == T3ServiceHost.threadCreatedAt)
+        #expect(automatic["visitedAt"].text == T3ServiceHost.threadCreatedAt, "The open visits through what it opened, by the host's clock")
+    }
+
+    @Test func markingVisitedSendsTheShownHostTimeOnlyForTheCurrentAccess() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        var visits = host.visits.makeAsyncIterator()
+        let first = try await service.openChat(.canonical(profile: try ExactID("bot-project"), expectedRoot: nil))
+        _ = try #require(await visits.next(isolation: MainActor.shared))
+        let current = try await service.openChat(.stored(first.identity))
+        _ = try #require(await visits.next(isolation: MainActor.shared))
+        let shown = VisitMark(hostTime: "2026-11-24T12:00:05.123Z", date: Date(timeIntervalSince1970: 1_795_000_000))
+        await #expect(throws: ConversationServiceError.staleConversation) { try await service.markVisited(through: shown, access: first.access) }
+        // The host records a command before acknowledging it, so a sent visit is already queued here.
+        try await service.markVisited(through: shown, access: current.access)
+        let visit = try #require(await visits.next(isolation: MainActor.shared))
+        #expect(visit["type"].text == "thread.visit")
+        #expect(visit["threadId"].text == "existing-general")
+        #expect(visit["visitedAt"].text == "2026-11-24T12:00:05.123Z", "The shown snapshot's host time, not the phone's clock")
+        #expect(visit["opened"] == .null, "Seeing new activity in an open space isn't another open")
     }
 
     @Test func sendsChannelModelSelectionToT3() async throws {
@@ -1388,6 +1411,7 @@ private actor RefusedSocket: T3WebSocketTransport {
 }
 
 private actor T3ServiceHost: T3WebSocketTransport {
+    static let threadCreatedAt = "2026-11-24T12:00:00.000Z"
     private let socket = T3TestSocket()
     private let root = "/host/.botto/bots/main"
     private var projectID = "bot-project"
@@ -1799,7 +1823,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
             threadStreams[thread] = id
             try chunk(id, values: [
                 .object(["kind": .string("snapshot"), "snapshotSequence": .number(Double(sequence)),
-                         "projection": .object(["thread": .object(["id": .string(thread)]), "visibleTurnItems": .array([])])]),
+                         "projection": .object(["thread": .object(["id": .string(thread), "createdAt": .string(Self.threadCreatedAt)]),
+                                                "visibleTurnItems": .array([])])]),
                 .object(["kind": .string("synchronized")])
             ])
             return

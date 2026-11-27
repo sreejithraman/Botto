@@ -326,33 +326,6 @@ import BottoCore
         XCTAssertEqual(store.chats.draft(try XCTUnwrap(store.chats.screen(profile: profile)?.owner)), "")
     }
 
-    func testReadEvidenceMatchesCompleteLocalReadsAndSelectedPublications() async throws {
-        let service = try await connected()
-        defer { service.disconnect() }
-        let profile = try ExactID("milo")
-        let main = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
-        let initial = try XCTUnwrap(main.readEvidence?.summaryObservedBeforeRead)
-        let directory = try await service.conversations(profile: profile)
-        XCTAssertEqual(initial, directory.summaries.first(where: \.isCanonical))
-        XCTAssertEqual(initial.identity, main.identity)
-
-        let sideSummary = try XCTUnwrap(directory.summaries.first { !$0.isCanonical })
-        let side = try await service.openChat(.stored(sideSummary.identity))
-        XCTAssertEqual(side.readEvidence?.summaryObservedBeforeRead, sideSummary)
-        var publications: [OpenedConversation] = []
-        service.onEvent = { if case .conversation(let value) = $0 { publications.append(value) } }
-        _ = try await service.send(text: "A complete local update", attachments: [],
-                                   access: side.access, operationID: UUID())
-        let updated = try XCTUnwrap(publications.last)
-        let current = try await service.conversations(profile: profile)
-        XCTAssertEqual(updated.identity, side.identity)
-        XCTAssertEqual(updated.snapshot.messages.last?.text, "A complete local update")
-        XCTAssertEqual(updated.readEvidence?.summaryObservedBeforeRead,
-                       current.summaries.first { $0.identity == side.identity })
-        XCTAssertEqual(main.readEvidence?.summaryObservedBeforeRead, initial,
-                       "Later local changes cannot backfill an older read witness.")
-    }
-
     func testOrdinaryDemoHasIndependentSpacesAndPreservesMain() async throws {
         let service = try await connected()
         let profile = try ExactID("milo")
@@ -682,6 +655,32 @@ import BottoCore
         try FileManager.default.removeItem(at: directory.appendingPathComponent("reply-2.hold"))
         try await waitUntil { !latest.isWorking }
         XCTAssertEqual(latest.messages.filter { $0.role == .assistant }.count, 2)
+    }
+
+    func testMarkingVisitedClearsTheSpaceUnreadMarkAndAnnouncesIt() async throws {
+        let directory = try makeGateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("reply-1.hold"))
+        let service = DemoBotService(gateDirectory: directory, performanceFixture: false)
+        let opened = try await emptyConversation(service)
+        var announced = 0
+        var latest = opened.snapshot
+        service.onEvent = {
+            if case .conversationDirectoryChanged = $0 { announced += 1 }
+            if case .conversation(let update) = $0 { latest = update.snapshot }
+        }
+        _ = try await service.send(text: "Seen", attachments: [], access: opened.access, operationID: UUID())
+        try await waitForMarker("reply-1.started", directory: directory)
+        func unread() -> Bool? { service.currentT3Channels.first { $0.id == opened.identity.stored.text }?.isUnread }
+        XCTAssertEqual(unread(), true)
+        XCTAssertNil(opened.snapshot.visitMark, "An empty chat has nothing to visit")
+        let mark = try XCTUnwrap(latest.visitMark)
+        try await service.markVisited(through: .init(hostTime: "", date: mark.date.addingTimeInterval(-1)), access: opened.access)
+        XCTAssertEqual(unread(), true, "A mark from before the message doesn't cover it")
+        announced = 0
+        try await service.markVisited(through: mark, access: opened.access)
+        XCTAssertEqual(unread(), false)
+        XCTAssertEqual(announced, 1)
     }
 
     private func makeGateDirectory() throws -> URL {

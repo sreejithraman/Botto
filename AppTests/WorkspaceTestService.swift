@@ -4,8 +4,6 @@ import BottoCore
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
-    var onOpen: (() -> Void)?
-    var onDownload: (() -> Void)?
     var downloadData = Data("artifact".utf8)
     var downloadError: (any Error)?
     var downloads = 0
@@ -14,7 +12,6 @@ import BottoCore
     var summaries: [SessionSummary]
     var snapshots: [ExactID: Conversation] = [:]
     var openError: (any Error)?
-    var beforeOpenReturn: ((OpenedConversation) -> Void)?
     var openResult: ((OpenedConversation) throws -> OpenedConversation)?
     var completedOpens: [OpenedConversation] = []
     var stopGate: WorkspaceGate?
@@ -36,11 +33,15 @@ import BottoCore
     var createError: (any Error)?
     var directoryError: (any Error)?
     var directoryResult: ConversationDirectory?
-    var readSummaryAvailable = true
     var directoryActivity: [SessionIdentity: ObservedActivity] = [:]
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
     var creates: [UUID] = []
     var opens: [SessionIdentity] = []
+    var visits: [(identity: SessionIdentity, mark: VisitMark)] = []
+    var visitAttempts = 0
+    /// Fails the next visit only.
+    var visitError: (any Error)?
+    var visitGate: WorkspaceGate?
     var uploads: [SessionIdentity] = []
     var uploadError: (any Error)?
     var responses: [PendingRequest] = []
@@ -94,11 +95,7 @@ import BottoCore
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
         let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map { snapshot in
-            let ids = Set(snapshot.messages.map { Data($0.id.utf8) })
-            let proof = !snapshot.hasEarlierMessages
-                && ids.count == snapshot.messages.count && snapshot.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
-                ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
-            return .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages, identityRead: proof)
+            .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages)
         }
         await previewGate?.wait()
         if let previewError { throw previewError }
@@ -121,28 +118,25 @@ import BottoCore
         case .stored(let stored): identity = stored
         }
         opens.append(identity)
-        onOpen?()
         issuer.retireAttachment()
-        // This method models a complete read. Capture inventory before the held read,
-        // never from metadata that arrives while it is suspended.
-        let observed = readSummaryAvailable ? summaries.first { $0.identity.profile == identity.profile && $0.identity.root == identity.root
-            && $0.identity.stored == identity.stored } : nil
-        let opened = try publication(identity, readEvidence: observed.map(ConversationReadEvidence.init))
+        // This method models a complete read; incremental publications use publication(_:).
+        let opened = OpenedConversation(identity: identity, snapshot: snapshots[identity.root]!,
+            access: try issuer.issue(identity), historyReadStartedAt: .now)
         await openGate?.wait()
         if let openError { throw openError }
         let result = try openResult?(opened) ?? opened
-        beforeOpenReturn?(result)
         completedOpens.append(result)
         return result
     }
-    /// Incremental publications carry no read witness unless explicitly supplied by a full-read fixture.
-    func publication(_ identity: SessionIdentity, readEvidence: ConversationReadEvidence? = nil) throws -> OpenedConversation {
-        .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity), readEvidence: readEvidence)
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
+        let identity = try issuer.resolve(access)
+        visitAttempts += 1
+        await visitGate?.wait()
+        if let visitError { self.visitError = nil; throw visitError }
+        visits.append((identity, mark))
     }
-    func fullReadPublication(_ identity: SessionIdentity) throws -> OpenedConversation {
-        let observed = readSummaryAvailable ? summaries.first { $0.identity.profile == identity.profile && $0.identity.root == identity.root
-            && $0.identity.stored == identity.stored } : nil
-        return try publication(identity, readEvidence: observed.map(ConversationReadEvidence.init))
+    func publication(_ identity: SessionIdentity) throws -> OpenedConversation {
+        .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity))
     }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access)
@@ -191,7 +185,6 @@ import BottoCore
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         _ = try issuer.resolve(access)
         downloads += 1
-        onDownload?()
         await downloadGate?.wait()
         if let downloadError { throw downloadError }
         return .init(data: downloadData, filename: attachment.name, mimeType: attachment.mimeType)
@@ -225,4 +218,9 @@ extension ConversationWorkspace {
         guard let claim = captureNavigationClaim() else { return false }
         return await openStoredChat(summary, claim: claim)
     }
+}
+
+extension VisitMark {
+    /// A host time this many seconds in, spelled so a test can tell marks apart.
+    static func at(_ seconds: TimeInterval) -> VisitMark { .init(hostTime: "t\(seconds)", date: Date(timeIntervalSince1970: seconds)) }
 }

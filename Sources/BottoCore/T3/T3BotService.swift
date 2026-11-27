@@ -735,17 +735,26 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let opened = try await attach(identity, in: session, attempt: attempt)
         Task { [weak self, weak session] in
             guard let self, let session else { return }
-            try? await self.visitChannel(identity, in: session)
+            try? await self.visitChannel(identity, in: session, through: opened.snapshot.visitMark)
         }
         return opened
     }
 
-    private func visitChannel(_ identity: SessionIdentity, in session: Session) async throws {
+    /// Moves the host's read watermark to a shown snapshot's host time, so a reply that arrives after the display stays unread.
+    public func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
+        let (session, selection) = try resolve(access)
+        try await visitChannel(selection.identity, in: session, through: mark, opened: false)
+    }
+
+    private func visitChannel(_ identity: SessionIdentity, in session: Session, through mark: VisitMark? = nil, opened: Bool = true) async throws {
         try validate(identity, in: session)
-        let visitedAt = Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
-        _ = try await dispatch("thread.visit", identity: identity, operationID: UUID(), in: session, fields: [
-            "visitedAt": .string(visitedAt), "opened": .bool(true)
-        ])
+        // As in T3's own clients, an open sets `opened`, which the host counts by its own clock, and a visit
+        // to an open space only moves the watermark. Only a visit with no snapshot falls back to the phone's clock.
+        var fields: [String: JSONValue] = [
+            "visitedAt": .string(mark?.hostTime ?? Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+        ]
+        if opened { fields["opened"] = .bool(true) }
+        _ = try await dispatch("thread.visit", identity: identity, operationID: UUID(), in: session, fields: fields)
     }
 
     private func attach(_ identity: SessionIdentity, in session: Session, attempt: UUID) async throws -> OpenedConversation {
@@ -783,8 +792,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let messages = T3ProjectionMapper.visibleItems(page.rows)
             .compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: page.messagesByID) }
         recordPreview(from: messages, for: identity.stored.text, in: session)
-        return ConversationHistoryWindow(messages: messages, hasEarlierMessages: page.more,
-                                         identityRead: page.more ? nil : historyIdentity(identity, messages: messages))
+        return ConversationHistoryWindow(messages: messages, hasEarlierMessages: page.more)
     }
 
     public func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery,
@@ -1684,14 +1692,6 @@ private extension T3BotService {
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(projection["messages"].list ?? [])
         return (rows, messagesByID, more)
-    }
-
-    func historyIdentity(_ identity: SessionIdentity, messages: [ChatMessage]) -> ConversationIdentityRead? {
-        let ids = Set(messages.map { Data($0.id.utf8) })
-        guard ids.count == messages.count, messages.allSatisfy({ $0.hasStableIdentity(storedID: identity.stored.text) }) else {
-            return nil
-        }
-        return ConversationIdentityRead(identity: identity, messageIDs: ids)
     }
 
     func httpJSON(_ session: Session, path: String, headers: [String: String]) async throws -> JSONValue {

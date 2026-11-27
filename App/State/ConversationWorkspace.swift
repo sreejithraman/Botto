@@ -171,26 +171,6 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
     deinit { release() }
 }
 
-private struct ReadObservationKey: Hashable, Sendable {
-    let profile: ExactID
-    let root: ExactID
-    let stored: ExactID
-    let preview: Data
-    let count: Int?
-    let date: Date?
-    init(_ summary: SessionSummary) {
-        profile = summary.identity.profile; root = summary.identity.root; stored = summary.identity.stored
-        preview = Data(summary.preview.utf8); count = summary.messageCount; date = summary.updatedAt
-    }
-    func matches(_ identity: SessionIdentity) -> Bool {
-        profile == identity.profile && root == identity.root && stored == identity.stored
-    }
-    func matches(_ evidence: ChatSummaryEvidence?) -> Bool {
-        evidence?.inventoryTip == stored && evidence?.preview == preview
-            && evidence?.messageCount == count && evidence?.updatedAt == date
-    }
-}
-
 /// One mounted cache, one selected attachment. No live authority is encoded in the book.
 @MainActor @Observable final class ConversationWorkspace {
     private let scope: WorkspaceScope
@@ -256,12 +236,16 @@ private struct ReadObservationKey: Hashable, Sendable {
         var signal: UUID?
     }
     @ObservationIgnored private var stopFeedback: StopFeedback?
-    private var readHint: ReadObservationKey?
-    private var attemptedReads: Set<ReadObservationKey> = []
+    /// How far the host has heard that this access's transcript was seen, with at most one call in flight.
+    private struct HostVisit {
+        let access: ConversationAccess
+        var acknowledged: VisitMark?
+        var sending: VisitMark?
+        var wanted: (owner: PresentationOwner, mark: VisitMark)?
+    }
+    @ObservationIgnored private var hostVisit: HostVisit?
     private var readAuthorityBlocked = false
     private var pendingOperations: [UUID: ChatID] = [:]
-    @ObservationIgnored private var foregroundRead: (id: UUID, task: Task<Void, Never>)?
-    @ObservationIgnored private var retiringForegroundReads: Set<UUID> = []
     @ObservationIgnored private var activityStorage: [ChatID: ObservedActivity] = [:]
     private var activity: [ChatID: ObservedActivity] {
         access(keyPath: \.activity)
@@ -932,14 +916,12 @@ private struct ReadObservationKey: Hashable, Sendable {
             guard !retired, online, directoryReads[profile]?.id == read.id,
                   read.recovery == recovery, read.presentation == presentation else { return }
             directoryReads[profile] = nil; loadingDirectories.remove(profile)
-            if selected.flatMap({ book.record($0)?.profile }) == profile { readHint = nil }
             var available: Set<ChatID> = []
             for summary in directory.summaries where summary.identity.profile == profile {
                 let initialMainBinding = initialMainBindings[profile]
                 let id = mutateBook { $0.merge(summary, initialMainBinding: initialMainBinding) }
                 available.insert(id); availability[id] = true
                 reconcileRequestSource(id)
-                if selected == id { readHint = ReadObservationKey(summary) }
                 let incoming = directory.activity[summary.identity]
                 if case .known(_, let incomingAt) = incoming,
                    case .known(_, let currentAt) = activity[id], currentAt > incomingAt {
@@ -999,15 +981,6 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     func displayed(_ owner: PresentationOwner) {
         guard isCurrent(owner), opening == nil, let chat = live?.snapshot ?? book.record(owner.chat)?.transcript else { return }
-        let observation = online ? live.flatMap { publication -> ChatSummaryEvidence? in
-            guard let evidence = publication.readEvidence?.summaryObservedBeforeRead,
-                  let identity = book.record(owner.chat)?.binding.identity,
-                  identity.profile == publication.identity.profile, identity.root == publication.identity.root,
-                  identity.stored == publication.identity.stored,
-                  evidence.identity.profile == identity.profile, evidence.identity.root == identity.root,
-                  evidence.identity.stored == identity.stored else { return nil }
-            return ChatSummaryEvidence(evidence)
-        } : nil
         let seen = book.record(owner.chat)?.seen
         var applied = false
         withMutation(keyPath: \.book) {
@@ -1015,23 +988,52 @@ private struct ReadObservationKey: Hashable, Sendable {
                   Self.sameSeenCursor(current.seen, seen) else { return }
             bookStorage.update(owner.chat) { record in
                 // A callback may publish newer content; acknowledge only the captured rendered chat.
-                if record.summary == nil, let observation { record.summary = observation }
-                record.displayed(chat, acknowledging: observation, at: .now)
+                record.displayed(chat, at: .now)
             }
             applied = true
         }
-        if applied { onDirty() }
+        guard applied else { return }
+        onDirty()
+        visitHost(chat, owner: owner)
+    }
+    /// The host's unread mark clears only when it learns the person saw a settled reply.
+    private func visitHost(_ shown: Conversation, owner: PresentationOwner) {
+        guard isCurrent(owner), transcriptVisible, online, let access = owner.access, !shown.isWorking,
+              let mark = shown.visitMark else { return }
+        if hostVisit?.access != access { hostVisit = .init(access: access) }
+        // Only a mark newer than what the host has, is being sent or is waiting is worth a call.
+        guard let visit = hostVisit,
+              [visit.acknowledged, visit.sending, visit.wanted?.mark].compactMap({ $0 }).allSatisfy({ $0 < mark }) else { return }
+        hostVisit?.wanted = (owner, mark)
+        sendHostVisit()
+    }
+    private func sendHostVisit() {
+        guard let visit = hostVisit, visit.sending == nil, case let (owner, mark)? = visit.wanted else { return }
+        hostVisit?.sending = mark; hostVisit?.wanted = nil
+        Task { @MainActor [weak self, service] in
+            guard let self else { return }
+            var sent = false
+            // Retirement, a new presentation or a covered transcript since the display cancels the visit.
+            if isCurrent(owner), transcriptVisible, online {
+                sent = (try? await service.markVisited(through: mark, access: visit.access)) != nil
+            }
+            guard hostVisit?.access == visit.access else { return }
+            hostVisit?.sending = nil
+            if sent { hostVisit?.acknowledged = mark }
+            // A newer mark shown meanwhile goes next. A failed one waits for a later display.
+            sendHostVisit()
+        }
     }
     private static func sameSeenCursor(_ a: SeenCursor?, _ b: SeenCursor?) -> Bool {
         (a == nil) == (b == nil) && a?.messageID == b?.messageID && a?.observedAt == b?.observedAt &&
             a?.content == b?.content && a?.summary == b?.summary && a?.rawMessageCount == b?.rawMessageCount
     }
-    /// Called by the mounted view on coverage changes. Covering a transcript prevents
-    /// new optional work; an already dispatched read remains workspace-owned.
+    /// Called by the mounted view on coverage changes. Only a visible transcript
+    /// acknowledges what it shows or plays feedback.
     func setTranscriptVisible(_ visible: Bool, owner: PresentationOwner) {
         guard isCurrent(owner) else { return }
         transcriptVisible = visible
-        if visible { displayed(owner); considerForegroundRead() }
+        if visible { displayed(owner) }
         onVisibleChatChange?(visibleChatIdentity)
     }
     var visibleChatIdentity: SessionIdentity? {
@@ -1039,72 +1041,6 @@ private struct ReadObservationKey: Hashable, Sendable {
               let record = book.record(selected), !record.isUnverified,
               let identity = record.binding.identity, sameSource(identity, live.identity) else { return nil }
         return identity
-    }
-    private func considerForegroundRead() {
-        guard transcriptVisible, online, !retired, opening == nil, foregroundRead == nil,
-              !readAuthorityBlocked, let id = selected, let current = live,
-              let record = book.record(id), !record.isUnverified, record.hasUnseenSummary,
-              let identity = record.binding.identity, sameSource(identity, current.identity),
-              let hint = readHint, hint.matches(identity), hint.matches(record.summary),
-              !attemptedReads.contains(hint),
-              current.readEvidence.map({ ReadObservationKey($0.summaryObservedBeforeRead) }) != hint,
-              !current.snapshot.isWorking, current.snapshot.pendingRequests.isEmpty,
-              sends[id] == nil, stops[id] == nil, (answers[id] ?? [:]).isEmpty,
-              uploadReservations[id] == nil,
-              !imports.values.contains(where: { $0.chat == id }),
-              !pendingOperations.values.contains(id), downloads.isEmpty else { return }
-        let attempt = UUID(), lifetime = selectedViewLifetime
-        // Reserve and retire synchronously, before a caller can queue an action or
-        // SwiftUI can cancel its old owner task. The cached display stays mounted.
-        attemptedReads.insert(hint)
-        readAuthorityBlocked = true
-        if let access = live?.access { retiredRecoveryAccesses.insert(access) }
-        live = nil
-        retireActionOwnership()
-        opening = .init(id: attempt, chat: id)
-        let operationOwner = owner(id)
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.performForegroundRead(attempt, owner: operationOwner, lifetime: lifetime, source: identity)
-        }
-        foregroundRead = (attempt, task)
-    }
-    private func performForegroundRead(_ attempt: UUID, owner: PresentationOwner, lifetime: UUID,
-                                       source: SessionIdentity) async {
-        defer {
-            retiringForegroundReads.remove(attempt)
-            if foregroundRead?.id == attempt {
-                foregroundRead = nil
-                if opening?.id == attempt { opening = nil }
-            }
-        }
-        guard !Task.isCancelled, foregroundRead?.id == attempt, opening?.id == attempt,
-              selectedViewLifetime == lifetime, isCurrent(owner) else { return }
-        do {
-            let opened = book.reconciled(try await service.openChat(.stored(source)), for: owner.chat)
-            guard !Task.isCancelled, foregroundRead?.id == attempt, opening?.id == attempt,
-                  selectedViewLifetime == lifetime, isCurrent(owner) else {
-                retiredRecoveryAccesses.insert(opened.access); return
-            }
-            guard sameSource(opened.identity, source),
-                  Data(opened.snapshot.profileID.utf8) == source.profile.bytes,
-                  Data(opened.snapshot.storedID.utf8) == source.stored.bytes,
-                  book.record(owner.chat)?.binding.identity.map({ sameSource($0, source) }) == true else {
-                retiredRecoveryAccesses.insert(opened.access)
-                throw ConversationServiceError.wrongConversation
-            }
-            // A fresh access always retires artifacts, renders and action callbacks,
-            // even for identical content. Only the selected visual lifetime survives.
-            retireActionOwnership()
-            retiredRecoveryAccesses.remove(opened.access)
-            readAuthorityBlocked = false
-            availability[owner.chat] = true; errors[owner.chat] = nil
-            installTranscript(opened, for: owner.chat, title: book.record(owner.chat)?.title ?? "Chat")
-            // No displayed() call here: only the fresh, visible view may acknowledge.
-        } catch {
-            guard foregroundRead?.id == attempt, selectedViewLifetime == lifetime, isCurrent(owner) else { return }
-            live = nil; avatarActivity.retire(); requestRows = []; errors[owner.chat] = error.localizedDescription
-        }
     }
     private func reserveOperation(_ id: UUID, chat: ChatID) -> WorkspaceOperationReservation {
         pendingOperations[id] = chat
@@ -1117,7 +1053,6 @@ private struct ReadObservationKey: Hashable, Sendable {
         imports[id] = nil
         if sends[chat] == id { sends[chat] = nil }
         if stops[chat] == id { stops[chat] = nil }
-        considerForegroundRead()
     }
     func captureSend(_ owner: PresentationOwner, delivery: MessageDelivery = .queue) -> SendIntent? {
         guard canAct(owner), let record = book.record(owner.chat), let source = live?.identity,
@@ -1295,9 +1230,6 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
 
     func answer(_ intent: RequestIntent, response: RequestResponse) async {
-        // A rendered request already blocks optional reads. Its reservation begins
-        // only on dispatch, never merely by creating a request row.
-        defer { considerForegroundRead() }
         let current = live?.snapshot.pendingRequests.filter { $0.id.utf8.elementsEqual(intent.request.id.utf8) } ?? []
         guard !Task.isCancelled, canAct(intent.owner), current.count == 1, current[0].hasSameWireRevision(as: intent.request),
               requestRows.contains(where: { $0.intent.operation == intent.operation && $0.intent.owner == intent.owner && $0.request.hasSameWireRevision(as: intent.request) }),
@@ -1396,10 +1328,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         pendingImports[id, default: []] += items.map { PendingImport(intent: intent.id, attachment: $0) }
         defer {
             for item in items { removePending(item.id, chat: id) }
-            if uploadReservations[id]?.intent == intent.id {
-                uploadReservations[id] = nil
-                considerForegroundRead()
-            }
+            if uploadReservations[id]?.intent == intent.id { uploadReservations[id] = nil }
         }
         let holdsLiveSlot = { [unowned self] in
             uploadReservations[id]?.intent == intent.id && uploadReservations[id]?.cancelled == false && !Task.isCancelled
@@ -1482,7 +1411,7 @@ private struct ReadObservationKey: Hashable, Sendable {
         let task = Task { try await service.downloadArtifact(intent.attachment, access: access) }
         let operation = UUID()
         downloads[operation] = task
-        defer { downloads[operation] = nil; considerForegroundRead() }
+        defer { downloads[operation] = nil }
         let artifact = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         try Task.checkCancellation()
         guard canAct(intent.owner), !task.isCancelled else { throw ConversationServiceError.staleConversation }
@@ -1557,10 +1486,9 @@ private struct ReadObservationKey: Hashable, Sendable {
         }
     }
     func receive(_ publication: OpenedConversation) {
-        // A canceled Core open can emit before returning. Until it drains, only
-        // the currently installed grant can publish; explicit opens install their
-        // fenced return directly. The canceled result is then tombstoned below.
-        if readAuthorityBlocked || (!retiringForegroundReads.isEmpty && publication.access != live?.access) {
+        // A canceled Core open can emit before returning. Until it drains, no grant
+        // can publish; explicit opens install their fenced return directly.
+        if readAuthorityBlocked {
             retiredRecoveryAccesses.insert(publication.access)
             return
         }
@@ -1690,13 +1618,9 @@ private struct ReadObservationKey: Hashable, Sendable {
     }
     private func retirePresentation(preservingNavigation request: UUID?) {
         if request == nil || navigationRequest != request { navigationRequest = nil }
-        selectedViewLifetime = UUID(); transcriptVisible = false; readHint = nil; attemptedReads = []
+        selectedViewLifetime = UUID(); transcriptVisible = false
         stopFeedback = nil
         onVisibleChatChange?(nil)
-        if let read = foregroundRead {
-            retiringForegroundReads.insert(read.id)
-            read.task.cancel(); foregroundRead = nil
-        }
         if readAuthorityBlocked { live = nil }
         retireActionOwnership()
     }

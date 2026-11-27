@@ -20,7 +20,7 @@ import BottoCore
         #expect(book.record(id)?.isUnread == false)
         #expect(book.record(id)?.seen == nil)
         book.update(id) { $0.draft.text = "My local unsent draft" }
-        for _ in 0..<2 { book.update(id) { $0.displayed(empty, acknowledging: nil, at: .now) } }
+        for _ in 0..<2 { book.update(id) { $0.displayed(empty, at: .now) } }
         #expect(book.record(id)?.isUnread == false)
         #expect(book.record(id)?.summary == summary && book.record(id)?.seen?.summary == nil)
         #expect(book.record(id)?.draft.text == "My local unsent draft")
@@ -43,7 +43,7 @@ import BottoCore
         _ = book.merge(.init(identity: identity, title: "New Chat", isCanonical: false, persistence: .durable, messageCount: 0))
         guard case .identified(_, _, let persistence) = book.record(id)?.binding else { Issue.record("Missing binding"); return }
         #expect(persistence == .durable)
-        book.update(id) { $0.displayed(empty, acknowledging: nil, at: .now) }
+        book.update(id) { $0.displayed(empty, at: .now) }
         #expect(book.record(id)?.isUnread == true)
         _ = book.merge(.init(identity: identity, title: "New Chat", isCanonical: false, persistence: .unknown, messageCount: 0))
         guard case .identified(_, _, let unknown) = book.record(id)?.binding else { Issue.record("Missing unknown binding"); return }
@@ -72,9 +72,9 @@ import BottoCore
         let populated = Conversation(id: empty.id, storedID: identity.stored.text, profileID: identity.profile.text,
             messages: [.init(id: "prior", role: .assistant, text: "Previously returned")])
         book.cache(populated, for: id)
-        book.update(id) { $0.displayed(populated, acknowledging: nil, at: .now) }
+        book.update(id) { $0.displayed(populated, at: .now) }
         book.cache(empty, for: id)
-        for _ in 0..<2 { book.update(id) { $0.displayed(empty, acknowledging: nil, at: .now) } }
+        for _ in 0..<2 { book.update(id) { $0.displayed(empty, at: .now) } }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -105,7 +105,7 @@ import BottoCore
             book.cache(populated, for: id); book.cache(empty, for: id)
         case .priorSeenContent:
             book.cache(populated, for: id)
-            book.update(id) { $0.displayed(populated, acknowledging: nil, at: .now) }
+            book.update(id) { $0.displayed(populated, at: .now) }
             book.cache(empty, for: id)
         case .preservedContent:
             book.update(id) { $0.preservedVariants = [.init(draft: .init(), transcript: populated)] }
@@ -142,7 +142,7 @@ import BottoCore
         }
         #expect(book.record(id)?.isUnread == true)
         let oldAcknowledgement = book.record(id)?.seen?.summary
-        for _ in 0..<2 { book.update(id) { $0.displayed(actual, acknowledging: nil, at: .now) } }
+        for _ in 0..<2 { book.update(id) { $0.displayed(actual, at: .now) } }
         #expect(book.record(id)?.isUnread == true)
         #expect(book.record(id)?.seen?.summary == oldAcknowledgement)
     }

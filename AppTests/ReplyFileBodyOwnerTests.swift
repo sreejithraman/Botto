@@ -25,24 +25,20 @@ import BottoCore
         let block = try #require(ReplyContent(message: state.message).blocks.first { $0.filePreview != nil })
         try #require(context.permits(block))
 
-        // A newer directory hint causes the same public read/authority handoff
-        // used by production. The stable message stays while its child .id resets.
+        // Reopening the chat hands authority to a fresh read. The stable message
+        // stays while its child .id resets.
         let readGate = WorkspaceGate(); service.openGate = readGate
-        let session = service.summaries[0].identity
-        service.summaries[0] = .init(identity: session, title: "Bot Chat", isCanonical: true,
-            persistence: .durable, messageCount: 6)
-        let screen = try #require(store.chats.screen(profile: service.profile))
-        await store.chats.refreshDirectory(screen.owner)
         state.settled = false
-        store.chats.setTranscriptVisible(true, owner: screen.owner)
-        try #require(store.artifactGeneration != firstGeneration)
+        let reopening = Task { await store.chats.openBot(profile: service.profile) }
+        defer { readGate.release(); reopening.cancel() }
+        try await wait("reopen retires the old authority") { store.artifactGeneration != firstGeneration }
         #expect(!context.permits(block), "Dimension retention must not retain old render authority")
         try await wait("replacement child preserves pending body with no document") {
             state.mounts.last != firstMount && fixture.webViews.isEmpty && abs(state.size.height - initialHeight) < 2
         }
         #expect(service.downloads == 1)
 
-        readGate.release()
+        readGate.release(); await reopening.value
         try await wait("actual read settles with a new layout writer") {
             store.chats.screen(profile: service.profile)?.isOpening == false && state.access[store.artifactGeneration] != nil
         }

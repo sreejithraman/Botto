@@ -290,43 +290,4 @@ import BottoCore
         await workspace.openBot(profile: service.profile)
         #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat).activity == .idle)
     }
-
-    @Test func automaticForegroundReadPreservesCompletionElapsedTimeAcrossFreshAccess() async throws {
-        let service = try WorkspaceTestService(), clock = Clock(), lineage = UUID()
-        let identity = service.summaries[0].identity
-        func summary(_ count: Int) -> SessionSummary {
-            .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-                  preview: "First prompt", messageCount: count)
-        }
-        service.summaries[0] = summary(4)
-        service.openResult = { value in
-            .init(identity: value.identity, snapshot: value.snapshot, access: value.access, readEvidence: value.readEvidence,
-                  activity: .init(lineage: lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil))
-        }
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, now: { clock.date }, onDirty: {})
-        workspace.setOnline(true)
-        await workspace.openBot(profile: service.profile)
-        let initial = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(initial.owner)
-        workspace.displayed(initial.owner)
-        let publication = try service.publication(identity)
-        let reaction = TurnReaction(kind: .succeeded, occurredAt: clock.date)
-        workspace.receive(.init(identity: identity, snapshot: publication.snapshot, access: publication.access,
-            activity: .init(lineage: lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil, reaction: reaction)))
-        let completed = workspace.avatarPresentation(profile: service.profile, scope: .selectedChat)
-        service.summaries[0] = summary(6)
-        var screen = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(screen.owner)
-        screen = try #require(workspace.screen(profile: service.profile))
-        clock.date = clock.date.addingTimeInterval(30)
-        workspace.setTranscriptVisible(true, owner: screen.owner)
-        await waitWhile { workspace.screen(profile: service.profile)?.isOpening != false }
-        #expect(service.opens.count == 2)
-        #expect(workspace.screen(profile: service.profile)?.isOpening == false)
-        #expect(workspace.avatarPresentation(profile: service.profile, scope: .selectedChat) == completed)
-        #expect(completed.enteredAt == reaction.occurredAt)
-        #expect(completed.reactionID == reaction.id)
-    }
-
 }

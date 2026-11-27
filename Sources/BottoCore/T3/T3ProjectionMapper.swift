@@ -277,14 +277,24 @@ struct T3ThreadProjection {
                                  isSteering: run["steerWhenReadyRunId"] != .null)
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(messages)
-        let rows = timeline.filter { row in
+        let shown = timeline.filter { row in
             let item = row.item
             guard row.isLocal, let run = item["runId"].text else { return true }
             return !removedRuns.contains(run) && !(Self.isHeldInput(item) && undeliveredRuns.contains(run))
-        }.compactMap { T3ProjectionMapper.chatMessage($0.item, messagesByID: messagesByID) }
-        return Conversation(id: identity.root.text, storedID: identity.stored.text, profileID: identity.profile.text,
-                            messages: rows, pendingRequests: pendingRequests, queuedMessages: queued,
+        }.map(\.item)
+        var conversation = Conversation(id: identity.root.text, storedID: identity.stored.text, profileID: identity.profile.text,
+                            messages: shown.compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: messagesByID) },
+                            pendingRequests: pendingRequests, queuedMessages: queued,
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
+        // A settled projection includes terminal changes such as cancelling a queued run or rolling back.
+        // While a run is still working, a hidden queued cancellation does not supersede that run.
+        let completionTimes = runs.compactMap { run -> JSONValue? in
+            if conversation.isWorking, let id = run["id"].text, undeliveredRuns.contains(id) { return nil }
+            return run["completedAt"]
+        }
+        conversation.visitMark = (shown.map { $0["updatedAt"] } + completionTimes + [thread["createdAt"]])
+            .compactMap { time in T3ProjectionMapper.date(time).map { VisitMark(hostTime: time.text ?? "", date: $0) } }.max()
+        return conversation
     }
 
     mutating func apply(_ event: JSONValue, sequence: Int, live: Bool) {

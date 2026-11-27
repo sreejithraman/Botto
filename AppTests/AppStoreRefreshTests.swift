@@ -120,45 +120,6 @@ import BottoCore
         #expect(store.chats.persisted().records.allSatisfy { $0.seen == nil })
     }
 
-    @Test func inboxUnreadFollowsSelectedChatWithoutClearingUnreadSiblings() async throws {
-        let service = try WorkspaceTestService()
-        service.summaries = service.summaries.map {
-            .init(identity: $0.identity, title: $0.title, isCanonical: $0.isCanonical,
-                  persistence: .durable, messageCount: 1)
-        }
-        let configuration = ConnectionConfiguration(serverURL: URL(string: "https://selected-chat-unread.invalid")!)
-        let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
-        defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        #expect(await store.connect(configuration))
-        let bot = try #require(store.bots.first)
-        await store.open(bot)
-        let main = try #require(store.chats.screen(profile: service.profile))
-        await store.chats.refreshDirectory(main.owner)
-        store.chats.displayed(main.owner)
-        try #require(store.chats.isUnread(service.summaries[1]) == true)
-        #expect(!store.isUnread(bot), "Unread sibling chats must not light the selected chat's inbox dot")
-
-        #expect(await store.chats.openSaved(service.summaries[1]))
-        #expect(store.isUnread(bot), "Selecting an unread chat lights the dot before its content is displayed")
-        let selected = try #require(store.chats.screen(profile: service.profile))
-        store.chats.displayed(selected.owner)
-        #expect(!store.isUnread(bot))
-        var reply = try #require(service.snapshots[service.summaries[0].identity.root])
-        reply.messages.append(.init(id: "unseen-main-reply", role: .assistant, text: "New Main reply"))
-        service.snapshots[service.summaries[0].identity.root] = reply
-        service.summaries[0] = .init(identity: service.summaries[0].identity, title: "Main", isCanonical: true,
-            persistence: .durable, messageCount: 2)
-        await store.chats.refreshDirectory(selected.owner)
-        #expect(store.chats.isUnread(service.summaries[0]) == true)
-        #expect(!store.isUnread(bot), "New activity in Main must not light the dot while the read sibling is selected")
-        await store.setActive(false)
-        #expect(!store.isUnread(bot), "The selected chat's dot keeps the same meaning offline")
-        let restored = ConversationWorkspace(scope: .init(cacheID: configuration.id, exactAccount: [], incarnation: UUID()),
-            book: store.chats.persisted(), service: service, onDirty: {})
-        #expect(!restored.aggregate(profile: service.profile).selectedChatIsUnread,
-                "Without an open chat, the dot follows the last opened chat, not unread Main")
-    }
-
     @Test func lookupKeepsCanonicallyEquivalentProfileIDsDistinct() async throws {
         let fixture = RefreshFixture()
         defer { fixture.cleanUp() }
@@ -507,6 +468,7 @@ import BottoCore
         if let error { throw error }
         return snapshot
     }
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         return try authority.opened(.init(id: "runtime-" + bot.id, storedID: "stored-" + bot.id, profileID: bot.id))

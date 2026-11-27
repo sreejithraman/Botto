@@ -222,11 +222,7 @@ import BottoCore
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,
               let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
-        let ids = Set(chat.messages.map { Data($0.id.utf8) })
-        let proof = !chat.hasEarlierMessages
-            && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
-            ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
-        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
+        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages)
     }
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -288,13 +284,20 @@ import BottoCore
             identity = requested
         }
         guard let chat = chats[identity.root.bytes] else { throw ConversationServiceError.missingChat }
-        let evidence = summary(identity.root.bytes).map(ConversationReadEvidence.init)
         let access = try issuer.issue(identity)
         visited[identity.stored.text] = .now
         selected = (identity, access)
         activity = ConversationActivity(lineage: UUID(), phase: nil, workStartedAt: nil, phaseStartedAt: nil)
-        return OpenedConversation(identity: identity, snapshot: chat, access: access, readEvidence: evidence, activity: activity,
+        return OpenedConversation(identity: identity, snapshot: Self.marked(chat), access: access, activity: activity,
             historyReadStartedAt: readStartedAt, observedSource: identity)
+    }
+
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
+        let source = try issuer.resolve(access)
+        // Like T3's host, the visit covers only what was shown and never moves back.
+        visited[source.stored.text] = max(visited[source.stored.text] ?? .distantPast, mark.date)
+        // Like T3's host, announce the changed space list so the drawer drops its unread mark.
+        onEvent?(.conversationDirectoryChanged(profile: source.profile))
     }
 
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
@@ -615,6 +618,13 @@ import BottoCore
                                         signal: .init(kind: .replyText))
     }
 
+    /// Demo's host clock is the phone's, and its unread mark follows the newest message.
+    private static func marked(_ chat: Conversation) -> Conversation {
+        var chat = chat
+        chat.visitMark = chat.messages.last?.timestamp.map { VisitMark(hostTime: $0.ISO8601Format(), date: $0) }
+        return chat
+    }
+
     private func publish(_ chat: Conversation, source: SessionIdentity) {
         chats[source.root.bytes] = chat
         guard connected else { return }
@@ -629,16 +639,13 @@ import BottoCore
                 self.selected = (source, refreshed)
             }
             #endif
-            // This demo reads its complete local record synchronously, rather
-            // than projecting a partial remote delta.
-            let evidence = summary(source.root.bytes).map(ConversationReadEvidence.init)
             let publishedActivity = activity
             if let current = activity, current.reaction != nil || current.signal != nil {
                 activity = ConversationActivity(lineage: current.lineage, phase: current.phase,
                     workStartedAt: current.workStartedAt, phaseStartedAt: current.phaseStartedAt)
             }
-            onEvent?(.conversation(OpenedConversation(identity: source, snapshot: chat, access: access,
-                                                     readEvidence: evidence, activity: publishedActivity)))
+            onEvent?(.conversation(OpenedConversation(identity: source, snapshot: Self.marked(chat), access: access,
+                                                     activity: publishedActivity)))
         }
         onEvent?(.botsChanged)
     }

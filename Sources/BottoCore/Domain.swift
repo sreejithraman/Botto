@@ -195,6 +195,8 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var queuedMessages: [QueuedMessage]
     public var isWorking: Bool
     public var lastSequence: Int
+    /// The host's time for the newest content this snapshot shows. A visit through it covers nothing the snapshot doesn't show.
+    public var visitMark: VisitMark?
     public init(id: String, storedID: String, profileID: String, messages: [ChatMessage] = [], pendingRequests: [PendingRequest] = [], queuedMessages: [QueuedMessage] = [], isWorking: Bool = false, lastSequence: Int = 0, hasEarlierMessages: Bool = false) {
         self.id = id; self.storedID = storedID; self.profileID = profileID
         self.messages = messages; self.pendingRequests = pendingRequests
@@ -218,6 +220,15 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
         isWorking = try values.decode(Bool.self, forKey: .isWorking)
         lastSequence = try values.decode(Int.self, forKey: .lastSequence)
     }
+}
+
+/// A host time that marks how far a person has seen a chat. Marks compare as times; the host gets back its own spelling.
+public struct VisitMark: Comparable, Sendable {
+    public let hostTime: String
+    public let date: Date
+    public init(hostTime: String, date: Date) { self.hostTime = hostTime; self.date = date }
+    public static func == (a: Self, b: Self) -> Bool { a.date == b.date }
+    public static func < (a: Self, b: Self) -> Bool { a.date < b.date }
 }
 
 public enum BotServiceEvent: Sendable {
@@ -244,6 +255,8 @@ public enum MessageDelivery: Equatable, Sendable {
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
+    /// Tells the host that a visible transcript showed the access's chat through this mark.
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt
