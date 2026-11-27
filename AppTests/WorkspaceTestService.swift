@@ -36,7 +36,6 @@ import BottoCore
     var createError: (any Error)?
     var directoryError: (any Error)?
     var directoryResult: ConversationDirectory?
-    var readSummaryAvailable = true
     var directoryActivity: [SessionIdentity: ObservedActivity] = [:]
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
     var creates: [UUID] = []
@@ -94,11 +93,7 @@ import BottoCore
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         previewReads.append(identity)
         let result: ConversationHistoryWindow? = previewUnavailable ? nil : previewResult ?? snapshots[identity.root].map { snapshot in
-            let ids = Set(snapshot.messages.map { Data($0.id.utf8) })
-            let proof = !snapshot.hasEarlierMessages
-                && ids.count == snapshot.messages.count && snapshot.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
-                ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
-            return .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages, identityRead: proof)
+            .init(messages: snapshot.messages, hasEarlierMessages: snapshot.hasEarlierMessages)
         }
         await previewGate?.wait()
         if let previewError { throw previewError }
@@ -123,11 +118,9 @@ import BottoCore
         opens.append(identity)
         onOpen?()
         issuer.retireAttachment()
-        // This method models a complete read. Capture inventory before the held read,
-        // never from metadata that arrives while it is suspended.
-        let observed = readSummaryAvailable ? summaries.first { $0.identity.profile == identity.profile && $0.identity.root == identity.root
-            && $0.identity.stored == identity.stored } : nil
-        let opened = try publication(identity, readEvidence: observed.map(ConversationReadEvidence.init))
+        // This method models a complete read; incremental publications use publication(_:).
+        let opened = OpenedConversation(identity: identity, snapshot: snapshots[identity.root]!,
+            access: try issuer.issue(identity), historyReadStartedAt: .now)
         await openGate?.wait()
         if let openError { throw openError }
         let result = try openResult?(opened) ?? opened
@@ -135,14 +128,8 @@ import BottoCore
         completedOpens.append(result)
         return result
     }
-    /// Incremental publications carry no read witness unless explicitly supplied by a full-read fixture.
-    func publication(_ identity: SessionIdentity, readEvidence: ConversationReadEvidence? = nil) throws -> OpenedConversation {
-        .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity), readEvidence: readEvidence)
-    }
-    func fullReadPublication(_ identity: SessionIdentity) throws -> OpenedConversation {
-        let observed = readSummaryAvailable ? summaries.first { $0.identity.profile == identity.profile && $0.identity.root == identity.root
-            && $0.identity.stored == identity.stored } : nil
-        return try publication(identity, readEvidence: observed.map(ConversationReadEvidence.init))
+    func publication(_ identity: SessionIdentity) throws -> OpenedConversation {
+        .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity))
     }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access)

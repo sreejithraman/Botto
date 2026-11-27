@@ -326,33 +326,6 @@ import BottoCore
         XCTAssertEqual(store.chats.draft(try XCTUnwrap(store.chats.screen(profile: profile)?.owner)), "")
     }
 
-    func testReadEvidenceMatchesCompleteLocalReadsAndSelectedPublications() async throws {
-        let service = try await connected()
-        defer { service.disconnect() }
-        let profile = try ExactID("milo")
-        let main = try await service.openChat(.canonical(profile: profile, expectedRoot: nil))
-        let initial = try XCTUnwrap(main.readEvidence?.summaryObservedBeforeRead)
-        let directory = try await service.conversations(profile: profile)
-        XCTAssertEqual(initial, directory.summaries.first(where: \.isCanonical))
-        XCTAssertEqual(initial.identity, main.identity)
-
-        let sideSummary = try XCTUnwrap(directory.summaries.first { !$0.isCanonical })
-        let side = try await service.openChat(.stored(sideSummary.identity))
-        XCTAssertEqual(side.readEvidence?.summaryObservedBeforeRead, sideSummary)
-        var publications: [OpenedConversation] = []
-        service.onEvent = { if case .conversation(let value) = $0 { publications.append(value) } }
-        _ = try await service.send(text: "A complete local update", attachments: [],
-                                   access: side.access, operationID: UUID())
-        let updated = try XCTUnwrap(publications.last)
-        let current = try await service.conversations(profile: profile)
-        XCTAssertEqual(updated.identity, side.identity)
-        XCTAssertEqual(updated.snapshot.messages.last?.text, "A complete local update")
-        XCTAssertEqual(updated.readEvidence?.summaryObservedBeforeRead,
-                       current.summaries.first { $0.identity == side.identity })
-        XCTAssertEqual(main.readEvidence?.summaryObservedBeforeRead, initial,
-                       "Later local changes cannot backfill an older read witness.")
-    }
-
     func testOrdinaryDemoHasIndependentSpacesAndPreservesMain() async throws {
         let service = try await connected()
         let profile = try ExactID("milo")

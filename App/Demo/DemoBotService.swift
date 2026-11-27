@@ -222,11 +222,7 @@ import BottoCore
         try requireProfile(identity.profile)
         guard identities[identity.root.bytes] == identity,
               let chat = chats[identity.root.bytes] else { throw ConversationServiceError.wrongConversation }
-        let ids = Set(chat.messages.map { Data($0.id.utf8) })
-        let proof = !chat.hasEarlierMessages
-            && ids.count == chat.messages.count && chat.messages.allSatisfy { $0.hasStableIdentity(storedID: identity.stored.text) }
-            ? ConversationIdentityRead(identity: identity, messageIDs: ids) : nil
-        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages, identityRead: proof)
+        return .init(messages: chat.messages, hasEarlierMessages: chat.hasEarlierMessages)
     }
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -288,12 +284,11 @@ import BottoCore
             identity = requested
         }
         guard let chat = chats[identity.root.bytes] else { throw ConversationServiceError.missingChat }
-        let evidence = summary(identity.root.bytes).map(ConversationReadEvidence.init)
         let access = try issuer.issue(identity)
         visited[identity.stored.text] = .now
         selected = (identity, access)
         activity = ConversationActivity(lineage: UUID(), phase: nil, workStartedAt: nil, phaseStartedAt: nil)
-        return OpenedConversation(identity: identity, snapshot: chat, access: access, readEvidence: evidence, activity: activity,
+        return OpenedConversation(identity: identity, snapshot: chat, access: access, activity: activity,
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
 
@@ -629,16 +624,13 @@ import BottoCore
                 self.selected = (source, refreshed)
             }
             #endif
-            // This demo reads its complete local record synchronously, rather
-            // than projecting a partial remote delta.
-            let evidence = summary(source.root.bytes).map(ConversationReadEvidence.init)
             let publishedActivity = activity
             if let current = activity, current.reaction != nil || current.signal != nil {
                 activity = ConversationActivity(lineage: current.lineage, phase: current.phase,
                     workStartedAt: current.workStartedAt, phaseStartedAt: current.phaseStartedAt)
             }
             onEvent?(.conversation(OpenedConversation(identity: source, snapshot: chat, access: access,
-                                                     readEvidence: evidence, activity: publishedActivity)))
+                                                     activity: publishedActivity)))
         }
         onEvent?(.botsChanged)
     }

@@ -783,8 +783,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let messages = T3ProjectionMapper.visibleItems(page.rows)
             .compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: page.messagesByID) }
         recordPreview(from: messages, for: identity.stored.text, in: session)
-        return ConversationHistoryWindow(messages: messages, hasEarlierMessages: page.more,
-                                         identityRead: page.more ? nil : historyIdentity(identity, messages: messages))
+        return ConversationHistoryWindow(messages: messages, hasEarlierMessages: page.more)
     }
 
     public func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery,
@@ -1684,14 +1683,6 @@ private extension T3BotService {
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(projection["messages"].list ?? [])
         return (rows, messagesByID, more)
-    }
-
-    func historyIdentity(_ identity: SessionIdentity, messages: [ChatMessage]) -> ConversationIdentityRead? {
-        let ids = Set(messages.map { Data($0.id.utf8) })
-        guard ids.count == messages.count, messages.allSatisfy({ $0.hasStableIdentity(storedID: identity.stored.text) }) else {
-            return nil
-        }
-        return ConversationIdentityRead(identity: identity, messageIDs: ids)
     }
 
     func httpJSON(_ session: Session, path: String, headers: [String: String]) async throws -> JSONValue {

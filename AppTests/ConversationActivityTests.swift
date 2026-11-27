@@ -154,7 +154,7 @@ import BottoCore
             book.cache(snapshot, for: id)
             book.update(id) {
                 $0.draft.text = "Keep this draft"
-                $0.displayed(snapshot, acknowledging: nil, at: Date(timeIntervalSince1970: 1))
+                $0.displayed(snapshot, at: Date(timeIntervalSince1970: 1))
             }
         }
         var dirty = 0

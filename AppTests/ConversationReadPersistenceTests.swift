@@ -39,7 +39,7 @@ import BottoCore
         #expect(workspace.screen(profile: profile)?.snapshot?.messages.first?.text == "Old V2 answer")
     }
 
-    @Test func newerExactSummaryAndUnconsumedReadEvidenceSurviveIndependentDiskReads() async throws {
+    @Test func newerExactSummarySurvivesIndependentDiskReads() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -77,12 +77,10 @@ import BottoCore
         service.snapshots[identity.root]?.messages = [old, .init(id: "new", role: .assistant, text: exact, timestamp: newAt)]
         reloaded.setOnline(true); await reloaded.openBot(profile: profile)
         let visible = try #require(reloaded.screen(profile: profile))
-        let visibleChats = reloaded.chats(profile)
-        #expect(visibleChats.first { $0.id == a.selectedChatID }?.isUnread == true)
         reloaded.displayed(visible.owner)
         try LocalHistory(book: reloaded.persisted()).save(for: cacheID, directory: directory)
         let seen = try LocalHistory.load(for: cacheID, directory: directory)
-        #expect(seen.book.record(a.selectedChatID)?.isUnread == false)
+        #expect(seen.book.record(a.selectedChatID)?.seen?.content?.messageID == (try? ExactID("new")))
         #expect(seen.book.record(a.selectedChatID)?.transcript?.messages.last?.id == "new")
         #expect(seen.book.record(a.selectedChatID)?.title == "Main")
     }
@@ -111,12 +109,11 @@ import BottoCore
         #expect(workspace.chats(service.profile).first?.isUnread == true,
             "Legacy seen dates cannot acknowledge an inventory observation by themselves")
         workspace.displayed(screen.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
         #expect(workspace.persisted().record(main)?.seen?.observedAt == readAt)
         #expect(workspace.draft(screen.owner) == " exact draft \n")
     }
 
-    @Test func v2SummaryWithoutInventoryTipStaysBytePreservedAndCannotMintRuntimeEvidence() async throws {
+    @Test func v2SummaryWithoutInventoryTipStaysBytePreservedAndUnread() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -158,9 +155,6 @@ import BottoCore
         restored.setOnline(false)
         restored.displayed(try #require(restored.screen(profile: service.profile)?.owner))
         #expect(restored.chats(service.profile).first?.isUnread == true)
-        restored.setOnline(true); await restored.openBot(profile: service.profile)
-        restored.displayed(try #require(restored.screen(profile: service.profile)?.owner))
-        #expect(restored.chats(service.profile).first?.isUnread == false)
     }
 
 }

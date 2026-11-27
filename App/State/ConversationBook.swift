@@ -135,13 +135,11 @@ extension ChatRecord {
         }
         return updatedAt.map { $0 > (seen?.observedAt ?? .distantPast) } ?? false
     }
-    mutating func displayed(_ snapshot: Conversation, acknowledging observation: ChatSummaryEvidence?, at now: Date) {
+    mutating func displayed(_ snapshot: Conversation, at now: Date) {
         let content = ChatContentEvidence(snapshot), previous = seen
         if content.hasContent || previous?.messageID != nil || previous?.content?.hasContent == true { hasContentHistory = true }
-        var acknowledged = previous?.summary
-        if let observation, observation == summary { acknowledged = observation }
         let observedAt = previous.flatMap { $0.content == content ? $0.observedAt : nil } ?? now
-        seen = .init(messageID: content.messageID, observedAt: observedAt, content: content, summary: acknowledged,
+        seen = .init(messageID: content.messageID, observedAt: observedAt, content: content, summary: previous?.summary,
             rawMessageCount: previous?.content == content ? (previous?.rawMessageCount ?? snapshot.messages.count) : snapshot.messages.count)
     }
 }
@@ -300,14 +298,12 @@ struct ConversationBook: Codable, Sendable {
         return bound
     }
     func reconciled(_ publication: OpenedConversation, for id: ChatID) -> OpenedConversation {
-        let completeRead = !publication.snapshot.hasEarlierMessages
-            && (publication.historyReadStartedAt != nil || publication.readEvidence != nil)
+        let completeRead = !publication.snapshot.hasEarlierMessages && publication.historyReadStartedAt != nil
         let snapshot = Self.reconciled(publication.snapshot, previous: record(id)?.transcript,
             retainEarlierMessages: !completeRead)
         return .init(identity: publication.identity, snapshot: snapshot, access: publication.access,
-            readEvidence: publication.readEvidence, activity: publication.activity,
-            historyReadStartedAt: publication.historyReadStartedAt, observedSource: publication.observedSource,
-            identityRead: publication.identityRead)
+            activity: publication.activity, historyReadStartedAt: publication.historyReadStartedAt,
+            observedSource: publication.observedSource)
     }
     @discardableResult mutating func cache(_ publication: OpenedConversation, for id: ChatID) -> OpenedConversation {
         let accepted = reconciled(publication, for: id)

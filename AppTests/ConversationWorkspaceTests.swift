@@ -769,11 +769,11 @@ import BottoCore
                        .init(id: "reply", role: .assistant, text: "é", timestamp: at)] +
                 (0..<100).map { .init(id: "tool-\($0)", role: .tool, text: "Tool output") })
         book.cache(content, for: main)
-        book.update(main) { $0.displayed(content, acknowledging: nil, at: at); $0.discoveryOrdinal = 50 }
+        book.update(main) { $0.displayed(content, at: at); $0.discoveryOrdinal = 50 }
         var changed = content
         changed.storedID = otherIdentity.stored.text
         book.cache(changed, for: other)
-        book.update(other) { $0.displayed(changed, acknowledging: nil, at: at); $0.discoveryOrdinal = 1 }
+        book.update(other) { $0.displayed(changed, at: at); $0.discoveryOrdinal = 1 }
         changed.messages[1].text = "e\u{301}"
         book.cache(changed, for: other)
         book.cache(.init(id: "empty", storedID: emptyKey.text, profileID: profile.text), for: empty)

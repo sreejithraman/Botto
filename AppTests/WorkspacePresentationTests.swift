@@ -27,7 +27,7 @@ import BottoCore
         return try #require(presentation.artifact)
     }
 
-    @Test func loadedBytesAndReservationSurviveTranscriptCoverageUntilExplicitClose() async throws {
+    @Test func loadedBytesSurviveTranscriptCoverageUntilExplicitClose() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
         let presentation = WorkspacePresentation()
@@ -51,15 +51,11 @@ import BottoCore
         #expect(session.file === file && service.downloads == 1 && service.opens.count == 1)
         #expect(store.artifactGeneration == generation && store.chats.isCurrent(owner))
         #expect(FileManager.default.fileExists(atPath: file.url.path))
-        store.chats.setTranscriptVisible(true, owner: owner)
-        let readGate = WorkspaceGate(); service.openGate = readGate
         presentation.closeArtifact(id: session.id)
         presentation.closeArtifact(id: session.id)
         presentation.reconcile(store: store)
-        await readGate.entered()
-        #expect(service.opens.count == 2, "Close releases one reservation and admits exactly one waiting reread")
         #expect(!session.isCurrent && session.file == nil && presentation.artifact == nil)
-        readGate.release()
+        #expect(service.opens.count == 1 && store.chats.isCurrent(owner), "Closing a reader leaves the chat's live access alone")
     }
 
     @Test(arguments: ["background", "foreground", "disconnect", "recovery", "reconnect", "reopen", "secret rotation"])

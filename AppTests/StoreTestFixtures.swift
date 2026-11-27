@@ -81,7 +81,7 @@ import BottoCore
         opened.profileID = bot.id
         let publication = try authority.opened(opened)
         return OpenedConversation(identity: publication.identity, snapshot: publication.snapshot, access: publication.access,
-            readEvidence: publication.readEvidence, activity: publication.activity, historyReadStartedAt: readStartedAt,
+            activity: publication.activity, historyReadStartedAt: readStartedAt,
             observedSource: publication.identity)
     }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { try authority.receipt(access, operationID) }

@@ -4,171 +4,6 @@ import Testing
 import BottoCore
 @testable import Botto
 
-/// Directory text can come from the first user message and does not identify the latest message.
-@MainActor struct ConversationDirectoryPreviewTests {
-    enum Shape: CaseIterable {
-        case firstUser, whitespace, ellipsis, skill
-        var userText: String {
-            switch self {
-            case .firstUser: "First user question"
-            case .whitespace: "\n  First\r\nquestion  \n"
-            case .ellipsis: String(repeating: "x", count: 70)
-            case .skill: "[IMPORTANT: The user has invoked the \"work\" skill. The full skill content is loaded below.]\n<skill body>\nThe user has provided the following instruction alongside the skill invocation: show result"
-            }
-        }
-        var preview: String {
-            switch self {
-            case .firstUser: "First user question"
-            case .whitespace: "First  question"
-            case .ellipsis: String(repeating: "x", count: 60) + "..."
-            case .skill: "/work — show result"
-            }
-        }
-    }
-
-    @Test(arguments: Shape.allCases)
-    func firstUserPreviewAtEqualCountCanAcknowledgeActuallyDisplayedFullConversation(_ shape: Shape) async throws {
-        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-        let latestAt = Date(timeIntervalSince1970: 200)
-        let messages: [ChatMessage] = [
-            .init(id: "first-user", role: .user, text: shape.userText, timestamp: latestAt.addingTimeInterval(-1)),
-            .init(id: "last-reply", role: .assistant, text: "The latest assistant reply.", timestamp: latestAt)]
-        service.snapshots[identity.root]?.messages = messages
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: latestAt, messageCount: 2)
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let screen = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(screen.owner)
-        workspace.displayed(screen.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        #expect(workspace.persisted().record(screen.selectedChatID)?.summary?.preview == Data(shape.preview.utf8))
-        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == messages)
-    }
-
-    @Test(arguments: Shape.allCases)
-    func firstOfflineDisplayCannotAcknowledgeNewerSummaryAtEqualCount(_ shape: Shape) async throws {
-        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-        let oldAt = Date(timeIntervalSince1970: 200), newAt = Date(timeIntervalSince1970: 400)
-        let old: [ChatMessage] = [.init(id: "first-user", role: .user, text: shape.userText, timestamp: oldAt),
-            .init(id: "reply", role: .assistant, text: "Old reply", timestamp: oldAt)]
-        var book = ConversationBook()
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: newAt, messageCount: 2)
-        let chat = book.merge(service.summaries[0])
-        book.cache(.init(id: "cached", storedID: identity.stored.text, profileID: service.profile.text, messages: old), for: chat)
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: book, service: service, onDirty: {})
-        await workspace.openBot(profile: service.profile)
-        let stale = try #require(workspace.screen(profile: service.profile))
-        let staleChats = workspace.chats(service.profile)
-        #expect(staleChats.first?.isUnread == true)
-        workspace.displayed(stale.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == true)
-        workspace.displayed(stale.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == true)
-        service.snapshots[identity.root]?.messages = [old[0],
-            .init(id: "reply", role: .assistant, text: "Updated reply", timestamp: newAt)]
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let actual = try #require(workspace.screen(profile: service.profile))
-        let actualChats = workspace.chats(service.profile)
-        #expect(actualChats.first?.isUnread == true)
-        workspace.displayed(actual.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-    }
-
-    @Test(arguments: Shape.allCases)
-    func sameFirstUserPreviewDoesNotConsumeUnseenGrowthUntilNewContentIsDisplayed(_ shape: Shape) async throws {
-        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-        let oldAt = Date(timeIntervalSince1970: 200), newAt = Date(timeIntervalSince1970: 400)
-        let old: [ChatMessage] = [.init(id: "first-user", role: .user, text: shape.userText, timestamp: oldAt),
-            .init(id: "old-reply", role: .assistant, text: "Old reply", timestamp: oldAt)]
-        service.snapshots[identity.root]?.messages = old
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: oldAt, messageCount: 2)
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let a = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(a.owner); workspace.displayed(a.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        #expect(await workspace.openSaved(service.summaries[1]))
-        let ownerB = try #require(workspace.screen(profile: service.profile)?.owner)
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: newAt, messageCount: 4)
-        await workspace.refreshDirectory(ownerB)
-        #expect(workspace.chats(service.profile).first?.isUnread == true)
-        workspace.setOnline(false)
-        #expect(await workspace.openSaved(service.summaries[0]))
-        workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.chats(service.profile).first?.isUnread == true)
-        let fresh = old + [.init(id: "follow-up", role: .user, text: "A follow-up", timestamp: newAt),
-            .init(id: "new-reply", role: .assistant, text: "New reply", timestamp: newAt)]
-        service.snapshots[identity.root]?.messages = fresh
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let actual = try #require(workspace.screen(profile: service.profile))
-        workspace.displayed(actual.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        #expect(workspace.screen(profile: service.profile)?.snapshot?.messages == fresh)
-    }
-    @Test(arguments: Shape.allCases)
-    func directoryGrowthAfterEarlierReadNeedsMatchingCurrentFullRead(_ shape: Shape) async throws {
-        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-        let oldAt = Date(timeIntervalSince1970: 200), newAt = Date(timeIntervalSince1970: 400)
-        let old: [ChatMessage] = [.init(id: "first-user", role: .user, text: shape.userText, timestamp: oldAt),
-            .init(id: "old-reply", role: .assistant, text: "Old reply", timestamp: oldAt)]
-        service.snapshots[identity.root]?.messages = old
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: oldAt, messageCount: 2)
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let initial = try #require(workspace.screen(profile: service.profile))
-        await workspace.refreshDirectory(initial.owner); workspace.displayed(initial.owner)
-        service.snapshots[identity.root]?.messages = old + [.init(id: "new-user", role: .user, text: "Follow up", timestamp: newAt),
-            .init(id: "new-reply", role: .assistant, text: "Already displayed new reply", timestamp: newAt)]
-        workspace.receive(try service.fullReadPublication(identity))
-        let fresh = try #require(workspace.screen(profile: service.profile))
-        workspace.displayed(fresh.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        let seenBefore = workspace.persisted().record(fresh.selectedChatID)?.seen
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, updatedAt: newAt, messageCount: 4)
-        await workspace.refreshDirectory(fresh.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == true,
-            "The earlier full read did not observe these later directory facts")
-        workspace.displayed(fresh.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == true)
-        #expect(workspace.persisted().record(fresh.selectedChatID)?.seen?.observedAt == seenBefore?.observedAt)
-        await workspace.openBot(profile: service.profile)
-        workspace.displayed(try #require(workspace.screen(profile: service.profile)?.owner))
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        #expect(workspace.persisted().record(fresh.selectedChatID)?.seen?.observedAt == seenBefore?.observedAt)
-    }
-
-    @Test(arguments: Shape.allCases)
-    func directoryAfterMatchingFirstEntryReadKeepsAlreadyDisplayedReplyRead(_ shape: Shape) async throws {
-        let service = try WorkspaceTestService(), identity = service.summaries[0].identity
-        service.snapshots[identity.root]?.messages = [
-            .init(id: "first-user", role: .user, text: shape.userText),
-            .init(id: "reply", role: .assistant, text: "Already displayed reply")]
-        service.summaries[0] = .init(identity: identity, title: "Bot Chat", isCanonical: true, persistence: .durable,
-            preview: shape.preview, messageCount: 4)
-        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
-            book: .init(), service: service, onDirty: {})
-        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let screen = try #require(workspace.screen(profile: service.profile))
-        workspace.displayed(screen.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        let seenAt = workspace.persisted().record(screen.selectedChatID)?.seen?.observedAt
-        await workspace.refreshDirectory(screen.owner)
-        #expect(workspace.chats(service.profile).first?.isUnread == false)
-        #expect(workspace.persisted().record(screen.selectedChatID)?.seen?.observedAt == seenAt)
-    }
-
-}
-
 @MainActor struct InboxMessagePreviewTests {
     @Test func inboxReplyIsAlreadyInChatWhileLiveAttachmentWaits() async throws {
         let service = try WorkspaceTestService(), identity = service.summaries[0].identity
@@ -459,9 +294,8 @@ extension InboxMessagePreviewTests {
         var book = ConversationBook()
         let id = book.merge(service.summaries[0])
         let rowID = identity.stored.text + ":row:1"
-        let proof = ConversationIdentityRead(identity: identity, messageIDs: [Data(rowID.utf8)])
         service.previewResult = .init(messages: [.init(id: rowID, role: .assistant, text: "Caf\u{e9}")],
-            hasEarlierMessages: false, identityRead: proof)
+            hasEarlierMessages: false)
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: book, service: service, onDirty: { probe.dirtyCount += 1 })
         workspace.observeProfiles([.init(id: service.profile.text, name: "Milo")])
@@ -482,7 +316,7 @@ extension InboxMessagePreviewTests {
         #expect(probe.publications == 2, "A repeated history read still lets file cards recheck their rows")
 
         service.previewResult = .init(messages: [.init(id: rowID, role: .assistant, text: "Cafe\u{301}")],
-            hasEarlierMessages: false, identityRead: proof)
+            hasEarlierMessages: false)
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(probe.displayChanges == 1)
         #expect(probe.dirtyCount == 2)

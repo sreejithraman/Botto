@@ -31,7 +31,6 @@ import BottoCore
         service.snapshots[service.summaries[0].identity.root]?.pendingRequests = requests
         service.openResult = { value in
             .init(identity: value.identity, snapshot: value.snapshot, access: value.access,
-                  readEvidence: value.readEvidence,
                   activity: .init(lineage: lineage, phase: nil, workStartedAt: nil, phaseStartedAt: nil))
         }
         var book = ConversationBook()
