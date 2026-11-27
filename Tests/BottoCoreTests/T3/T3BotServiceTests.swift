@@ -433,6 +433,30 @@ import Testing
         #expect(await host.workflowAnswers.map { $0["runId"].text } == ["own-run"])
     }
 
+    @Test func downloadStopsWhenTheSpaceChangesWhileItsURLIsSigned() async throws {
+        let host = T3ServiceHost(existing: true, archivedChannel: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        let profile = try ExactID("bot-project")
+        let linked = try T3ProjectionMapper.identity(profile: profile, threadID: "existing-general")
+        let other = try T3ProjectionMapper.identity(profile: profile, threadID: "archived-channel")
+        let report = ChatAttachment(name: "report.txt", path: "outputs/report.txt")
+        let opened = try await service.openChat(.stored(linked))
+
+        var signing = await host.holdNextAssetURL().makeAsyncIterator()
+        let pending = Task { try await service.downloadArtifact(report, access: opened.access) }
+        _ = try #require(await signing.next(isolation: MainActor.shared))
+        _ = try await service.openChat(.stored(other))
+        try await host.releaseAssetURL()
+        await #expect(throws: ConversationServiceError.staleConversation) { try await pending.value }
+        #expect(await host.assetFetches.isEmpty)
+
+        let reopened = try await service.openChat(.stored(linked))
+        #expect(try await service.downloadArtifact(report, access: reopened.access).data == Data("report".utf8))
+        #expect(await host.assetFetches == ["/api/assets/signed/report.txt"])
+    }
+
     @Test func managesProjectRoutinesThroughT3ScheduledTasks() async throws {
         let host = T3ServiceHost(existing: true, archivedChannel: true)
         try await host.seedRoutines()
@@ -1169,6 +1193,9 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var workflowQuestions: [JSONValue] = []
     private var waitingForWorkflowSnapshot: AsyncStream<String>.Continuation?
     private var heldWorkflowSnapshotID: String?
+    private var waitingForAssetURL: AsyncStream<String>.Continuation?
+    private var heldAssetURL: (id: String, reply: JSONValue)?
+    private(set) var assetFetches: [String] = []
     private var routineStreams: Set<String> = []
     private(set) var interruptedRoutineStreams = 0
     private(set) var routineUpserts: [JSONValue] = []
@@ -1305,6 +1332,19 @@ private actor T3ServiceHost: T3WebSocketTransport {
         try sendWorkflowSnapshot(id)
     }
 
+    func holdNextAssetURL() -> AsyncStream<String> {
+        let (requests, continuation) = AsyncStream<String>.makeStream()
+        waitingForAssetURL = continuation
+        return requests
+    }
+
+    func releaseAssetURL() throws {
+        let held = try #require(heldAssetURL)
+        heldAssetURL = nil
+        try emit(.object(["_tag": .string("Exit"), "requestId": .string(held.id),
+                          "exit": .object(["_tag": .string("Success"), "value": held.reply])]))
+    }
+
     private func sendWorkflowSnapshot(_ id: String) throws {
         try chunk(id, values: [.object(["runs": .array(workflowRuns), "questions": .array(workflowQuestions)])])
     }
@@ -1388,6 +1428,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
             status = 204
         case "/api/assets/signed/report.txt":
             #expect(request.httpMethod == "GET")
+            assetFetches.append(url.path)
             json = "report"
             status = 200
         default:
@@ -1572,6 +1613,13 @@ private actor T3ServiceHost: T3WebSocketTransport {
                 #expect(resource["_tag"].text == "workspace-file")
                 #expect(resource["path"].text == "outputs/report.txt")
                 reply = try t3JSON(#"{"relativeUrl":"/api/assets/signed/report.txt","expiresAt":4100000000000}"#)
+            }
+            if let observer = waitingForAssetURL {
+                heldAssetURL = (id, reply)
+                waitingForAssetURL = nil
+                observer.yield(id)
+                observer.finish()
+                return
             }
         case "workflows.subscribe":
             if let observer = waitingForWorkflowSnapshot {
