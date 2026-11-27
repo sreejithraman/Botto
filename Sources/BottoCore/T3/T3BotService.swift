@@ -132,22 +132,34 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let primary = try T3PairingExchange.validatedOrigin(configuration.serverURL.absoluteString)
         try checkAttempt(attempt)
         let token = paired.accessToken
-        // The token is sent only once a route has answered as the paired environment.
-        let (origin, descriptor) = try await http.reach(configuration.connectionRoutes,
-                                                        environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID)
-        try checkAttempt(attempt)
-        let ticket = try await http.mintWebSocketTicket(origin: origin, accessToken: token)
-        try checkAttempt(attempt)
-        let request = try T3RPCClient.socketRequest(origin: origin, ticket: ticket.ticket, accessToken: token)
-        let rpc = T3RPCClient(transport: try webSocket(request))
-        connectingRPC = rpc
+        // The token is sent only once a route has answered as the paired environment. A route that
+        // answers but can't mint a ticket or open the socket counts as failed, and the next is tried.
+        // Nothing about the workspace is read or written until a route has connected.
+        let (origin, descriptor, rpc, config) = try await http.reach(
+            configuration.connectionRoutes, environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID,
+            isRouteFailure: T3UnreachableRoutes.isRouteFailure
+        ) { origin, descriptor in
+            try checkAttempt(attempt)
+            let ticket = try await http.mintWebSocketTicket(origin: origin, accessToken: token)
+            try checkAttempt(attempt)
+            let request = try T3RPCClient.socketRequest(origin: origin, ticket: ticket.ticket, accessToken: token)
+            let rpc = T3RPCClient(transport: try webSocket(request))
+            connectingRPC = rpc
+            do {
+                let config = try await rpc.call("server.getConfig")
+                if let environmentID = config["environment"]["environmentId"].text, environmentID != descriptor.environmentId {
+                    throw T3ServiceError.differentEnvironment
+                }
+                try checkAttempt(attempt)
+                return (origin, descriptor, rpc, config)
+            } catch {
+                if connectingRPC === rpc { connectingRPC = nil }
+                await rpc.close()
+                throw error
+            }
+        }
 
         do {
-            let config = try await rpc.call("server.getConfig")
-            if let environmentID = config["environment"]["environmentId"].text, environmentID != descriptor.environmentId {
-                throw T3ServiceError.differentEnvironment
-            }
-            try checkAttempt(attempt)
             let project = try await resolveProject(origin: origin, paired: paired, rpc: rpc, attempt: attempt,
                                                    environmentID: descriptor.environmentId)
             guard let id = project["id"].nonempty, let root = project["workspaceRoot"].nonempty else {

@@ -12,8 +12,14 @@ public enum PairingRoutes {
     /// Every route can add a wait to each connection, so the cap also bounds how long a connection
     /// with dead routes takes, and keeps the list short enough for a person to review.
     public static let maximumCount = 4
-    /// How long a route may stay silent before the next one is tried. The last route keeps the usual limit.
-    static let probeTimeout: TimeInterval = 5
+    /// How long a route's environment probe may go without receiving data before the next route is
+    /// tried. These are URLRequest idle timeouts, not limits on the whole request. A direct LAN or
+    /// Tailscale address that is there answers in well under a second, so 5 seconds of silence means
+    /// it isn't. An HTTPS route can need a DNS lookup, a TLS handshake and a relay that wakes on
+    /// demand, often over cellular, so it gets 15. The last route keeps the usual 30.
+    nonisolated static func probeTimeout(for route: URL, isLast: Bool) -> TimeInterval {
+        isLast ? T3PairingExchange.requestTimeout : route.scheme == "https" ? 15 : 5
+    }
 
     /// The pairing link with `routes` added after its own origin.
     public static func link(_ pairingURL: String, adding routes: [URL]) -> String? {
@@ -107,7 +113,10 @@ public extension ConnectionConfiguration {
 
 /// No route reached the paired Mac. Names each route tried and what happened there.
 public struct T3UnreachableRoutes: Error, Equatable, LocalizedError, Sendable {
-    public enum Reason: Equatable, Sendable { case noAnswer, differentMac, needsUpdate, unexpectedReply }
+    public enum Reason: Equatable, Sendable {
+        case noAnswer, differentMac, needsUpdate, unexpectedReply, wouldNotConnect
+        case httpError(Int)
+    }
     public struct Attempt: Equatable, Sendable {
         public let route: URL
         public let reason: Reason
@@ -125,40 +134,64 @@ public struct T3UnreachableRoutes: Error, Equatable, LocalizedError, Sendable {
             case .differentMac: "\(route) is a different Mac"
             case .needsUpdate: "\(route) needs a newer Botto"
             case .unexpectedReply: "\(route) isn’t Botto"
+            case .wouldNotConnect: "\(route) answered but wouldn’t connect"
+            case .httpError(let status): "\(route) answered with an error (HTTP \(status))"
             }
         }
         return "Couldn’t reach your Mac. " + tried.joined(separator: "; ")
             + ". Check that Botto is running on your Mac, then try again."
     }
 
-    static func reason(for error: any Error) -> Reason {
+    /// What a route's failure says about it, before (`answered` false) or after it answered the probe.
+    nonisolated static func reason(for error: any Error, answered: Bool) -> Reason {
         switch error {
-        case is URLError: .noAnswer
+        case T3PairingError.httpStatus(let status): .httpError(status)
         case T3ServiceError.differentEnvironment: .differentMac
+        case _ where answered: .wouldNotConnect
+        case is URLError: .noAnswer
         case T3PairingError.incompatibleProtocol: .needsUpdate
         default: .unexpectedReply
+        }
+    }
+
+    /// Whether a failure after a route answered as the paired environment belongs to that route, so
+    /// the next one is worth trying. A refused token, a superseded attempt and an RPC error from T3
+    /// itself would be the same on every route.
+    nonisolated static func isRouteFailure(_ error: any Error) -> Bool {
+        switch error {
+        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403), T3RPCError.remote, T3RPCError.defect: false
+        case is URLError, is T3RPCError, T3PairingError.httpStatus, T3PairingError.invalidResponse,
+             T3PairingError.redirected, T3ServiceError.differentEnvironment: true
+        default: false
         }
     }
 }
 
 extension T3PairingExchange {
-    /// The first route, in order, that answers as `environmentID` (or as any T3 environment when nil).
-    /// Every route but the last gets a short limit, so a dead address doesn't hold up the next.
-    /// A single route fails with its own error, as before routes existed.
-    func reach(_ routes: [URL], environmentID: String?) async throws -> (origin: URL, descriptor: T3EnvironmentDescriptor) {
+    /// Uses the first route, in order, that answers as `environmentID` (or as any T3 environment when
+    /// nil) and that `use` succeeds on. A route that doesn't answer, answers as another environment,
+    /// or fails `use` with an error `isRouteFailure` accepts is skipped for the next. Nothing reaches a
+    /// route through `use` before it has answered as the environment. A single route fails with its
+    /// own error, as before routes existed.
+    func reach<Value>(_ routes: [URL], environmentID: String?,
+                      isRouteFailure: (any Error) -> Bool,
+                      isolation: isolated (any Actor)? = #isolation,
+                      use: (_ origin: URL, _ descriptor: T3EnvironmentDescriptor) async throws -> Value) async throws -> Value {
         guard !routes.isEmpty else { throw T3PairingError.invalidOrigin }
         var attempts: [T3UnreachableRoutes.Attempt] = []
         for (index, route) in routes.enumerated() {
+            var answered = false
             do {
                 let origin = try Self.validatedOrigin(route.absoluteString)
-                let timeout = index == routes.count - 1 ? Self.requestTimeout : PairingRoutes.probeTimeout
+                let timeout = PairingRoutes.probeTimeout(for: origin, isLast: index == routes.count - 1)
                 let descriptor = try await probeEnvironment(origin: origin, timeout: timeout)
                 if let environmentID, descriptor.environmentId != environmentID { throw T3ServiceError.differentEnvironment }
-                return (origin, descriptor)
+                answered = true
+                return try await use(origin, descriptor)
             } catch {
                 try Task.checkCancellation()
-                if routes.count == 1 || error is CancellationError { throw error }
-                attempts.append(.init(route: route, reason: T3UnreachableRoutes.reason(for: error)))
+                if routes.count == 1 || error is CancellationError || (answered && !isRouteFailure(error)) { throw error }
+                attempts.append(.init(route: route, reason: T3UnreachableRoutes.reason(for: error, answered: answered)))
             }
         }
         throw T3UnreachableRoutes(attempts: attempts)

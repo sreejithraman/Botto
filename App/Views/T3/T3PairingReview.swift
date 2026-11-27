@@ -35,6 +35,11 @@ struct T3PairingReview: Equatable {
         return URLComponents(string: text)?.scheme?.lowercased() == "t3code" || (try? T3PairingExchange.parse(text)) != nil
     }
 
+    /// Whether the code may already be spent, so the review can't offer it again.
+    static func needsFreshLink(after error: any Error) -> Bool {
+        if case T3PairingError.codeMayBeUsed = error { true } else { false }
+    }
+
     /// What went wrong, for someone holding a phone next to their Mac.
     static func message(for error: any Error) -> String {
         switch error {

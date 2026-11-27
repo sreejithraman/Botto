@@ -174,7 +174,7 @@ struct T3PairingView: View {
             .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .padding(.top, 20)
             Text(review.routes.count > 1
-                 ? "Continue only if you recognize these addresses. Your pairing code is sent to the first one that answers."
+                 ? "Continue only if you recognize these addresses. Your pairing code is sent to the first one that answers, secure ones first."
                  : "Continue only if you recognize this address. Your pairing code is sent there.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -330,6 +330,12 @@ struct T3PairingView: View {
                 return
             } catch {
                 guard !Task.isCancelled, attemptID == owner else { return }
+                if T3PairingReview.needsFreshLink(after: error) {
+                    // The code may be spent, so it is never offered again.
+                    self.review = nil
+                    allowsHTTP = false
+                    input = ""
+                }
                 self.error = T3PairingReview.message(for: error)
                 if scenePhase == .active { BottoHaptics.shared.play(.failure(error)) }
             }

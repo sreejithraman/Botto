@@ -1164,6 +1164,16 @@ import Testing
 }
 
 extension T3BotServiceTests {
+    private var lan: URL { URL(string: "http://192.168.1.20:3774")! }
+    private var tailscale: URL { URL(string: "http://100.64.1.2:3774")! }
+    private var tunnel: URL { URL(string: "https://botto.example.com")! }
+
+    private func paired(_ primary: URL, _ alternates: [URL], lastReached: URL? = nil) -> ConnectionConfiguration {
+        ConnectionConfiguration(serverURL: primary, installID: "environment",
+                                t3: T3Connection(environmentID: "environment", accessToken: "bearer", projectID: "bot-project"),
+                                alternateRoutes: alternates, lastReachedRoute: lastReached)
+    }
+
     @Test func connectionsFallBackPastDeadAndForeignRoutesAndRememberTheOneThatWorked() async throws {
         let host = T3ServiceHost(existing: true)
         let reconnected = T3ServiceHost(existing: true)
@@ -1172,9 +1182,9 @@ extension T3BotServiceTests {
         let service = T3BotService(transport: { request in
             await requests.record(request)
             switch request.url?.host {
-            case "192.168.1.20": throw URLError(.timedOut)
-            // Another T3 now answers at the Tailscale address. It must not see the token.
-            case "100.64.1.2":
+            case "botto.example.com": throw URLError(.timedOut)
+            // Another T3 now answers at the LAN address. It must not see the token.
+            case "192.168.1.20":
                 return try routeReply(request, #"{"environmentId":"someone-else","label":"Other","serverVersion":"2.0","orchestrationProtocolVersion":2}"#)
             default: return try await host.http(request)
             }
@@ -1185,32 +1195,96 @@ extension T3BotServiceTests {
         var saved: ConnectionConfiguration?
         service.onEvent = { (event: BotServiceEvent) in if case .configuration(let updated) = event { saved = updated } }
         defer { service.disconnect() }
-        let lan = try #require(URL(string: "http://192.168.1.20:3774"))
-        let tailscale = try #require(URL(string: "http://100.64.1.2:3774"))
-        let tunnel = try #require(URL(string: "https://botto.example.com"))
-        let configuration = ConnectionConfiguration(
-            serverURL: lan, installID: "environment",
-            t3: T3Connection(environmentID: "environment", accessToken: "bearer", projectID: "bot-project"),
-            alternateRoutes: [tailscale, tunnel])
 
-        _ = try await service.connect(configuration: configuration)
+        _ = try await service.connect(configuration: paired(lan, [tailscale, tunnel]))
         let probes = await requests.seen.filter { $0.path == "/.well-known/t3/environment" }
-        #expect(probes.map(\.host) == ["192.168.1.20", "100.64.1.2", "botto.example.com"])
-        // Each route but the last gets a short limit, so a dead address doesn't stall the next.
-        #expect(probes.map(\.timeout) == [5, 5, 30])
-        #expect(await requests.at("/api/auth/websocket-ticket/rpc") == ["botto.example.com"])
-        #expect(await requests.seen.allSatisfy { $0.host == "botto.example.com" || $0.path == "/.well-known/t3/environment" })
-        #expect(sockets.hosts == ["botto.example.com"])
+        // HTTPS first, then the HTTP routes in paired order.
+        #expect(probes.map(\.host) == ["botto.example.com", "192.168.1.20", "100.64.1.2"])
+        // HTTPS gets 15 seconds, other routes but the last get 5, and the last keeps 30.
+        #expect(probes.map(\.timeout) == [15, 5, 30])
+        #expect(await requests.seen.filter(\.authorized).allSatisfy { $0.host == "100.64.1.2" })
+        #expect(sockets.hosts == ["100.64.1.2"])
         let remembered = try #require(saved)
         #expect(remembered.serverURL == lan)
         #expect(remembered.alternateRoutes == [tailscale, tunnel])
-        #expect(remembered.lastReachedRoute == tunnel)
+        #expect(remembered.lastReachedRoute == tailscale)
 
         service.disconnect()
         let before = await requests.seen.count
         _ = try await service.connect(configuration: remembered)
-        #expect(await requests.seen.dropFirst(before).first?.host == "botto.example.com")
+        // The HTTPS route still leads; the route that last worked leads the HTTP ones.
+        #expect(await requests.seen.dropFirst(before).prefix(2).map(\.host) == ["botto.example.com", "100.64.1.2"])
     }
+
+    enum RouteBreak: CaseIterable { case ticket, socket }
+
+    @Test(arguments: RouteBreak.allCases)
+    func aRouteThatAnswersButWontConnectIsSkippedForTheNext(_ broken: RouteBreak) async throws {
+        let host = T3ServiceHost(existing: true)
+        let requests = RouteRequests()
+        let sockets = SocketHosts()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            if broken == .ticket, request.url?.host == "botto.example.com", request.url?.path == "/api/auth/websocket-ticket/rpc" {
+                let url = try #require(request.url)
+                return (Data(), try #require(HTTPURLResponse(url: url, statusCode: 503, httpVersion: nil, headerFields: nil)))
+            }
+            return try await host.http(request)
+        }, webSocket: { request in
+            sockets.record(request)
+            // The tunnel serves the environment probe but refuses the WebSocket upgrade.
+            return request.url?.host == "botto.example.com" ? RefusedSocket() : host
+        })
+        var saved: ConnectionConfiguration?
+        service.onEvent = { (event: BotServiceEvent) in if case .configuration(let updated) = event { saved = updated } }
+        defer { service.disconnect() }
+
+        _ = try await service.connect(configuration: paired(lan, [tunnel]))
+        #expect(sockets.hosts == (broken == .socket ? ["botto.example.com", "192.168.1.20"] : ["192.168.1.20"]))
+        // The workspace is read only at the route that connected.
+        #expect(await requests.at("/api/projects") == ["192.168.1.20"])
+        #expect(saved?.lastReachedRoute == lan)
+    }
+
+    @Test func noTokenGoesToAnHTTPRouteWhileAnHTTPSRouteAnswers() async throws {
+        let host = T3ServiceHost(existing: true)
+        let requests = RouteRequests()
+        let sockets = SocketHosts()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            return try await host.http(request)
+        }, webSocket: { request in
+            sockets.record(request)
+            return host
+        })
+        defer { service.disconnect() }
+
+        // Even when the LAN route is the primary and last worked.
+        _ = try await service.connect(configuration: paired(lan, [tunnel], lastReached: lan))
+        #expect(await requests.seen.allSatisfy { $0.host == "botto.example.com" })
+        #expect(sockets.hosts == ["botto.example.com"])
+    }
+
+    @Test func aRefusedTokenEndsTheSearchInsteadOfTryingItElsewhere() async throws {
+        let host = T3ServiceHost(existing: true, ticketStatuses: [401])
+        let requests = RouteRequests()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            return try await host.http(request)
+        }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        await #expect(throws: T3PairingError.httpStatus(401)) {
+            try await service.connect(configuration: paired(lan, [tunnel]))
+        }
+        #expect(await requests.seen.allSatisfy { $0.host == "botto.example.com" })
+    }
+}
+
+/// A WebSocket whose upgrade the server refused.
+private actor RefusedSocket: T3WebSocketTransport {
+    func send(_ data: Data) async throws { throw URLError(.badServerResponse) }
+    func receive() async throws -> Data { throw URLError(.badServerResponse) }
+    func close() async {}
 }
 
 private actor T3ServiceHost: T3WebSocketTransport {

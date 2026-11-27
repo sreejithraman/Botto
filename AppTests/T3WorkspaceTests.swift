@@ -521,6 +521,60 @@ import UIKit
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
     }
 
+    @Test func rePairingTheSameMacThroughANewLinkKeepsItsPrimaryRouteAndHistory() async throws {
+        var previous = t3Configuration()
+        previous.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let previousID = previous.id
+        let resolved = try #require(previous.t3)
+        let lan = try #require(URL(string: "http://192.168.1.10:3774"))
+        // A Mac's new code leads with LAN; the phone first paired through the HTTPS address.
+        let next = ConnectionConfiguration(serverURL: lan, installID: resolved.environmentID,
+            t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"),
+            alternateRoutes: [URL(string: "https://Studio.example:443")!], lastReachedRoute: lan)
+        defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
+        let replacement = T3WorkspaceService()
+        replacement.resolvedPairing = next.t3.map {
+            var bound = $0
+            bound.projectID = resolved.projectID
+            bound.workspaceRoot = resolved.workspaceRoot
+            return bound
+        }
+        let storage = MemoryConnectionStorage(saved: previous)
+        let store = AppStore(persistence: storage.persistence, makeService: {
+            $0?.id == next.id ? replacement : T3WorkspaceService()
+        })
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        await store.open(bot)
+        await store.testEdit("Keep the typed draft", for: bot.id)
+        try #require(store.flush())
+
+        #expect(await store.connect(next))
+        let saved = try #require(storage.saved)
+        #expect(saved.id == next.id)
+        #expect(saved.serverURL == previous.serverURL)
+        #expect(saved.alternateRoutes == [lan])
+        #expect(saved.lastReachedRoute == lan)
+        #expect(AppStore.artifactScope(saved).serverURL == AppStore.artifactScope(previous).serverURL)
+        #expect(store.draft(for: bot.id) == "Keep the typed draft")
+        #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
+    }
+
+    @Test func aNewPairingKeepsItsOwnPrimaryUnlessItIsTheSameMacByAReviewedRoute() throws {
+        let saved = t3Configuration()
+        let lan = try #require(URL(string: "http://192.168.1.10:3774"))
+        let tunnel = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"),
+                                             alternateRoutes: [saved.serverURL])
+        #expect(AppStore.keepingPrimary(of: saved, in: tunnel).serverURL == saved.serverURL)
+        // The saved primary isn't one of the reviewed routes, for example HTTP the person didn't allow.
+        let lanOnly = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"))
+        #expect(AppStore.keepingPrimary(of: saved, in: lanOnly) == lanOnly)
+        var otherMac = tunnel
+        otherMac.t3?.environmentID = "other-environment"
+        #expect(AppStore.keepingPrimary(of: saved, in: otherMac) == otherMac)
+        #expect(AppStore.keepingPrimary(of: nil, in: tunnel) == tunnel)
+    }
+
     enum Replacement: CaseIterable {
         case sameWorkspace, differentAddress, differentEnvironment, differentProject, failedSave
     }
@@ -1250,8 +1304,17 @@ import UIKit
                 #expect(page.contains(label))
             }
             #expect(!page.contains("http://botto.example.com"))
-            #expect(page.contains { $0.contains("Your pairing code is sent to the first one that answers.") })
+            #expect(page.contains { $0.contains("Your pairing code is sent to the first one that answers, secure ones first.") })
         }
+    }
+
+    @Test func aCodeThatMayBeSpentAsksForAFreshLink() {
+        #expect(T3PairingReview.needsFreshLink(after: T3PairingError.codeMayBeUsed))
+        #expect(T3PairingReview.message(for: T3PairingError.codeMayBeUsed)
+            == "Your Mac may already have used this pairing code. Get a fresh link from Botto on your Mac, then try again.")
+        // A failure before the code was sent can be retried with the same link.
+        #expect(!T3PairingReview.needsFreshLink(after: T3UnreachableRoutes(attempts: [])))
+        #expect(!T3PairingReview.needsFreshLink(after: URLError(.cannotConnectToHost)))
     }
 
     @Test func pairingNamesEachRouteItCouldNotReach() {

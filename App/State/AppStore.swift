@@ -860,6 +860,7 @@ import BottoCore
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         guard candidate.t3 != nil || injectedService != nil else { return false }
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
+        let candidate = isDemo ? candidate : Self.keepingPrimary(of: configuration, in: candidate)
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
         discardPendingService()
@@ -1017,6 +1018,21 @@ import BottoCore
         pendingService = nil
         pending.service.onEvent = nil
         pending.service.disconnect()
+    }
+
+    /// A new pairing with the same environment keeps the saved setup's primary route when that route
+    /// is still one of the reviewed ones, so the account, history and file cache built from it carry
+    /// over. A Mac's code leads with its LAN route, which may not be the route the phone first paired by.
+    static func keepingPrimary(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
+        guard let saved, saved.id != candidate.id, let paired = saved.t3, !paired.environmentID.isEmpty,
+              candidate.t3?.environmentID == paired.environmentID,
+              !PairingRoutes.same(saved.serverURL, candidate.serverURL),
+              candidate.connectionRoutes.contains(where: { PairingRoutes.same($0, saved.serverURL) }) else { return candidate }
+        var kept = candidate
+        kept.serverURL = saved.serverURL
+        kept.alternateRoutes = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
+            .filter { !PairingRoutes.same($0, saved.serverURL) }
+        return kept
     }
 
     private func canPreserveHistory(for candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
