@@ -198,6 +198,8 @@ import BottoCore
     var link: Link { pendingService != nil && connection.link != .online ? .connecting : connection.link }
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
+    /// Pairing codes that may have reached T3 since launch. A pairing view sends none of them again.
+    @ObservationIgnored var pairingCodesSent: Set<String> = []
     var serverInfo: ServerInfo? { connection.serverInfo }
     private var cachedBots: [BotProfile] = []
     private(set) var t3Channels: [T3ChannelSummary] = []
@@ -855,13 +857,14 @@ import BottoCore
         else { await t3Push.resume(scope: nil) }
     }
 
-    @discardableResult func connect(_ candidate: ConnectionConfiguration,
+    /// A new pairing of the saved Mac first tries to continue the saved setup (`keepsSavedSetup`).
+    @discardableResult func connect(_ candidate: ConnectionConfiguration, keepsSavedSetup: Bool = true,
                                    onConnected: (@MainActor () -> Void)? = nil,
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         guard candidate.t3 != nil || injectedService != nil else { return false }
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
         let paired = candidate
-        let candidate = isDemo ? candidate : Self.keepingSetup(of: configuration, in: candidate)
+        let candidate = isDemo || !keepsSavedSetup ? candidate : Self.keepingSetup(of: configuration, in: candidate)
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
         discardPendingService()
@@ -904,17 +907,22 @@ import BottoCore
             var saved = staged?.configuration ?? connection.candidate ?? candidate
             saved.installID = info.installID ?? saved.installID
             let previousID = configuration?.id
-            let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
-            // A re-pairing that kept the saved setup's ID carries its history only to the same workspace.
+            let continuesSetup = continuesSavedSetup(saved, confirmedBy: info)
             let keptSetup = candidate.id != paired.id
-            let confirmsWorkspace = canPreserveHistory(for: saved, confirmedBy: info)
-            let changedCache = previousID != saved.id || changedBackendAccount || (keptSetup && !confirmsWorkspace)
-            let preservesHistory = (changedCache || keptSetup) && confirmsWorkspace
+            if keptSetup, !continuesSetup {
+                // Nothing is written for a trial the connection didn't confirm. The pairing becomes a new
+                // setup with its own ID, as any other new pairing does.
+                cancelConnection(owner: owner)
+                return await connect(paired, keepsSavedSetup: false, onConnected: onConnected, onFailure: onFailure)
+            }
+            let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
+            let changedCache = previousID != saved.id || changedBackendAccount
+            let preservesHistory = changedCache && continuesSetup
             let replacementHistory: LocalHistory
-            if preservesHistory {
+            if preservesHistory || keptSetup {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = history.readOnly
-            } else if previousID == saved.id, changedCache {
+            } else if previousID == saved.id, changedBackendAccount {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = .init()
             } else if previousID == saved.id { replacementHistory = history.readOnly }
@@ -923,15 +931,11 @@ import BottoCore
                 // A failed vault read cannot authorize overwriting setup or pruning caches.
                 _ = try persistence.load()
                 var replacement: LocalHistory.CacheReplacement?
-                if changedCache {
-                    if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) {
-                        try history.save(for: previousID)
-                    }
-                    replacement = try replacementHistory.prepareReplacement(for: saved.id)
-                } else if keptSetup, !protectedCaches.contains(saved.id) {
-                    // As with a new setup, the history it carries is on disk before the credentials change.
-                    try history.save(for: saved.id)
+                // The current history is on disk before the credentials change, as an autosave would leave it.
+                if let previousID, previousID != saved.id || keptSetup, !protectedCaches.contains(previousID) {
+                    try history.save(for: previousID)
                 }
+                if changedCache { replacement = try replacementHistory.prepareReplacement(for: saved.id) }
                 do { try persistence.save(saved) }
                 catch {
                     do { try replacement?.rollback() }
@@ -1027,10 +1031,10 @@ import BottoCore
         pending.service.disconnect()
     }
 
-    /// A new pairing with the same environment keeps the saved setup's ID and primary route when that
+    /// A new pairing with the same environment tries the saved setup's ID and primary route when that
     /// route is still one of the reviewed ones, so the account, history and file cache built from them
-    /// carry over. A Mac's code leads with its LAN route, which may not be the route the phone first
-    /// paired by. Whether the workspace is the same is confirmed once the pairing connects.
+    /// can carry over. A Mac's code leads with its LAN route, which may not be the route the phone first
+    /// paired by. The setup is kept only if the connection then confirms it (`continuesSavedSetup`).
     static func keepingSetup(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
         guard let saved, saved.id != candidate.id, let paired = saved.t3, !paired.environmentID.isEmpty,
               candidate.t3?.environmentID == paired.environmentID,
@@ -1045,15 +1049,16 @@ import BottoCore
         return kept
     }
 
-    private func canPreserveHistory(for candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
+    /// Whether a connected pairing continues the saved setup, so its history (and, under a kept ID, its
+    /// file cache) carries over. Only when the route the connection reached was already saved for that
+    /// setup, answered as the same environment, and confirmed the same project and workspace. A route
+    /// that arrived only with the new link can't vouch for the old setup, whatever IDs it reports.
+    private func continuesSavedSetup(_ candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
+        let reached = candidate.lastReachedRoute ?? candidate.serverURL
         guard !isDemo, let previous = configuration, previous.t3 != nil,
               Self.backendAccount(previous) == Self.backendAccount(candidate),
               let installID = info.installID, !installID.isEmpty, previous.installID == installID,
-              let oldOrigin = try? PairingAddress.parse(previous.serverURL.absoluteString, allowInsecureHTTP: true),
-              let newOrigin = try? PairingAddress.parse(candidate.serverURL.absoluteString, allowInsecureHTTP: true),
-              oldOrigin.scheme == newOrigin.scheme, oldOrigin.host == newOrigin.host,
-              (oldOrigin.port ?? (oldOrigin.scheme == "https" ? 443 : 80))
-                == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)),
+              previous.connectionRoutes.contains(where: { PairingRoutes.same($0, reached) }),
               let paired = previous.t3, let verified = candidate.t3,
               paired.environmentID == installID, verified.environmentID == installID,
               let project = paired.projectID, !project.isEmpty,

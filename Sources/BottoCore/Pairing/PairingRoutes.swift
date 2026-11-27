@@ -155,15 +155,14 @@ public struct T3UnreachableRoutes: Error, Equatable, LocalizedError, Sendable {
     }
 
     /// Whether a failure after a route answered as the paired environment belongs to that route, so
-    /// the next one is worth trying. That includes an RPC error or a malformed reply to
-    /// `server.getConfig`: the route isn't confirmed until its own config names the environment. A
-    /// refused token and a superseded attempt would be the same on every route.
+    /// the next one is worth trying. Any failure of the reads a connection makes before it writes
+    /// anything (ticket, socket, `server.getConfig`, projects) does, including a relay's own 401 or
+    /// 403. Only T3's own refusal of the token, which every route would repeat, and a cancelled or
+    /// superseded attempt end the search.
     nonisolated static func isRouteFailure(_ error: any Error) -> Bool {
         switch error {
-        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): false
-        case is URLError, is T3RPCError, T3PairingError.httpStatus, T3PairingError.invalidResponse,
-             T3PairingError.redirected, T3ServiceError.differentEnvironment, T3ServiceError.invalidResponse: true
-        default: false
+        case T3PairingError.credentialRefused, is CancellationError, T3ServiceError.disconnected: false
+        default: true
         }
     }
 }

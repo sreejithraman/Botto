@@ -31,6 +31,8 @@ public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
     case tooManyRoutes
     /// The code was sent, but whether it was redeemed is unknown, so it can't be tried again.
     case codeMayBeUsed
+    /// T3 itself refused the credential: 401 with its `auth_invalid` body. Every route would refuse it.
+    case credentialRefused
     case httpStatus(Int)
 
     public var errorDescription: String? {
@@ -42,6 +44,7 @@ public enum T3PairingError: Error, Equatable, LocalizedError, Sendable {
         case .invalidResponse: "The T3 Code environment returned an invalid response."
         case .codeMayBeUsed: "Your Mac may already have used this pairing code. Get a fresh link from Botto on your Mac, then try again."
         case .tooManyRoutes: "That pairing link lists more addresses than Botto accepts. Get a fresh link from Botto on your Mac."
+        case .credentialRefused: "The T3 Code environment returned HTTP 401."
         case .httpStatus(let status): "The T3 Code environment returned HTTP \(status)."
         }
     }
@@ -143,9 +146,10 @@ public struct T3PairingExchange: Sendable {
                 if Self.wasNotSent(error) { throw error }
                 throw T3PairingError.codeMayBeUsed
             }
-            // From here T3 may have redeemed the code, unless the reply is its own refusal.
+            // From here T3 may have redeemed the code. Its own refusal is a known outcome, and the code is
+            // no good after either.
             guard response.url == post.url, (200..<300).contains(response.statusCode) else {
-                if Self.isCredentialRefusal(data, status: response.statusCode) { throw T3PairingError.httpStatus(response.statusCode) }
+                if Self.isCredentialRefusal(data, status: response.statusCode) { throw T3PairingError.credentialRefused }
                 throw T3PairingError.codeMayBeUsed
             }
             struct Token: Decodable { let access_token: String; let token_type: String }
@@ -171,12 +175,15 @@ public struct T3PairingExchange: Sendable {
                 .internationalRoamingOff, .dataNotAllowed, .callIsActive].contains(error.code)
     }
 
-    /// T3 itself refused the credential, so this request didn't redeem it. T3's token endpoint answers
-    /// an unknown or already used credential with 401 `auth_invalid` (`EnvironmentAuthInvalidError` in
-    /// packages/contracts/src/environmentHttp.ts, raised from the token handler in
-    /// apps/server/src/auth/http.ts). Other errors aren't this: T3 can return 400 `invalid_request` or
-    /// 500 `internal_error` after the credential was consumed, and a relay's error may follow a request
-    /// it passed on.
+    /// T3 itself refused the credential. At the pinned T3 (see scripts/t3-engine-pin.json),
+    /// `EnvironmentAuthInvalidError` in packages/contracts/src/environmentHttp.ts is answered as 401
+    /// with `code: "auth_invalid"`. The token handler in apps/server/src/auth/http.ts raises it for an
+    /// unknown or used pairing code, and also after spending one when a session revocation won the
+    /// race (`issueUnlessOthersRevokedSince` in EnvironmentAuth.ts). The authentication middleware in
+    /// the same http.ts raises it for a refused access token, including at the WebSocket ticket
+    /// endpoint. A relay's own 401 or 403 lacks this body, so it isn't a refusal of the credential.
+    /// Other errors aren't this either: T3 can return 400 `invalid_request` or 500 `internal_error`
+    /// after the credential was consumed.
     nonisolated static func isCredentialRefusal(_ data: Data, status: Int) -> Bool {
         struct Refusal: Decodable { let code: String }
         return status == 401 && (try? JSONDecoder().decode(Refusal.self, from: data))?.code == "auth_invalid"
@@ -218,7 +225,10 @@ public struct T3PairingExchange: Sendable {
                                        headers: headers, timeout: timeout)
         let (data, response) = try await transport(request)
         if (300..<400).contains(response.statusCode) || response.url != request.url { throw T3PairingError.redirected }
-        guard (200..<300).contains(response.statusCode) else { throw T3PairingError.httpStatus(response.statusCode) }
+        guard (200..<300).contains(response.statusCode) else {
+            if Self.isCredentialRefusal(data, status: response.statusCode) { throw T3PairingError.credentialRefused }
+            throw T3PairingError.httpStatus(response.statusCode)
+        }
         return data
     }
 

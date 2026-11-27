@@ -40,9 +40,12 @@ struct T3PairingReview: Equatable {
         catch { return false }
     }
 
-    /// Whether the code may already be spent, so the review can't offer it again.
+    /// Whether the code may already be spent, or T3 refused it, so the review can't offer it again.
     static func needsFreshLink(after error: any Error) -> Bool {
-        if case T3PairingError.codeMayBeUsed = error { true } else { false }
+        switch error {
+        case T3PairingError.codeMayBeUsed, T3PairingError.credentialRefused: true
+        default: false
+        }
     }
 
     /// What went wrong, for someone holding a phone next to their Mac.
@@ -56,7 +59,8 @@ struct T3PairingReview: Equatable {
             String(localized: "That link lists more addresses than Botto accepts. Get a fresh one from Botto on your Mac.")
         case T3PairingError.invalidOrigin, is PairingAddress.Failure:
             String(localized: "That doesn’t look like a pairing link from Botto on your Mac.")
-        case T3PairingError.httpStatus(400), T3PairingError.httpStatus(401), T3PairingError.httpStatus(403):
+        case T3PairingError.credentialRefused, T3PairingError.httpStatus(400), T3PairingError.httpStatus(401),
+             T3PairingError.httpStatus(403):
             String(localized: "That link has expired or was already used. Get a fresh one on your Mac.")
         case T3PairingError.incompatibleProtocol:
             String(localized: "Botto on your Mac needs an update before this phone can pair.")

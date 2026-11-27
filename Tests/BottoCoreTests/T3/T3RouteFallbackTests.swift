@@ -114,8 +114,9 @@ private let token = #"{"token_type":"Bearer","access_token":"access"}"#
         #expect(await requests.at("/oauth/token") == (stage == .whileProbing ? [] : ["botto.example.com"]))
     }
 
-    /// T3 answers a credential it doesn't know, or one already used, with 401 `auth_invalid`.
-    @Test func aCodeT3RefusedIsReportedAsBefore() async throws {
+    /// T3 answers a credential it doesn't know, or one already used, with 401 `auth_invalid`. It can
+    /// also answer so after spending the code, when a session revocation won the race.
+    @Test func aCodeT3RefusedEndsTheExchangeAsARefusal() async throws {
         let requests = RouteRequests()
         let exchange = T3PairingExchange { request in
             await requests.record(request)
@@ -123,7 +124,7 @@ private let token = #"{"token_type":"Bearer","access_token":"access"}"#
             return try routeReply(request, #"{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential","traceId":"t"}"#,
                                   status: 401)
         }
-        await #expect(throws: T3PairingError.httpStatus(401)) {
+        await #expect(throws: T3PairingError.credentialRefused) {
             try await exchange.exchangePairingCredential(routes: [lan, tunnel], credential: "code", clientLabel: "Botto")
         }
         #expect(await requests.at("/oauth/token") == ["botto.example.com"])

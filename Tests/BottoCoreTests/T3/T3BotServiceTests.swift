@@ -1265,7 +1265,7 @@ extension T3BotServiceTests {
         #expect(sockets.hosts == ["botto.example.com"])
     }
 
-    @Test func aRefusedTokenEndsTheSearchInsteadOfTryingItElsewhere() async throws {
+    @Test func aTokenT3RefusesEndsTheSearchInsteadOfTryingItElsewhere() async throws {
         let host = T3ServiceHost(existing: true, ticketStatuses: [401])
         let requests = RouteRequests()
         let service = T3BotService(transport: { request in
@@ -1273,10 +1273,51 @@ extension T3BotServiceTests {
             return try await host.http(request)
         }, webSocket: { _ in host })
         defer { service.disconnect() }
-        await #expect(throws: T3PairingError.httpStatus(401)) {
+        await #expect(throws: T3PairingError.credentialRefused) {
             try await service.connect(configuration: paired(lan, [tunnel]))
         }
         #expect(await requests.seen.allSatisfy { $0.host == "botto.example.com" })
+    }
+
+    enum RelayFailure: CaseIterable { case ticketForbidden, ticketUnauthorized, projectsUnavailable }
+
+    /// A relay in front of the tunnel answers for itself, without T3's refusal body, so the next route
+    /// is tried. Nothing in the workspace was written at the tunnel.
+    @Test(arguments: RelayFailure.allCases)
+    func aRelaysOwnErrorBeforeAnyWriteMovesOnToTheNextRoute(_ failure: RelayFailure) async throws {
+        let host = T3ServiceHost(existing: true)
+        let tunnelSocket = BrokenConfigSocket.valid
+        let requests = RouteRequests()
+        let sockets = SocketHosts()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            let url = try #require(request.url)
+            let status: Int? = switch (failure, url.path) {
+            case (.ticketForbidden, "/api/auth/websocket-ticket/rpc"): 403
+            case (.ticketUnauthorized, "/api/auth/websocket-ticket/rpc"): 401
+            case (.projectsUnavailable, "/api/projects"): 503
+            default: nil
+            }
+            if url.host == "botto.example.com", let status {
+                return (Data("<html>Relay error</html>".utf8),
+                        try #require(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)))
+            }
+            return try await host.http(request)
+        }, webSocket: { request in
+            sockets.record(request)
+            return request.url?.host == "botto.example.com" ? tunnelSocket : host
+        })
+        var saved: ConnectionConfiguration?
+        service.onEvent = { (event: BotServiceEvent) in if case .configuration(let updated) = event { saved = updated } }
+        defer { service.disconnect() }
+
+        _ = try await service.connect(configuration: paired(lan, [tunnel]))
+        #expect(saved?.lastReachedRoute == lan)
+        let reachedTunnelSocket = failure == .projectsUnavailable
+        #expect(sockets.hosts == (reachedTunnelSocket ? ["botto.example.com", "192.168.1.20"] : ["192.168.1.20"]))
+        #expect(await requests.at("/api/projects") == (reachedTunnelSocket ? ["botto.example.com", "192.168.1.20"] : ["192.168.1.20"]))
+        // The tunnel's socket saw only the config read before it was closed: nothing was created or written there.
+        #expect(await tunnelSocket.tags == (reachedTunnelSocket ? ["server.getConfig"] : []))
     }
 }
 
@@ -1307,24 +1348,27 @@ extension T3BotServiceTests {
     }
 }
 
-/// A socket that answers `server.getConfig` with an RPC error, or with a config that doesn't name
-/// the environment.
+/// A socket that answers `server.getConfig` with an RPC error, with a config that doesn't name the
+/// environment, or (`valid`) with one that does. Every request gets that reply.
 actor BrokenConfigSocket: T3WebSocketTransport {
     enum Reply: CaseIterable, Sendable { case failure, defect, missingEnvironment }
-    private let reply: Reply
+    private let exit: String
     private(set) var tags: [String] = []
     private let (replies, replier) = AsyncStream<Data>.makeStream()
-    init(_ reply: Reply) { self.reply = reply }
+    init(_ reply: Reply) {
+        exit = switch reply {
+        case .failure: #"{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"ConfigError","message":"Unavailable"}}]}"#
+        case .defect: #"{"_tag":"Failure","cause":[{"_tag":"Die","defect":"Lost"}]}"#
+        case .missingEnvironment: #"{"_tag":"Success","value":{"cwd":"/srv","providers":[]}}"#
+        }
+    }
+    static var valid: BrokenConfigSocket { .init(exit: #"{"_tag":"Success","value":{"environment":{"environmentId":"environment"}}}"#) }
+    private init(exit: String) { self.exit = exit }
 
     func send(_ data: Data) async throws {
         let frame = try JSONDecoder().decode(JSONValue.self, from: data)
         guard frame["_tag"].text == "Request", let id = frame["id"].text else { return }
         tags.append(frame["tag"].text ?? "")
-        let exit = switch reply {
-        case .failure: #"{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"ConfigError","message":"Unavailable"}}]}"#
-        case .defect: #"{"_tag":"Failure","cause":[{"_tag":"Die","defect":"Lost"}]}"#
-        case .missingEnvironment: #"{"_tag":"Success","value":{"cwd":"/srv","providers":[]}}"#
-        }
         replier.yield(Data(#"{"_tag":"Exit","requestId":"\#(id)","exit":\#(exit)}"#.utf8))
     }
 
@@ -1355,6 +1399,8 @@ private actor T3ServiceHost: T3WebSocketTransport {
     private var probedSignedOut: Bool
     private var refused: String?
     private let ticketStatuses: [Int]
+    /// T3's own refusal of a token, as its authentication middleware answers it with HTTP 401.
+    static let refusal = #"{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential","traceId":"trace"}"#
     nonisolated let visits: AsyncStream<JSONValue>
     private let visitCommands: AsyncStream<JSONValue>.Continuation
     private let workflowsEnabled: Bool
@@ -1594,7 +1640,7 @@ private actor T3ServiceHost: T3WebSocketTransport {
             status = ticketAttempts < ticketStatuses.count ? ticketStatuses[ticketAttempts] : 200
             let ticket = ticketAttempts == 0 ? "short+ticket" : "reconnect-ticket"
             ticketAttempts += 1
-            json = """
+            json = status == 401 ? T3ServiceHost.refusal : """
             {"ticket":"\(ticket)","expiresAt":"2099-11-24T12:00:00Z"}
             """
         case "/api/projects":

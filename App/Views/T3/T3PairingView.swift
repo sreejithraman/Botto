@@ -202,6 +202,7 @@ struct T3PairingView: View {
                 .font(.subheadline.weight(.medium)).foregroundStyle(BottoTheme.action)
                 .frame(minHeight: 44)
                 .disabled(isConnecting)
+                .accessibilityIdentifier("t3-pair-change-address")
                 .padding(.top, 4)
         }
     }
@@ -279,13 +280,16 @@ struct T3PairingView: View {
         }
     }
 
-    /// A new address is a new decision, so it never inherits the last one's permission.
+    /// A new address is a new decision, so it never inherits the last one's permission. A code that may
+    /// have been sent leaves the form with its review.
     private func clearReview() {
         cancelAttempt()
+        let credential = review?.credential
         review = nil
         paired = nil
         allowsHTTP = false
         error = nil
+        if let credential, store.pairingCodesSent.contains(credential) { retire(credential, after: T3PairingError.codeMayBeUsed) }
     }
 
     private func connect(_ review: T3PairingReview) {
@@ -294,21 +298,34 @@ struct T3PairingView: View {
         let destinations: [URL]
         do { destinations = try review.destinations(allowingHTTP: allowsHTTP) }
         catch { self.error = T3PairingReview.message(for: error); return }
+        let existing = paired
+        // A code is sent once. It counts as sent from before the exchange starts until the exchange
+        // shows it never left the phone, whatever happens to this view meanwhile.
+        if existing == nil, !store.pairingCodesSent.insert(review.credential).inserted {
+            retire(review.credential, after: T3PairingError.codeMayBeUsed)
+            return
+        }
         isConnecting = true
         let owner = UUID()
         attemptID = owner
-        let existing = paired
         connectionTask = Task { @MainActor in
-            defer {
-                if attemptID == owner { isConnecting = false; connectionTask = nil }
-            }
+            // Connect stays off until this task ends, even after it was cancelled, so a cancelled
+            // exchange settles before the code could be offered again.
+            defer { isConnecting = false; connectionTask = nil }
             do {
                 let candidate: ConnectionConfiguration
                 if let existing { candidate = existing }
                 else {
-                    candidate = try await exchange.exchangePairingCredential(
-                        routes: destinations, credential: review.credential, clientLabel: "Botto"
-                    ).configuration
+                    do {
+                        candidate = try await exchange.exchangePairingCredential(
+                            routes: destinations, credential: review.credential, clientLabel: "Botto"
+                        ).configuration
+                    } catch {
+                        // Even when the attempt was cancelled meanwhile, as when the app went to the background.
+                        if T3PairingReview.needsFreshLink(after: error) { retire(review.credential, after: error) }
+                        else { store.pairingCodesSent.remove(review.credential) }
+                        throw error
+                    }
                     // The code is spent. A later Connect for this review uses what it bought, even when this
                     // attempt was cancelled meanwhile.
                     if self.review == review { paired = candidate }
@@ -333,8 +350,6 @@ struct T3PairingView: View {
             } catch is CancellationError {
                 return
             } catch {
-                // Even when the attempt was cancelled meanwhile, as when the app went to the background.
-                if T3PairingReview.needsFreshLink(after: error) { retire(review, after: error) }
                 guard !Task.isCancelled, attemptID == owner else { return }
                 self.error = T3PairingReview.message(for: error)
                 if scenePhase == .active { BottoHaptics.shared.play(.failure(error)) }
@@ -342,22 +357,19 @@ struct T3PairingView: View {
         }
     }
 
-    /// The code `spent` carries may already be redeemed, so neither its review nor any copy of the code
-    /// is offered again. A typed address stays for a fresh code.
-    private func retire(_ spent: T3PairingReview, after failure: any Error) {
-        guard review == spent else { return }
-        review = nil
-        paired = nil
-        allowsHTTP = false
-        code = ""
-        if T3PairingReview.isPairingLink(input) { input = "" }
-        error = T3PairingReview.message(for: failure)
+    /// The code `spent` may already be redeemed, so neither its review nor any copy of it in the form is
+    /// offered again. A typed address stays for a fresh code.
+    private func retire(_ spent: String, after failure: any Error) {
+        store.pairingCodesSent.insert(spent)
+        var shown = false
+        if review?.credential == spent { review = nil; paired = nil; allowsHTTP = false; shown = true }
+        if code == spent { code = ""; shown = true }
+        if (try? T3PairingExchange.parse(input))?.credential == spent { input = ""; shown = true }
+        if shown { error = T3PairingReview.message(for: failure) }
     }
 
     private func cancelAttempt() {
         attemptID = UUID()
         connectionTask?.cancel()
-        connectionTask = nil
-        isConnecting = false
     }
 }

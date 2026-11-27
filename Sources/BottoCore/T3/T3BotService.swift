@@ -133,10 +133,10 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         try checkAttempt(attempt)
         let token = paired.accessToken
         // The token is sent only once a route has answered as the paired environment. A route that
-        // answers but can't mint a ticket, open the socket, or return its config as that environment
-        // counts as failed, and the next is tried. Nothing about the workspace is read or written
-        // until a route has connected.
-        let (origin, descriptor, rpc, config) = try await http.reach(
+        // answers but can't mint a ticket, open the socket, return its config as that environment, or
+        // list its projects counts as failed, and the next is tried. Nothing in the workspace is
+        // written until a route has made all of those reads.
+        let (origin, descriptor, rpc, config, projects) = try await http.reach(
             configuration.connectionRoutes, environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID,
             isRouteFailure: T3UnreachableRoutes.isRouteFailure
         ) { origin, descriptor in
@@ -155,7 +155,9 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                 default: throw T3ServiceError.differentEnvironment
                 }
                 try checkAttempt(attempt)
-                return (origin, descriptor, rpc, config)
+                let projects = try await listProjects(origin: origin, token: token)
+                try checkAttempt(attempt)
+                return (origin, descriptor, rpc, config, projects)
             } catch {
                 if connectingRPC === rpc { connectingRPC = nil }
                 await rpc.close()
@@ -164,7 +166,7 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         }
 
         do {
-            let project = try await resolveProject(origin: origin, paired: paired, rpc: rpc, attempt: attempt,
+            let project = try await resolveProject(in: projects, paired: paired, rpc: rpc, attempt: attempt,
                                                    environmentID: descriptor.environmentId)
             guard let id = project["id"].nonempty, let root = project["workspaceRoot"].nonempty else {
                 throw T3ServiceError.invalidProject
@@ -268,7 +270,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     private static func shouldRetry(_ error: Error) -> Bool {
         switch error {
-        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403), T3PairingError.incompatibleProtocol,
+        case T3PairingError.credentialRefused, T3PairingError.httpStatus(401), T3PairingError.httpStatus(403),
+             T3PairingError.incompatibleProtocol,
              T3ServiceError.differentEnvironment, T3ServiceError.differentWorkspace, T3ServiceError.missingConnection:
             return false
         default:
@@ -939,13 +942,18 @@ private extension T3BotService {
         return (session, selection)
     }
 
-    func resolveProject(origin: URL, paired: T3Connection, rpc: T3RPCClient, attempt: UUID,
+    /// The projects a route's environment holds. A read, so a failure here is the route's.
+    func listProjects(origin: URL, token: String) async throws -> [JSONValue] {
+        let data = try await http.request(origin: origin, path: "/api/projects", token: token)
+        guard let projects = try JSONDecoder().decode(JSONValue.self, from: data)["projects"].list else {
+            throw T3ServiceError.invalidProject
+        }
+        return projects
+    }
+
+    func resolveProject(in projects: [JSONValue], paired: T3Connection, rpc: T3RPCClient, attempt: UUID,
                         environmentID: String) async throws -> JSONValue {
         let projectID = T3ProjectionMapper.stableUUID("botto-main-project:" + environmentID).uuidString
-        let data = try await http.request(origin: origin, path: "/api/projects", token: paired.accessToken)
-        let snapshot = try JSONDecoder().decode(JSONValue.self, from: data)
-        try checkAttempt(attempt)
-        guard let projects = snapshot["projects"].list else { throw T3ServiceError.invalidProject }
         let available = projects.filter { $0["deletedAt"] == .null }
         if let savedID = paired.projectID.nonempty {
             guard let project = available.first(where: { $0["id"].text?.utf8.elementsEqual(savedID.utf8) == true }),
