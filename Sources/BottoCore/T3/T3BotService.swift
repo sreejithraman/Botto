@@ -740,17 +740,22 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return opened
     }
 
-    public func markVisited(access: ConversationAccess) async throws {
+    /// Moves the host's read watermark to the shown snapshot's host time, never the phone's clock,
+    /// so a reply that arrives after the display stays unread.
+    public func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
         let (session, selection) = try resolve(access)
-        try await visitChannel(selection.identity, in: session)
+        guard let visitMark = shown.visitMark else { return }
+        try await visitChannel(selection.identity, in: session, through: visitMark)
     }
 
-    private func visitChannel(_ identity: SessionIdentity, in session: Session) async throws {
+    private func visitChannel(_ identity: SessionIdentity, in session: Session, through visitMark: String? = nil) async throws {
         try validate(identity, in: session)
-        let visitedAt = Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
-        _ = try await dispatch("thread.visit", identity: identity, operationID: UUID(), in: session, fields: [
-            "visitedAt": .string(visitedAt), "opened": .bool(true)
-        ])
+        // As in T3's own clients, an open sets `opened`; a visit to an already open space only moves the watermark.
+        let fields: [String: JSONValue] = visitMark.map { ["visitedAt": .string($0)] } ?? [
+            "visitedAt": .string(Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
+            "opened": .bool(true)
+        ]
+        _ = try await dispatch("thread.visit", identity: identity, operationID: UUID(), in: session, fields: fields)
     }
 
     private func attach(_ identity: SessionIdentity, in session: Session, attempt: UUID) async throws -> OpenedConversation {

@@ -215,6 +215,25 @@ import Testing
         #expect(projection.conversation(source).messages.map(\.text) == ["Shared context"])
     }
 
+    @Test func aSnapshotsVisitMarkIsTheNewestHostTimeItShows() throws {
+        let source = try T3ProjectionMapper.identity(profile: ExactID("project"), threadID: "thread")
+        let initial = try t3JSON("""
+        {"thread":{"id":"thread"},
+         "runs":[{"id":"run","status":"completed","ordinal":1,"completedAt":"2026-11-24T12:00:03.250Z"}],
+         "visibleTurnItems":[
+           {"position":0,"item":{"id":"prompt","type":"user_message","text":"Hi","runId":"run","ordinal":1,"updatedAt":"2026-11-24T12:00:01.000Z"}},
+           {"position":1,"item":{"id":"answer","type":"assistant_message","text":"Hello","runId":"run","ordinal":2,"updatedAt":"2026-11-24T12:00:03.100Z"}}]}
+        """)
+        var projection = T3ThreadProjection(snapshot: initial, sequence: 1, hasMoreHistory: false, lineage: UUID())
+        // The host's unread mark compares the run's completion, which follows its reply's last update.
+        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:03.250Z")
+        projection.apply(try event("run.created", #"{"id":"queued","status":"queued","ordinal":2}"#), sequence: 2, live: true)
+        projection.apply(try event("turn-item.updated", #"{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Later","runId":"queued","ordinal":3,"updatedAt":"2026-11-24T12:00:09.000Z"}"#), sequence: 3, live: true)
+        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:03.250Z", "A held prompt isn't shown")
+        projection.apply(try event("turn-item.updated", #"{"id":"next","type":"user_message","text":"Again","runId":"next","ordinal":4,"updatedAt":"2026-11-24T12:00:07.000Z"}"#), sequence: 4, live: true)
+        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:07.000Z")
+    }
+
     @Test func deliveryRestoresHeldPromptLoadedInSnapshot() throws {
         let source = try T3ProjectionMapper.identity(profile: ExactID("project"), threadID: "thread")
         let initial = try t3JSON("""

@@ -37,7 +37,11 @@ import BottoCore
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
     var creates: [UUID] = []
     var opens: [SessionIdentity] = []
-    var visits: [SessionIdentity] = []
+    var visits: [(identity: SessionIdentity, shown: Conversation)] = []
+    var visitAttempts = 0
+    /// Fails the next visit only.
+    var visitError: (any Error)?
+    var visitGate: WorkspaceGate?
     var uploads: [SessionIdentity] = []
     var uploadError: (any Error)?
     var responses: [PendingRequest] = []
@@ -124,7 +128,13 @@ import BottoCore
         completedOpens.append(result)
         return result
     }
-    func markVisited(access: ConversationAccess) async throws { visits.append(try issuer.resolve(access)) }
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
+        let identity = try issuer.resolve(access)
+        visitAttempts += 1
+        await visitGate?.wait()
+        if let visitError { self.visitError = nil; throw visitError }
+        visits.append((identity, shown))
+    }
     func publication(_ identity: SessionIdentity) throws -> OpenedConversation {
         .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity))
     }

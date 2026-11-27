@@ -616,6 +616,7 @@ import WebKit
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo { .init(version: "test") }
     func disconnect() {}
     func bots() async throws -> [BotProfile] { [bot] }
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         return try authority.opened(chat)
     }

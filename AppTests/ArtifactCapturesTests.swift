@@ -602,6 +602,7 @@ import BottoCore
             activity: [:])
     }
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now
         issuer.retireAttachment()

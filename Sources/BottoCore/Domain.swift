@@ -195,6 +195,8 @@ public struct Conversation: Identifiable, Codable, Equatable, Sendable {
     public var queuedMessages: [QueuedMessage]
     public var isWorking: Bool
     public var lastSequence: Int
+    /// The host's time for the newest content this snapshot shows. A visit through it covers nothing the snapshot doesn't show.
+    public var visitMark: String?
     public init(id: String, storedID: String, profileID: String, messages: [ChatMessage] = [], pendingRequests: [PendingRequest] = [], queuedMessages: [QueuedMessage] = [], isWorking: Bool = false, lastSequence: Int = 0, hasEarlierMessages: Bool = false) {
         self.id = id; self.storedID = storedID; self.profileID = profileID
         self.messages = messages; self.pendingRequests = pendingRequests
@@ -244,8 +246,8 @@ public enum MessageDelivery: Equatable, Sendable {
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
-    /// Tells the host that a visible transcript showed this access's chat.
-    func markVisited(access: ConversationAccess) async throws
+    /// Tells the host that a visible transcript showed this snapshot of the access's chat.
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt
@@ -261,8 +263,6 @@ public extension BotService {
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         nil
     }
-
-    func markVisited(access: ConversationAccess) async throws {}
 
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         throw ConversationServiceError.rejected(-32601)

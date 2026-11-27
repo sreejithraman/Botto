@@ -74,6 +74,7 @@ import BottoCore
     }
     func disconnect() { recovery?.cancel() }
     func bots() async throws -> [BotProfile] { profiles }
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let readStartedAt = ContinuousClock.now
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")

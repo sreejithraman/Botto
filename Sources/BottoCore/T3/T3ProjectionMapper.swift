@@ -277,14 +277,21 @@ struct T3ThreadProjection {
                                  isSteering: run["steerWhenReadyRunId"] != .null)
         }
         let messagesByID = T3ProjectionMapper.messageTextLookup(messages)
-        let rows = timeline.filter { row in
+        let shown = timeline.filter { row in
             let item = row.item
             guard row.isLocal, let run = item["runId"].text else { return true }
             return !removedRuns.contains(run) && !(Self.isHeldInput(item) && undeliveredRuns.contains(run))
-        }.compactMap { T3ProjectionMapper.chatMessage($0.item, messagesByID: messagesByID) }
-        return Conversation(id: identity.root.text, storedID: identity.stored.text, profileID: identity.profile.text,
-                            messages: rows, pendingRequests: pendingRequests, queuedMessages: queued,
+        }.map(\.item)
+        var conversation = Conversation(id: identity.root.text, storedID: identity.stored.text, profileID: identity.profile.text,
+                            messages: shown.compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: messagesByID) },
+                            pendingRequests: pendingRequests, queuedMessages: queued,
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
+        // The host marks a space unread by its runs' completion and messages' update times, so
+        // the newest of those that this snapshot holds is what showing it has seen.
+        conversation.visitMark = (shown.map { $0["updatedAt"] } + runs.map { $0["completedAt"] })
+            .compactMap { time in T3ProjectionMapper.date(time).map { (time.text ?? "", $0) } }
+            .max { $0.1 < $1.1 }?.0
+        return conversation
     }
 
     mutating func apply(_ event: JSONValue, sequence: Int, live: Bool) {

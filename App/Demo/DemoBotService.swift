@@ -292,9 +292,11 @@ import BottoCore
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
 
-    func markVisited(access: ConversationAccess) async throws {
+    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
         let source = try issuer.resolve(access)
-        visited[source.stored.text] = .now
+        // Like T3's host, the visit covers only what was shown and never moves back.
+        guard let shownAt = shown.messages.last?.timestamp else { return }
+        visited[source.stored.text] = max(visited[source.stored.text] ?? .distantPast, shownAt)
         // Like T3's host, announce the changed space list so the drawer drops its unread mark.
         onEvent?(.conversationDirectoryChanged(profile: source.profile))
     }

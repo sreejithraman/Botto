@@ -236,8 +236,16 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
         var signal: UUID?
     }
     @ObservationIgnored private var stopFeedback: StopFeedback?
-    /// What the host last recorded as visited, so a visible transcript tells it only once per change.
-    @ObservationIgnored private var hostVisit: (access: ConversationAccess, content: ChatContentEvidence)?
+    /// The settled content a visible transcript last showed, so the host hears of each change once.
+    private struct HostVisit {
+        let owner: PresentationOwner
+        let shown: Conversation
+        let content: ChatContentEvidence
+        var acknowledged: Bool
+    }
+    @ObservationIgnored private var hostVisit: HostVisit?
+    /// Accesses with a visit call in flight; each has at most one.
+    @ObservationIgnored private var visiting: Set<ConversationAccess> = []
     private var readAuthorityBlocked = false
     private var pendingOperations: [UUID: ChatID] = [:]
     @ObservationIgnored private var activityStorage: [ChatID: ObservedActivity] = [:]
@@ -769,7 +777,9 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
             readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
             guard installTranscript(opened, for: actual, title: record.title, navigation: request) else { return nil }
             // Opening a chat records the visit on the host.
-            if let live { hostVisit = (live.access, ChatContentEvidence(live.snapshot)) }
+            if let live {
+                hostVisit = .init(owner: owner(actual), shown: live.snapshot, content: .init(live.snapshot), acknowledged: true)
+            }
             return opened.identity
         } catch {
             guard !retired, recovery == connection, presentation == epoch,
@@ -988,16 +998,38 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
             }
             applied = true
         }
-        if applied { onDirty() }
-        visitHost()
+        guard applied else { return }
+        onDirty()
+        visitHost(chat, owner: owner)
     }
     /// The host's unread mark clears only when it learns the person saw a settled reply.
-    private func visitHost() {
-        guard transcriptVisible, online, !retired, let live, !live.snapshot.isWorking else { return }
-        let content = ChatContentEvidence(live.snapshot)
-        guard hostVisit?.access != live.access || hostVisit?.content != content else { return }
-        hostVisit = (live.access, content)
-        Task { [service] in try? await service.markVisited(access: live.access) }
+    private func visitHost(_ shown: Conversation, owner: PresentationOwner) {
+        guard transcriptVisible, online, !retired, let access = owner.access, !shown.isWorking else { return }
+        let content = ChatContentEvidence(shown)
+        if let last = hostVisit, last.owner.access == access, last.content == content {
+            // Showing it again retries a failed visit with what was first shown, so its watermark holds.
+            hostVisit = .init(owner: owner, shown: last.shown, content: content, acknowledged: last.acknowledged)
+        } else {
+            hostVisit = .init(owner: owner, shown: shown, content: content, acknowledged: false)
+        }
+        sendHostVisit()
+    }
+    private func sendHostVisit() {
+        guard let visit = hostVisit, !visit.acknowledged, let access = visit.owner.access,
+              visiting.insert(access).inserted else { return }
+        Task { @MainActor [weak self, service] in
+            guard let self else { return }
+            var sent = false
+            // Retirement, a new presentation or a covered transcript since the display cancels the visit.
+            if isCurrent(visit.owner), transcriptVisible, online {
+                sent = (try? await service.markVisited(visit.shown, access: access)) != nil
+            }
+            visiting.remove(access)
+            guard sent else { return }
+            if hostVisit?.owner.access == access, hostVisit?.content == visit.content { hostVisit?.acknowledged = true }
+            // Content shown while this call was in flight goes next.
+            else { sendHostVisit() }
+        }
     }
     private static func sameSeenCursor(_ a: SeenCursor?, _ b: SeenCursor?) -> Bool {
         (a == nil) == (b == nil) && a?.messageID == b?.messageID && a?.observedAt == b?.observedAt &&

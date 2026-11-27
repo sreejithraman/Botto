@@ -278,7 +278,7 @@ import Testing
         }
     }
 
-    @Test func markingVisitedDispatchesTheVisitOnlyForTheCurrentAccess() async throws {
+    @Test func markingVisitedSendsTheShownHostTimeOnlyForTheCurrentAccess() async throws {
         let host = T3ServiceHost(existing: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
         defer { service.disconnect() }
@@ -288,13 +288,16 @@ import Testing
         _ = try #require(await visits.next(isolation: MainActor.shared))
         let current = try await service.openChat(.stored(first.identity))
         _ = try #require(await visits.next(isolation: MainActor.shared))
-        await #expect(throws: ConversationServiceError.staleConversation) { try await service.markVisited(access: first.access) }
+        var shown = current.snapshot
+        shown.visitMark = "2026-11-24T12:00:05.123Z"
+        await #expect(throws: ConversationServiceError.staleConversation) { try await service.markVisited(shown, access: first.access) }
         // The host records a command before acknowledging it, so a sent visit is already queued here.
-        try await service.markVisited(access: current.access)
+        try await service.markVisited(shown, access: current.access)
         let visit = try #require(await visits.next(isolation: MainActor.shared))
         #expect(visit["type"].text == "thread.visit")
         #expect(visit["threadId"].text == "existing-general")
-        #expect(visit["opened"].flag == true)
+        #expect(visit["visitedAt"].text == "2026-11-24T12:00:05.123Z", "The shown snapshot's host time, not the phone's clock")
+        #expect(visit["opened"] == .null, "Seeing new activity in an open space isn't another open")
     }
 
     @Test func sendsChannelModelSelectionToT3() async throws {

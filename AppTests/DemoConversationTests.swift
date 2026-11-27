@@ -664,13 +664,19 @@ import BottoCore
         let service = DemoBotService(gateDirectory: directory, performanceFixture: false)
         let opened = try await emptyConversation(service)
         var announced = 0
-        service.onEvent = { if case .conversationDirectoryChanged = $0 { announced += 1 } }
+        var latest = opened.snapshot
+        service.onEvent = {
+            if case .conversationDirectoryChanged = $0 { announced += 1 }
+            if case .conversation(let update) = $0 { latest = update.snapshot }
+        }
         _ = try await service.send(text: "Seen", attachments: [], access: opened.access, operationID: UUID())
         try await waitForMarker("reply-1.started", directory: directory)
         func unread() -> Bool? { service.currentT3Channels.first { $0.id == opened.identity.stored.text }?.isUnread }
         XCTAssertEqual(unread(), true)
+        try await service.markVisited(opened.snapshot, access: opened.access)
+        XCTAssertEqual(unread(), true, "Showing the chat before the message doesn't cover it")
         announced = 0
-        try await service.markVisited(access: opened.access)
+        try await service.markVisited(latest, access: opened.access)
         XCTAssertEqual(unread(), false)
         XCTAssertEqual(announced, 1)
     }

@@ -145,15 +145,19 @@ import BottoCore
         #expect(workspace.persisted().preference(newcomer) != nil)
     }
 
-    @Test(arguments: ["draft", "publication", "seen", "retirement"])
+    @Test(arguments: ["draft", "publication", "seen", "retirement", "retirement before dispatch"])
     func displayCallbacksCannotLoseDraftOrAcknowledgeUnrenderedContent(change: String) async throws {
         let service = try WorkspaceTestService()
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true); await workspace.openBot(profile: service.profile)
-        let screen = try #require(workspace.screen(profile: service.profile))
-        let rendered = try #require(screen.snapshot)
         let opened = try #require(service.completedOpens.last)
+        workspace.setTranscriptVisible(true, owner: try #require(workspace.screen(profile: service.profile)).owner)
+        // A reply after the open, so only a visit tells the host it was seen.
+        var rendered = opened.snapshot
+        rendered.messages.append(.init(id: "rendered", role: .assistant, text: "A settled reply"))
+        workspace.receive(.init(identity: opened.identity, snapshot: rendered, access: opened.access))
+        let screen = try #require(workspace.screen(profile: service.profile))
         var next = rendered
         next.messages.append(.init(id: "not-rendered-yet", role: .assistant, text: "A newer unrendered reply"))
         let publication = OpenedConversation(identity: opened.identity, snapshot: next, access: opened.access)
@@ -167,6 +171,7 @@ import BottoCore
                     switch change {
                     case "draft": workspace.editDraft("Keep this callback draft", owner: screen.owner)
                     case "retirement": workspace.retireConnection()
+                    case "retirement before dispatch": break
                     default:
                         workspace.receive(publication)
                         if change == "seen" { workspace.displayed(screen.owner) }
@@ -174,19 +179,29 @@ import BottoCore
                 }
             }
             workspace.displayed(screen.owner)
+            if change == "retirement before dispatch" { workspace.retireConnection() }
         }
+        for _ in 0..<10 { await Task.yield() }
         let record = try #require(workspace.persisted().record(screen.owner.chat))
+        let visited = service.visits.map { ChatContentEvidence($0.shown) }
         switch change {
         case "draft":
             #expect(record.draft.text == "Keep this callback draft")
             #expect(record.seen?.content == ChatContentEvidence(rendered))
+            #expect(visited == [ChatContentEvidence(rendered)])
         case "retirement":
-            #expect(record.seen == nil && !workspace.isCurrent(screen.owner))
+            #expect(record.seen?.content != ChatContentEvidence(rendered) && !workspace.isCurrent(screen.owner))
+            #expect(service.visitAttempts == 0)
+        case "retirement before dispatch":
+            #expect(record.seen?.content == ChatContentEvidence(rendered) && !workspace.isCurrent(screen.owner))
+            #expect(service.visitAttempts == 0, "A retired presentation's queued visit never reaches the host")
         case "seen":
             #expect(record.seen?.content == ChatContentEvidence(next))
+            #expect(visited == [ChatContentEvidence(next)])
         default:
             #expect(record.seen?.content == ChatContentEvidence(rendered))
             #expect(record.seen?.content != ChatContentEvidence(next) && record.isUnread)
+            #expect(visited == [ChatContentEvidence(rendered)], "The host hears only of what was rendered")
         }
     }
 
@@ -215,10 +230,54 @@ import BottoCore
         workspace.setTranscriptVisible(false, owner: try owner())
         try publish("Unseen")
         workspace.displayed(try owner())
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visitAttempts == 1, "A covered transcript tells the host nothing")
         workspace.setTranscriptVisible(true, owner: try owner())
         await waitWhile("the uncovered reply's visit reaches the host") { service.visits.count < 2 }
         for _ in 0..<10 { await Task.yield() }
-        #expect(service.visits == [opened.identity, opened.identity])
+        #expect(service.visitAttempts == 2)
+        #expect(service.visits.map(\.identity) == [opened.identity, opened.identity])
+        #expect(service.visits.map { $0.shown.messages.last?.text } == ["Reply", "Unseen"])
+    }
+
+    @Test func aFailedVisitRetriesOnTheNextDisplayOfTheSameReplyOneCallAtATime() async throws {
+        let (workspace, service) = try fixture()
+        await workspace.openBot(profile: service.profile)
+        let opened = try #require(service.completedOpens.last)
+        func owner() throws -> PresentationOwner { try #require(workspace.screen(profile: service.profile)).owner }
+        func publish(_ text: String, mark: String) throws {
+            var snapshot = opened.snapshot
+            snapshot.messages.append(.init(id: text, role: .assistant, text: text))
+            snapshot.visitMark = mark
+            workspace.receive(.init(identity: opened.identity, snapshot: snapshot, access: opened.access))
+        }
+        workspace.setTranscriptVisible(true, owner: try owner())
+        service.visitError = ConversationServiceError.staleConversation
+        try publish("Reply", mark: "shown")
+        workspace.displayed(try owner())
+        await waitWhile("the first visit fails") { service.visitAttempts == 0 }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visitAttempts == 1 && service.visits.isEmpty, "A failed visit doesn't retry by itself")
+        // The same reply with a later host time: the retry keeps the watermark of what was first shown.
+        try publish("Reply", mark: "later")
+        let gate = WorkspaceGate()
+        service.visitGate = gate
+        workspace.setTranscriptVisible(false, owner: try owner())
+        workspace.setTranscriptVisible(true, owner: try owner())
+        await waitWhile("the retry reaches the host") { service.visitAttempts < 2 }
+        try publish("Reply\nNewer", mark: "newer")
+        workspace.displayed(try owner())
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visitAttempts == 2, "One visit call at a time")
+        service.visitGate = nil
+        gate.release()
+        await waitWhile("the newer reply's visit follows") { service.visits.count < 2 }
+        workspace.displayed(try owner())
+        workspace.setTranscriptVisible(false, owner: try owner())
+        workspace.setTranscriptVisible(true, owner: try owner())
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visitAttempts == 3)
+        #expect(service.visits.map(\.shown.visitMark) == ["shown", "newer"])
     }
 
     func fixture() throws -> (ConversationWorkspace, WorkspaceTestService) {
