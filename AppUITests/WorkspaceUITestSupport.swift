@@ -45,6 +45,19 @@ import Vision
     }
 }
 
+/// The transcript scrolls beneath the fixed header and the composer, with the Demo banner above it,
+/// and `isHittable` can still be true there. Only this area is one a person can read and tap.
+@MainActor func readingArea(of transcript: XCUIElement, in app: XCUIApplication) -> CGRect {
+    let top = app.buttons["t3-chat-header"].frame.maxY
+    let visible = transcript.frame.intersection(app.frame)
+    let banner = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Demo workspace."))
+    let composer = app.textViews.matching(identifier: "chat-composer")
+    // The closed Spaces drawer keeps its own banner beside the transcript.
+    let bottom = (banner.allElementsBoundByIndex + composer.allElementsBoundByIndex).map(\.frame)
+        .filter { $0.intersects(visible) }.map(\.minY).min() ?? visible.maxY
+    return CGRect(x: visible.minX, y: top, width: visible.width, height: bottom - top)
+}
+
 /// The file pane owns one native Actions menu. Menu items may be exposed as
 /// cells or buttons, depending on the OS presentation.
 @MainActor enum ArtifactOutputActions {
