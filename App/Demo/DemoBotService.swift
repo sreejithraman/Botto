@@ -293,7 +293,10 @@ import BottoCore
     }
 
     func markVisited(access: ConversationAccess) async throws {
-        visited[try issuer.resolve(access).stored.text] = .now
+        let source = try issuer.resolve(access)
+        visited[source.stored.text] = .now
+        // Like T3's host, announce the changed space list so the drawer drops its unread mark.
+        onEvent?(.conversationDirectoryChanged(profile: source.profile))
     }
 
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,

@@ -657,6 +657,24 @@ import BottoCore
         XCTAssertEqual(latest.messages.filter { $0.role == .assistant }.count, 2)
     }
 
+    func testMarkingVisitedClearsTheSpaceUnreadMarkAndAnnouncesIt() async throws {
+        let directory = try makeGateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data().write(to: directory.appendingPathComponent("reply-1.hold"))
+        let service = DemoBotService(gateDirectory: directory, performanceFixture: false)
+        let opened = try await emptyConversation(service)
+        var announced = 0
+        service.onEvent = { if case .conversationDirectoryChanged = $0 { announced += 1 } }
+        _ = try await service.send(text: "Seen", attachments: [], access: opened.access, operationID: UUID())
+        try await waitForMarker("reply-1.started", directory: directory)
+        func unread() -> Bool? { service.currentT3Channels.first { $0.id == opened.identity.stored.text }?.isUnread }
+        XCTAssertEqual(unread(), true)
+        announced = 0
+        try await service.markVisited(access: opened.access)
+        XCTAssertEqual(unread(), false)
+        XCTAssertEqual(announced, 1)
+    }
+
     private func makeGateDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
