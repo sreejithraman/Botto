@@ -286,13 +286,13 @@ struct T3ThreadProjection {
                             messages: shown.compactMap { T3ProjectionMapper.chatMessage($0, messagesByID: messagesByID) },
                             pendingRequests: pendingRequests, queuedMessages: queued,
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
-        // The host marks a space unread by its runs' completion and messages' update times, so
-        // the newest of those that this snapshot holds is what showing it has seen. An empty space has its creation.
-        let deliveredRuns = runs.filter { run in
-            guard let id = run["id"].text else { return false }
-            return !removedRuns.contains(id) && !undeliveredRuns.contains(id)
+        // A settled projection includes terminal changes such as cancelling a queued run or rolling back.
+        // While a run is still working, a hidden queued cancellation does not supersede that run.
+        let completionTimes = runs.compactMap { run -> JSONValue? in
+            if conversation.isWorking, let id = run["id"].text, undeliveredRuns.contains(id) { return nil }
+            return run["completedAt"]
         }
-        conversation.visitMark = (shown.map { $0["updatedAt"] } + deliveredRuns.map { $0["completedAt"] } + [thread["createdAt"]])
+        conversation.visitMark = (shown.map { $0["updatedAt"] } + completionTimes + [thread["createdAt"]])
             .compactMap { time in T3ProjectionMapper.date(time).map { VisitMark(hostTime: time.text ?? "", date: $0) } }.max()
         return conversation
     }
