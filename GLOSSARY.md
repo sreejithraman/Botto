@@ -21,7 +21,11 @@ initially takes the bot's name and can be renamed independently.
 
 **Pairing**
 Permission for a device to connect directly to a specific T3 environment
-through a reviewed origin.
+through one or more reviewed routes.
+
+**Route**
+One reviewed address at which a device reaches its paired Mac, such as its
+local network, Tailscale, or HTTPS tunnel address.
 
 **Artifact**
 A file or visual associated with a Space, with its originating work attached.

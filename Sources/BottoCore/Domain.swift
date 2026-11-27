@@ -9,8 +9,14 @@ public struct ConnectionConfiguration: Codable, Equatable, Sendable {
     public var nativeCredential: NativeCredential?
     public var connectionHeaders: [String: String]
     public var t3: T3Connection?
+    /// Further reviewed routes to the same Mac, in pairing order. `serverURL` stays the primary route.
+    /// Nil in setups saved before a pairing could hold more than one route.
+    public var alternateRoutes: [URL]?
+    /// The route the last connection reached, tried first next time.
+    public var lastReachedRoute: URL?
 
-    public init(id: UUID = UUID(), serverURL: URL, username: String = "", password: String = "", installID: String? = nil, nativeCredential: NativeCredential? = nil, connectionHeaders: [String: String] = [:], t3: T3Connection? = nil) {
+    public init(id: UUID = UUID(), serverURL: URL, username: String = "", password: String = "", installID: String? = nil, nativeCredential: NativeCredential? = nil, connectionHeaders: [String: String] = [:], t3: T3Connection? = nil,
+                alternateRoutes: [URL]? = nil, lastReachedRoute: URL? = nil) {
         self.id = id
         self.serverURL = serverURL
         self.username = username
@@ -19,6 +25,8 @@ public struct ConnectionConfiguration: Codable, Equatable, Sendable {
         self.nativeCredential = nativeCredential
         self.connectionHeaders = connectionHeaders
         self.t3 = t3
+        self.alternateRoutes = alternateRoutes
+        self.lastReachedRoute = lastReachedRoute
     }
 }
 
