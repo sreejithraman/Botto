@@ -185,6 +185,9 @@ struct LocalT3ServerManagerTests {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         try await Task.sleep(for: .milliseconds(300))
+        // Phones try HTTPS first, so the sheet doesn't promise LAN at home.
+        #expect(String(localized: MacPairPhoneContent.intro) == "Pair your phone once. It reaches this Mac through your tunnel "
+            + "while the tunnel answers, and otherwise over LAN or Tailscale. No T3 account required.")
         let view = try #require(window.contentView)
         let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)

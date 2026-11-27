@@ -4,10 +4,10 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 import BottoCore
 
-/// The routes a phone can reach this Mac by, in the order phones try them after the one that last
-/// worked: LAN is direct and fastest at home, Tailscale reaches the Mac from anywhere on the tailnet,
-/// and an HTTPS tunnel relays through another service, so it comes last. The first available route
-/// is the primary one, which older phone builds pair with.
+/// The routes a phone can reach this Mac by, in the order they go in the code: LAN, Tailscale, then
+/// an HTTPS tunnel. The first available route is the primary one, which older phone builds pair with.
+/// Phones try every HTTPS route before any plain HTTP one, so with a tunnel a phone uses the tunnel
+/// while it answers, even at home, and LAN or Tailscale when it doesn't.
 struct MacPairingRoutes: Equatable {
     struct Route: Identifiable, Equatable {
         let name: String
@@ -117,6 +117,8 @@ struct MacPairPhoneContent: View {
     let refresh: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
+    /// Phones try HTTPS routes first, so with a tunnel the phone uses it even at home.
+    static let intro: LocalizedStringResource = "Pair your phone once. It reaches this Mac through your tunnel while the tunnel answers, and otherwise over LAN or Tailscale. No T3 account required."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -129,7 +131,7 @@ struct MacPairPhoneContent: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Take Botto with you")
                         .font(MacTheme.rounded(.title2, weight: .bold))
-                    Text("Pair your phone once. It reaches this Mac over LAN at home, and over Tailscale or your own tunnel away. No T3 account required.")
+                    Text(Self.intro)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
