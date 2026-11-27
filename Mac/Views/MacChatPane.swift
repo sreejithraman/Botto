@@ -501,6 +501,9 @@ struct MacRuntimeRequestCard: View {
     let request: PendingRequest
     let store: MacBottoStore
     @State private var answer = ""
+    /// The request as the person saw it when they chose, and where.
+    private struct Confirmation { let request: PendingRequest; let choice: RequestChoice; let access: ConversationAccess }
+    @State private var confirming: Confirmation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -530,6 +533,13 @@ struct MacRuntimeRequestCard: View {
         .padding(15)
         .frame(maxWidth: 520, alignment: .leading)
         .background(MacTheme.selection, in: .rect(cornerRadius: 20))
+        .confirmationDialog("Allow future actions?", isPresented: Binding { confirming != nil } set: { if !$0 { confirming = nil } },
+                            titleVisibility: .visible, presenting: confirming) { seen in
+            Button(seen.choice.label) { confirm(seen) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This choice can let your bot run matching actions again without asking you. Only continue if you trust the scope described in this request.")
+        }
         .disabled(store.respondingRequestIDs.contains(request.id))
         .accessibilityElement(children: .contain)
     }
@@ -537,13 +547,26 @@ struct MacRuntimeRequestCard: View {
     /// The first choice is the go-ahead; the rest sit beside it, quieter.
     private var choices: some View {
         ForEach(Array(request.choices.enumerated()), id: \.element.id) { index, choice in
-            Button(choice.label) { respond(.choice(choice.id)) }
-                .buttonStyle(MacPillButtonStyle(prominent: index == 0))
+            Button(choice.label) {
+                if choice.allowsFutureActions {
+                    confirming = store.openedConversation.map { .init(request: request, choice: choice, access: $0.access) }
+                } else { respond(.choice(choice.id)) }
+            }
+            .buttonStyle(MacPillButtonStyle(prominent: index == 0))
         }
     }
 
     private func respond(_ response: RequestResponse) {
         Task { await store.respond(to: request, response: response) }
+    }
+
+    /// Sends only while the open space still holds exactly the request the person confirmed.
+    private func confirm(_ seen: Confirmation) {
+        Task {
+            guard let opened = store.openedConversation, opened.access == seen.access,
+                  opened.snapshot.pendingRequests.contains(where: { $0.hasSameWireRevision(as: seen.request) }) else { return }
+            await store.respond(to: seen.request, response: .choice(seen.choice.id))
+        }
     }
 }
 

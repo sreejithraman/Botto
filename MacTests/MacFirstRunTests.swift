@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import BottoCore
 @testable import BottoMac
@@ -201,6 +203,165 @@ import Testing
     }
 }
 
+/// The real card in a window of the test host, pressed the way VoiceOver presses it.
+@MainActor @Suite(.serialized) struct MacRequestCardTests {
+    private let host = FirstRunHost(preview: "Hi")
+    /// The requests the cards last rendered. Behind a sheet, the accessibility tree doesn't show them.
+    private final class Rendered { var requests: [PendingRequest] = [] }
+    private let rendered = Rendered()
+    private let request = PendingRequest(id: "run-tests", kind: .approval, title: "Run the test suite?",
+                                         detail: "`swift test` in the bot's folder.",
+                                         choices: [.init(id: "once", label: "Allow once"),
+                                                   .init(id: "always", label: "Always allow"),
+                                                   .init(id: "deny", label: "Deny")])
+
+    @Test func alwaysAllowAsksFirstAndCancelSendsNothing() async throws {
+        let store = try await connected(to: host)
+        try await show(request, in: store)
+        try await withCards(of: store) { window in
+            record(window, named: "request-card")
+
+            // Any other choice still answers on one click.
+            try await answerOnce(in: window)
+            #expect(window.attachedSheet == nil)
+            #expect(host.responses == [.choice("once")])
+
+            let sheet = try await askAlways(in: window)
+            record(sheet, named: "allow-future-actions")
+            #expect(host.responses == [.choice("once")])
+
+            try press("Cancel", in: sheet)
+            try await settled { window.attachedSheet == nil }
+            try await answerOnce(in: window)
+            #expect(host.responses == [.choice("once"), .choice("once")])
+
+            let confirmation = try await askAlways(in: window)
+            #expect(host.responses == [.choice("once"), .choice("once")])
+            try press("Always allow", in: confirmation)
+            try await settled { host.responses.count == 3 }
+            #expect(host.responses == [.choice("once"), .choice("once"), .choice("always")])
+        }
+    }
+
+    @Test func confirmingAfterTheRequestChangedSendsNothing() async throws {
+        let store = try await connected(to: host)
+        try await show(request, in: store)
+        try await withCards(of: store) { window in
+            let sheet = try await askAlways(in: window)
+            var changed = request
+            changed.detail = "`rm -rf .` in the bot's folder."
+            try await show(changed, in: store)
+            // The card now shows the new revision under the same id, and the dialog is still open.
+            try await settled { rendered.requests == [changed] }
+            #expect(window.attachedSheet === sheet)
+
+            try press("Always allow", in: sheet)
+            try await settled { window.attachedSheet == nil }
+            try await answerOnce(in: window)
+            #expect(host.responses == [.choice("once")])
+        }
+    }
+
+    /// The host publishes the open space with this request, as the live service does.
+    private func show(_ request: PendingRequest, in store: MacBottoStore) async throws {
+        let opened = try #require(store.openedConversation)
+        let thread = opened.identity.stored.text
+        let snapshot = Conversation(id: thread, storedID: thread, profileID: opened.snapshot.profileID, pendingRequests: [request])
+        host.onEvent?(.conversation(.init(identity: opened.identity, snapshot: snapshot, access: opened.access)))
+        try await settled { store.openedConversation?.snapshot.pendingRequests == [request] }
+    }
+
+    /// The cards as the chat pane lists them: by id, so a same-id update keeps the card and its state.
+    private struct Cards: View {
+        let store: MacBottoStore
+        let rendered: Rendered
+        var body: some View {
+            let requests = store.openedConversation?.snapshot.pendingRequests ?? []
+            ForEach(requests) { MacRuntimeRequestCard(request: $0, store: store) }
+                .padding(20)
+                .onChange(of: requests, initial: true) { rendered.requests = requests }
+        }
+    }
+
+    private func withCards(of store: MacBottoStore, _ body: (NSWindow) async throws -> Void) async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 220), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: Cards(store: store, rendered: rendered))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        // What VoiceOver sets on the app; until something does, SwiftUI keeps no accessibility tree.
+        let attribute = "AXEnhancedUserInterface"
+        let prior = NSApp.perform(NSSelectorFromString("accessibilityAttributeValue:"), with: attribute)?.takeUnretainedValue()
+        let enhance = NSSelectorFromString("accessibilitySetValue:forAttribute:")
+        NSApp.perform(enhance, with: true, with: attribute)
+        defer { NSApp.perform(enhance, with: prior, with: attribute) }
+        try await settled { button("Always allow", in: window) != nil }
+        try await body(window)
+    }
+
+    /// A one-click answer. Each press answers from a main-actor task, so anything an earlier press sent is recorded first.
+    private func answerOnce(in window: NSWindow) async throws {
+        let sent = host.responses.count
+        try await settled { button("Allow once", in: window) != nil }
+        try press("Allow once", in: window)
+        try await settled { host.responses.count > sent }
+    }
+
+    private func askAlways(in window: NSWindow) async throws -> NSWindow {
+        try press("Always allow", in: window)
+        try await settled { window.attachedSheet != nil }
+        let sheet = try #require(window.attachedSheet)
+        try await settled { button("Always allow", in: sheet) != nil && button("Cancel", in: sheet) != nil }
+        return sheet
+    }
+
+    private func connected(to host: FirstRunHost) async throws -> MacBottoStore {
+        let suite = "botto.mac.request-card-tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = MacBottoStore(session: MacSessionPersistence(slot: MacSessionPersistenceTests.MemorySlot(), defaults: defaults),
+                                  service: host)
+        let origin = URL(string: "http://127.0.0.1:3774")!
+        await store.connect(origin: origin) { _ in
+            .init(serverURL: origin, t3: T3Connection(environmentID: "mac", accessToken: "fixture-only", projectID: "bot-project"))
+        }
+        try await settled { store.openedConversation != nil }
+        return store
+    }
+
+    private func settled(_ done: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !done(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(done(), "The card never settled", sourceLocation: sourceLocation)
+    }
+
+    private func press(_ title: String, in window: NSWindow) throws {
+        let button = try #require(button(title, in: window), "No \(title) button")
+        // The alert's own buttons act but answer false, so what a press did is checked by its effect.
+        _ = button.accessibilityPerformPress?()
+    }
+
+    private func button(_ title: String, in window: NSWindow) -> AnyObject? {
+        func find(_ element: Any) -> AnyObject? {
+            let node = element as AnyObject
+            let name = (node.accessibilityLabel?() ?? nil) ?? (node.accessibilityTitle?() ?? nil)
+            if node.accessibilityRole?() == .button, name == title, node.isAccessibilityEnabled?() == true { return node }
+            return (node.accessibilityChildren?() ?? []).lazy.compactMap(find).first
+        }
+        return window.contentView.flatMap(find)
+    }
+
+    /// Kept with the test's results, for seeing what a person sees.
+    private func record(_ window: NSWindow, named name: String) {
+        guard let view = window.contentView?.superview ?? window.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        Attachment.record(png, named: name + ".png")
+    }
+}
+
 /// A host with one new bot, as a first launch finds it.
 @MainActor private final class FirstRunHost: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
@@ -211,6 +372,7 @@ import Testing
     var createReply: AsyncStream<Void>?
     private(set) var isCreating = false
     private(set) var sent: [String: String] = [:]
+    private(set) var responses: [RequestResponse] = []
     var found: [T3ProviderStatus] = [.init(id: "claudeAgent", driver: "claudeAgent", state: .ready)]
     private(set) var renames: [String: String] = [:]
     private(set) var manifest = T3BotManifest(displayName: "Botto")
@@ -296,7 +458,10 @@ import Testing
     }
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
     func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess,
-                 operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+                 operationID: UUID) async throws -> MutationReceipt {
+        responses.append(response)
+        return .init(operationID: operationID, source: try issuer.resolve(access), admissionID: nil)
+    }
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment {
         throw T3ServiceError.unsupported
     }

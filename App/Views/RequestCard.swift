@@ -111,7 +111,7 @@ struct RequestCardInput {
     var enabled: Bool { intent != nil && lifetime.canAttempt && admission() }
     func choose(_ choice: RequestChoice) -> RequestCardConfirmation? {
         guard enabled, let intent else { return nil }
-        if choice.id.localizedCaseInsensitiveContains("always") || choice.label.localizedCaseInsensitiveContains("always") {
+        if choice.allowsFutureActions {
             return lifetime.beginConfirmation(choice, intent: intent)
         }
         lifetime.send(.choice(choice.id), intent: intent)
