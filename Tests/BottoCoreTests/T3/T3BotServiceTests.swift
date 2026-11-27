@@ -1163,6 +1163,56 @@ import Testing
     }
 }
 
+extension T3BotServiceTests {
+    @Test func connectionsFallBackPastDeadAndForeignRoutesAndRememberTheOneThatWorked() async throws {
+        let host = T3ServiceHost(existing: true)
+        let reconnected = T3ServiceHost(existing: true)
+        let requests = RouteRequests()
+        let sockets = SocketHosts()
+        let service = T3BotService(transport: { request in
+            await requests.record(request)
+            switch request.url?.host {
+            case "192.168.1.20": throw URLError(.timedOut)
+            // Another T3 now answers at the Tailscale address. It must not see the token.
+            case "100.64.1.2":
+                return try routeReply(request, #"{"environmentId":"someone-else","label":"Other","serverVersion":"2.0","orchestrationProtocolVersion":2}"#)
+            default: return try await host.http(request)
+            }
+        }, webSocket: { request in
+            sockets.record(request)
+            return request.url?.absoluteString.contains("reconnect-ticket") == true ? reconnected : host
+        })
+        var saved: ConnectionConfiguration?
+        service.onEvent = { (event: BotServiceEvent) in if case .configuration(let updated) = event { saved = updated } }
+        defer { service.disconnect() }
+        let lan = try #require(URL(string: "http://192.168.1.20:3774"))
+        let tailscale = try #require(URL(string: "http://100.64.1.2:3774"))
+        let tunnel = try #require(URL(string: "https://botto.example.com"))
+        let configuration = ConnectionConfiguration(
+            serverURL: lan, installID: "environment",
+            t3: T3Connection(environmentID: "environment", accessToken: "bearer", projectID: "bot-project"),
+            alternateRoutes: [tailscale, tunnel])
+
+        _ = try await service.connect(configuration: configuration)
+        let probes = await requests.seen.filter { $0.path == "/.well-known/t3/environment" }
+        #expect(probes.map(\.host) == ["192.168.1.20", "100.64.1.2", "botto.example.com"])
+        // Each route but the last gets a short limit, so a dead address doesn't stall the next.
+        #expect(probes.map(\.timeout) == [5, 5, 30])
+        #expect(await requests.at("/api/auth/websocket-ticket/rpc") == ["botto.example.com"])
+        #expect(await requests.seen.allSatisfy { $0.host == "botto.example.com" || $0.path == "/.well-known/t3/environment" })
+        #expect(sockets.hosts == ["botto.example.com"])
+        let remembered = try #require(saved)
+        #expect(remembered.serverURL == lan)
+        #expect(remembered.alternateRoutes == [tailscale, tunnel])
+        #expect(remembered.lastReachedRoute == tunnel)
+
+        service.disconnect()
+        let before = await requests.seen.count
+        _ = try await service.connect(configuration: remembered)
+        #expect(await requests.seen.dropFirst(before).first?.host == "botto.example.com")
+    }
+}
+
 private actor T3ServiceHost: T3WebSocketTransport {
     private let socket = T3TestSocket()
     private let root = "/host/.botto/bots/main"

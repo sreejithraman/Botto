@@ -129,13 +129,12 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     private func establish(_ configuration: ConnectionConfiguration, attempt: UUID,
                            reattaching identity: SessionIdentity?) async throws -> ServerInfo {
         guard var paired = configuration.t3, !paired.accessToken.isEmpty else { throw T3ServiceError.missingConnection }
-        let origin = try T3PairingExchange.validatedOrigin(configuration.serverURL.absoluteString)
+        let primary = try T3PairingExchange.validatedOrigin(configuration.serverURL.absoluteString)
         try checkAttempt(attempt)
         let token = paired.accessToken
-        let descriptor = try await http.probeEnvironment(origin: origin)
-        if !paired.environmentID.isEmpty, paired.environmentID != descriptor.environmentId {
-            throw T3ServiceError.differentEnvironment
-        }
+        // The token is sent only once a route has answered as the paired environment.
+        let (origin, descriptor) = try await http.reach(configuration.connectionRoutes,
+                                                        environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID)
         try checkAttempt(attempt)
         let ticket = try await http.mintWebSocketTicket(origin: origin, accessToken: token)
         try checkAttempt(attempt)
@@ -155,7 +154,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
                 throw T3ServiceError.invalidProject
             }
             var updated = configuration
-            updated.serverURL = origin
+            updated.serverURL = primary
+            updated.reached(origin)
             updated.installID = descriptor.environmentId
             paired.environmentID = descriptor.environmentId
             paired.label = descriptor.label

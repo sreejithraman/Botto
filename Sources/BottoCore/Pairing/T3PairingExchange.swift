@@ -95,8 +95,8 @@ public struct T3PairingExchange: Sendable {
                               routes: try PairingRoutes.routes(primary: origin, items: items))
     }
 
-    public func probeEnvironment(origin: URL) async throws -> T3EnvironmentDescriptor {
-        let data = try await request(origin: origin, path: "/.well-known/t3/environment")
+    public func probeEnvironment(origin: URL, timeout: TimeInterval = requestTimeout) async throws -> T3EnvironmentDescriptor {
+        let data = try await request(origin: origin, path: "/.well-known/t3/environment", timeout: timeout)
         struct ProtocolVersion: Decodable { let orchestrationProtocolVersion: Int? }
         let decoder = JSONDecoder()
         guard let version = try? decoder.decode(ProtocolVersion.self, from: data) else {
@@ -109,8 +109,17 @@ public struct T3PairingExchange: Sendable {
     }
 
     public func exchangePairingCredential(origin: URL, credential: String, clientLabel: String) async throws -> T3PairingResult {
-        let input = try Self.parse(origin.absoluteString, credential: credential)
-        let descriptor = try await probeEnvironment(origin: input.origin)
+        try await exchangePairingCredential(routes: [origin], credential: credential, clientLabel: clientLabel)
+    }
+
+    /// Exchanges the one-time credential at the first route, in order, that answers. The credential
+    /// works at every route, but only once, so the exchange is never repeated on another route.
+    public func exchangePairingCredential(routes: [URL], credential: String, clientLabel: String) async throws -> T3PairingResult {
+        guard let primary = routes.first else { throw T3PairingError.invalidOrigin }
+        let input = try Self.parse(primary.absoluteString, credential: credential)
+        let alternates = PairingRoutes.unique(try routes.map { try Self.validatedOrigin($0.absoluteString) })
+            .filter { $0 != input.origin }
+        let (origin, descriptor) = try await reach([input.origin] + alternates, environmentID: nil)
         let fields = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
             ("subject_token", input.credential),
@@ -119,14 +128,16 @@ public struct T3PairingExchange: Sendable {
             ("client_label", clientLabel), ("client_device_type", "mobile"), ("client_os", "ios")
         ]
         let form = fields.map { Self.formEncode($0.0) + "=" + Self.formEncode($0.1) }.joined(separator: "&")
-        let data = try await request(origin: input.origin, path: "/oauth/token", method: "POST",
+        let data = try await request(origin: origin, path: "/oauth/token", method: "POST",
                                      body: Data(form.utf8), headers: ["Content-Type": "application/x-www-form-urlencoded"])
         struct Token: Decodable { let access_token: String; let token_type: String }
         guard let token = try? JSONDecoder().decode(Token.self, from: data),
               !token.access_token.isEmpty else { throw T3PairingError.invalidResponse }
         guard token.token_type == "Bearer" else { throw T3PairingError.unsupportedToken }
         let t3 = T3Connection(environmentID: descriptor.environmentId, label: descriptor.label, accessToken: token.access_token)
-        let configuration = ConnectionConfiguration(serverURL: input.origin, installID: descriptor.environmentId, t3: t3)
+        var configuration = ConnectionConfiguration(serverURL: input.origin, installID: descriptor.environmentId, t3: t3,
+                                                    alternateRoutes: alternates.isEmpty ? nil : alternates)
+        configuration.reached(origin)
         return T3PairingResult(accessToken: token.access_token, environmentDescriptor: descriptor, configuration: configuration)
     }
 
@@ -158,8 +169,10 @@ public struct T3PairingExchange: Sendable {
         return origin
     }
 
+    public static let requestTimeout: TimeInterval = 30
+
     func request(origin: URL, path: String, method: String = "GET", token: String? = nil,
-                 body: Data? = nil, headers: [String: String] = [:]) async throws -> Data {
+                 body: Data? = nil, headers: [String: String] = [:], timeout: TimeInterval = requestTimeout) async throws -> Data {
         let origin = try Self.validatedOrigin(origin.absoluteString)
         guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains("\\"),
               let endpoint = URL(string: path, relativeTo: origin)?.absoluteURL,
@@ -167,7 +180,7 @@ public struct T3PairingExchange: Sendable {
               let components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
               components.fragment == nil else { throw T3PairingError.invalidOrigin }
         guard let url = components.url else { throw T3PairingError.invalidOrigin }
-        var request = URLRequest(url: url, timeoutInterval: 30)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
         request.httpBody = body
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }

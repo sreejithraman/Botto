@@ -1214,13 +1214,13 @@ import UIKit
             let review = try T3PairingReview(link)
             #expect(review.origin.absoluteString == origin)
             #expect(!review.isEncrypted)
-            #expect(throws: PairingAddress.Failure.insecureHTTP) { try review.destination(allowingHTTP: false) }
-            #expect(try review.destination(allowingHTTP: true) == review.origin)
+            #expect(throws: PairingAddress.Failure.insecureHTTP) { try review.destinations(allowingHTTP: false) }
+            #expect(try review.destinations(allowingHTTP: true) == [review.origin])
         }
         #expect(try T3PairingReview("http://192.168.1.10:3774/pair#token=Ab%2B").credential == "Ab+")
         let tunnel = try T3PairingReview("https://botto.example.com/pair#token=A")
         #expect(tunnel.isEncrypted)
-        #expect(try tunnel.destination(allowingHTTP: false).absoluteString == "https://botto.example.com")
+        #expect(try tunnel.destinations(allowingHTTP: false).map(\.absoluteString) == ["https://botto.example.com"])
         // HTTP outside the local network is refused before there is anything to allow.
         #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://botto.example.com/pair#token=A") }
         #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://8.8.8.8:3774/pair#token=A") }
@@ -1228,6 +1228,39 @@ import UIKit
         #expect(try T3PairingReview("https://botto.example.com", code: "typed").credential == "typed")
         #expect(T3PairingReview.message(for: T3PairingError.httpStatus(401)).contains("expired"))
         #expect(!T3PairingReview.message(for: T3PairingError.missingCredential).contains("T3"))
+    }
+
+    @Test func pairingReviewShowsEveryRouteAndHTTPConsentCoversOnlyTheLocalOnes() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let link = "http://192.168.1.10:3774/pair#token=A&route=http%3A%2F%2Fbotto.example.com"
+            + "&route=http%3A%2F%2F100.64.1.2%3A3774&route=https%3A%2F%2Fbotto.example.com"
+        let review = try T3PairingReview(link)
+        // Plain HTTP to a public address fails the rule, so it is never shown or used.
+        #expect(review.routes.map(\.absoluteString) == ["http://192.168.1.10:3774", "http://100.64.1.2:3774",
+                                                         "https://botto.example.com"])
+        #expect(!review.isEncrypted && review.hasSecureRoute)
+        #expect(try review.destinations(allowingHTTP: false).map(\.absoluteString) == ["https://botto.example.com"])
+        #expect(try review.destinations(allowingHTTP: true) == review.routes)
+
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        try await withHosted(ConnectionView(store: store, input: link)) { window in
+            let page = try await labels(in: window) { $0.contains("Is this your Mac?") && $0.contains("Connect") }
+            for label in ["http://192.168.1.10:3774", "Local connection, not encrypted", "http://100.64.1.2:3774",
+                          "Tailscale, not encrypted", "https://botto.example.com", "Secure connection"] {
+                #expect(page.contains(label))
+            }
+            #expect(!page.contains("http://botto.example.com"))
+            #expect(page.contains { $0.contains("Your pairing code is sent to the first one that answers.") })
+        }
+    }
+
+    @Test func pairingNamesEachRouteItCouldNotReach() {
+        let failure = T3UnreachableRoutes(attempts: [
+            .init(route: URL(string: "http://192.168.1.10:3774")!, reason: .noAnswer),
+            .init(route: URL(string: "https://botto.example.com")!, reason: .differentMac),
+        ])
+        #expect(T3PairingReview.message(for: failure) == "Couldn’t reach your Mac. Local network (192.168.1.10) didn’t answer; "
+            + "botto.example.com is a different Mac. Check that Botto is running on your Mac, then try again.")
     }
 
     @Test func firstRunNamesTheBotAndItsMainSpaceAndSavesTheFace() async throws {

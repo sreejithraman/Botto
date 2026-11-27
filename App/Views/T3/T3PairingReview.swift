@@ -3,8 +3,12 @@ import BottoCore
 
 /// Where a pairing link points, checked before anything is sent to it.
 struct T3PairingReview: Equatable {
+    /// The link's primary route.
     let origin: URL
     let credential: String
+    /// The routes shown for review, primary first. A further route that fails the pairing address rule
+    /// is dropped here, so it is never shown or used.
+    let routes: [URL]
 
     /// Reads a pairing link, or a server address with its code typed separately. Plain HTTP is refused
     /// outright unless the address is on a local network or Tailscale.
@@ -12,13 +16,18 @@ struct T3PairingReview: Equatable {
         let pairing = try T3PairingExchange.parse(input, credential: Self.isPairingLink(input) ? nil : code)
         origin = try PairingAddress.parse(pairing.origin.absoluteString, allowInsecureHTTP: true)
         credential = pairing.credential
+        routes = PairingRoutes.allowed([origin] + pairing.routes, allowingHTTP: true)
     }
 
-    var isEncrypted: Bool { origin.scheme == "https" }
+    var isEncrypted: Bool { routes.allSatisfy { $0.scheme == "https" } }
+    var hasSecureRoute: Bool { routes.contains { $0.scheme == "https" } }
 
-    /// The address to pair with. A local HTTP address needs the person to have allowed it.
-    func destination(allowingHTTP: Bool) throws -> URL {
-        try PairingAddress.parse(origin.absoluteString, allowInsecureHTTP: allowingHTTP)
+    /// The routes to pair with, in order. HTTP routes join only when the person allowed them,
+    /// and the consent covers exactly the HTTP routes shown.
+    func destinations(allowingHTTP: Bool) throws -> [URL] {
+        let routes = PairingRoutes.allowed(routes, allowingHTTP: allowingHTTP)
+        guard !routes.isEmpty else { throw PairingAddress.Failure.insecureHTTP }
+        return routes
     }
 
     static func isPairingLink(_ input: String) -> Bool {

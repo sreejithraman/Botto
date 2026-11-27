@@ -12,6 +12,8 @@ public enum PairingRoutes {
     /// Every route can add a wait to each connection, so the cap also bounds how long a connection
     /// with dead routes takes, and keeps the list short enough for a person to review.
     public static let maximumCount = 4
+    /// How long a route may stay silent before the next one is tried. The last route keeps the usual limit.
+    static let probeTimeout: TimeInterval = 5
 
     /// The pairing link with `routes` added after its own origin.
     public static func link(_ pairingURL: String, adding routes: [URL]) -> String? {
@@ -100,5 +102,65 @@ public extension ConnectionConfiguration {
     /// Remembers the route a connection reached. A single-route pairing has nothing to remember.
     mutating func reached(_ route: URL) {
         lastReachedRoute = alternateRoutes?.isEmpty == false ? route : nil
+    }
+}
+
+/// No route reached the paired Mac. Names each route tried and what happened there.
+public struct T3UnreachableRoutes: Error, Equatable, LocalizedError, Sendable {
+    public enum Reason: Equatable, Sendable { case noAnswer, differentMac, needsUpdate, unexpectedReply }
+    public struct Attempt: Equatable, Sendable {
+        public let route: URL
+        public let reason: Reason
+        public init(route: URL, reason: Reason) { self.route = route; self.reason = reason }
+    }
+
+    public let attempts: [Attempt]
+    public init(attempts: [Attempt]) { self.attempts = attempts }
+
+    public var errorDescription: String? {
+        let tried = attempts.map { attempt in
+            let route = PairingRoutes.describe(attempt.route)
+            return switch attempt.reason {
+            case .noAnswer: "\(route) didn’t answer"
+            case .differentMac: "\(route) is a different Mac"
+            case .needsUpdate: "\(route) needs a newer Botto"
+            case .unexpectedReply: "\(route) isn’t Botto"
+            }
+        }
+        return "Couldn’t reach your Mac. " + tried.joined(separator: "; ")
+            + ". Check that Botto is running on your Mac, then try again."
+    }
+
+    static func reason(for error: any Error) -> Reason {
+        switch error {
+        case is URLError: .noAnswer
+        case T3ServiceError.differentEnvironment: .differentMac
+        case T3PairingError.incompatibleProtocol: .needsUpdate
+        default: .unexpectedReply
+        }
+    }
+}
+
+extension T3PairingExchange {
+    /// The first route, in order, that answers as `environmentID` (or as any T3 environment when nil).
+    /// Every route but the last gets a short limit, so a dead address doesn't hold up the next.
+    /// A single route fails with its own error, as before routes existed.
+    func reach(_ routes: [URL], environmentID: String?) async throws -> (origin: URL, descriptor: T3EnvironmentDescriptor) {
+        guard !routes.isEmpty else { throw T3PairingError.invalidOrigin }
+        var attempts: [T3UnreachableRoutes.Attempt] = []
+        for (index, route) in routes.enumerated() {
+            do {
+                let origin = try Self.validatedOrigin(route.absoluteString)
+                let timeout = index == routes.count - 1 ? Self.requestTimeout : PairingRoutes.probeTimeout
+                let descriptor = try await probeEnvironment(origin: origin, timeout: timeout)
+                if let environmentID, descriptor.environmentId != environmentID { throw T3ServiceError.differentEnvironment }
+                return (origin, descriptor)
+            } catch {
+                try Task.checkCancellation()
+                if routes.count == 1 || error is CancellationError { throw error }
+                attempts.append(.init(route: route, reason: T3UnreachableRoutes.reason(for: error)))
+            }
+        }
+        throw T3UnreachableRoutes(attempts: attempts)
     }
 }

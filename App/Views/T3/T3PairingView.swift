@@ -163,20 +163,19 @@ struct T3PairingView: View {
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.top, 18)
-            VStack(spacing: 6) {
-                Text(review.origin.absoluteString)
-                    .font(.headline).textSelection(.enabled)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("t3-pair-destination")
-                Text(review.isEncrypted ? "Secure connection" : "Local connection, not encrypted")
-                    .font(.subheadline).foregroundStyle(.secondary)
+            VStack(spacing: 14) {
+                ForEach(Array(review.routes.enumerated()), id: \.element) { index, route in
+                    if index > 0 { Divider() }
+                    routeRow(route, isPrimary: index == 0)
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity)
             .background(BottoTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .padding(.top, 20)
-            Text("Continue only if you recognize this address. Your pairing code is sent there.")
+            Text(review.routes.count > 1
+                 ? "Continue only if you recognize these addresses. Your pairing code is sent to the first one that answers."
+                 : "Continue only if you recognize this address. Your pairing code is sent there.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -188,13 +187,13 @@ struct T3PairingView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 12)
             }
-            if !review.isEncrypted { httpChoice.padding(.top, 18) }
+            if !review.isEncrypted { httpChoice(review).padding(.top, 18) }
             if let error { notice(error).padding(.top, 18) }
             Button { connect(review) } label: {
                 label(isConnecting ? "Connecting…" : "Connect", systemImage: nil)
             }
             .buttonStyle(BottoPrimaryButtonStyle())
-            .disabled(isConnecting || !(review.isEncrypted || allowsHTTP))
+            .disabled(isConnecting || !(review.hasSecureRoute || allowsHTTP))
             .accessibilityIdentifier("t3-pair-connect")
             .padding(.top, 24)
             Button("Change address") { clearReview() }
@@ -205,14 +204,40 @@ struct T3PairingView: View {
         }
     }
 
-    private var httpChoice: some View {
+    private func routeRow(_ route: URL, isPrimary: Bool) -> some View {
+        VStack(spacing: 4) {
+            Text(route.absoluteString)
+                .font(.headline).textSelection(.enabled)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(isPrimary ? "t3-pair-destination" : "t3-pair-route")
+            Text(Self.routeDetail(route))
+                .font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private static func routeDetail(_ route: URL) -> LocalizedStringKey {
+        switch (PairingRoutes.kind(of: route), route.scheme == "https") {
+        case (.tailscale, true): "Tailscale, secure connection"
+        case (_, true): "Secure connection"
+        case (.tailscale, false): "Tailscale, not encrypted"
+        default: "Local connection, not encrypted"
+        }
+    }
+
+    private func httpChoice(_ review: T3PairingReview) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Allow an HTTP connection", isOn: $allowsHTTP)
                 .font(.body.weight(.semibold))
                 .tint(BottoTheme.action)
-                .disabled(isConnecting)
+                // Once the code is redeemed, the consent it was sent under stays as it was.
+                .disabled(isConnecting || paired != nil)
                 .accessibilityIdentifier("t3-pair-allow-http")
-            Text("HTTP sends pairing details and messages without encryption. Turn it on only for a trusted LAN or Tailscale address.")
+            Text(review.hasSecureRoute
+                 ? "HTTP sends pairing details and messages without encryption. Turn it on only if the LAN and Tailscale addresses above are yours. Otherwise Botto uses only the secure address."
+                 : "HTTP sends pairing details and messages without encryption. Turn it on only for a trusted LAN or Tailscale address.")
                 .font(.footnote).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -264,8 +289,8 @@ struct T3PairingView: View {
     private func connect(_ review: T3PairingReview) {
         guard !isConnecting else { return }
         error = nil
-        let destination: URL
-        do { destination = try review.destination(allowingHTTP: allowsHTTP) }
+        let destinations: [URL]
+        do { destinations = try review.destinations(allowingHTTP: allowsHTTP) }
         catch { self.error = T3PairingReview.message(for: error); return }
         isConnecting = true
         let owner = UUID()
@@ -280,7 +305,7 @@ struct T3PairingView: View {
                 if let existing { candidate = existing }
                 else {
                     candidate = try await T3PairingExchange().exchangePairingCredential(
-                        origin: destination, credential: review.credential, clientLabel: "Botto"
+                        routes: destinations, credential: review.credential, clientLabel: "Botto"
                     ).configuration
                     try Task.checkCancellation()
                     guard attemptID == owner else { return }
