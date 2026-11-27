@@ -39,10 +39,14 @@ nonisolated indirect enum JSONValue: Codable, Equatable, Sendable {
     var integer: Int? { if case .number(let v) = self { return Int(exactly: v) }; return nil }
     var number: Double? { if case .number(let v) = self { return v }; return nil }
     var date: Date? { number.flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil } }
-    var nonempty: String? { text.flatMap { $0.isEmpty ? nil : $0 } }
+    var nonempty: String? { text.nonempty }
     var data: Data { get throws { try JSONEncoder().encode(self) } }
     static func decode(_ data: Data) throws -> JSONValue {
         do { return try JSONDecoder().decode(Self.self, from: data) }
         catch { throw ConversationServiceError.incompatible }
     }
+}
+
+nonisolated extension Optional where Wrapped == String {
+    var nonempty: String? { flatMap { $0.isEmpty ? nil : $0 } }
 }
