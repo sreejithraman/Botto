@@ -4,7 +4,7 @@ The Mac's **Pair Phone…** window requests a new pairing link from its local
 T3 Code process and puts every available route in its code: LAN, then
 Tailscale, then a saved HTTPS tunnel. The first available route is the primary
 one that older phone builds pair with. The window lists each route, marks the
-ones in the code, and says why any other is unavailable. LAN and Tailscale
+ones in the code while a code is shown, and says why any other is unavailable. LAN and Tailscale
 typically use HTTP on a trusted network. Public routes use HTTPS and forward
 traffic to the same T3 host.
 

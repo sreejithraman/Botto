@@ -215,6 +215,12 @@ struct MacPairPhoneContent: View {
         .onChange(of: pairingURL) { _, _ in copied = false }
     }
 
+    /// A route claims to be in the code only while a code is on screen, not while one is being made
+    /// or after it expired.
+    static func mark(for route: MacPairingRoutes.Route, showingCode: Bool) -> String {
+        route.origin == nil ? "Not available" : showingCode ? "In the code" : "Available"
+    }
+
     private var routeList: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(routes.routes) { route in
@@ -230,7 +236,7 @@ struct MacPairPhoneContent: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    Text(route.origin == nil ? "Not available" : "In the code")
+                    Text(Self.mark(for: route, showingCode: pairingURL != nil))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(route.origin == nil ? Color.secondary : MacTheme.action)
                 }

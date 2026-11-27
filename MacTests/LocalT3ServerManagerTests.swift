@@ -161,12 +161,21 @@ struct LocalT3ServerManagerTests {
         #expect(MacPairingRoutes(lan: lan, tailscale: nil, tunnel: "https://botto.example.com/prefix").inCode == [lan])
     }
 
-    /// Renders the sheet with fixture routes and no live server, for seeing what a person sees.
-    @Test func sheetListsEachRouteAndWhichAreInTheCode() async throws {
+    @Test func routesClaimToBeInTheCodeOnlyWhileACodeIsShown() {
+        let routes = MacPairingRoutes(lan: lan, tailscale: nil, tunnel: "").routes
+        #expect(routes.map { MacPairPhoneContent.mark(for: $0, showingCode: true) } == ["In the code", "Not available", "Not available"])
+        // While a code is being made, or after it expired.
+        #expect(routes.map { MacPairPhoneContent.mark(for: $0, showingCode: false) } == ["Available", "Not available", "Not available"])
+    }
+
+    /// Renders the sheet with fixture routes and no live server, for seeing what a person sees: with a
+    /// code, and while one is being made.
+    @Test(arguments: [true, false]) func sheetListsEachRouteAndWhichAreInTheCode(showingCode: Bool) async throws {
         let routes = MacPairingRoutes(lan: lan, tailscale: tailscale, tunnel: "")
         let content = MacPairPhoneContent(routes: routes, tunnel: .constant(""),
-                                          pairingURL: routes.pairingURL(from: "http://127.0.0.1:3774/pair#token=FIXTURE-ONLY"),
-                                          status: "", isGenerating: false, error: nil, canRefresh: true, refresh: {})
+                                          pairingURL: showingCode ? routes.pairingURL(from: "http://127.0.0.1:3774/pair#token=FIXTURE-ONLY") : nil,
+                                          status: showingCode ? "" : "Generating a pairing link…", isGenerating: !showingCode,
+                                          error: nil, canRefresh: showingCode, refresh: {})
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 760), styleMask: [.titled],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -180,9 +189,10 @@ struct LocalT3ServerManagerTests {
         let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         let png = try #require(bitmap.representation(using: .png, properties: [:]))
-        Attachment.record(png, named: "Mac pair sheet.png")
+        let name = showingCode ? "mac-pair-sheet.png" : "mac-pair-sheet-generating.png"
+        Attachment.record(png, named: name)
         if let directory = ProcessInfo.processInfo.environment["BOTTO_SCREENSHOT_DIRECTORY"] {
-            try png.write(to: URL(fileURLWithPath: directory).appending(path: "mac-pair-sheet.png"))
+            try png.write(to: URL(fileURLWithPath: directory).appending(path: name))
         }
     }
 }
