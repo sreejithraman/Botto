@@ -82,14 +82,16 @@ final class MacBottoStore {
     }
 
     @ObservationIgnored var onPushScope: ((T3PushScope?) -> Void)?
-    private let exchange = T3PairingExchange()
+    private let exchange: T3PairingExchange
     private let session: MacSessionPersistence
     private var connectionID = UUID()
     private var openID = UUID()
     private var sessionWrite: Task<Void, Never>?
 
-    init(session: MacSessionPersistence = MacSessionPersistence(), service: any T3BotBrainControlling = T3BotService()) {
+    init(session: MacSessionPersistence = MacSessionPersistence(), service: any T3BotBrainControlling = T3BotService(),
+         exchange: T3PairingExchange = T3PairingExchange()) {
         self.session = session
+        self.exchange = exchange
         self.service = service
         service.onEvent = { [weak self] event in self?.receive(event) }
     }
@@ -652,10 +654,10 @@ final class MacBottoStore {
     }
 
     private func pair(with server: LocalT3ServerManager, attempt: UUID) async throws -> ConnectionConfiguration {
-        if let startup = server.startupLinks.pairingURL {
+        if let startup = server.takeStartupPairingLink() {
             do {
                 return try await redeem(startup, using: server.loopbackOrigin)
-            } catch where Self.invalidPairingCredential(error) {
+            } catch where Self.needsFreshPairingCode(error) {
                 try checkConnection(attempt)
             }
         }
@@ -688,9 +690,10 @@ final class MacBottoStore {
         }
     }
 
-    private static func invalidPairingCredential(_ error: any Error) -> Bool {
+    private static func needsFreshPairingCode(_ error: any Error) -> Bool {
         switch error {
-        case T3PairingError.httpStatus(400), T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): true
+        case T3PairingError.credentialRefused, T3PairingError.codeMayBeUsed,
+             T3PairingError.httpStatus(400), T3PairingError.httpStatus(401), T3PairingError.httpStatus(403): true
         default: false
         }
     }

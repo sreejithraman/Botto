@@ -198,6 +198,8 @@ import BottoCore
     var link: Link { pendingService != nil && connection.link != .online ? .connecting : connection.link }
     private(set) var configuration: ConnectionConfiguration?
     private(set) var savedSetupLoadFailed = false
+    /// Pairing codes that may have reached T3 since launch. A pairing view sends none of them again.
+    @ObservationIgnored var pairingCodesSent: Set<String> = []
     var serverInfo: ServerInfo? { connection.serverInfo }
     private var cachedBots: [BotProfile] = []
     private(set) var t3Channels: [T3ChannelSummary] = []
@@ -422,7 +424,8 @@ import BottoCore
     }
 
     static func artifactScope(_ configuration: ConnectionConfiguration) -> ArtifactCacheScope {
-        .init(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
+        .init(configurationID: configuration.id,
+            serverURL: Data((configuration.artifactCacheOrigin ?? configuration.serverURL).absoluteString.utf8),
             installationID: configuration.installID.map { Data($0.utf8) }, username: Data(configuration.username.utf8),
             provider: configuration.nativeCredential.map { Data($0.provider.utf8) },
             backend: configuration.t3.map { _ in backendAccount(configuration) })
@@ -855,11 +858,14 @@ import BottoCore
         else { await t3Push.resume(scope: nil) }
     }
 
-    @discardableResult func connect(_ candidate: ConnectionConfiguration,
+    /// A new pairing of the saved Mac first tries to continue the saved setup (`keepsSavedSetup`).
+    @discardableResult func connect(_ candidate: ConnectionConfiguration, keepsSavedSetup: Bool = true,
                                    onConnected: (@MainActor () -> Void)? = nil,
                                    onFailure: (@MainActor (any Error) -> Void)? = nil) async -> Bool {
         guard candidate.t3 != nil || injectedService != nil else { return false }
         if isDemo, candidate.id != demoConnectionID { leaveDemo() }
+        let paired = candidate
+        let candidate = isDemo || !keepsSavedSetup ? candidate : Self.keepingSetup(of: configuration, in: candidate)
         guard isDemo || !savedSetupLoadFailed else { return false }
         let closesConnection = showsConnection ? connectionChoice : nil
         discardPendingService()
@@ -902,11 +908,18 @@ import BottoCore
             var saved = staged?.configuration ?? connection.candidate ?? candidate
             saved.installID = info.installID ?? saved.installID
             let previousID = configuration?.id
+            let continuesSetup = continuesSavedSetup(saved, confirmedBy: info)
+            let keptSetup = candidate.id != paired.id
+            if keptSetup, !continuesSetup {
+                // Nothing is written for a trial the connection didn't confirm. The pairing becomes a new
+                // setup with its own ID, as any other new pairing does.
+                cancelConnection(owner: owner)
+                return await connect(paired, keepsSavedSetup: false, onConnected: onConnected, onFailure: onFailure)
+            }
             let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
             let changedCache = previousID != saved.id || changedBackendAccount
-            let preservesHistory = changedCache && canPreserveHistory(for: saved, confirmedBy: info)
             let replacementHistory: LocalHistory
-            if preservesHistory {
+            if keptSetup {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = history.readOnly
             } else if previousID == saved.id, changedBackendAccount {
@@ -918,12 +931,11 @@ import BottoCore
                 // A failed vault read cannot authorize overwriting setup or pruning caches.
                 _ = try persistence.load()
                 var replacement: LocalHistory.CacheReplacement?
-                if changedCache {
-                    if let previousID, previousID != saved.id, !protectedCaches.contains(previousID) {
-                        try history.save(for: previousID)
-                    }
-                    replacement = try replacementHistory.prepareReplacement(for: saved.id)
+                // The current history is on disk before the credentials change, as an autosave would leave it.
+                if let previousID, previousID != saved.id || keptSetup, !protectedCaches.contains(previousID) {
+                    try history.save(for: previousID)
                 }
+                if changedCache { replacement = try replacementHistory.prepareReplacement(for: saved.id) }
                 do { try persistence.save(saved) }
                 catch {
                     do { try replacement?.rollback() }
@@ -1019,15 +1031,39 @@ import BottoCore
         pending.service.disconnect()
     }
 
-    private func canPreserveHistory(for candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
+    /// Try the saved ID when the new review includes any route from that setup. The connection
+    /// must confirm the workspace through a saved route before committing that ID or cache key.
+    static func keepingSetup(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
+        guard let saved, saved.id != candidate.id, let paired = saved.t3, !paired.environmentID.isEmpty,
+              candidate.t3?.environmentID == paired.environmentID else { return candidate }
+        let reviewed = candidate.connectionRoutes
+        guard saved.connectionRoutes.contains(where: { prior in reviewed.contains { PairingRoutes.same($0, prior) } })
+        else { return candidate }
+
+        var kept = candidate
+        kept.id = saved.id
+        if reviewed.contains(where: { PairingRoutes.same($0, saved.serverURL) }) {
+            kept.serverURL = saved.serverURL
+            let alternates = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
+                .filter { !PairingRoutes.same($0, saved.serverURL) }
+            kept.alternateRoutes = alternates.isEmpty ? nil : alternates
+            if alternates.isEmpty { kept.lastReachedRoute = nil }
+        }
+        let cacheOrigin = saved.artifactCacheOrigin ?? saved.serverURL
+        if !kept.serverURL.absoluteString.utf8.elementsEqual(cacheOrigin.absoluteString.utf8) {
+            kept.artifactCacheOrigin = cacheOrigin
+        }
+        return kept
+    }
+
+    /// History and files carry over only if a route already saved for this setup confirmed
+    /// the same environment, project and workspace.
+    private func continuesSavedSetup(_ candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
+        let reached = candidate.lastReachedRoute ?? candidate.serverURL
         guard !isDemo, let previous = configuration, previous.t3 != nil,
               Self.backendAccount(previous) == Self.backendAccount(candidate),
               let installID = info.installID, !installID.isEmpty, previous.installID == installID,
-              let oldOrigin = try? PairingAddress.parse(previous.serverURL.absoluteString, allowInsecureHTTP: true),
-              let newOrigin = try? PairingAddress.parse(candidate.serverURL.absoluteString, allowInsecureHTTP: true),
-              oldOrigin.scheme == newOrigin.scheme, oldOrigin.host == newOrigin.host,
-              (oldOrigin.port ?? (oldOrigin.scheme == "https" ? 443 : 80))
-                == (newOrigin.port ?? (newOrigin.scheme == "https" ? 443 : 80)),
+              previous.connectionRoutes.contains(where: { PairingRoutes.same($0, reached) }),
               let paired = previous.t3, let verified = candidate.t3,
               paired.environmentID == installID, verified.environmentID == installID,
               let project = paired.projectID, !project.isEmpty,

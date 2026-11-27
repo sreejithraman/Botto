@@ -14,6 +14,9 @@ public struct ConnectionConfiguration: Codable, Equatable, Sendable {
     public var alternateRoutes: [URL]?
     /// The route the last connection reached, tried first next time.
     public var lastReachedRoute: URL?
+    /// The origin in the existing file-cache key after a confirmed re-pair changes the primary route.
+    /// This origin is never used to connect.
+    public var artifactCacheOrigin: URL?
 
     public init(id: UUID = UUID(), serverURL: URL, username: String = "", password: String = "", installID: String? = nil, nativeCredential: NativeCredential? = nil, connectionHeaders: [String: String] = [:], t3: T3Connection? = nil,
                 alternateRoutes: [URL]? = nil, lastReachedRoute: URL? = nil) {

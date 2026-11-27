@@ -11,7 +11,8 @@ struct ConnectionStatusView: View {
                 .font(.footnote).foregroundStyle(.secondary)
             if store.link != .connecting {
                 if let error = store.connectionError {
-                    Text(error).font(.footnote).foregroundStyle(.secondary).lineLimit(4)
+                    // The whole message, so every route that was tried stays readable.
+                    Text(error).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Button("Reconnect") {
                     if let configuration = store.configuration { Task { await store.connect(configuration) } }

@@ -120,7 +120,7 @@ final class LocalT3ServerManager {
         didSet { if state != oldValue { onStateChange?(state) } }
     }
     var logTail: [String] { (engineLogMessage.map { [$0] } ?? []) + serverLogTail }
-    private(set) var startupLinks = T3PairingOutput()
+    private var startupLinks = T3PairingOutput()
     private(set) var lanOrigin: URL?
     private(set) var tailscaleOrigin: URL?
     var executableOverride: String {
@@ -210,6 +210,11 @@ final class LocalT3ServerManager {
         running?.stop()
         startupLinks = T3PairingOutput()
         state = .stopped
+    }
+
+    func takeStartupPairingLink() -> String? {
+        defer { startupLinks = T3PairingOutput() }
+        return startupLinks.pairingURL
     }
 
     func mintPairingLink() async throws -> String {

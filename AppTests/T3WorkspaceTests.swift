@@ -502,7 +502,7 @@ import UIKit
         }
         let storage = MemoryConnectionStorage(saved: previous)
         let store = AppStore(persistence: storage.persistence, makeService: {
-            $0?.id == next.id ? replacement : original
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : original
         })
         await store.start()
         let bot = try #require(store.primaryT3Bot)
@@ -514,11 +514,210 @@ import UIKit
 
         #expect(await store.connect(next))
         #expect(store.chats !== workspace)
-        #expect(storage.saved?.id == next.id)
+        // The same workspace keeps its setup, and with it the history and file cache built on its ID.
+        #expect(storage.saved?.id == previousID)
         #expect(storage.saved?.t3?.projectID == resolved.projectID)
         #expect(storage.saved?.t3?.accessToken == "new-fixture-token")
         #expect(store.draft(for: bot.id) == "Keep the typed draft")
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
+    }
+
+    @Test(arguments: [false, true])
+    func rePairingTheSameMacThroughANewLinkKeepsItsSetupHistoryAndFileCache(oldPrimaryMissing: Bool) async throws {
+        var previous = t3Configuration()
+        previous.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let previousID = previous.id
+        let resolved = try #require(previous.t3)
+        let lan = try #require(URL(string: "http://192.168.1.10:3774"))
+        let savedHTTPS = previous.serverURL
+        if oldPrimaryMissing {
+            previous.serverURL = lan
+            previous.alternateRoutes = [savedHTTPS]
+        }
+        // A new code can still confirm the saved HTTPS route after the user declines HTTP.
+        let next = ConnectionConfiguration(serverURL: oldPrimaryMissing ? savedHTTPS : lan, installID: resolved.environmentID,
+            t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"),
+            alternateRoutes: oldPrimaryMissing ? nil : [URL(string: "https://Studio.example:443")!])
+        defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
+        let replacement = T3WorkspaceService()
+        replacement.resolvedPairing = next.t3.map {
+            var bound = $0
+            bound.projectID = resolved.projectID
+            bound.workspaceRoot = resolved.workspaceRoot
+            return bound
+        }
+        // HTTPS routes are tried first, so the connection confirms the workspace through the saved route.
+        replacement.reachedRoute = savedHTTPS
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ArtifactCache(root: root)
+        let file = DownloadedArtifact(data: Data("Cached plan".utf8), filename: "plan.txt", mimeType: "text/plain")
+        let key = ArtifactOriginalKey(identity: SessionIdentity(profile: try ExactID("bot-project"), root: try ExactID("release"),
+                                                                stored: try ExactID("release"), aliases: []),
+                                      messageID: Data("m1".utf8), path: Data("/plan.txt".utf8), sourceRevision: Data("r1".utf8))
+        try await cache.session(scope: AppStore.artifactScope(previous)).retainOriginal(file, for: key)
+        let storage = MemoryConnectionStorage(saved: previous)
+        let store = AppStore(persistence: storage.persistence, artifactCache: cache, makeService: {
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : T3WorkspaceService()
+        })
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        await store.open(bot)
+        await store.testEdit("Keep the typed draft", for: bot.id)
+        try #require(store.flush())
+
+        #expect(await store.connect(next))
+        let saved = try #require(storage.saved)
+        #expect(saved.id == previousID)
+        #expect(saved.serverURL == savedHTTPS)
+        #expect(saved.alternateRoutes == (oldPrimaryMissing ? nil : [lan]))
+        #expect(saved.lastReachedRoute == (oldPrimaryMissing ? nil : savedHTTPS))
+        #expect(AppStore.artifactScope(saved) == AppStore.artifactScope(previous))
+        #expect(store.draft(for: bot.id) == "Keep the typed draft")
+        #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
+        // A file read before re-pairing is still in the cache afterwards, including after the next launch prunes it.
+        let onDisk = try JSONDecoder().decode(ConnectionConfiguration.self, from: JSONEncoder().encode(saved))
+        let relaunched = AppStore(persistence: MemoryConnectionStorage(saved: onDisk).persistence,
+                                  artifactCache: cache, makeService: { _ in T3WorkspaceService() })
+        try await cache.drainMaintenance()
+        #expect(relaunched.configuration?.id == previousID)
+        #expect(relaunched.draft(for: bot.id) == "Keep the typed draft")
+        #expect(try await cache.session(scope: AppStore.artifactScope(onDisk)).original(for: key)?.artifact.data == file.data)
+        await cache.close()
+    }
+
+    @Test func aNewPairingKeepsItsOwnSetupUnlessItIsTheSameMacByAReviewedRoute() throws {
+        let saved = t3Configuration()
+        let lan = try #require(URL(string: "http://192.168.1.10:3774"))
+        let tunnel = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"),
+                                             alternateRoutes: [URL(string: "https://Studio.example:443")!])
+        let kept = AppStore.keepingSetup(of: saved, in: tunnel)
+        #expect(kept.id == saved.id)
+        #expect(kept.serverURL == saved.serverURL)
+        #expect(kept.alternateRoutes == [lan])
+        // Through the same primary route, too.
+        let samePrimary = ConnectionConfiguration(serverURL: saved.serverURL, t3: .init(environmentID: "studio-id", accessToken: "new"))
+        #expect(AppStore.keepingSetup(of: saved, in: samePrimary).id == saved.id)
+        #expect(AppStore.keepingSetup(of: saved, in: samePrimary).alternateRoutes == nil)
+        // The saved primary isn't one of the reviewed routes, for example HTTP the person didn't allow.
+        let lanOnly = ConnectionConfiguration(serverURL: lan, t3: .init(environmentID: "studio-id", accessToken: "new"))
+        #expect(AppStore.keepingSetup(of: saved, in: lanOnly) == lanOnly)
+        var otherMac = tunnel
+        otherMac.t3?.environmentID = "other-environment"
+        #expect(AppStore.keepingSetup(of: saved, in: otherMac) == otherMac)
+        #expect(AppStore.keepingSetup(of: nil, in: tunnel) == tunnel)
+    }
+
+    /// A reviewed link can carry a route of anyone's, and the environment, project and workspace IDs it
+    /// reports aren't secret. A route that arrived only with the link can't vouch for the saved setup.
+    @Test func aRePairConfirmedOnlyByANewRouteIsANewSetupAndLeavesTheOldHistoryAlone() async throws {
+        var previous = t3Configuration()
+        previous.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let previousID = previous.id
+        let resolved = try #require(previous.t3)
+        let stranger = try #require(URL(string: "https://relay.example"))
+        // The link leads with the saved address, so the saved setup's ID is tried first.
+        let next = ConnectionConfiguration(serverURL: previous.serverURL, installID: resolved.environmentID,
+            t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"),
+            alternateRoutes: [stranger], lastReachedRoute: stranger)
+        defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
+        let replacement = T3WorkspaceService()
+        replacement.resolvedPairing = next.t3.map {
+            var bound = $0
+            bound.projectID = resolved.projectID
+            bound.workspaceRoot = resolved.workspaceRoot
+            return bound
+        }
+        replacement.reachedRoute = stranger
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ArtifactCache(root: root)
+        let file = DownloadedArtifact(data: Data("Cached plan".utf8), filename: "plan.txt", mimeType: "text/plain")
+        let key = ArtifactOriginalKey(identity: SessionIdentity(profile: try ExactID("bot-project"), root: try ExactID("release"),
+                                                                stored: try ExactID("release"), aliases: []),
+                                      messageID: Data("m1".utf8), path: Data("/plan.txt".utf8), sourceRevision: Data("r1".utf8))
+        try await cache.session(scope: AppStore.artifactScope(previous)).retainOriginal(file, for: key)
+        let storage = MemoryConnectionStorage(saved: previous)
+        let store = AppStore(persistence: storage.persistence, artifactCache: cache, makeService: {
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : T3WorkspaceService()
+        })
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        await store.open(bot)
+        await store.testEdit("Keep the typed draft", for: bot.id)
+        try #require(store.flush())
+        // What the saved setup's history holds: each chat with its draft and transcript.
+        func contents(of id: UUID) throws -> [String] {
+            try LocalHistory.load(for: id).book.records.map { record in
+                "\(record.id) \(record.draft.text) \(record.transcript?.messages.map(\.text) ?? [])"
+            }.sorted()
+        }
+        let before = try contents(of: previousID)
+        #expect(before.contains { $0.contains("Keep the typed draft") })
+        var atCommit: [String]?
+        storage.beforeSave = { saved in
+            guard saved.t3?.accessToken == "new-fixture-token" else { return }
+            atCommit = try? contents(of: previousID)
+        }
+
+        #expect(await store.connect(next))
+        let saved = try #require(storage.saved)
+        #expect(saved.id == next.id && saved.id != previousID)
+        // Until the new credentials were committed, the saved setup's history held what it did before.
+        #expect(atCommit == before)
+        #expect(store.draft(for: bot.id) == "")
+        #expect(store.conversation(for: bot.id)?.messages.map(\.text) != ["Chat in release"])
+        #expect(try await cache.session(scope: AppStore.artifactScope(saved)).original(for: key) == nil)
+        await cache.close()
+    }
+
+    enum Workspace: CaseIterable { case same, different }
+
+    /// The app is killed while the new credentials are being committed. On relaunch, the Keychain still
+    /// holds the old ones, and they find their own history on disk.
+    @Test(arguments: Workspace.allCases)
+    func aKillBeforeTheKeychainCommitLeavesTheSavedSetupWithItsHistory(_ workspace: Workspace) async throws {
+        var previous = t3Configuration()
+        previous.t3?.workspaceRoot = "/host/.botto/bots/main"
+        let previousID = previous.id
+        let resolved = try #require(previous.t3)
+        let lan = try #require(URL(string: "http://192.168.1.10:3774"))
+        let next = ConnectionConfiguration(serverURL: lan, installID: resolved.environmentID,
+            t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"),
+            alternateRoutes: [previous.serverURL], lastReachedRoute: lan)
+        defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
+        let replacement = T3WorkspaceService()
+        replacement.resolvedPairing = next.t3.map {
+            var bound = $0
+            bound.projectID = workspace == .same ? resolved.projectID : "other-project"
+            bound.workspaceRoot = workspace == .same ? resolved.workspaceRoot : "/host/.botto/bots/other"
+            return bound
+        }
+        replacement.reachedRoute = previous.serverURL
+        let storage = MemoryConnectionStorage(saved: previous)
+        let store = AppStore(persistence: storage.persistence, makeService: {
+            $0?.t3?.accessToken == "new-fixture-token" ? replacement : T3WorkspaceService()
+        })
+        await store.start()
+        let bot = try #require(store.primaryT3Bot)
+        await store.open(bot)
+        await store.testEdit("Keep the typed draft", for: bot.id)
+        try #require(store.flush())
+        var relaunchedDraft: String?
+        storage.beforeSave = { saved in
+            guard saved.t3?.accessToken == "new-fixture-token" else { return }
+            // Killed here: the Keychain write never happens, and the next launch reads what is on disk.
+            let relaunched = AppStore(persistence: MemoryConnectionStorage(saved: previous).persistence,
+                                      makeService: { _ in T3WorkspaceService() })
+            #expect(relaunched.configuration?.id == previousID && !relaunched.cacheLoadFailed)
+            relaunchedDraft = relaunched.draft(for: bot.id)
+        }
+        storage.failSave = true
+
+        #expect(!(await store.connect(next)))
+        #expect(relaunchedDraft == "Keep the typed draft")
+        #expect(storage.saved == previous)
+        #expect(try LocalHistory.load(for: previousID).book.records.contains { $0.draft.text == "Keep the typed draft" })
     }
 
     enum Replacement: CaseIterable {
@@ -563,7 +762,8 @@ import UIKit
             #expect(!FileManager.default.fileExists(atPath: candidateCache.path))
         } else {
             try #require(replaced)
-            #expect(storage.saved?.id == candidate.id)
+            // Only the same workspace, confirmed by a saved route, keeps the saved setup. Anything else is a new one.
+            #expect(storage.saved?.id == (replacement == .sameWorkspace ? original.id : candidate.id))
             try #require(await store.openT3Channel(general))
             let current = try #require(store.chats.screen(profile: profile)?.owner)
             #expect(store.chats.draft(current) == (replacement == .sameWorkspace ? draft : ""))
@@ -1214,13 +1414,13 @@ import UIKit
             let review = try T3PairingReview(link)
             #expect(review.origin.absoluteString == origin)
             #expect(!review.isEncrypted)
-            #expect(throws: PairingAddress.Failure.insecureHTTP) { try review.destination(allowingHTTP: false) }
-            #expect(try review.destination(allowingHTTP: true) == review.origin)
+            #expect(throws: PairingAddress.Failure.insecureHTTP) { try review.destinations(allowingHTTP: false) }
+            #expect(try review.destinations(allowingHTTP: true) == [review.origin])
         }
         #expect(try T3PairingReview("http://192.168.1.10:3774/pair#token=Ab%2B").credential == "Ab+")
         let tunnel = try T3PairingReview("https://botto.example.com/pair#token=A")
         #expect(tunnel.isEncrypted)
-        #expect(try tunnel.destination(allowingHTTP: false).absoluteString == "https://botto.example.com")
+        #expect(try tunnel.destinations(allowingHTTP: false).map(\.absoluteString) == ["https://botto.example.com"])
         // HTTP outside the local network is refused before there is anything to allow.
         #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://botto.example.com/pair#token=A") }
         #expect(throws: PairingAddress.Failure.insecureHTTP) { try T3PairingReview("http://8.8.8.8:3774/pair#token=A") }
@@ -1228,6 +1428,294 @@ import UIKit
         #expect(try T3PairingReview("https://botto.example.com", code: "typed").credential == "typed")
         #expect(T3PairingReview.message(for: T3PairingError.httpStatus(401)).contains("expired"))
         #expect(!T3PairingReview.message(for: T3PairingError.missingCredential).contains("T3"))
+    }
+
+    @Test func pairingReviewShowsEveryRouteAndHTTPConsentCoversOnlyTheLocalOnes() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let link = "http://192.168.1.10:3774/pair#token=A&route=http%3A%2F%2Fbotto.example.com"
+            + "&route=http%3A%2F%2F100.64.1.2%3A3774&route=https%3A%2F%2Fbotto.example.com"
+        let review = try T3PairingReview(link)
+        // Plain HTTP to a public address fails the rule, so it is never shown or used.
+        #expect(review.routes.map(\.absoluteString) == ["http://192.168.1.10:3774", "http://100.64.1.2:3774",
+                                                         "https://botto.example.com"])
+        #expect(!review.isEncrypted && review.hasSecureRoute)
+        #expect(try review.destinations(allowingHTTP: false).map(\.absoluteString) == ["https://botto.example.com"])
+        #expect(try review.destinations(allowingHTTP: true) == review.routes)
+
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        try await withHosted(ConnectionView(store: store, input: link)) { window in
+            let page = try await labels(in: window) { $0.contains("Is this your Mac?") && $0.contains("Connect") }
+            for label in ["http://192.168.1.10:3774", "Local connection, not encrypted", "http://100.64.1.2:3774",
+                          "Tailscale, not encrypted", "https://botto.example.com", "Secure connection"] {
+                #expect(page.contains(label))
+            }
+            #expect(!page.contains("http://botto.example.com"))
+            #expect(page.contains { $0.contains("Your pairing code is sent to the first one that answers, secure ones first.") })
+        }
+    }
+
+    @Test func aCodeThatMayBeSpentAsksForAFreshLink() {
+        #expect(T3PairingReview.needsFreshLink(after: T3PairingError.codeMayBeUsed))
+        #expect(T3PairingReview.needsFreshLink(after: T3PairingError.credentialRefused))
+        #expect(T3PairingReview.message(for: T3PairingError.credentialRefused)
+            == "That link has expired or was already used. Get a fresh one on your Mac.")
+        #expect(T3PairingReview.message(for: T3PairingError.codeMayBeUsed)
+            == "Your Mac may already have used this pairing code. Get a fresh link from Botto on your Mac, then try again.")
+        // A failure before the code was sent can be retried with the same link.
+        #expect(!T3PairingReview.needsFreshLink(after: T3UnreachableRoutes(attempts: [])))
+        #expect(!T3PairingReview.needsFreshLink(after: URLError(.cannotConnectToHost)))
+    }
+
+    /// The phone goes to the background after the code was sent, which cancels the exchange.
+    @Test func backgroundingAfterTheCodeWasSentRetiresTheReview() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let (sent, sending) = AsyncStream<Void>.makeStream()
+        let exchange = pairingExchange(tokens) {
+            sending.yield()
+            try await Task.sleep(for: .seconds(60))
+            return 200
+        }
+        let host = PairingHost()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        let hosted = HostedPairing(store: store, input: "https://studio.example/pair#token=sent-code", exchange: exchange, host: host)
+        try await withHosted(hosted) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            for await _ in sent { break }
+            host.phase = .background
+            let page = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+            host.phase = .active
+            #expect(!page.contains("Is this your Mac?"))
+            // The link, which carries the code, is gone too.
+            let form = try await expose(window, "The link page settles") { $0.byID["t3-pair-review"] != nil }
+            #expect(form.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == true)
+        }
+        #expect(tokens.sent == ["sent-code"])
+    }
+
+    /// A typed code is retired with its review; the typed address stays for a fresh code.
+    @Test func aTypedCodeThatMayBeSpentIsClearedAndItsAddressKept() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        // A 500 may come after T3 redeemed the code.
+        let exchange = pairingExchange(tokens) { 500 }
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        let hosted = HostedPairing(store: store, input: "https://studio.example", exchange: exchange, host: PairingHost())
+        try await withHosted(hosted) { window in
+            _ = try await expose(window, "The code field shows") { $0.byID["t3-pair-code"] != nil }
+            let secureFields = textInputs(in: window).compactMap { $0 as? UITextField }.filter(\.isSecureTextEntry)
+            let codeField = try #require(secureFields.first)
+            try #require(codeField.becomeFirstResponder())
+            codeField.insertText("typed-code")
+            let typed = try await expose(window, "The typed code can be reviewed") {
+                $0.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == false
+            }
+            try #require(typed.byID["t3-pair-review"]?.accessibilityActivate() == true)
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            _ = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+            let fields = textInputs(in: window)
+            #expect(fields.compactMap { $0 as? UITextField }.filter(\.isSecureTextEntry).allSatisfy { $0.text?.isEmpty != false })
+            #expect(fields.contains { ($0 as? UITextField)?.text == "https://studio.example" || ($0 as? UITextView)?.text == "https://studio.example" })
+        }
+        #expect(tokens.sent == ["typed-code"])
+    }
+
+    /// The exchange bought a token, but the connection failed. Change address retires the link with
+    /// the review, and the same link entered again is refused without sending its code.
+    @Test func changingTheAddressAfterAFailedConnectionRetiresTheSpentLink() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let exchange = pairingExchange(tokens) { 200 }
+        let link = "https://studio.example/pair#token=spent-code"
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence, makeService: { _ in
+            let unreachable = T3WorkspaceService()
+            unreachable.connectError = .disconnected
+            return unreachable
+        })
+        let hosted = HostedPairing(store: store, input: link, exchange: exchange, host: PairingHost())
+        try await withHosted(hosted) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            let failed = try await expose(window, "The connection fails and the review stays") {
+                $0.byID["t3-pair-change-address"]?.accessibilityTraits.contains(.notEnabled) == false
+            }
+            try #require(failed.byID["t3-pair-change-address"]?.accessibilityActivate() == true)
+            let page = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+            #expect(!page.contains("Is this your Mac?"))
+            let form = try await expose(window, "The link is gone from the form") {
+                $0.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == true
+            }
+            #expect(form.byID["t3-pair-address"] != nil)
+            // Entered again, the same link reviews, but its code isn't sent.
+            let field = try #require(textInputs(in: window).first { !(($0 as? UITextField)?.isSecureTextEntry ?? false) })
+            try #require(field.becomeFirstResponder())
+            (field as? UIKeyInput)?.insertText(link)
+            let typed = try await expose(window, "The link can be reviewed") {
+                $0.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == false
+            }
+            try #require(typed.byID["t3-pair-review"]?.accessibilityActivate() == true)
+            let again = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(again.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            _ = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+        }
+        #expect(tokens.sent == ["spent-code"])
+    }
+
+    /// Going to the background cancels the exchange, but Connect stays off until it settles, so the code
+    /// can't go out a second time while the first may still be on its way.
+    @Test func connectStaysOffUntilACancelledExchangeSettles() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let gate = PairingGate()
+        let exchange = pairingExchange(tokens) {
+            await gate.wait()
+            return 200
+        }
+        let host = PairingHost()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence, makeService: { _ in T3WorkspaceService() })
+        let hosted = HostedPairing(store: store, input: "https://studio.example/pair#token=one-code", exchange: exchange, host: host)
+        try await withHosted(hosted) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            await gate.reached()
+            host.phase = .background
+            try await Task.sleep(for: .milliseconds(200))
+            host.phase = .active
+            let waiting = try await expose(window, "The review is back") { $0.byID["t3-pair-connect"] != nil }
+            #expect(waiting.byID["t3-pair-connect"]?.accessibilityTraits.contains(.notEnabled) == true)
+            // The exchange settles with a token, which a later Connect uses instead of the code.
+            gate.open()
+            let settled = try await expose(window, "Connect comes back once the exchange settles") {
+                $0.byID["t3-pair-connect"]?.accessibilityTraits.contains(.notEnabled) == false
+            }
+            try #require(settled.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            #expect(await waitWhile("The pairing connects") { store.configuration?.t3?.accessToken != "fresh-token" })
+        }
+        #expect(tokens.sent == ["one-code"])
+    }
+
+    /// T3 refused the code: 401 `auth_invalid`, which it can also answer after spending the code.
+    @Test func aRefusedCodeIsRetiredLikeOneThatMayBeSpent() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let exchange = pairingExchange(tokens) { 401 }
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        let hosted = HostedPairing(store: store, input: "https://studio.example/pair#token=refused-code", exchange: exchange,
+                                   host: PairingHost())
+        try await withHosted(hosted) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            let page = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains("That link has expired or was already used. Get a fresh one on your Mac.")
+            }
+            #expect(!page.contains("Is this your Mac?"))
+            let form = try await expose(window, "The link is gone from the form") { $0.byID["t3-pair-review"] != nil }
+            #expect(form.byID["t3-pair-review"]?.accessibilityTraits.contains(.notEnabled) == true)
+        }
+        #expect(tokens.sent == ["refused-code"])
+    }
+
+    /// The pairing sheet is cancelled while the exchange may be on its way. A new sheet with the same
+    /// link doesn't send the code again.
+    @Test func aCodeSentFromACancelledSheetIsNotSentFromTheNext() async throws {
+        try NativeAccessibilityRuntime.enable()
+        let tokens = PairingTokenRequests()
+        let gate = PairingGate()
+        let exchange = pairingExchange(tokens) {
+            await gate.wait()
+            return 500
+        }
+        let link = "https://studio.example/pair#token=first-sheet"
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        try await withHosted(HostedPairing(store: store, input: link, exchange: exchange, host: PairingHost())) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            await gate.reached()
+        }
+        try await withHosted(HostedPairing(store: store, input: link, exchange: exchange, host: PairingHost())) { window in
+            let review = try await expose(window, "The review offers Connect") { $0.byID["t3-pair-connect"] != nil }
+            try #require(review.byID["t3-pair-connect"]?.accessibilityActivate() == true)
+            _ = try await labels(in: window) { labels in
+                labels.contains("Find Botto on your Mac") && labels.contains { $0.contains("may already have used this pairing code") }
+            }
+        }
+        gate.open()
+        #expect(tokens.sent == ["first-sheet"])
+    }
+
+    @Test func aLinkWithTooManyRoutesSaysSoWhenPastedOrHandedOver() async throws {
+        let link = "https://studio.example/pair#token=A" + (1...4).map { "&route=https%3A%2F%2Froute\($0).example" }.joined()
+        let message = "That link lists more addresses than Botto accepts. Get a fresh one from Botto on your Mac."
+        #expect(T3PairingReview.isPairingLink(link))
+        // Pasting or scanning reviews the link with nothing typed in the code field.
+        #expect(throws: T3PairingError.tooManyRoutes) { try T3PairingReview(link, code: "") }
+        #expect(T3PairingReview.message(for: T3PairingError.tooManyRoutes) == message)
+        try NativeAccessibilityRuntime.enable()
+        let store = AppStore(persistence: MemoryConnectionStorage().persistence)
+        try await withHosted(ConnectionView(store: store, input: link)) { window in
+            let page = try await labels(in: window) { $0.contains { $0.contains(message) } }
+            #expect(!page.contains("Is this your Mac?"))
+            // The link carries its own code, so the form doesn't ask for one.
+            let form = try await expose(window, "The link page settles") { $0.byID["t3-pair-address"] != nil }
+            #expect(form.byID["t3-pair-code"] == nil)
+        }
+    }
+
+    @Observable @MainActor final class PairingHost { var phase: ScenePhase = .active }
+
+    private struct HostedPairing: View {
+        let store: AppStore
+        let input: String
+        let exchange: T3PairingExchange
+        let host: PairingHost
+        var body: some View {
+            NavigationStack { T3PairingView(store: store, input: input, exchange: exchange) }
+                .environment(\.scenePhase, host.phase)
+        }
+    }
+
+    /// An exchange whose environment answers, and whose token request ends with `tokenStatus`: a token
+    /// for 200, T3's own refusal for 401, and T3's internal error otherwise.
+    private func pairingExchange(_ tokens: PairingTokenRequests,
+                                 tokenStatus: @escaping @Sendable () async throws -> Int) -> T3PairingExchange {
+        T3PairingExchange { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            var body = #"{"environmentId":"studio-id","label":"Studio","serverVersion":"2.0","orchestrationProtocolVersion":2}"#
+            var status = 200
+            if url.path == "/oauth/token" {
+                tokens.record(request)
+                status = try await tokenStatus()
+                body = switch status {
+                case 200: #"{"access_token":"fresh-token","token_type":"Bearer"}"#
+                case 401: #"{"_tag":"EnvironmentAuthInvalidError","code":"auth_invalid","reason":"invalid_credential","traceId":"t"}"#
+                default: #"{"code":"internal_error","reason":"access_token_issuance_failed","traceId":"t"}"#
+                }
+            }
+            return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+
+    private func textInputs(in view: UIView) -> [UIView] {
+        (view is UITextField || view is UITextView ? [view] : []) + view.subviews.flatMap { textInputs(in: $0) }
+    }
+
+    @Test func pairingNamesEachRouteItCouldNotReach() {
+        let failure = T3UnreachableRoutes(attempts: [
+            .init(route: URL(string: "http://192.168.1.10:3774")!, reason: .noAnswer),
+            .init(route: URL(string: "https://botto.example.com")!, reason: .differentMac),
+        ])
+        #expect(T3PairingReview.message(for: failure) == "Couldn’t reach your Mac. Local network (192.168.1.10) didn’t answer; "
+            + "botto.example.com is a different Mac. Check that Botto is running on your Mac, then try again.")
     }
 
     @Test func firstRunNamesTheBotAndItsMainSpaceAndSavesTheFace() async throws {
@@ -1454,11 +1942,50 @@ import UIKit
     }
 }
 
+/// Holds a token request until the test opens it. A cancelled exchange still waits, as a request
+/// already on its way would.
+private final class PairingGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private let (arrivals, arrived) = AsyncStream<Void>.makeStream()
+
+    func wait() async {
+        arrived.yield()
+        await withCheckedContinuation { continuation in
+            let resume = lock.withLock { isOpen ? true : { waiting.append(continuation); return false }() }
+            if resume { continuation.resume() }
+        }
+    }
+
+    /// Returns once a request is waiting.
+    func reached() async { for await _ in arrivals { return } }
+
+    func open() {
+        let held = lock.withLock { isOpen = true; defer { waiting = [] }; return waiting }
+        held.forEach { $0.resume() }
+    }
+}
+
+/// The codes the token endpoint received.
+private final class PairingTokenRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var codes: [String] = []
+    var sent: [String] { lock.withLock { codes } }
+    func record(_ request: URLRequest) {
+        let form = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+        let code = form.split(separator: "&").first { $0.hasPrefix("subject_token=") }?.dropFirst("subject_token=".count)
+        lock.withLock { codes.append(code.map(String.init) ?? "") }
+    }
+}
+
 @MainActor private final class T3WorkspaceService: T3BotBrainControlling {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
     var connectGate: WorkspaceGate?
     var resolvedPairing: T3Connection?
+    /// The route a connection reaches, as T3BotService reports it.
+    var reachedRoute: URL?
     var openError: T3ServiceError?
     var canonicalThread: String?
     var modelError: T3ServiceError?
@@ -1506,9 +2033,10 @@ import UIKit
     func connect(configuration: ConnectionConfiguration) async throws -> ServerInfo {
         if let connectGate { await connectGate.wait() }
         if let connectError { throw connectError }
-        if let resolvedPairing {
+        if resolvedPairing != nil || reachedRoute != nil {
             var connected = configuration
-            connected.t3 = resolvedPairing
+            if let resolvedPairing { connected.t3 = resolvedPairing }
+            if let reachedRoute { connected.reached(reachedRoute) }
             onEvent?(.configuration(connected))
         }
         return .init(version: "fixture", installID: configuration.t3?.environmentID)

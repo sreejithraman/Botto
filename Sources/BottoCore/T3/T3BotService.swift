@@ -129,33 +129,51 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
     private func establish(_ configuration: ConnectionConfiguration, attempt: UUID,
                            reattaching identity: SessionIdentity?) async throws -> ServerInfo {
         guard var paired = configuration.t3, !paired.accessToken.isEmpty else { throw T3ServiceError.missingConnection }
-        let origin = try T3PairingExchange.validatedOrigin(configuration.serverURL.absoluteString)
+        let primary = try T3PairingExchange.validatedOrigin(configuration.serverURL.absoluteString)
         try checkAttempt(attempt)
         let token = paired.accessToken
-        let descriptor = try await http.probeEnvironment(origin: origin)
-        if !paired.environmentID.isEmpty, paired.environmentID != descriptor.environmentId {
-            throw T3ServiceError.differentEnvironment
+        // The token is sent only once a route has answered as the paired environment. A route that
+        // answers but can't mint a ticket, open the socket, return its config as that environment, or
+        // list its projects counts as failed, and the next is tried. Nothing in the workspace is
+        // written until a route has made all of those reads.
+        let (origin, descriptor, rpc, config, projects) = try await http.reach(
+            configuration.connectionRoutes, environmentID: paired.environmentID.isEmpty ? nil : paired.environmentID,
+            isRouteFailure: T3UnreachableRoutes.isRouteFailure
+        ) { origin, descriptor in
+            try checkAttempt(attempt)
+            let ticket = try await http.mintWebSocketTicket(origin: origin, accessToken: token)
+            try checkAttempt(attempt)
+            let request = try T3RPCClient.socketRequest(origin: origin, ticket: ticket.ticket, accessToken: token)
+            let rpc = T3RPCClient(transport: try webSocket(request))
+            connectingRPC = rpc
+            do {
+                let config = try await rpc.call("server.getConfig")
+                // A route is chosen only once its own config names the environment it answered as.
+                switch config["environment"]["environmentId"].text {
+                case descriptor.environmentId: break
+                case nil: throw T3ServiceError.invalidResponse
+                default: throw T3ServiceError.differentEnvironment
+                }
+                try checkAttempt(attempt)
+                let projects = try await listProjects(origin: origin, token: token)
+                try checkAttempt(attempt)
+                return (origin, descriptor, rpc, config, projects)
+            } catch {
+                if connectingRPC === rpc { connectingRPC = nil }
+                await rpc.close()
+                throw error
+            }
         }
-        try checkAttempt(attempt)
-        let ticket = try await http.mintWebSocketTicket(origin: origin, accessToken: token)
-        try checkAttempt(attempt)
-        let request = try T3RPCClient.socketRequest(origin: origin, ticket: ticket.ticket, accessToken: token)
-        let rpc = T3RPCClient(transport: try webSocket(request))
-        connectingRPC = rpc
 
         do {
-            let config = try await rpc.call("server.getConfig")
-            if let environmentID = config["environment"]["environmentId"].text, environmentID != descriptor.environmentId {
-                throw T3ServiceError.differentEnvironment
-            }
-            try checkAttempt(attempt)
-            let project = try await resolveProject(origin: origin, paired: paired, rpc: rpc, attempt: attempt,
+            let project = try await resolveProject(in: projects, paired: paired, rpc: rpc, attempt: attempt,
                                                    environmentID: descriptor.environmentId)
             guard let id = project["id"].nonempty, let root = project["workspaceRoot"].nonempty else {
                 throw T3ServiceError.invalidProject
             }
             var updated = configuration
-            updated.serverURL = origin
+            updated.serverURL = primary
+            updated.reached(origin)
             updated.installID = descriptor.environmentId
             paired.environmentID = descriptor.environmentId
             paired.label = descriptor.label
@@ -252,7 +270,8 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
 
     private static func shouldRetry(_ error: Error) -> Bool {
         switch error {
-        case T3PairingError.httpStatus(401), T3PairingError.httpStatus(403), T3PairingError.incompatibleProtocol,
+        case T3PairingError.credentialRefused, T3PairingError.httpStatus(401), T3PairingError.httpStatus(403),
+             T3PairingError.incompatibleProtocol,
              T3ServiceError.differentEnvironment, T3ServiceError.differentWorkspace, T3ServiceError.missingConnection:
             return false
         default:
@@ -923,13 +942,18 @@ private extension T3BotService {
         return (session, selection)
     }
 
-    func resolveProject(origin: URL, paired: T3Connection, rpc: T3RPCClient, attempt: UUID,
+    /// The projects a route's environment holds. A read, so a failure here is the route's.
+    func listProjects(origin: URL, token: String) async throws -> [JSONValue] {
+        let data = try await http.request(origin: origin, path: "/api/projects", token: token)
+        guard let projects = try JSONDecoder().decode(JSONValue.self, from: data)["projects"].list else {
+            throw T3ServiceError.invalidProject
+        }
+        return projects
+    }
+
+    func resolveProject(in projects: [JSONValue], paired: T3Connection, rpc: T3RPCClient, attempt: UUID,
                         environmentID: String) async throws -> JSONValue {
         let projectID = T3ProjectionMapper.stableUUID("botto-main-project:" + environmentID).uuidString
-        let data = try await http.request(origin: origin, path: "/api/projects", token: paired.accessToken)
-        let snapshot = try JSONDecoder().decode(JSONValue.self, from: data)
-        try checkAttempt(attempt)
-        guard let projects = snapshot["projects"].list else { throw T3ServiceError.invalidProject }
         let available = projects.filter { $0["deletedAt"] == .null }
         if let savedID = paired.projectID.nonempty {
             guard let project = available.first(where: { $0["id"].text?.utf8.elementsEqual(savedID.utf8) == true }),
