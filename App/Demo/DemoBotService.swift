@@ -292,6 +292,10 @@ import BottoCore
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
 
+    func markVisited(access: ConversationAccess) async throws {
+        visited[try issuer.resolve(access).stored.text] = .now
+    }
+
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt {
         let source = try issuer.resolve(access)

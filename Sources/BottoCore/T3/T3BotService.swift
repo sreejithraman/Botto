@@ -740,6 +740,11 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         return opened
     }
 
+    public func markVisited(access: ConversationAccess) async throws {
+        let (session, selection) = try resolve(access)
+        try await visitChannel(selection.identity, in: session)
+    }
+
     private func visitChannel(_ identity: SessionIdentity, in session: Session) async throws {
         try validate(identity, in: session)
         let visitedAt = Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))

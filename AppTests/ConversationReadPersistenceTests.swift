@@ -128,26 +128,29 @@ import BottoCore
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalHistory(book: workspace.persisted()))) as? [String: Any])
         var book = try #require(json["book"] as? [String: Any])
         var records = try #require(book["records"] as? [[String: Any]])
-        for index in records.indices {
-            if var summary = records[index]["summary"] as? [String: Any] {
-                summary.removeValue(forKey: "inventoryTip"); records[index]["summary"] = summary
-            }
-            if var seen = records[index]["seen"] as? [String: Any], var summary = seen["summary"] as? [String: Any] {
-                summary.removeValue(forKey: "inventoryTip"); seen["summary"] = summary; records[index]["seen"] = seen
-            }
-        }
+        // V2 saved summaries predate inventory tips. Write both in that shape for the displayed chat.
+        let legacySummary: [String: Any] = ["preview": Data("Known preview".utf8).base64EncodedString(), "messageCount": 4]
+        let displayed = try #require(records.firstIndex { $0["seen"] != nil })
+        var seen = try #require(records[displayed]["seen"] as? [String: Any])
+        seen["summary"] = legacySummary
+        records[displayed]["seen"] = seen; records[displayed]["summary"] = legacySummary
         book["records"] = records; json["book"] = book
         let raw = try JSONSerialization.data(withJSONObject: json), url = try LocalHistory.file(for: cacheID, directory: directory)
         try raw.write(to: url)
         let loaded = try LocalHistory.load(for: cacheID, directory: directory)
         #expect(try Data(contentsOf: url) == raw)
-        #expect(loaded.book.record(screen.selectedChatID)?.summary?.inventoryTip == nil)
+        let saved = try #require(loaded.book.record(screen.selectedChatID))
+        for summary in [saved.summary, saved.seen?.summary] {
+            let summary = try #require(summary, "A saved V2 summary still decodes")
+            #expect(summary.inventoryTip == nil && summary.updatedAt == nil)
+            #expect(summary.preview == Data("Known preview".utf8) && summary.messageCount == 4)
+        }
         let restored = ConversationWorkspace(scope: .init(cacheID: cacheID, exactAccount: [], incarnation: UUID()),
             book: loaded.book, service: service, onDirty: {})
         await restored.openBot(profile: service.profile)
         let cached = try #require(restored.screen(profile: service.profile))
         restored.displayed(cached.owner); restored.displayed(cached.owner)
-        #expect(restored.persisted().record(screen.selectedChatID)?.seen?.summary?.inventoryTip == nil)
+        #expect(restored.persisted().record(screen.selectedChatID)?.seen?.summary == saved.seen?.summary)
         restored.setOnline(true); await restored.openBot(profile: service.profile)
         let current = try #require(restored.screen(profile: service.profile))
         await restored.refreshDirectory(current.owner)

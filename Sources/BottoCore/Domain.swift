@@ -244,6 +244,8 @@ public enum MessageDelivery: Equatable, Sendable {
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
     func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
+    /// Tells the host that a visible transcript showed this access's chat.
+    func markVisited(access: ConversationAccess) async throws
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt
     func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt
@@ -259,6 +261,8 @@ public extension BotService {
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
         nil
     }
+
+    func markVisited(access: ConversationAccess) async throws {}
 
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
         throw ConversationServiceError.rejected(-32601)

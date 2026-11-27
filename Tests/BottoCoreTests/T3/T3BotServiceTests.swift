@@ -278,6 +278,25 @@ import Testing
         }
     }
 
+    @Test func markingVisitedDispatchesTheVisitOnlyForTheCurrentAccess() async throws {
+        let host = T3ServiceHost(existing: true)
+        let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        defer { service.disconnect() }
+        _ = try await service.connect(configuration: existingConfiguration())
+        var visits = host.visits.makeAsyncIterator()
+        let first = try await service.openChat(.canonical(profile: try ExactID("bot-project"), expectedRoot: nil))
+        _ = try #require(await visits.next(isolation: MainActor.shared))
+        let current = try await service.openChat(.stored(first.identity))
+        _ = try #require(await visits.next(isolation: MainActor.shared))
+        await #expect(throws: ConversationServiceError.staleConversation) { try await service.markVisited(access: first.access) }
+        // The host records a command before acknowledging it, so a sent visit is already queued here.
+        try await service.markVisited(access: current.access)
+        let visit = try #require(await visits.next(isolation: MainActor.shared))
+        #expect(visit["type"].text == "thread.visit")
+        #expect(visit["threadId"].text == "existing-general")
+        #expect(visit["opened"].flag == true)
+    }
+
     @Test func sendsChannelModelSelectionToT3() async throws {
         let host = T3ServiceHost(existing: true)
         let service = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })

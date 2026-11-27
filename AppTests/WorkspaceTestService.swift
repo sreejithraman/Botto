@@ -4,8 +4,6 @@ import BottoCore
 
 @MainActor final class WorkspaceTestService: BotService {
     var onEvent: ((BotServiceEvent) -> Void)?
-    var onOpen: (() -> Void)?
-    var onDownload: (() -> Void)?
     var downloadData = Data("artifact".utf8)
     var downloadError: (any Error)?
     var downloads = 0
@@ -14,7 +12,6 @@ import BottoCore
     var summaries: [SessionSummary]
     var snapshots: [ExactID: Conversation] = [:]
     var openError: (any Error)?
-    var beforeOpenReturn: ((OpenedConversation) -> Void)?
     var openResult: ((OpenedConversation) throws -> OpenedConversation)?
     var completedOpens: [OpenedConversation] = []
     var stopGate: WorkspaceGate?
@@ -40,6 +37,7 @@ import BottoCore
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
     var creates: [UUID] = []
     var opens: [SessionIdentity] = []
+    var visits: [SessionIdentity] = []
     var uploads: [SessionIdentity] = []
     var uploadError: (any Error)?
     var responses: [PendingRequest] = []
@@ -116,7 +114,6 @@ import BottoCore
         case .stored(let stored): identity = stored
         }
         opens.append(identity)
-        onOpen?()
         issuer.retireAttachment()
         // This method models a complete read; incremental publications use publication(_:).
         let opened = OpenedConversation(identity: identity, snapshot: snapshots[identity.root]!,
@@ -124,10 +121,10 @@ import BottoCore
         await openGate?.wait()
         if let openError { throw openError }
         let result = try openResult?(opened) ?? opened
-        beforeOpenReturn?(result)
         completedOpens.append(result)
         return result
     }
+    func markVisited(access: ConversationAccess) async throws { visits.append(try issuer.resolve(access)) }
     func publication(_ identity: SessionIdentity) throws -> OpenedConversation {
         .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity))
     }
@@ -178,7 +175,6 @@ import BottoCore
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         _ = try issuer.resolve(access)
         downloads += 1
-        onDownload?()
         await downloadGate?.wait()
         if let downloadError { throw downloadError }
         return .init(data: downloadData, filename: attachment.name, mimeType: attachment.mimeType)

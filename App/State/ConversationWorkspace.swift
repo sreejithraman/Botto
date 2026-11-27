@@ -236,6 +236,8 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
         var signal: UUID?
     }
     @ObservationIgnored private var stopFeedback: StopFeedback?
+    /// What the host last recorded as visited, so a visible transcript tells it only once per change.
+    @ObservationIgnored private var hostVisit: (access: ConversationAccess, content: ChatContentEvidence)?
     private var readAuthorityBlocked = false
     private var pendingOperations: [UUID: ChatID] = [:]
     @ObservationIgnored private var activityStorage: [ChatID: ObservedActivity] = [:]
@@ -766,6 +768,8 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
             retiredRecoveryAccesses.remove(opened.access)
             readAuthorityBlocked = false; availability[actual] = true; errors[actual] = nil
             guard installTranscript(opened, for: actual, title: record.title, navigation: request) else { return nil }
+            // Opening a chat records the visit on the host.
+            if let live { hostVisit = (live.access, ChatContentEvidence(live.snapshot)) }
             return opened.identity
         } catch {
             guard !retired, recovery == connection, presentation == epoch,
@@ -985,6 +989,15 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
             applied = true
         }
         if applied { onDirty() }
+        visitHost()
+    }
+    /// The host's unread mark clears only when it learns the person saw a settled reply.
+    private func visitHost() {
+        guard transcriptVisible, online, !retired, let live, !live.snapshot.isWorking else { return }
+        let content = ChatContentEvidence(live.snapshot)
+        guard hostVisit?.access != live.access || hostVisit?.content != content else { return }
+        hostVisit = (live.access, content)
+        Task { [service] in try? await service.markVisited(access: live.access) }
     }
     private static func sameSeenCursor(_ a: SeenCursor?, _ b: SeenCursor?) -> Bool {
         (a == nil) == (b == nil) && a?.messageID == b?.messageID && a?.observedAt == b?.observedAt &&

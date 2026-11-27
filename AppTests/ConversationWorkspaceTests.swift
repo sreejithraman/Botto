@@ -145,6 +145,82 @@ import BottoCore
         #expect(workspace.persisted().preference(newcomer) != nil)
     }
 
+    @Test(arguments: ["draft", "publication", "seen", "retirement"])
+    func displayCallbacksCannotLoseDraftOrAcknowledgeUnrenderedContent(change: String) async throws {
+        let service = try WorkspaceTestService()
+        let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
+            book: .init(), service: service, onDirty: {})
+        workspace.setOnline(true); await workspace.openBot(profile: service.profile)
+        let screen = try #require(workspace.screen(profile: service.profile))
+        let rendered = try #require(screen.snapshot)
+        let opened = try #require(service.completedOpens.last)
+        var next = rendered
+        next.messages.append(.init(id: "not-rendered-yet", role: .assistant, text: "A newer unrendered reply"))
+        let publication = OpenedConversation(identity: opened.identity, snapshot: next, access: opened.access)
+        let entry = DisplayObservationEntry()
+        await confirmation("A guarded observer runs before read bookkeeping") { changed in
+            withObservationTracking { _ = workspace.persisted() } onChange: {
+                MainActor.assumeIsolated {
+                    guard !entry.entered else { return }
+                    entry.entered = true
+                    changed()
+                    switch change {
+                    case "draft": workspace.editDraft("Keep this callback draft", owner: screen.owner)
+                    case "retirement": workspace.retireConnection()
+                    default:
+                        workspace.receive(publication)
+                        if change == "seen" { workspace.displayed(screen.owner) }
+                    }
+                }
+            }
+            workspace.displayed(screen.owner)
+        }
+        let record = try #require(workspace.persisted().record(screen.owner.chat))
+        switch change {
+        case "draft":
+            #expect(record.draft.text == "Keep this callback draft")
+            #expect(record.seen?.content == ChatContentEvidence(rendered))
+        case "retirement":
+            #expect(record.seen == nil && !workspace.isCurrent(screen.owner))
+        case "seen":
+            #expect(record.seen?.content == ChatContentEvidence(next))
+        default:
+            #expect(record.seen?.content == ChatContentEvidence(rendered))
+            #expect(record.seen?.content != ChatContentEvidence(next) && record.isUnread)
+        }
+    }
+
+    @Test func aVisibleTranscriptTellsTheHostOnceForEachSettledChangeItShows() async throws {
+        let (workspace, service) = try fixture()
+        await workspace.openBot(profile: service.profile)
+        let opened = try #require(service.completedOpens.last)
+        func owner() throws -> PresentationOwner { try #require(workspace.screen(profile: service.profile)).owner }
+        func publish(_ text: String, working: Bool = false) throws {
+            var snapshot = try #require(workspace.screen(profile: service.profile)?.snapshot)
+            snapshot.messages.append(.init(id: text, role: .assistant, text: text))
+            snapshot.isWorking = working
+            workspace.receive(.init(identity: opened.identity, snapshot: snapshot, access: opened.access))
+        }
+        // Opening already recorded the visit, so showing what it opened sends nothing.
+        workspace.setTranscriptVisible(true, owner: try owner())
+        try publish("Streaming", working: true)
+        workspace.displayed(try owner())
+        try publish("Reply")
+        workspace.displayed(try owner())
+        await waitWhile("the reply's visit reaches the host") { service.visits.isEmpty }
+        workspace.displayed(try owner())
+        workspace.setTranscriptVisible(true, owner: try owner())
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visits.count == 1, "Showing the same content again sends no visit")
+        workspace.setTranscriptVisible(false, owner: try owner())
+        try publish("Unseen")
+        workspace.displayed(try owner())
+        workspace.setTranscriptVisible(true, owner: try owner())
+        await waitWhile("the uncovered reply's visit reaches the host") { service.visits.count < 2 }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(service.visits == [opened.identity, opened.identity])
+    }
+
     func fixture() throws -> (ConversationWorkspace, WorkspaceTestService) {
         let service = try WorkspaceTestService()
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
@@ -831,4 +907,8 @@ import BottoCore
         #expect(grouped[composed]?.map(\.id) == [main, sibling.id])
         #expect(grouped[decomposed]?.map(\.id) == [distinct])
     }
+}
+
+@MainActor private final class DisplayObservationEntry {
+    var entered = false
 }

@@ -46,7 +46,6 @@ import BottoCore
         return .init(service: service, store: store, block: block, context: context, log: log, cacheID: configuration.id)
     }
     private func clean(_ f: Fixture) {
-        f.service.onOpen = nil; f.service.onDownload = nil
         LocalHistory.remove(for: f.cacheID)
     }
 
