@@ -60,6 +60,7 @@ public enum T3RPCError: Error, Equatable, LocalizedError, Sendable {
 
 actor T3RPCClient {
     typealias Stream = AsyncThrowingStream<JSONValue, Error>
+    static let orchestrationProtocol = "2"
 
     private struct Pending {
         let continuation: Stream.Continuation
@@ -102,7 +103,7 @@ actor T3RPCClient {
         }
         parts.scheme = parts.scheme == "https" ? "wss" : "ws"
         parts.path = "/ws"
-        parts.queryItems = [URLQueryItem(name: "orchestrationProtocol", value: "2")]
+        parts.queryItems = [URLQueryItem(name: "orchestrationProtocol", value: orchestrationProtocol)]
         if let ticket { parts.queryItems?.append(URLQueryItem(name: "wsTicket", value: ticket)) }
         parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = parts.url else { throw T3PairingError.invalidOrigin }

@@ -83,6 +83,13 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
             self.project = project
             self.workspace = workspace
         }
+
+        func subscribeThread(_ id: String) async throws -> T3RPCClient.Stream {
+            try await rpc.subscribe("orchestration.subscribeThread", payload: .object([
+                "threadId": .string(id), "requestCompletionMarker": .bool(true),
+                "acceptBoundedSnapshot": .bool(config["threadSnapshotPagination"].flag == true)
+            ]))
+        }
     }
 
     @MainActor fileprivate final class Selection {
@@ -1344,11 +1351,7 @@ private extension T3BotService {
                 guard let session else { return }
                 while !Task.isCancelled {
                     do {
-                        let stream = try await session.rpc.subscribe("orchestration.subscribeThread", payload: .object([
-                            "threadId": .string(id),
-                            "requestCompletionMarker": .bool(true),
-                            "acceptBoundedSnapshot": .bool(session.config["threadSnapshotPagination"].flag == true)
-                        ]))
+                        let stream = try await session.subscribeThread(id)
                         for try await item in stream {
                             guard let self, self.session === session, !Task.isCancelled,
                                   let shell = session.shells[id] else { return }
@@ -1466,11 +1469,7 @@ private extension T3BotService {
     }
 
     func subscribeToThread(_ selection: Selection, in session: Session) async throws {
-        let stream = try await session.rpc.subscribe("orchestration.subscribeThread", payload: .object([
-            "threadId": .string(selection.identity.stored.text),
-            "requestCompletionMarker": .bool(true),
-            "acceptBoundedSnapshot": .bool(session.config["threadSnapshotPagination"].flag == true)
-        ]))
+        let stream = try await session.subscribeThread(selection.identity.stored.text)
         let (ready, signal) = AsyncThrowingStream<Void, Error>.makeStream()
         selection.task = Task { [weak self, weak session, weak selection] in
             do {
@@ -1679,7 +1678,7 @@ private extension T3BotService {
         -> (rows: [JSONValue], messagesByID: [String: String], more: Bool) {
         let thread = try Self.pathSegment(identity.stored.text)
         let reply = try await httpJSON(session, path: "/api/orchestration/threads/" + thread + "/bounded",
-                                       headers: ["x-t3-orchestration-protocol": "2"])
+                                       headers: ["x-t3-orchestration-protocol": T3RPCClient.orchestrationProtocol])
         try validate(identity, in: session)
         let projection = reply["projection"]
         guard projection["thread"]["id"].text == identity.stored.text, let rows = projection["visibleTurnItems"].list,
@@ -1751,8 +1750,4 @@ private extension T3BotService {
         }
         return result
     }
-}
-
-private extension Optional where Wrapped == String {
-    var nonempty: String? { flatMap { $0.isEmpty ? nil : $0 } }
 }
