@@ -1,5 +1,8 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
+@testable import BottoCore
 @testable import BottoMac
 
 struct LocalT3ServerManagerTests {
@@ -123,6 +126,77 @@ struct LocalT3ServerManagerTests {
     func rejectsInvalidOrigins(origin: String) throws {
         let route = try #require(URL(string: origin))
         #expect(T3RouteFormatter.pairingURL(from: "http://127.0.0.1:3774/pair#token=ABC", routeOrigin: route) == nil)
+    }
+}
+
+@MainActor struct MacPairingRoutesTests {
+    private let raw = "http://127.0.0.1:3774/pair#token=Ab%2bc"
+    private let lan = URL(string: "http://192.168.1.10:3774")!
+    private let tailscale = URL(string: "http://100.64.1.2:3774")!
+
+    @Test func theCodeCarriesEveryAvailableRouteWithLANAsThePrimary() throws {
+        let routes = MacPairingRoutes(lan: lan, tailscale: tailscale, tunnel: " https://Botto.example.com/ ")
+        #expect(routes.routes.map(\.name) == ["LAN", "Tailscale", "HTTPS tunnel"])
+        let link = try #require(routes.pairingURL(from: raw))
+        #expect(link == "http://192.168.1.10:3774/pair#token=Ab%2bc"
+            + "&route=http%3A%2F%2F100.64.1.2%3A3774&route=https%3A%2F%2Fbotto.example.com")
+        let parsed = try T3PairingExchange.parse(link)
+        // Older phones read only the link's own origin and token.
+        #expect(parsed.origin == lan && parsed.credential == "Ab+c")
+        #expect(parsed.routes.map(\.absoluteString) == ["http://192.168.1.10:3774", "http://100.64.1.2:3774",
+                                                        "https://botto.example.com"])
+    }
+
+    @Test func routesThatAreUnavailableSayWhyAndStayOutOfTheCode() throws {
+        let routes = MacPairingRoutes(lan: nil, tailscale: tailscale, tunnel: "http://botto.example.com")
+        #expect(routes.routes.map { $0.origin == nil } == [true, false, true])
+        #expect(routes.routes[0].unavailable == "No active LAN IPv4 address was found.")
+        #expect(routes.routes[2].unavailable == "Enter the tunnel’s HTTPS origin, such as https://botto.example.com.")
+        #expect(routes.pairingURL(from: raw) == "http://100.64.1.2:3774/pair#token=Ab%2bc")
+
+        let none = MacPairingRoutes(lan: URL(string: "http://8.8.8.8:3774"), tailscale: nil, tunnel: "")
+        #expect(none.routes.map(\.unavailable) == ["Not a local network address.",
+                                                   "Tailscale is off, or this Mac has no Tailscale address.", "No tunnel saved."])
+        #expect(none.inCode.isEmpty && none.pairingURL(from: raw) == nil)
+        #expect(MacPairingRoutes(lan: lan, tailscale: nil, tunnel: "https://botto.example.com/prefix").inCode == [lan])
+    }
+
+    @Test func routesClaimToBeInTheCodeOnlyWhileACodeIsShown() {
+        let routes = MacPairingRoutes(lan: lan, tailscale: nil, tunnel: "").routes
+        #expect(routes.map { MacPairPhoneContent.mark(for: $0, showingCode: true) } == ["In the code", "Not available", "Not available"])
+        // While a code is being made, or after it expired.
+        #expect(routes.map { MacPairPhoneContent.mark(for: $0, showingCode: false) } == ["Available", "Not available", "Not available"])
+    }
+
+    /// Renders the sheet with fixture routes and no live server, for seeing what a person sees: with a
+    /// code, and while one is being made.
+    @Test(arguments: [true, false]) func sheetListsEachRouteAndWhichAreInTheCode(showingCode: Bool) async throws {
+        let routes = MacPairingRoutes(lan: lan, tailscale: tailscale, tunnel: "")
+        let content = MacPairPhoneContent(routes: routes, tunnel: .constant(""),
+                                          pairingURL: showingCode ? routes.pairingURL(from: "http://127.0.0.1:3774/pair#token=FIXTURE-ONLY") : nil,
+                                          status: showingCode ? "" : "Generating a pairing link…", isGenerating: !showingCode,
+                                          error: nil, canRefresh: showingCode, refresh: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 760), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: content)
+        window.contentView = host
+        window.setContentSize(host.fittingSize)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(300))
+        // Phones try HTTPS first, so the sheet doesn't promise LAN at home.
+        #expect(String(localized: MacPairPhoneContent.intro) == "Pair your phone once. It reaches this Mac through your tunnel "
+            + "while the tunnel answers, and otherwise over LAN or Tailscale. No T3 account required.")
+        let view = try #require(window.contentView)
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        let name = showingCode ? "mac-pair-sheet.png" : "mac-pair-sheet-generating.png"
+        Attachment.record(png, named: name)
+        if let directory = ProcessInfo.processInfo.environment["BOTTO_SCREENSHOT_DIRECTORY"] {
+            try png.write(to: URL(fileURLWithPath: directory).appending(path: name))
+        }
     }
 }
 
