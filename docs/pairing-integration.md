@@ -1,7 +1,7 @@
 # Pairing integration
 
 The Mac's **Pair Phone…** window requests a new pairing link from its local
-T3 Code process and uses the selected route's origin. LAN and Tailscale
+T3 Code process and includes its available routes. LAN and Tailscale
 typically use HTTP on a trusted network. Public routes use HTTPS and forward
 traffic to the same T3 host.
 
@@ -25,14 +25,14 @@ that couldn't be sent moves on to the next route. Once the exchange was sent,
 only a usable token or T3's own refusal of the credential (401 with its
 `auth_invalid` body) has a known outcome. Anything else, such as a timeout, a
 relay's error, a 500, a token Botto can't use, or the app going to the
-background mid-exchange, means the code may already be spent. A code is sent
-once: it counts as sent from before the exchange until the exchange shows it
+background mid-exchange, means the code may already be spent. During a running
+app session a code counts as sent from before the exchange until the exchange shows it
 never left the phone, and Connect stays off until a cancelled exchange settles.
 A spent or refused code leaves the review and the form, in every case: after
 an ambiguous reply, a refusal, a cancelled exchange, or Change address after a
 failed connection. Entered again, it isn't sent, and the phone asks for a fresh
-link. A link with more routes than
-Botto accepts is refused at review with its own message. Requests reject
+link. Across launches, T3 enforces the code's single-use limit. A link with
+more routes than Botto accepts is refused at review with its own message. Requests reject
 redirects. Keep credentials, access tokens, and ticket values out of screenshots
 and logs. Use a fresh link to retry after expiration, consumption, or a change
 of route.
@@ -55,17 +55,19 @@ the workspace is written. That includes a relay's own 401 or 403. Only T3's own
 refusal of the token (401 with its `auth_invalid` body) ends the search. When
 no route connects, the error names each route tried and what happened there.
 
-A re-pairing continues the saved setup, keeping its ID, history and file cache,
-only when the route the connection reached was already saved for that setup
-and confirmed the same environment, project and workspace. The phone first
-tries the saved ID and primary route when that route is one of the reviewed
-routes. If the connection doesn't confirm the setup, nothing is written, and
-the pairing connects again as a new setup with its own ID and fresh history.
-Re-pairing through a route that only the new link carries, such as a new
-tunnel, therefore starts fresh history. Nothing the saved credentials rely on
-is changed on disk before the new credentials are in Keychain. The iOS app stores the pairing in Keychain. Demo uses a
-separate sample workspace. A new pairing can be tried from Settings. Use a
-signed build for physical-device credential storage proof.
+A re-pairing keeps the saved setup's ID, history and file cache when a route
+already saved for that setup confirms the same environment, project and
+workspace. It connects only through routes approved in the new review. If
+the old primary was left out, the app keeps its exact address as part of the
+local file-cache key. When only a new route can confirm the workspace, the
+app connects as a new setup with its own ID and fresh history.
+
+The current history may be saved before Keychain is updated, just as it is
+during regular use. A re-pair to a different workspace prepares the new
+history under a separate ID before saving credentials and only prunes the
+old setup after that save succeeds. The iOS app stores the pairing in
+Keychain. Demo uses a separate sample workspace. A new pairing can be tried
+from Settings. Use a signed build for physical-device credential storage proof.
 
 See [setup](setup.md), the [pairing tests](../Tests/BottoCoreTests/T3/T3PairingTests.swift),
 and the [verification map](agents/verification/index.md#shared-setup-and-readiness).

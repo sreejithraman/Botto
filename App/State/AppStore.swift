@@ -424,7 +424,8 @@ import BottoCore
     }
 
     static func artifactScope(_ configuration: ConnectionConfiguration) -> ArtifactCacheScope {
-        .init(configurationID: configuration.id, serverURL: Data(configuration.serverURL.absoluteString.utf8),
+        .init(configurationID: configuration.id,
+            serverURL: Data((configuration.artifactCacheOrigin ?? configuration.serverURL).absoluteString.utf8),
             installationID: configuration.installID.map { Data($0.utf8) }, username: Data(configuration.username.utf8),
             provider: configuration.nativeCredential.map { Data($0.provider.utf8) },
             backend: configuration.t3.map { _ in backendAccount(configuration) })
@@ -917,9 +918,8 @@ import BottoCore
             }
             let changedBackendAccount = configuration.map(Self.backendAccount) != Self.backendAccount(saved)
             let changedCache = previousID != saved.id || changedBackendAccount
-            let preservesHistory = changedCache && continuesSetup
             let replacementHistory: LocalHistory
-            if preservesHistory || keptSetup {
+            if keptSetup {
                 guard !cacheLoadFailed else { throw HistoryFailure.corrupt }
                 replacementHistory = history.readOnly
             } else if previousID == saved.id, changedBackendAccount {
@@ -1031,28 +1031,33 @@ import BottoCore
         pending.service.disconnect()
     }
 
-    /// A new pairing with the same environment tries the saved setup's ID and primary route when that
-    /// route is still one of the reviewed ones, so the account, history and file cache built from them
-    /// can carry over. A Mac's code leads with its LAN route, which may not be the route the phone first
-    /// paired by. The setup is kept only if the connection then confirms it (`continuesSavedSetup`).
+    /// Try the saved ID when the new review includes any route from that setup. The connection
+    /// must confirm the workspace through a saved route before committing that ID or cache key.
     static func keepingSetup(of saved: ConnectionConfiguration?, in candidate: ConnectionConfiguration) -> ConnectionConfiguration {
         guard let saved, saved.id != candidate.id, let paired = saved.t3, !paired.environmentID.isEmpty,
-              candidate.t3?.environmentID == paired.environmentID,
-              candidate.connectionRoutes.contains(where: { PairingRoutes.same($0, saved.serverURL) }) else { return candidate }
+              candidate.t3?.environmentID == paired.environmentID else { return candidate }
+        let reviewed = candidate.connectionRoutes
+        guard saved.connectionRoutes.contains(where: { prior in reviewed.contains { PairingRoutes.same($0, prior) } })
+        else { return candidate }
+
         var kept = candidate
         kept.id = saved.id
-        kept.serverURL = saved.serverURL
-        let alternates = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
-            .filter { !PairingRoutes.same($0, saved.serverURL) }
-        kept.alternateRoutes = alternates.isEmpty ? nil : alternates
-        if alternates.isEmpty { kept.lastReachedRoute = nil }
+        if reviewed.contains(where: { PairingRoutes.same($0, saved.serverURL) }) {
+            kept.serverURL = saved.serverURL
+            let alternates = ([candidate.serverURL] + (candidate.alternateRoutes ?? []))
+                .filter { !PairingRoutes.same($0, saved.serverURL) }
+            kept.alternateRoutes = alternates.isEmpty ? nil : alternates
+            if alternates.isEmpty { kept.lastReachedRoute = nil }
+        }
+        let cacheOrigin = saved.artifactCacheOrigin ?? saved.serverURL
+        if !kept.serverURL.absoluteString.utf8.elementsEqual(cacheOrigin.absoluteString.utf8) {
+            kept.artifactCacheOrigin = cacheOrigin
+        }
         return kept
     }
 
-    /// Whether a connected pairing continues the saved setup, so its history (and, under a kept ID, its
-    /// file cache) carries over. Only when the route the connection reached was already saved for that
-    /// setup, answered as the same environment, and confirmed the same project and workspace. A route
-    /// that arrived only with the new link can't vouch for the old setup, whatever IDs it reports.
+    /// History and files carry over only if a route already saved for this setup confirmed
+    /// the same environment, project and workspace.
     private func continuesSavedSetup(_ candidate: ConnectionConfiguration, confirmedBy info: ServerInfo) -> Bool {
         let reached = candidate.lastReachedRoute ?? candidate.serverURL
         guard !isDemo, let previous = configuration, previous.t3 != nil,

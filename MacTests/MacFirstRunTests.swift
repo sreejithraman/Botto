@@ -6,6 +6,61 @@ import Testing
 @testable import BottoMac
 
 @MainActor struct MacFirstRunTests {
+    @Test(arguments: [true, false])
+    func pairAgainReplacesARefusedOrUncertainStartupCode(refused: Bool) async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let engine = dir.appending(path: "fixture-t3")
+        let suite = "botto.mac.startup-pairing-tests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let server = LocalT3ServerManager(baseDirectory: dir, defaults: defaults)
+        defer {
+            server.stop()
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("""
+        #!/bin/sh
+        if [ "$1" = serve ]; then
+          echo 'Pairing URL: http://127.0.0.1:3774/pair#token=fixture-startup'
+          exec /bin/sleep 20
+        fi
+        echo 'Pairing URL: http://127.0.0.1:3774/pair#token=fixture-fresh'
+        """.utf8).write(to: engine)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: engine.path)
+        server.executableOverride = engine.path
+        server.start()
+        try await settled { server.state == .running }
+
+        let attempts = StartupPairingAttempts()
+        let exchange = T3PairingExchange { request in
+            let url = try #require(request.url)
+            var status = 200
+            var body = #"{"environmentId":"mac","label":"Fixture","serverVersion":"2.0","orchestrationProtocolVersion":2}"#
+            if url.path == "/oauth/token" {
+                let startup = String(decoding: request.httpBody ?? Data(), as: UTF8.self).contains("fixture-startup")
+                await attempts.record(startup)
+                if startup {
+                    if !refused { throw URLError(.timedOut) }
+                    status = 401
+                    body = #"{"code":"auth_invalid","reason":"invalid_credential"}"#
+                } else {
+                    body = #"{"access_token":"fixture-token","token_type":"Bearer"}"#
+                }
+            }
+            let response = try #require(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil))
+            return (Data(body.utf8), response)
+        }
+        let session = MacSessionPersistence(slot: MacSessionPersistenceTests.MemorySlot(), defaults: defaults)
+        let store = MacBottoStore(session: session, service: FirstRunHost(), exchange: exchange)
+        await store.connect(to: server, pairingAgain: true)
+        #expect(store.isConnected)
+        store.disconnect()
+        await store.connect(to: server, pairingAgain: true)
+        #expect(store.isConnected)
+        #expect(await attempts.usedStartup == [true, false, false])
+    }
+
     @Test func firstRunNamesTheBotAndItsMainSpaceAndSavesTheFace() async throws {
         let host = FirstRunHost()
         let store = try await connected(to: host)
@@ -201,6 +256,11 @@ import Testing
         while !done(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(done(), "The store never settled")
     }
+}
+
+private actor StartupPairingAttempts {
+    private(set) var usedStartup: [Bool] = []
+    func record(_ startup: Bool) { usedStartup.append(startup) }
 }
 
 /// The real card in a window of the test host, pressed the way VoiceOver presses it.

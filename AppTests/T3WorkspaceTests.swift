@@ -522,16 +522,22 @@ import UIKit
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
     }
 
-    @Test func rePairingTheSameMacThroughANewLinkKeepsItsSetupHistoryAndFileCache() async throws {
+    @Test(arguments: [false, true])
+    func rePairingTheSameMacThroughANewLinkKeepsItsSetupHistoryAndFileCache(oldPrimaryMissing: Bool) async throws {
         var previous = t3Configuration()
         previous.t3?.workspaceRoot = "/host/.botto/bots/main"
         let previousID = previous.id
         let resolved = try #require(previous.t3)
         let lan = try #require(URL(string: "http://192.168.1.10:3774"))
-        // A Mac's new code leads with LAN; the phone first paired through the HTTPS address.
-        let next = ConnectionConfiguration(serverURL: lan, installID: resolved.environmentID,
+        let savedHTTPS = previous.serverURL
+        if oldPrimaryMissing {
+            previous.serverURL = lan
+            previous.alternateRoutes = [savedHTTPS]
+        }
+        // A new code can still confirm the saved HTTPS route after the user declines HTTP.
+        let next = ConnectionConfiguration(serverURL: oldPrimaryMissing ? savedHTTPS : lan, installID: resolved.environmentID,
             t3: .init(environmentID: resolved.environmentID, accessToken: "new-fixture-token"),
-            alternateRoutes: [URL(string: "https://Studio.example:443")!], lastReachedRoute: lan)
+            alternateRoutes: oldPrimaryMissing ? nil : [URL(string: "https://Studio.example:443")!])
         defer { LocalHistory.remove(for: previousID); LocalHistory.remove(for: next.id) }
         let replacement = T3WorkspaceService()
         replacement.resolvedPairing = next.t3.map {
@@ -541,7 +547,7 @@ import UIKit
             return bound
         }
         // HTTPS routes are tried first, so the connection confirms the workspace through the saved route.
-        replacement.reachedRoute = previous.serverURL
+        replacement.reachedRoute = savedHTTPS
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = ArtifactCache(root: root)
@@ -563,17 +569,20 @@ import UIKit
         #expect(await store.connect(next))
         let saved = try #require(storage.saved)
         #expect(saved.id == previousID)
-        #expect(saved.serverURL == previous.serverURL)
-        #expect(saved.alternateRoutes == [lan])
-        #expect(saved.lastReachedRoute == previous.serverURL)
+        #expect(saved.serverURL == savedHTTPS)
+        #expect(saved.alternateRoutes == (oldPrimaryMissing ? nil : [lan]))
+        #expect(saved.lastReachedRoute == (oldPrimaryMissing ? nil : savedHTTPS))
+        #expect(AppStore.artifactScope(saved) == AppStore.artifactScope(previous))
         #expect(store.draft(for: bot.id) == "Keep the typed draft")
         #expect(store.conversation(for: bot.id)?.messages.map(\.text) == ["Chat in release"])
         // A file read before re-pairing is still in the cache afterwards, including after the next launch prunes it.
-        let relaunched = AppStore(persistence: storage.persistence, artifactCache: cache, makeService: { _ in T3WorkspaceService() })
+        let onDisk = try JSONDecoder().decode(ConnectionConfiguration.self, from: JSONEncoder().encode(saved))
+        let relaunched = AppStore(persistence: MemoryConnectionStorage(saved: onDisk).persistence,
+                                  artifactCache: cache, makeService: { _ in T3WorkspaceService() })
         try await cache.drainMaintenance()
         #expect(relaunched.configuration?.id == previousID)
         #expect(relaunched.draft(for: bot.id) == "Keep the typed draft")
-        #expect(try await cache.session(scope: AppStore.artifactScope(saved)).original(for: key)?.artifact.data == file.data)
+        #expect(try await cache.session(scope: AppStore.artifactScope(onDisk)).original(for: key)?.artifact.data == file.data)
         await cache.close()
     }
 
