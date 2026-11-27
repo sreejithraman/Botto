@@ -298,7 +298,7 @@ import BottoCore
         captures.setOnline(false)
         let currentKey = try #require(await ArtifactCaptures.originalKey(identity: source, attachment: try Self.attachment(in: current), messages: [current]))
         let viaKey: Result<Data, ConversationServiceError>
-        do { viaKey = .success(try await captures.original(for: currentKey) { throw ConversationServiceError.rejected(500) }.data) }
+        do { viaKey = .success(try await captures.original(for: currentKey) { throw ConversationServiceError.disconnected }.data) }
         catch let error as ConversationServiceError { viaKey = .failure(error) }
         catch { viaKey = .failure(.incompatible) }
         let capturedBytes = try await session.original(for: capturedKey)?.artifact.data
@@ -616,10 +616,10 @@ import BottoCore
         return .init(identity: identity, snapshot: snapshot, access: access,
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
-    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
-    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
-    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw ConversationServiceError.rejected(-32601) }
-    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw ConversationServiceError.rejected(-32601) }
+    func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+    func stop(access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+    func respond(to request: PendingRequest, response: RequestResponse, access: ConversationAccess, operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+    func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment { throw T3ServiceError.unsupported }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact {
         let identity = try issuer.resolve(access)
         downloadCount += 1

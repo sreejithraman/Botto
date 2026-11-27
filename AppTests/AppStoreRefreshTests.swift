@@ -364,7 +364,7 @@ import BottoCore
         defer { fixture.cleanUp(); LocalHistory.remove(for: replacement.id) }
         let store = fixture.store, service = fixture.service
         #expect(await store.connect(fixture.configuration))
-        service.readError = oldReadFails ? ConversationServiceError.timeout : nil
+        service.readError = oldReadFails ? T3RPCError.timeout : nil
         let oldRead = service.holdNextRead()
         let inbox = RefreshCall { await store.refresh() }
         try await eventually { oldRead.entered }
@@ -434,7 +434,7 @@ import BottoCore
         guard let messages = previewMessages[identity.profile.text] else { return nil }
         return .init(messages: messages, hasEarlierMessages: false)
     }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw T3ServiceError.unsupported }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var profiles = [BotProfile(id: "milo", name: "Milo")]

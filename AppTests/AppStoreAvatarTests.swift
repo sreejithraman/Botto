@@ -181,8 +181,8 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: connection.id) }
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        service.saveError = .timeout
-        await #expect(throws: ConversationServiceError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
+        service.saveError = T3RPCError.timeout
+        await #expect(throws: T3RPCError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1)
         service.saveError = nil
         #expect(await store.connect(connection))
@@ -262,8 +262,8 @@ import BottoCore
         #expect(await store.connect(connection))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
         let original = service.profiles
-        service.targetReadError = .timeout
-        await #expect(throws: ConversationServiceError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
+        service.targetReadError = T3RPCError.timeout
+        await #expect(throws: T3RPCError.timeout) { try await store.saveAvatar(.automatic, to: destination) }
         #expect(service.saves == 1 && service.mutations == 0)
         #expect(service.profiles == original)
         service.targetReadError = nil
@@ -371,7 +371,7 @@ import BottoCore
         defer { store.forgetConnection(); LocalHistory.remove(for: original.id) }
         #expect(await store.connect(original))
         let destination = try #require(store.avatarDestination(for: store.bots[0]))
-        service.connectError = .timeout
+        service.connectError = T3RPCError.timeout
         #expect(!(await store.connect(replacement)))
         #expect(destination.isCurrent(in: store))
         #expect(service.saves == 0)
@@ -486,16 +486,16 @@ import BottoCore
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw T3ServiceError.unsupported }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var profiles = [BotProfile(id: "shared", name: "Shared", appearance: BotAppearance(), hasAvatar: false, lookRevision: 1)]
     var holdRoster = false
     var failRoster = false
     var failRosterAfterSave = false
-    var connectError: ConversationServiceError?
-    var saveError: ConversationServiceError?
-    var targetReadError: ConversationServiceError?
+    var connectError: (any Error)?
+    var saveError: (any Error)?
+    var targetReadError: (any Error)?
     var holdTargetRead = false
     var pendingTargetRead: CheckedContinuation<Void, Never>?
     private var connectionGeneration = 0
@@ -513,7 +513,7 @@ import BottoCore
     func bots() async throws -> [BotProfile] {
         let result = profiles
         if holdRoster { await withCheckedContinuation { pendingRosters.append($0) } }
-        if failRoster { throw ConversationServiceError.timeout }
+        if failRoster { throw T3RPCError.timeout }
         return result
     }
     func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {

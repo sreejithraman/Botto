@@ -191,7 +191,7 @@ import BottoCore
         let count = service.previewReads.count
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(service.previewReads.count == count)
-        if outcome == "failure" { service.openError = ConversationServiceError.timeout }
+        if outcome == "failure" { service.openError = T3RPCError.timeout }
         if outcome == "cancel" { cancellation.entered = true; opening.cancel() }
         gate.release()
         #expect(await opening.value == (outcome == "success"))
@@ -207,7 +207,7 @@ import BottoCore
         book.cache(.init(id: "cache", storedID: identity.stored.text, profileID: service.profile.text,
             messages: [.init(id: "cached", role: .assistant, text: "Keep this useful reply.")]), for: id)
         service.previewUnavailable = true
-        if fails { service.previewError = ConversationServiceError.timeout }
+        if fails { service.previewError = T3RPCError.timeout }
         let workspace = fixture(service, book: book)
         await workspace.refreshInboxHistory(profiles: [service.profile])
         #expect(workspace.aggregate(profile: service.profile).preview?.text == "Keep this useful reply.")

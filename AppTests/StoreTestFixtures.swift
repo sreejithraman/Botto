@@ -62,7 +62,7 @@ extension ConversationTestService {
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
+    func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw T3ServiceError.unsupported }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: (any Error)?

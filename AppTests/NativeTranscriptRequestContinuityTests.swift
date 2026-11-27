@@ -146,7 +146,7 @@ import BottoCore
         #expect(fixture.service.base.responseOperations.count == 1)
     }
 
-    @Test(arguments: [BottoCore.ConversationServiceError.invalidResponse, .responseTooLong], ["text", "choice", "confirmation"])
+    @Test(arguments: [BottoCore.ConversationServiceError.invalidResponse], ["text", "choice", "confirmation"])
     func validationRetryRequiresNewRenderedActionsAndNeverReplaysRetainedCallbacks(rejection: BottoCore.ConversationServiceError, action: String) async throws {
         let choice = RequestChoice(id: action == "confirmation" ? "always" : "suggested", label: "Use this answer")
         let fixture = try await Fixture(request: .init(id: "question", kind: .question, title: "What should happen next?", choices: [choice]))
