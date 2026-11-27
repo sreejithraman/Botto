@@ -253,7 +253,6 @@ public enum MessageDelivery: Equatable, Sendable {
     func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile
     func conversations(profile: ExactID) async throws -> ConversationDirectory
     func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow?
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation
     /// Tells the host that a visible transcript showed the access's chat through this mark.
     func markVisited(through mark: VisitMark, access: ConversationAccess) async throws
@@ -266,27 +265,35 @@ public enum MessageDelivery: Equatable, Sendable {
                  operationID: UUID) async throws -> MutationReceipt
     func upload(data: Data, filename: String, mimeType: String, access: ConversationAccess) async throws -> ChatAttachment
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact
+    var currentBotWorkspaceRoot: String? { get }
+    var currentT3Channels: [T3ChannelSummary] { get }
+    func loadBotBrain() async throws -> T3BotBrainSnapshot
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws
+    func saveManifest(_ manifest: T3BotManifest) async throws
+    @discardableResult func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest
+    /// Creates a space. A title is kept as given; without one, T3 names the space from its first message.
+    func createChat(title: String?) async throws -> CreatedSession
+    func renameChannel(threadID: String, title: String) async throws
+    func setChannelPinned(threadID: String, pinned: Bool) async throws
+    func archiveChannel(threadID: String, archived: Bool) async throws
+    func markChannelVisited(threadID: String) async throws
+    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws
+    func availableModels() async throws -> [T3ModelOption]
+    /// The host's model providers, looked for anew. What it remembers can miss a sign-in or sign-out.
+    func providers() async throws -> [T3ProviderStatus]
+    func readProjectFile(relativePath: String) async throws -> String
+    func listOutputs() async throws -> [T3OutputFile]
+    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact
+    func listRoutines() async throws -> [T3ScheduledRoutine]
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule, threadID: String?) async throws -> T3ScheduledRoutine
+    func setRoutineEnabled(id: String, enabled: Bool) async throws
+    func deleteRoutine(id: String) async throws
 }
 
 public extension BotService {
-    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? {
-        nil
-    }
-
-    func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile {
-        throw ConversationServiceError.rejected(-32601)
-    }
-    func replaceQueuedMessage(_ message: QueuedMessage, text: String, access: ConversationAccess,
-                              operationID: UUID) async throws -> MutationReceipt {
-        throw ConversationServiceError.rejected(-32601)
-    }
-
     func send(text: String, attachments: [ChatAttachment], access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt {
         try await send(text: text, attachments: attachments, delivery: .queue, access: access, operationID: operationID)
-    }
-
-    func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile {
-        throw ConversationServiceError.rejected(-32601)
     }
 }

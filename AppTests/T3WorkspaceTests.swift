@@ -953,18 +953,7 @@ import UIKit
         #expect(store.selectedT3ChannelID == "release")
     }
 
-    @Test func t3PassthroughsRequireAConnectedT3Service() async throws {
-        let older = ConnectionConfiguration(serverURL: URL(string: "https://studio.example")!, username: "older")
-        defer { LocalHistory.remove(for: older.id) }
-        let store = AppStore(service: try WorkspaceTestService(), persistence: MemoryConnectionStorage(saved: older).persistence)
-        await store.start()
-        await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Outputs() }
-        await #expect(throws: T3ServiceError.unsupported) { try await store.listT3Routines() }
-        await #expect(throws: T3ServiceError.unsupported) {
-            try await store.setT3ChannelModel(threadID: "general", providerInstanceID: "claude", model: "claude-test")
-        }
-        await #expect(throws: T3ServiceError.unsupported) { try await store.markT3ChannelVisited(threadID: "general") }
-
+    @Test func t3PassthroughsRequireAConnection() async throws {
         let configuration = t3Configuration()
         defer { LocalHistory.remove(for: configuration.id) }
         let offline = AppStore(service: T3WorkspaceService(), persistence: MemoryConnectionStorage(saved: configuration).persistence)
@@ -1979,7 +1968,7 @@ private final class PairingTokenRequests: @unchecked Sendable {
     }
 }
 
-@MainActor private final class T3WorkspaceService: T3BotBrainControlling {
+@MainActor private final class T3WorkspaceService: ConversationTestService {
     var onEvent: ((BotServiceEvent) -> Void)?
     var connectError: T3ServiceError?
     var connectGate: WorkspaceGate?
@@ -2162,7 +2151,6 @@ private final class PairingTokenRequests: @unchecked Sendable {
     }
     func setChannelPinned(threadID: String, pinned: Bool) async throws { throw T3ServiceError.unsupported }
     func archiveChannel(threadID: String, archived: Bool) async throws { throw T3ServiceError.unsupported }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw T3ServiceError.unsupported }
     func send(text: String, attachments: [ChatAttachment], delivery: MessageDelivery, access: ConversationAccess,
               operationID: UUID) async throws -> MutationReceipt {
         let identity = try issuer.resolve(access)

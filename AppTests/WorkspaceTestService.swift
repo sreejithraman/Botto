@@ -2,7 +2,7 @@ import Foundation
 import BottoCore
 @testable import Botto
 
-@MainActor final class WorkspaceTestService: BotService {
+@MainActor final class WorkspaceTestService: ConversationTestService {
     var onEvent: ((BotServiceEvent) -> Void)?
     var downloadData = Data("artifact".utf8)
     var downloadError: (any Error)?
@@ -25,17 +25,16 @@ import BottoCore
     var acceptsReplacementBeforeGate = false
     var replacements: [(QueuedMessage, String, SessionIdentity, UUID)] = []
     var sendGate: WorkspaceGate?
-    var createGate: WorkspaceGate?
     var openGate: WorkspaceGate?
     var directoryGate: WorkspaceGate?
     var uploadGate: WorkspaceGate?
     var downloadGate: WorkspaceGate?
-    var createError: (any Error)?
     var directoryError: (any Error)?
     var directoryResult: ConversationDirectory?
     var directoryActivity: [SessionIdentity: ObservedActivity] = [:]
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
-    var creates: [UUID] = []
+    /// Titles of the spaces asked for. This service creates none.
+    var creates: [String?] = []
     var opens: [SessionIdentity] = []
     var visits: [(identity: SessionIdentity, mark: VisitMark)] = []
     var visitAttempts = 0
@@ -101,15 +100,9 @@ import BottoCore
         if let previewError { throw previewError }
         return result
     }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession {
-        creates.append(operationID)
-        await createGate?.wait()
-        if let createError { throw createError }
-        let identity = SessionIdentity(profile: profile, root: try ExactID("created-\(operationID)"), stored: try ExactID("created-tip-\(operationID)"), aliases: [])
-        let summary = SessionSummary(identity: identity, title: "New chat", isCanonical: false, persistence: .liveOnly)
-        summaries.append(summary)
-        snapshots[identity.root] = .init(id: identity.root.text, storedID: identity.stored.text, profileID: profile.text)
-        return .init(operationID: operationID, summary: summary)
+    func createChat(title: String?) async throws -> CreatedSession {
+        creates.append(title)
+        throw T3ServiceError.unsupported
     }
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let identity: SessionIdentity

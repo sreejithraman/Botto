@@ -318,7 +318,7 @@ import Testing
 
     @Test func listsAndDownloadsWorkspaceOutputsWithoutOpeningAChannel() async throws {
         let host = T3ServiceHost(existing: true)
-        let service: any T3BotBrainControlling = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        let service: any BotService = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
         defer { service.disconnect() }
         _ = try await service.connect(configuration: existingConfiguration())
         #expect(try await service.listOutputs().isEmpty)
@@ -483,7 +483,7 @@ import Testing
     @Test func managesProjectRoutinesThroughT3ScheduledTasks() async throws {
         let host = T3ServiceHost(existing: true, archivedChannel: true)
         try await host.seedRoutines()
-        let service: any T3BotBrainControlling = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
+        let service: any BotService = T3BotService(transport: { try await host.http($0) }, webSocket: { _ in host })
         defer { service.disconnect() }
         _ = try await service.connect(configuration: existingConfiguration())
         let initial = try await service.listRoutines()

@@ -482,11 +482,10 @@ import BottoCore
     }
 }
 
-@MainActor private final class AvatarService: BotService {
+@MainActor private final class AvatarService: ConversationTestService {
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?

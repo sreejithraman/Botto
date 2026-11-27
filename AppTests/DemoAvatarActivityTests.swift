@@ -12,7 +12,7 @@ import BottoCore
         let service: any BotService = DemoBotService(gateDirectory: directory, performanceFixture: false)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         defer { service.disconnect() }
-        let created = try await service.createConversation(profile: ExactID("milo"), operationID: UUID())
+        let created = try await service.createChat(title: nil)
         let opened = try await service.openChat(.stored(created.summary.identity))
         var publications: [OpenedConversation] = []
         service.onEvent = { if case .conversation(let value) = $0 { publications.append(value) } }
@@ -57,7 +57,7 @@ import BottoCore
         let service: any BotService = DemoBotService(gateDirectory: directory, performanceFixture: true)
         _ = try await service.connect(configuration: ConnectionConfiguration(serverURL: URL(string: "https://demo.invalid")!))
         defer { service.disconnect() }
-        let created = try await service.createConversation(profile: ExactID("milo"), operationID: UUID())
+        let created = try await service.createChat(title: nil)
         let opened = try await service.openChat(.stored(created.summary.identity))
         var publications: [OpenedConversation] = []
         service.onEvent = { if case .conversation(let value) = $0 { publications.append(value) } }

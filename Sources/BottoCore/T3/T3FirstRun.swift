@@ -76,7 +76,7 @@ public struct T3ProviderStatus: Identifiable, Equatable, Sendable {
     static func isSignedOut(_ provider: JSONValue) -> Bool { provider["auth"]["status"].text == "unauthenticated" }
 }
 
-extension T3BotBrainControlling {
+extension BotService {
     /// Names the bot and saves its face in one `bot.json` edit, then gives its main space the same name. The
     /// choices are saved before the space is touched, and a failure can simply be tried again.
     public func setUpBot(name: String, face: BotFace) async throws {

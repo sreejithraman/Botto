@@ -590,12 +590,11 @@ import WebKit
 
 }
 
-@MainActor final class RichReplyTestService: BotService {
+@MainActor final class RichReplyTestService: ConversationTestService {
     static let text = "```mermaid\ngraph LR\nA[Start] --> B[Done]\n```\n"
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
     let bot = BotProfile(id: "cache-bot", name: "Cache")

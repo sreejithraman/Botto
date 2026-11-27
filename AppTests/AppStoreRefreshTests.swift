@@ -424,7 +424,7 @@ import BottoCore
 }
 
 /// Captures the host roster before suspension, including when cancellation is ignored.
-@MainActor private final class RefreshService: BotService {
+@MainActor private final class RefreshService: ConversationTestService {
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory {
@@ -434,7 +434,6 @@ import BottoCore
         guard let messages = previewMessages[identity.profile.text] else { return nil }
         return .init(messages: messages, hasEarlierMessages: false)
     }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?

@@ -23,11 +23,45 @@ import BottoCore
     }
 }
 
-@MainActor final class StoreTestService: BotService {
+/// A test service that exercises conversations only. Every T3 workspace member it leaves out is refused,
+/// as AppStore refused them before the service contract was one protocol.
+@MainActor protocol ConversationTestService: BotService {}
+
+extension ConversationTestService {
+    func updateProfile(_ edit: BotProfileEdit, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
+    func setAvatar(_ choice: BotAvatarChoice, for bot: BotProfile) async throws -> BotProfile { throw T3ServiceError.unsupported }
+    func recentConversationHistory(_ identity: SessionIdentity) async throws -> ConversationHistoryWindow? { nil }
+    func replaceQueuedMessage(_ message: QueuedMessage, text: String, access: ConversationAccess,
+                              operationID: UUID) async throws -> MutationReceipt { throw T3ServiceError.unsupported }
+    var currentBotWorkspaceRoot: String? { nil }
+    var currentT3Channels: [T3ChannelSummary] { [] }
+    func loadBotBrain() async throws -> T3BotBrainSnapshot { throw T3ServiceError.unsupported }
+    func saveSoul(_ markdown: String, replacing expected: String?) async throws { throw T3ServiceError.unsupported }
+    func saveMemory(_ markdown: String, replacing expected: String?) async throws { throw T3ServiceError.unsupported }
+    func saveManifest(_ manifest: T3BotManifest) async throws { throw T3ServiceError.unsupported }
+    func setDefaultModel(_ option: T3ModelOption?) async throws -> T3BotManifest { throw T3ServiceError.unsupported }
+    func createChat(title: String?) async throws -> CreatedSession { throw T3ServiceError.unsupported }
+    func renameChannel(threadID: String, title: String) async throws { throw T3ServiceError.unsupported }
+    func setChannelPinned(threadID: String, pinned: Bool) async throws { throw T3ServiceError.unsupported }
+    func archiveChannel(threadID: String, archived: Bool) async throws { throw T3ServiceError.unsupported }
+    func markChannelVisited(threadID: String) async throws { throw T3ServiceError.unsupported }
+    func setChannelModel(threadID: String, providerInstanceID: String, model: String) async throws { throw T3ServiceError.unsupported }
+    func availableModels() async throws -> [T3ModelOption] { throw T3ServiceError.unsupported }
+    func providers() async throws -> [T3ProviderStatus] { throw T3ServiceError.unsupported }
+    func readProjectFile(relativePath: String) async throws -> String { throw T3ServiceError.unsupported }
+    func listOutputs() async throws -> [T3OutputFile] { throw T3ServiceError.unsupported }
+    func downloadOutput(_ output: T3OutputFile) async throws -> DownloadedArtifact { throw T3ServiceError.unsupported }
+    func listRoutines() async throws -> [T3ScheduledRoutine] { throw T3ServiceError.unsupported }
+    func createRoutine(name: String, prompt: String, schedule: T3RoutineSchedule,
+                       threadID: String?) async throws -> T3ScheduledRoutine { throw T3ServiceError.unsupported }
+    func setRoutineEnabled(id: String, enabled: Bool) async throws { throw T3ServiceError.unsupported }
+    func deleteRoutine(id: String) async throws { throw T3ServiceError.unsupported }
+}
+
+@MainActor final class StoreTestService: ConversationTestService {
     let authority = TestConversationAuthority()
 
     func conversations(profile: ExactID) async throws -> ConversationDirectory { authority.directory(profile) }
-    func createConversation(profile: ExactID, operationID: UUID) async throws -> CreatedSession { throw ConversationServiceError.rejected(-32601) }
     func downloadArtifact(_ attachment: ChatAttachment, access: ConversationAccess) async throws -> DownloadedArtifact { throw ConversationServiceError.rejected(-32601) }
 
     var onEvent: ((BotServiceEvent) -> Void)?
