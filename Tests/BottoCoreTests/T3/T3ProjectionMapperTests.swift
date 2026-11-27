@@ -226,12 +226,15 @@ import Testing
         """)
         var projection = T3ThreadProjection(snapshot: initial, sequence: 1, hasMoreHistory: false, lineage: UUID())
         // The host's unread mark compares the run's completion, which follows its reply's last update.
-        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:03.250Z")
+        #expect(projection.conversation(source).visitMark?.hostTime == "2026-11-24T12:00:03.250Z")
         projection.apply(try event("run.created", #"{"id":"queued","status":"queued","ordinal":2}"#), sequence: 2, live: true)
         projection.apply(try event("turn-item.updated", #"{"id":"held","type":"user_message","inputIntent":"queued_turn","text":"Later","runId":"queued","ordinal":3,"updatedAt":"2026-11-24T12:00:09.000Z"}"#), sequence: 3, live: true)
-        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:03.250Z", "A held prompt isn't shown")
+        #expect(projection.conversation(source).visitMark?.hostTime == "2026-11-24T12:00:03.250Z", "A held prompt isn't shown")
         projection.apply(try event("turn-item.updated", #"{"id":"next","type":"user_message","text":"Again","runId":"next","ordinal":4,"updatedAt":"2026-11-24T12:00:07.000Z"}"#), sequence: 4, live: true)
-        #expect(projection.conversation(source).visitMark == "2026-11-24T12:00:07.000Z")
+        #expect(projection.conversation(source).visitMark?.hostTime == "2026-11-24T12:00:07.000Z")
+        projection.apply(try event("run.updated", #"{"id":"queued","status":"cancelled","ordinal":2,"startedAt":null,"completedAt":"2026-11-24T12:00:10.000Z"}"#), sequence: 5, live: true)
+        #expect(projection.conversation(source).visitMark?.hostTime == "2026-11-24T12:00:07.000Z",
+                "A held run cancelled before it starts does not count as shown activity")
     }
 
     @Test func deliveryRestoresHeldPromptLoadedInSnapshot() throws {

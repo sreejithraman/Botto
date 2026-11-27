@@ -735,26 +735,25 @@ public enum T3ServiceError: Error, Equatable, LocalizedError, Sendable {
         let opened = try await attach(identity, in: session, attempt: attempt)
         Task { [weak self, weak session] in
             guard let self, let session else { return }
-            try? await self.visitChannel(identity, in: session)
+            try? await self.visitChannel(identity, in: session, through: opened.snapshot.visitMark)
         }
         return opened
     }
 
-    /// Moves the host's read watermark to the shown snapshot's host time, never the phone's clock,
-    /// so a reply that arrives after the display stays unread.
-    public func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
+    /// Moves the host's read watermark to a shown snapshot's host time, so a reply that arrives after the display stays unread.
+    public func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
         let (session, selection) = try resolve(access)
-        guard let visitMark = shown.visitMark else { return }
-        try await visitChannel(selection.identity, in: session, through: visitMark)
+        try await visitChannel(selection.identity, in: session, through: mark, opened: false)
     }
 
-    private func visitChannel(_ identity: SessionIdentity, in session: Session, through visitMark: String? = nil) async throws {
+    private func visitChannel(_ identity: SessionIdentity, in session: Session, through mark: VisitMark? = nil, opened: Bool = true) async throws {
         try validate(identity, in: session)
-        // As in T3's own clients, an open sets `opened`; a visit to an already open space only moves the watermark.
-        let fields: [String: JSONValue] = visitMark.map { ["visitedAt": .string($0)] } ?? [
-            "visitedAt": .string(Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
-            "opened": .bool(true)
+        // As in T3's own clients, an open sets `opened`, which the host counts by its own clock, and a visit
+        // to an open space only moves the watermark. Only a visit with no snapshot falls back to the phone's clock.
+        var fields: [String: JSONValue] = [
+            "visitedAt": .string(mark?.hostTime ?? Date().ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
         ]
+        if opened { fields["opened"] = .bool(true) }
         _ = try await dispatch("thread.visit", identity: identity, operationID: UUID(), in: session, fields: fields)
     }
 

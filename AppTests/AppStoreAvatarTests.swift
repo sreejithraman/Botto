@@ -545,7 +545,7 @@ import BottoCore
         if holdSave { await withCheckedContinuation { pendingSave = $0 } }
         return saved
     }
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         return try authority.opened(Conversation(id: bot.id, storedID: bot.id, profileID: bot.id))

@@ -673,10 +673,12 @@ import BottoCore
         try await waitForMarker("reply-1.started", directory: directory)
         func unread() -> Bool? { service.currentT3Channels.first { $0.id == opened.identity.stored.text }?.isUnread }
         XCTAssertEqual(unread(), true)
-        try await service.markVisited(opened.snapshot, access: opened.access)
-        XCTAssertEqual(unread(), true, "Showing the chat before the message doesn't cover it")
+        XCTAssertNil(opened.snapshot.visitMark, "An empty chat has nothing to visit")
+        let mark = try XCTUnwrap(latest.visitMark)
+        try await service.markVisited(through: .init(hostTime: "", date: mark.date.addingTimeInterval(-1)), access: opened.access)
+        XCTAssertEqual(unread(), true, "A mark from before the message doesn't cover it")
         announced = 0
-        try await service.markVisited(latest, access: opened.access)
+        try await service.markVisited(through: mark, access: opened.access)
         XCTAssertEqual(unread(), false)
         XCTAssertEqual(announced, 1)
     }

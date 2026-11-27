@@ -483,7 +483,7 @@ private actor StartupPairingAttempts {
         if currentT3Channels.isEmpty { makeMainSpace() }
         return [.init(id: "claude-test", providerInstanceID: "claudeAgent", providerName: "Claude", modelID: "claude-test", label: "Claude Test")]
     }
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         // Without a main space, a host still looking for its providers can't make one.
         guard case .stored(let identity) = target else { throw T3ServiceError.missingModel }

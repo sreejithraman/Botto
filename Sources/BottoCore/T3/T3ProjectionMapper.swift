@@ -287,10 +287,13 @@ struct T3ThreadProjection {
                             pendingRequests: pendingRequests, queuedMessages: queued,
                             isWorking: activeRunID != nil, lastSequence: sequence, hasEarlierMessages: hasMoreHistory)
         // The host marks a space unread by its runs' completion and messages' update times, so
-        // the newest of those that this snapshot holds is what showing it has seen.
-        conversation.visitMark = (shown.map { $0["updatedAt"] } + runs.map { $0["completedAt"] })
-            .compactMap { time in T3ProjectionMapper.date(time).map { (time.text ?? "", $0) } }
-            .max { $0.1 < $1.1 }?.0
+        // the newest of those that this snapshot holds is what showing it has seen. An empty space has its creation.
+        let deliveredRuns = runs.filter { run in
+            guard let id = run["id"].text else { return false }
+            return !removedRuns.contains(id) && !undeliveredRuns.contains(id)
+        }
+        conversation.visitMark = (shown.map { $0["updatedAt"] } + deliveredRuns.map { $0["completedAt"] } + [thread["createdAt"]])
+            .compactMap { time in T3ProjectionMapper.date(time).map { VisitMark(hostTime: time.text ?? "", date: $0) } }.max()
         return conversation
     }
 

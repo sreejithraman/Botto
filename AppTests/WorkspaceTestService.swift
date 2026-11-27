@@ -37,7 +37,7 @@ import BottoCore
     var sends: [(String, [ChatAttachment], SessionIdentity, UUID)] = []
     var creates: [UUID] = []
     var opens: [SessionIdentity] = []
-    var visits: [(identity: SessionIdentity, shown: Conversation)] = []
+    var visits: [(identity: SessionIdentity, mark: VisitMark)] = []
     var visitAttempts = 0
     /// Fails the next visit only.
     var visitError: (any Error)?
@@ -128,12 +128,12 @@ import BottoCore
         completedOpens.append(result)
         return result
     }
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
         let identity = try issuer.resolve(access)
         visitAttempts += 1
         await visitGate?.wait()
         if let visitError { self.visitError = nil; throw visitError }
-        visits.append((identity, shown))
+        visits.append((identity, mark))
     }
     func publication(_ identity: SessionIdentity) throws -> OpenedConversation {
         .init(identity: identity, snapshot: snapshots[identity.root]!, access: try issuer.issue(identity))
@@ -218,4 +218,9 @@ extension ConversationWorkspace {
         guard let claim = captureNavigationClaim() else { return false }
         return await openStoredChat(summary, claim: claim)
     }
+}
+
+extension VisitMark {
+    /// A host time this many seconds in, spelled so a test can tell marks apart.
+    static func at(_ seconds: TimeInterval) -> VisitMark { .init(hostTime: "t\(seconds)", date: Date(timeIntervalSince1970: seconds)) }
 }

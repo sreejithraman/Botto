@@ -468,7 +468,7 @@ import BottoCore
         if let error { throw error }
         return snapshot
     }
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         let bot = BotProfile(id: authority.profile(target), name: "Fixture")
         return try authority.opened(.init(id: "runtime-" + bot.id, storedID: "stored-" + bot.id, profileID: bot.id))

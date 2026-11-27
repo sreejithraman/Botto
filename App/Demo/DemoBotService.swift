@@ -288,15 +288,14 @@ import BottoCore
         visited[identity.stored.text] = .now
         selected = (identity, access)
         activity = ConversationActivity(lineage: UUID(), phase: nil, workStartedAt: nil, phaseStartedAt: nil)
-        return OpenedConversation(identity: identity, snapshot: chat, access: access, activity: activity,
+        return OpenedConversation(identity: identity, snapshot: Self.marked(chat), access: access, activity: activity,
             historyReadStartedAt: readStartedAt, observedSource: identity)
     }
 
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {
         let source = try issuer.resolve(access)
         // Like T3's host, the visit covers only what was shown and never moves back.
-        guard let shownAt = shown.messages.last?.timestamp else { return }
-        visited[source.stored.text] = max(visited[source.stored.text] ?? .distantPast, shownAt)
+        visited[source.stored.text] = max(visited[source.stored.text] ?? .distantPast, mark.date)
         // Like T3's host, announce the changed space list so the drawer drops its unread mark.
         onEvent?(.conversationDirectoryChanged(profile: source.profile))
     }
@@ -619,6 +618,13 @@ import BottoCore
                                         signal: .init(kind: .replyText))
     }
 
+    /// Demo's host clock is the phone's, and its unread mark follows the newest message.
+    private static func marked(_ chat: Conversation) -> Conversation {
+        var chat = chat
+        chat.visitMark = chat.messages.last?.timestamp.map { VisitMark(hostTime: $0.ISO8601Format(), date: $0) }
+        return chat
+    }
+
     private func publish(_ chat: Conversation, source: SessionIdentity) {
         chats[source.root.bytes] = chat
         guard connected else { return }
@@ -638,7 +644,7 @@ import BottoCore
                 activity = ConversationActivity(lineage: current.lineage, phase: current.phase,
                     workStartedAt: current.workStartedAt, phaseStartedAt: current.phaseStartedAt)
             }
-            onEvent?(.conversation(OpenedConversation(identity: source, snapshot: chat, access: access,
+            onEvent?(.conversation(OpenedConversation(identity: source, snapshot: Self.marked(chat), access: access,
                                                      activity: publishedActivity)))
         }
         onEvent?(.botsChanged)

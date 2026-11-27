@@ -2056,7 +2056,7 @@ private final class PairingTokenRequests: @unchecked Sendable {
         }
         return .init(summaries: summaries, activity: [:])
     }
-    func markVisited(_ shown: Conversation, access: ConversationAccess) async throws {}
+    func markVisited(through mark: VisitMark, access: ConversationAccess) async throws {}
     func openChat(_ target: SessionTarget) async throws -> OpenedConversation {
         if let openError { throw openError }
         let identity: SessionIdentity
