@@ -126,6 +126,10 @@ public struct RequestChoice: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var label: String
     public init(id: String, label: String) { self.id = id; self.label = label }
+    /// It can let the bot repeat matching actions without asking, so the person confirms it first.
+    public var allowsFutureActions: Bool {
+        id.localizedCaseInsensitiveContains("always") || label.localizedCaseInsensitiveContains("always")
+    }
 }
 
 public struct PendingRequest: Identifiable, Codable, Equatable, Sendable {
