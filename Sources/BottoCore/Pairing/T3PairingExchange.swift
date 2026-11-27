@@ -1,8 +1,11 @@
 import Foundation
 
 public struct T3PairingInput: Equatable, Sendable {
+    /// The primary route, which every Botto build reads from the link.
     public let origin: URL
     public let credential: String
+    /// Every route the link carries, primary first.
+    public let routes: [URL]
 }
 
 public struct T3EnvironmentDescriptor: Codable, Equatable, Sendable {
@@ -53,6 +56,7 @@ public struct T3PairingExchange: Sendable {
         guard let url = URLComponents(string: input) else { throw T3PairingError.invalidOrigin }
         let origin: URL
         let credential: String?
+        let items: [URLQueryItem]?
         if url.scheme?.lowercased() == "t3code", manualCredential == nil {
             guard url.host?.lowercased() == "pair", url.user == nil, url.password == nil else {
                 throw T3PairingError.invalidOrigin
@@ -68,9 +72,11 @@ public struct T3PairingExchange: Sendable {
                 credential = parameter("token", from: fragment.queryItems)
                     ?? parameter("token", from: url.queryItems)
                     ?? parameter("credential", from: url.queryItems)
+                items = fragment.queryItems
             } else if let address = parameter("url", from: url.queryItems) {
                 origin = try validatedOrigin(address)
                 credential = parameter("token", from: url.queryItems) ?? parameter("credential", from: url.queryItems)
+                items = url.queryItems
             } else {
                 throw T3PairingError.invalidOrigin
             }
@@ -79,10 +85,12 @@ public struct T3PairingExchange: Sendable {
             var fragment = URLComponents()
             fragment.percentEncodedQuery = url.percentEncodedFragment
             credential = manualCredential ?? parameter("token", from: fragment.queryItems)
+            items = manualCredential == nil ? fragment.queryItems : nil
         }
         guard let credential = credential?.trimmingCharacters(in: .whitespacesAndNewlines),
               !credential.isEmpty else { throw T3PairingError.missingCredential }
-        return T3PairingInput(origin: origin, credential: credential)
+        return T3PairingInput(origin: origin, credential: credential,
+                              routes: PairingRoutes.routes(primary: origin, items: items))
     }
 
     public func probeEnvironment(origin: URL) async throws -> T3EnvironmentDescriptor {
