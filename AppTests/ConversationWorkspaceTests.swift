@@ -841,7 +841,7 @@ import BottoCore
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
         #expect(workspace.screen(profile: service.profile)?.canAct == true)
-        service.directoryError = ConversationServiceError.timeout
+        service.directoryError = T3RPCError.timeout
         await workspace.refreshDirectory(b.owner)
         #expect(workspace.chats(service.profile).count == 3)
         let failed = try #require(workspace.screen(profile: service.profile))

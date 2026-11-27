@@ -576,7 +576,7 @@ import BottoCore
     @Test func failedFirstSignInDoesNotEnterTheInboxOrSaveCredentials() async throws {
         let storage = MemoryConnectionStorage()
         let service = StoreTestService()
-        service.connectError = ConversationServiceError.authentication
+        service.connectError = T3PairingError.httpStatus(401)
         let store = AppStore(service: service, persistence: storage.persistence)
         let result = await store.connect(.init(serverURL: URL(string: "https://wrong.example")!, password: "test-only"))
         #expect(!result)
@@ -592,7 +592,7 @@ import BottoCore
         try offlineRoster.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let service = StoreTestService()
-        service.connectError = ConversationServiceError.authentication
+        service.connectError = T3PairingError.httpStatus(401)
         let store = AppStore(service: service, persistence: storage.persistence)
         await store.testEdit("A thought for the original host", for: "milo")
         let result = await store.connect(.init(serverURL: URL(string: "https://replacement.example")!))
@@ -614,7 +614,7 @@ import BottoCore
         try cached.save(for: old.id)
         let storage = MemoryConnectionStorage(saved: old)
         let service = StoreTestService()
-        service.connectError = ConversationServiceError.timeout
+        service.connectError = T3RPCError.timeout
         var queuedCallback: ((BotServiceEvent) -> Void)?
         service.duringConnect = { _ in
             queuedCallback = service.onEvent

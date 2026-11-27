@@ -267,7 +267,7 @@ import BottoCore
         await store.setActive(false)
         let historical = store.chats.aggregate(profile: service.profile).activity
         service.rosterGate = gate
-        service.rosterError = ConversationServiceError.timeout
+        service.rosterError = T3RPCError.timeout
         let reconnecting = Task { await store.connect(configuration) }
         await gate.entered()
         #expect(store.isConnected)
@@ -400,7 +400,7 @@ import BottoCore
         workspace.setOnline(false)
         #expect(workspace.aggregate(profile: service.profile).activity == .historical(observation))
         workspace.setOnline(true)
-        service.directoryError = ConversationServiceError.timeout
+        service.directoryError = T3RPCError.timeout
         await workspace.refreshActivityDirectories(for: [bot])
         let failed = try #require(workspace.screen(profile: service.profile))
         #expect(failed.selectedChatID == before.selectedChatID && !failed.canAct)
@@ -427,7 +427,7 @@ import BottoCore
             book: .init(), service: service, onDirty: {})
         workspace.observeProfiles([bot]); workspace.setOnline(true)
         #expect(workspace.aggregate(profile: service.profile).activity == .unobserved)
-        service.directoryError = ConversationServiceError.timeout
+        service.directoryError = T3RPCError.timeout
         await workspace.refreshActivityDirectories(for: [bot])
         #expect(workspace.aggregate(profile: service.profile).activity == .unavailable(lastKnown: nil))
         #expect(workspace.aggregate(profile: service.profile).activity.label == "Activity unavailable")
@@ -577,7 +577,7 @@ import BottoCore
         let service = try WorkspaceTestService()
         let configuration = ConnectionConfiguration(serverURL: URL(string: "https://activity-failure.invalid")!)
         defer { LocalHistory.remove(for: configuration.id) }
-        service.directoryError = ConversationServiceError.timeout
+        service.directoryError = T3RPCError.timeout
         let store = AppStore(service: service, persistence: MemoryConnectionStorage().persistence)
         #expect(await store.connect(configuration))
         #expect(store.chats.aggregate(profile: service.profile).hasUnknownActivity)

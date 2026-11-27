@@ -61,10 +61,10 @@ struct MacPreviewFileTests {
         draft.text = "Keep this"
         draft.selectModel(first)
         #expect(draft.offersAutomaticModel)
-        await #expect(throws: ConversationServiceError.rejected(400)) {
+        await #expect(throws: T3RPCError.remote(tag: "Rejected", message: "Rejected")) {
             _ = try await draft.submit { _ in "first-space" } send: { _, _, _, model in
                 #expect(model == first)
-                throw ConversationServiceError.rejected(400)
+                throw T3RPCError.remote(tag: "Rejected", message: "Rejected")
             }
         }
         #expect(!draft.offersAutomaticModel)
@@ -90,10 +90,10 @@ struct MacPreviewFileTests {
         func send(_ id: String, _ text: String, _ files: [URL], _: T3ModelOption?) async throws {
             #expect(id == "weekend-space")
             #expect(files == [file])
-            if reject { throw ConversationServiceError.rejected(400) }
+            if reject { throw T3RPCError.remote(tag: "Rejected", message: "Rejected") }
             delivered.append(text)
         }
-        await #expect(throws: ConversationServiceError.rejected(400)) {
+        await #expect(throws: T3RPCError.remote(tag: "Rejected", message: "Rejected")) {
             _ = try await draft.submit(create: create, send: send)
         }
         #expect(draft.createdSpace == "weekend-space")

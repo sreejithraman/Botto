@@ -715,7 +715,7 @@ import BottoCore
 
     private func waitUntil(fileID: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
         await waitWhile(fileID: fileID, line: line) { !condition() }
-        guard condition() else { throw ConversationServiceError.timeout }
+        guard condition() else { throw T3RPCError.timeout }
     }
 
     private func waitForMarker(_ name: String, directory: URL) async throws {

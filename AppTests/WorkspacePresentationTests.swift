@@ -179,7 +179,7 @@ import BottoCore
         #expect(!session.isCurrent && session.file == nil && session.output == nil)
         presentation.reconcile(store: store)
         #expect(presentation.artifact == nil)
-        session.endOutput(id: saving.id, error: ConversationServiceError.timeout)
+        session.endOutput(id: saving.id, error: T3RPCError.timeout)
         session.beginOutput(.share); session.retry()
         #expect(session.output == nil && session.exportError == nil)
         #expect(service.downloads == 1)
@@ -212,7 +212,7 @@ import BottoCore
     @Test func failedReaderRetryRequiresItsCurrentUncoveredSurface() async throws {
         let (store, service, configuration) = try await fixture()
         defer { store.forgetConnection(); LocalHistory.remove(for: configuration.id) }
-        service.downloadError = ConversationServiceError.timeout
+        service.downloadError = T3RPCError.timeout
         let presentation = WorkspacePresentation()
         let session = try openFile(presentation: presentation, store: store, service: service)
         func failed(after count: Int) async throws {
@@ -419,7 +419,7 @@ import BottoCore
         first.endOutput(id: oldOutput.id)
         first.beginOutput(.save)
         let saving = try #require(first.output)
-        first.endOutput(id: oldOutput.id, error: ConversationServiceError.timeout)
+        first.endOutput(id: oldOutput.id, error: T3RPCError.timeout)
         #expect(first.output?.id == saving.id && first.exportError == nil)
         store.showsConnection = true
         presentation.reconcile(store: store)
@@ -430,7 +430,7 @@ import BottoCore
         try await loaded(second)
         second.beginOutput(.share)
         let fresh = try #require(second.output)
-        first.endOutput(id: saving.id, error: ConversationServiceError.timeout)
+        first.endOutput(id: saving.id, error: T3RPCError.timeout)
         presentation.closeArtifact(id: first.id)
         #expect(presentation.artifact === second && second.output?.id == fresh.id)
         second.endOutput(id: fresh.id)
@@ -445,7 +445,7 @@ import BottoCore
         try await loaded(session)
         session.beginOutput(.save)
         let first = try #require(session.output)
-        session.endOutput(id: first.id, error: ConversationServiceError.timeout)
+        session.endOutput(id: first.id, error: T3RPCError.timeout)
         let oldError = try #require(session.exportErrorID)
         session.clearExportError(id: oldError)
         session.beginOutput(.save)

@@ -144,7 +144,7 @@ import BottoCore
         let service = try WorkspaceTestService()
         let gate = WorkspaceGate()
         service.openGate = gate
-        service.openError = ConversationServiceError.timeout
+        service.openError = T3RPCError.timeout
         let workspace = ConversationWorkspace(scope: .init(cacheID: UUID(), exactAccount: [], incarnation: UUID()),
             book: .init(), service: service, onDirty: {})
         workspace.setOnline(true)
@@ -287,7 +287,7 @@ import BottoCore
         #expect(service.sends.isEmpty && service.creates.isEmpty && service.uploads.isEmpty)
     }
 
-    @Test(arguments: [BottoCore.ConversationServiceError.invalidResponse, .responseTooLong])
+    @Test(arguments: [BottoCore.ConversationServiceError.invalidResponse])
     func definiteValidationRejectionRenewsOnlyAttemptAndKeepsRowAuthority(rejection: BottoCore.ConversationServiceError) async throws {
         let (workspace, service, row) = try await fixture()
         let owner = try #require(workspace.screen(profile: service.profile)?.owner)

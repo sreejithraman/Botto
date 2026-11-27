@@ -87,7 +87,7 @@ import BottoCore
         await workspace.refreshDirectory(owner)
         #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .idle)
 
-        service.directoryError = ConversationServiceError.timeout
+        service.directoryError = T3RPCError.timeout
         await workspace.refreshDirectory(owner)
         #expect(workspace.avatarPresentation(profile: profile, scope: .profile).activity == .waiting)
         #expect(workspace.aggregate(profile: profile).attentionChat == nil)

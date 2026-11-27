@@ -1253,8 +1253,7 @@ nonisolated final class WorkspaceOperationReservation: Sendable {
             emitFailure(error, owner: intent.owner, lifetime: feedbackLifetime)
             // Core consumed this operation before its local validation. A later deliberate
             // correction needs a fresh attempt, while this old intent stays tombstoned.
-            if let rejection = error as? ConversationServiceError,
-               [.invalidResponse, .responseTooLong].contains(rejection), canAct(intent.owner),
+            if error as? ConversationServiceError == .invalidResponse, canAct(intent.owner),
                let index = requestRows.firstIndex(where: {
                    $0.intent.operation == intent.operation && $0.intent.owner == intent.owner && $0.request.hasSameWireRevision(as: intent.request)
                }) {
