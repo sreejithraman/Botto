@@ -404,8 +404,10 @@ enum T3BrainText {
         lines(markdown).first ?? String(localized: "Not written yet")
     }
 
-    /// Each remembered thing, one per bullet or line.
-    static func memoryItems(_ markdown: String) -> [String] { lines(markdown) }
+    /// Each remembered thing, one per bullet or line, without the line a new Botto starts with.
+    static func memoryItems(_ markdown: String) -> [String] {
+        lines(markdown).filter { $0 != T3BotBootstrap.memoryPlaceholder }
+    }
 
     static func memorySummary(_ markdown: String) -> String {
         let items = memoryItems(markdown)

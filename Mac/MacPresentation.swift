@@ -61,7 +61,7 @@ enum MacBrainSummary {
                 line = line[line.index(after: dot)...].trimmingCharacters(in: .whitespaces)
             }
             line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
-            return line.isEmpty || line == "Keep durable decisions and useful context here." ? nil : line
+            return line.isEmpty || line == T3BotBootstrap.memoryPlaceholder ? nil : line
         }
     }
 }

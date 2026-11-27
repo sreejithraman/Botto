@@ -265,7 +265,9 @@ public enum T3BotBootstrap {
     public static let workspaceRoot = "~/.botto/bots/main"
     public static let defaultManifest = T3BotManifest(displayName: "Botto")
     public static let soulMarkdown = "# Soul\n\nBe a thoughtful, clear collaborator.\n"
-    public static let memoryMarkdown = "# Memory\n\nKeep durable decisions and useful context here.\n"
+    /// The template line a new Botto starts with; summaries skip it so a new Botto remembers nothing yet.
+    public static let memoryPlaceholder = "Keep durable decisions and useful context here."
+    public static let memoryMarkdown = "# Memory\n\n\(memoryPlaceholder)\n"
 
     public static func manifestJSON(_ manifest: T3BotManifest = defaultManifest) throws -> String {
         let encoder = JSONEncoder()
