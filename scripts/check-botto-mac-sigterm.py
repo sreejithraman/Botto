@@ -161,7 +161,7 @@ def exercise(harness, engine, directory, action, override=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("app", type=Path, help="path to the Apple Silicon BottoMac.app build")
+    parser.add_argument("app", type=Path, help="path to the Apple Silicon Botto.app build")
     args = parser.parse_args()
     resources = args.app.resolve() / "Contents/Resources"
     engine = resources / "T3Engine/t3"

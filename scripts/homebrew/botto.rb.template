@@ -1,0 +1,22 @@
+cask "botto" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/@REPO@/releases/download/v#{version}/Botto-#{version}.zip"
+  name "Botto"
+  desc "Native Mac companion and local T3 engine host for Botto"
+  homepage "https://github.com/@REPO@"
+
+  auto_updates true
+  conflicts_with cask: "botto@beta"
+  depends_on macos: :sequoia
+  depends_on arch: :arm64
+
+  app "Botto.app"
+
+  zap trash: [
+    "~/Library/Application Support/Botto",
+    "~/Library/Caches/com.sree.botto.mac",
+    "~/Library/Preferences/com.sree.botto.mac.plist",
+  ]
+end

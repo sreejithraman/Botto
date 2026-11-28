@@ -1,0 +1,158 @@
+name: Mac Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        default: beta
+        options:
+          - beta
+          - stable
+      version:
+        description: Marketing version (X.Y.Z)
+        required: true
+        type: string
+        default: "0.2.0"
+      build:
+        description: Positive integer build number (defaults to GitHub run number if blank)
+        required: false
+        type: string
+        default: ""
+      notes:
+        description: Release notes summary
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-release-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, notarize, and publish Botto.app (${{ inputs.channel }})
+    runs-on: xcode-27
+    timeout-minutes: 60
+    environment: apple-release
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      GH_TOKEN: ${{ secrets.BOTTO_TAP_PUBLISH_TOKEN || github.token }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify required signing secrets
+        env:
+          HAS_CERT: ${{ secrets.MAC_DEVELOPER_ID_CERTIFICATE_BASE64 != '' }}
+          HAS_SPARKLE: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
+          HAS_ASC: ${{ secrets.ASC_PRIVATE_KEY != '' }}
+        run: |
+          if [[ "$HAS_CERT" != "true" || "$HAS_SPARKLE" != "true" || "$HAS_ASC" != "true" ]]; then
+            echo "Add MAC_DEVELOPER_ID_CERTIFICATE_BASE64, MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD, SPARKLE_PRIVATE_KEY, ASC_PRIVATE_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_TEAM_ID, and BOTTO_TAP_PUBLISH_TOKEN to the apple-release environment." >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate and notary credentials
+        env:
+          CERT_B64: ${{ secrets.MAC_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          CERT_PASS: ${{ secrets.MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          ASC_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/botto-mac-signing"
+          mkdir -p "$root"
+          keychain="$root/release.keychain-db"
+          kc_pass="$(uuidgen)"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          printf '%s' "$CERT_B64" | base64 --decode > "$root/devid.p12"
+          security import "$root/devid.p12" -k "$keychain" -P "$CERT_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          printf '%s' "$ASC_KEY" > "$root/AuthKey.p8"
+          chmod 600 "$root/AuthKey.p8"
+          xcrun notarytool store-credentials botto-ci \
+            --key "$root/AuthKey.p8" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --keychain "$keychain"
+
+          printf '%s' "$SPARKLE_KEY" > "$root/sparkle.key"
+          chmod 600 "$root/sparkle.key"
+
+          echo "BOTTO_NOTARY_PROFILE=botto-ci" >> "$GITHUB_ENV"
+          echo "BOTTO_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "BOTTO_SPARKLE_KEY_FILE=$root/sparkle.key" >> "$GITHUB_ENV"
+
+      - name: Resolve Sparkle tools
+        run: |
+          set -euo pipefail
+          dd="$RUNNER_TEMP/botto-sparkle"
+          xcodebuild -resolvePackageDependencies -project Botto.xcodeproj -scheme BottoMac -derivedDataPath "$dd"
+          gen_appcast="$(find "$dd" -type f -name generate_appcast -perm -111 -print -quit)"
+          test -n "$gen_appcast"
+          echo "BOTTO_GENERATE_APPCAST=$gen_appcast" >> "$GITHUB_ENV"
+
+      - name: Package, sign, and notarize Botto.app
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          build="${{ inputs.build }}"
+          if [[ -z "$build" ]]; then
+            build="${{ github.run_number }}"
+          fi
+          echo "BOTTO_BUILD=$build" >> "$GITHUB_ENV"
+          python3 scripts/mac-release.py package \
+            --channel "${{ inputs.channel }}" \
+            --version "${{ inputs.version }}" \
+            --build "$build" \
+            --team-id "$TEAM_ID" \
+            --output-dir "$RUNNER_TEMP/mac-release-out"
+
+      - name: Publish GitHub release, Sparkle appcast, and Homebrew cask
+        env:
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git --hostname github.com
+          git config --global user.name "Botto Release"
+          git config --global user.email "actions@users.noreply.github.com"
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            zip_file="$RUNNER_TEMP/mac-release-out/Botto-${{ inputs.version }}-beta.${BOTTO_BUILD}.zip"
+          else
+            zip_file="$RUNNER_TEMP/mac-release-out/Botto-${{ inputs.version }}.zip"
+          fi
+          extra_args=()
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            extra_args+=(--notes "$RELEASE_NOTES")
+          fi
+          python3 scripts/mac-release.py publish \
+            --zip "$zip_file" \
+            --version "${{ inputs.version }}" \
+            --build "$BOTTO_BUILD" \
+            --channel "${{ inputs.channel }}" \
+            --target-commit "${{ github.sha }}" \
+            --generate-appcast "$BOTTO_GENERATE_APPCAST" \
+            --ed-key-file "$BOTTO_SPARKLE_KEY_FILE" \
+            "${extra_args[@]}"
+
+      - name: Clean up temporary signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/botto-mac-signing"

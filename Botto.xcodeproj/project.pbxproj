@@ -17,10 +17,14 @@
 		06F9E0EBB511816E0FD92F6D /* StoreTestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D64E090AE929D72587B8ACA /* StoreTestFixtures.swift */; };
 		073E4775DE41271EC8AB308C /* ConversationServiceContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D241EFCEDDD02239487121A5 /* ConversationServiceContracts.swift */; };
 		0748075F1C16723EC9D13630 /* T3PushBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEDE0FD5E094302AAA25C31 /* T3PushBridge.swift */; };
+		0E170D8673A1708E9399335E /* Pele.txt in Resources */ = {isa = PBXBuildFile; fileRef = 4A9431AB271F0631187FFEB6 /* Pele.txt */; };
+		10B3D0F0C40C35C2C8B7CA10 /* Blobatar.txt in Resources */ = {isa = PBXBuildFile; fileRef = D42E4C711DB682B27EC6C739 /* Blobatar.txt */; };
+		149841D5D1321D732A6AD512 /* MacUpdateChannelSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71A566157401850B44B8228 /* MacUpdateChannelSettingsTests.swift */; };
 		15223DF75D35D538FC93F6ED /* OpenBotAvatar.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1020B520B176F7C7254E8036 /* OpenBotAvatar.txt */; };
 		17FB57AA0BE3A9142A338856 /* T3WorkspaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C32637BF282F524B0C51B392 /* T3WorkspaceTests.swift */; };
 		181260C1DB04E8E066EDB627 /* QueuedMessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB41FA3C7BA75D99F4BBE281 /* QueuedMessagesView.swift */; };
 		190494B1316625AEA82C9F73 /* ArtifactPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 162047411A429BB88BA61507 /* ArtifactPreview.swift */; };
+		1941E92E71F357E0980817FA /* MacUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4457AAAC8CFC0EE787C03503 /* MacUpdateController.swift */; };
 		1A9613C1C0E31111C0CF8FBA /* ArtifactCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6E976D071FECB173CBEE56 /* ArtifactCard.swift */; };
 		20FC4BBE53969569C376EF20 /* ReplyFileInstallationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCB021E6E93B0FF76317AD71 /* ReplyFileInstallationTests.swift */; };
 		22583F716371A906E4878A68 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1272DC399CAB7B0B9A213A09 /* OnboardingView.swift */; };
@@ -48,6 +52,7 @@
 		3BBA5A9D1629AAC3FA7D748C /* BottoCore in Frameworks */ = {isa = PBXBuildFile; productRef = F0E9BE327778DAF74E2DA1F1 /* BottoCore */; };
 		3C06FBCED3DAC8B2A188AD45 /* ConnectionStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4CDD4D682E1CCC2C76576C /* ConnectionStatusView.swift */; };
 		3CD7041F5209DCB309CEA10D /* child.js in Resources */ = {isa = PBXBuildFile; fileRef = 4FB440252C192B8F1311D992 /* child.js */; };
+		3FDCFBCE450FCCCD98C42CE6 /* Hermex.txt in Resources */ = {isa = PBXBuildFile; fileRef = C4BCF8A898C7050C2B11AC39 /* Hermex.txt */; };
 		420B09926E63BCAAB7CAC351 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 7E8B3B25FDDCCD83C19F7DE6 /* LICENSE */; };
 		43899A904C954C1A5EC1BCBB /* OpenBotAvatarParity.json in Resources */ = {isa = PBXBuildFile; fileRef = 803C1BED6D2DA6E8A65C451E /* OpenBotAvatarParity.json */; };
 		43F79A7757B70D75566F0061 /* DeveloperMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96E3733F94057EE379E7C995 /* DeveloperMenuView.swift */; };
@@ -88,6 +93,7 @@
 		7219BFF4E344540EDAE1325C /* T3Outputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAF4898525EF28F63992A54 /* T3Outputs.swift */; };
 		726DBDFC2E91BA4EAA75B649 /* MessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A4AA7C376DFE3153929E74 /* MessageView.swift */; };
 		754B86CCE8D892D0D86B0EEA /* Blobatar.txt in Resources */ = {isa = PBXBuildFile; fileRef = D42E4C711DB682B27EC6C739 /* Blobatar.txt */; };
+		77341BC498929F6CBFEB0A6C /* Sparkle.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2BB815A044175C26944B2BF1 /* Sparkle.txt */; };
 		77F0B1488E2E1409BDD4F2F8 /* BottoCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2AC4749954CE8BD1DBBA4C44 /* BottoCore */; };
 		7A6B4746F20C7A6ADEC34DCF /* DemoAvatarActivityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 289814912E23949719A451CC /* DemoAvatarActivityTests.swift */; };
 		7BC4A4ED037BA04965C80F9D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D347546D9D5BC337A46CFE4D /* SettingsView.swift */; };
@@ -108,6 +114,7 @@
 		8C9A761F9A28CB30B69B7E05 /* ArtifactCaptures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C9CAD308B785B957A1BE9EA /* ArtifactCaptures.swift */; };
 		8CB477D8AE3D872A295422E1 /* T3PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF1EAB6F982F8C611736E6F9 /* T3PairingView.swift */; };
 		8D837D1307DF4DF7159CA247 /* AppStoreRichReplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B87F354C25FF55C2A20B44 /* AppStoreRichReplyTests.swift */; };
+		8D895F062EA550B35964F7C9 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 8EF918C6FAAFFA48E476B8EF /* THIRD_PARTY_NOTICES.md */; };
 		8D9DFFC41794867837840BB0 /* T3ChatsDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D360BFA03099CC3905269C17 /* T3ChatsDrawer.swift */; };
 		8DD3B28E6722C6BCE3AB7D61 /* RequestCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71FE9705D2802899D3A68BA9 /* RequestCard.swift */; };
 		8DD52199657B938D64B803CD /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC64C1566AE954FCE6444A63 /* PairingScannerView.swift */; };
@@ -143,6 +150,7 @@
 		A8DD1AE6FFF17651AC317FE5 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540FEEA6131914A5C16B27D4 /* AppStore.swift */; };
 		ABA3887F956E47D812EFB20D /* NativeMessageTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363B0D82F00F3B2481CCFD19 /* NativeMessageTextTests.swift */; };
 		AC20712207A8FD3B257951ED /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D483D73FC568FFB0442ECC8 /* ChatComposer.swift */; };
+		AD2F8E88404ABEDD73FB6BB1 /* Bloub.txt in Resources */ = {isa = PBXBuildFile; fileRef = 6F116CAA799318994D8FB507 /* Bloub.txt */; };
 		AF1BC6D456868AFF85E46A65 /* BotAvatarPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62BC6D91BCAB070EC23C53D4 /* BotAvatarPicker.swift */; };
 		B0224F0289D0C8CB6A20E63C /* MacServerLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F871DA801CA4C58F2BE5C54 /* MacServerLogView.swift */; };
 		B16882E02BEBF41115AAEA4F /* RichContentRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8204DE5634E908EC80D93BCE /* RichContentRendererTests.swift */; };
@@ -157,6 +165,7 @@
 		B61E8FF3A16D5797CEA85C9D /* BotAvatarGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 162914939CB38B1F1ED1DFD0 /* BotAvatarGeometry.swift */; };
 		B70695B4C45BF65071B64A16 /* NativeTranscriptContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93BCC9F54F87C70999A83A97 /* NativeTranscriptContentTests.swift */; };
 		B891D80C8A68B7E385D28B4E /* pele-provenance.json in Resources */ = {isa = PBXBuildFile; fileRef = E42E3411D31C0B482AE94E8F /* pele-provenance.json */; };
+		B9427380B12039AA2137D010 /* OpenBotAvatar.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1020B520B176F7C7254E8036 /* OpenBotAvatar.txt */; };
 		B9E4B98FF9C2B214AFE2D0B8 /* RawMessagePayloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFB4E38D049F0CD1354A4CA /* RawMessagePayloadTests.swift */; };
 		BCA1743E2EA2FDC26C378F3A /* NativeTranscriptExposure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6CEB0C0A8AD2D528E9DD59 /* NativeTranscriptExposure.swift */; };
 		BD429CB41841A709F500D2EE /* HapticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80E1523EFCEA4C2D9CF2E615 /* HapticsTests.swift */; };
@@ -164,6 +173,7 @@
 		BF0AA0C16DE383E43394C081 /* HapticOutcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266E76FCA348861575B29530 /* HapticOutcome.swift */; };
 		C0BAC0F09A806AA8088F2A5E /* NativeTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06CCF6EAA18B0B5458C361C /* NativeTranscript.swift */; };
 		C125CA372AC800C5F3B28A75 /* ArtifactPreviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494DC1F3139E0BD947ACEBC5 /* ArtifactPreviewModel.swift */; };
+		C15D9D5A542BC9DE6AEFF1DF /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 803C214CDB86B1E125983985 /* Sparkle */; };
 		C5E02068B99452923EBA8DA7 /* MacProviderGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3FF8E9A5155B8FB9E4955C4 /* MacProviderGuide.swift */; };
 		C8DCEB3CD4B74D4687F5ABD0 /* WorkspaceLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 417EAFFEB7327B235723370E /* WorkspaceLaunchTests.swift */; };
 		CA63B0C1CE575051A895C414 /* NativeComposerEditorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007B67D6AF01D8B10CDBC52A /* NativeComposerEditorTests.swift */; };
@@ -195,8 +205,11 @@
 		E8F4CA0E9E4E0A4389D8FB69 /* BottoThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BEF176098C4DE2A11A916D5 /* BottoThemeTests.swift */; };
 		E8FA9DB1A1CD931A0C2E1E92 /* MultipleChatUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DEB7723F080163E54A7CC91 /* MultipleChatUITests.swift */; };
 		E9CDB142F09C87AAD7FB9179 /* DemoBotService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F4C02C7FE8D15368769EE5 /* DemoBotService.swift */; };
+		EA0429DDA4221BEBB414C653 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A46D9AF709CE65B73951A304 /* Assets.xcassets */; };
+		EC48F0AA8608F1712252E2B0 /* Sparkle.txt in Resources */ = {isa = PBXBuildFile; fileRef = 2BB815A044175C26944B2BF1 /* Sparkle.txt */; };
 		EF0D6E8B1E6FDFC6041A22B4 /* QueuedMessageEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F50D5C000809BD01FA1742 /* QueuedMessageEditing.swift */; };
 		F0511B3D5F4CFE05A98300A3 /* PushPairingVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 508F5D70B293850E9D381835 /* PushPairingVault.swift */; };
+		F2DEB3000A50986DFD5AD360 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 7E8B3B25FDDCCD83C19F7DE6 /* LICENSE */; };
 		F393C0694516CBFEA9795497 /* BotFaceMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C8FDAA5E724961CB0F1E2D2 /* BotFaceMotion.swift */; };
 		F3A71371C96B6CAAAC636D5C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB4EF72AEF00267A9E6DA6F2 /* PrivacyInfo.xcprivacy */; };
 		F487FF84C0EB7EFED7CFA632 /* RichReplyContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79BE6BB89908C731C7C1BB87 /* RichReplyContext.swift */; };
@@ -299,6 +312,7 @@
 		29DC2207A2C1B50544E355FD /* T3FreshPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T3FreshPage.swift; sourceTree = "<group>"; };
 		2AA4287B6EB83965FA95D80E /* RichContentDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RichContentDocument.swift; sourceTree = "<group>"; };
 		2B3F21A8F140D68885EF63C5 /* HistoryJSONValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryJSONValidation.swift; sourceTree = "<group>"; };
+		2BB815A044175C26944B2BF1 /* Sparkle.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sparkle.txt; sourceTree = "<group>"; };
 		305B8D79928E1B8851292B21 /* pele-1.9.0.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "pele-1.9.0.js"; sourceTree = "<group>"; };
 		363B0D82F00F3B2481CCFD19 /* NativeMessageTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageTextTests.swift; sourceTree = "<group>"; };
 		394BA4356B903A0C12352607 /* DiagramScrollUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagramScrollUITests.swift; sourceTree = "<group>"; };
@@ -310,6 +324,7 @@
 		4030CD4A967A11E421EBE84E /* MacBottoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacBottoApp.swift; sourceTree = "<group>"; };
 		417EAFFEB7327B235723370E /* WorkspaceLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLaunchTests.swift; sourceTree = "<group>"; };
 		43F4C02C7FE8D15368769EE5 /* DemoBotService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoBotService.swift; sourceTree = "<group>"; };
+		4457AAAC8CFC0EE787C03503 /* MacUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacUpdateController.swift; sourceTree = "<group>"; };
 		46B3ED2074FD996AA09605A1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		494DC1F3139E0BD947ACEBC5 /* ArtifactPreviewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreviewModel.swift; sourceTree = "<group>"; };
 		4A0FEB8F9921532CFD5123A6 /* T3Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T3Components.swift; sourceTree = "<group>"; };
@@ -383,6 +398,7 @@
 		9F741E4EE6E1AB25429227C5 /* DiagramImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagramImageView.swift; sourceTree = "<group>"; };
 		9F871DA801CA4C58F2BE5C54 /* MacServerLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacServerLogView.swift; sourceTree = "<group>"; };
 		A3FF8E9A5155B8FB9E4955C4 /* MacProviderGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacProviderGuide.swift; sourceTree = "<group>"; };
+		A46D9AF709CE65B73951A304 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A6F08D258CDBAD86FBAEC431 /* MacRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacRootView.swift; sourceTree = "<group>"; };
 		AA8F7808D5261EFAB9091C75 /* Botto.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Botto.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AB3DB80BE8FA473B1586ADFC /* LocalT3ServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalT3ServerManager.swift; sourceTree = "<group>"; };
@@ -423,6 +439,7 @@
 		D360BFA03099CC3905269C17 /* T3ChatsDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = T3ChatsDrawer.swift; sourceTree = "<group>"; };
 		D42E4C711DB682B27EC6C739 /* Blobatar.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Blobatar.txt; sourceTree = "<group>"; };
 		D64BACB44E4B7DFEE857835F /* MacBottoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacBottoStore.swift; sourceTree = "<group>"; };
+		D71A566157401850B44B8228 /* MacUpdateChannelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacUpdateChannelSettingsTests.swift; sourceTree = "<group>"; };
 		D88D326386B3298BB4EFAA3A /* BotAvatarMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarMotion.swift; sourceTree = "<group>"; };
 		DC8E9FA109B94A8F2C060D56 /* ConversationReadPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationReadPersistenceTests.swift; sourceTree = "<group>"; };
 		DD20C1E8D6F24F41BEB6145C /* capabilities.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = capabilities.js; sourceTree = "<group>"; };
@@ -476,6 +493,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				77F0B1488E2E1409BDD4F2F8 /* BottoCore in Frameworks */,
+				C15D9D5A542BC9DE6AEFF1DF /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -648,6 +666,14 @@
 			);
 			sourceTree = "<group>";
 		};
+		6E9EC5DACD545FBA8711375F /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A46D9AF709CE65B73951A304 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		71B41E7C01CCC189B321555E /* LICENSES */ = {
 			isa = PBXGroup;
 			children = (
@@ -656,6 +682,7 @@
 				C4BCF8A898C7050C2B11AC39 /* Hermex.txt */,
 				1020B520B176F7C7254E8036 /* OpenBotAvatar.txt */,
 				4A9431AB271F0631187FFEB6 /* Pele.txt */,
+				2BB815A044175C26944B2BF1 /* Sparkle.txt */,
 			);
 			path = LICENSES;
 			sourceTree = "<group>";
@@ -731,7 +758,9 @@
 				D64BACB44E4B7DFEE857835F /* MacBottoStore.swift */,
 				7D64DEBEAACC37E33A1BF376 /* MacEngineLifecycle.swift */,
 				08CF2412D01EC65F19DAF2B7 /* MacPresentation.swift */,
+				4457AAAC8CFC0EE787C03503 /* MacUpdateController.swift */,
 				FFEDE0FD5E094302AAA25C31 /* T3PushBridge.swift */,
+				6E9EC5DACD545FBA8711375F /* Resources */,
 				99AC98A9AB0CE52FAF797080 /* Views */,
 			);
 			path = Mac;
@@ -886,6 +915,7 @@
 				7354E8992E743B65C4839EEE /* LocalT3ServerManagerTests.swift */,
 				822392780312D09968A77034 /* MacFirstRunTests.swift */,
 				8C7E5BCF6984B26BDA2CE8AD /* MacRedesignTests.swift */,
+				D71A566157401850B44B8228 /* MacUpdateChannelSettingsTests.swift */,
 				281B80DAED58B5E9D213DC39 /* T3PushBridgeTests.swift */,
 			);
 			path = MacTests;
@@ -899,6 +929,7 @@
 			buildConfigurationList = 26738E4D2AA27C698C6AC5B9 /* Build configuration list for PBXNativeTarget "BottoMac" */;
 			buildPhases = (
 				E054F0717EAE7976DCB74D89 /* Sources */,
+				DC107917E8E01F717B19B9A9 /* Resources */,
 				DE1BC0BEE66C94B60AA97025 /* Frameworks */,
 				A7EEA60DDC4CD6DCCE976691 /* Embed T3 Engine */,
 			);
@@ -909,6 +940,7 @@
 			name = BottoMac;
 			packageProductDependencies = (
 				2AC4749954CE8BD1DBBA4C44 /* BottoCore */,
+				803C214CDB86B1E125983985 /* Sparkle */,
 			);
 			productName = BottoMac;
 			productReference = E7098B23B9A21C4D9AE5D875 /* BottoMac.app */;
@@ -1058,6 +1090,7 @@
 			mainGroup = 68CA305097444B977AAE7721;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				93786D8FD74549B803A81E98 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				425849B791AF5992AA95A744 /* XCLocalSwiftPackageReference "." */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -1099,12 +1132,29 @@
 				15223DF75D35D538FC93F6ED /* OpenBotAvatar.txt in Resources */,
 				A2A1FE71A45D8F28897A2EE2 /* Pele.txt in Resources */,
 				F3A71371C96B6CAAAC636D5C /* PrivacyInfo.xcprivacy in Resources */,
+				EC48F0AA8608F1712252E2B0 /* Sparkle.txt in Resources */,
 				5DF7899FBCF89E42A803F823 /* THIRD_PARTY_NOTICES.md in Resources */,
 				57ECF811D753B7131F5C504E /* capabilities.js in Resources */,
 				3CD7041F5209DCB309CEA10D /* child.js in Resources */,
 				48164BB001BB2C5D335A19A9 /* host.js in Resources */,
 				0433733B880308D93ABFB0A4 /* pele-1.9.0.js in Resources */,
 				B891D80C8A68B7E385D28B4E /* pele-provenance.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DC107917E8E01F717B19B9A9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EA0429DDA4221BEBB414C653 /* Assets.xcassets in Resources */,
+				10B3D0F0C40C35C2C8B7CA10 /* Blobatar.txt in Resources */,
+				AD2F8E88404ABEDD73FB6BB1 /* Bloub.txt in Resources */,
+				3FDCFBCE450FCCCD98C42CE6 /* Hermex.txt in Resources */,
+				F2DEB3000A50986DFD5AD360 /* LICENSE in Resources */,
+				B9427380B12039AA2137D010 /* OpenBotAvatar.txt in Resources */,
+				0E170D8673A1708E9399335E /* Pele.txt in Resources */,
+				77341BC498929F6CBFEB0A6C /* Sparkle.txt in Resources */,
+				8D895F062EA550B35964F7C9 /* THIRD_PARTY_NOTICES.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1225,6 +1275,7 @@
 				39A4FCD5F2E025D78A785039 /* LocalT3ServerManagerTests.swift in Sources */,
 				69E7D2B4850E490CED89A776 /* MacFirstRunTests.swift in Sources */,
 				251B77D5F9AD79EC2F6E31B1 /* MacRedesignTests.swift in Sources */,
+				149841D5D1321D732A6AD512 /* MacUpdateChannelSettingsTests.swift in Sources */,
 				54BEDC59C5A1404D4B635422 /* T3PushBridgeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1350,6 +1401,7 @@
 				CB0415CBD554C7BB4F44C1C3 /* MacRootView.swift in Sources */,
 				B0224F0289D0C8CB6A20E63C /* MacServerLogView.swift in Sources */,
 				036F4A2269C547A3E867536E /* MacTheme.swift in Sources */,
+				1941E92E71F357E0980817FA /* MacUpdateController.swift in Sources */,
 				0748075F1C16723EC9D13630 /* T3PushBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1477,7 +1529,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1518,7 +1570,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1605,7 +1657,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac.tests";
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BottoMac.app/Contents/MacOS/BottoMac";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Botto.app/Contents/MacOS/Botto";
 			};
 			name = Debug;
 		};
@@ -1639,7 +1691,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac.tests";
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BottoMac.app/Contents/MacOS/BottoMac";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Botto.app/Contents/MacOS/Botto";
 			};
 			name = Internal;
 		};
@@ -1656,7 +1708,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1695,7 +1747,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac.tests";
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BottoMac.app/Contents/MacOS/BottoMac";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Botto.app/Contents/MacOS/Botto";
 			};
 			name = Release;
 		};
@@ -1703,19 +1755,23 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				BOTTO_UPDATE_CHANNEL = "";
+				CODE_SIGN_ENTITLEMENTS = Mac/Resources/BottoMac.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Botto;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Mac/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac";
+				PRODUCT_MODULE_NAME = BottoMac;
+				PRODUCT_NAME = Botto;
 				SDKROOT = macosx;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
@@ -1755,7 +1811,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1777,7 +1833,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).notifications";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_NOTIFICATIONS_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1790,19 +1846,23 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				BOTTO_UPDATE_CHANNEL = "";
+				CODE_SIGN_ENTITLEMENTS = Mac/Resources/BottoMac.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Botto;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Mac/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac";
+				PRODUCT_MODULE_NAME = BottoMac;
+				PRODUCT_NAME = Botto;
 				SDKROOT = macosx;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
@@ -1914,7 +1974,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER)";
 				PROVISIONING_PROFILE_SPECIFIER = "$(BOTTO_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = iphoneos;
@@ -1927,19 +1987,23 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				BOTTO_UPDATE_CHANNEL = "";
+				CODE_SIGN_ENTITLEMENTS = Mac/Resources/BottoMac.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Botto;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Botto uses the local network to connect to its T3 server and pair phones.";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Mac/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BOTTO_APP_BUNDLE_IDENTIFIER).mac";
+				PRODUCT_MODULE_NAME = BottoMac;
+				PRODUCT_NAME = Botto;
 				SDKROOT = macosx;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
@@ -2028,10 +2092,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		93786D8FD74549B803A81E98 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		2AC4749954CE8BD1DBBA4C44 /* BottoCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BottoCore;
+		};
+		803C214CDB86B1E125983985 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 93786D8FD74549B803A81E98 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 		B72BCD60D960AE230C09FC3A /* BottoCore */ = {
 			isa = XCSwiftPackageProductDependency;

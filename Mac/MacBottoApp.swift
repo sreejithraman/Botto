@@ -1,5 +1,6 @@
 import AppKit
 import BottoCore
+import Sparkle
 import SwiftUI
 
 enum MacWindowID {
@@ -19,7 +20,14 @@ struct MacBottoApp: App {
                 .frame(minWidth: 680, minHeight: 480)
         }
         .defaultSize(width: 1040, height: 700)
-        .commands { MacBottoCommands(server: delegate.server, store: store) }
+        .commands {
+            MacBottoCommands(
+                server: delegate.server,
+                store: store,
+                updaterController: delegate.updaterController,
+                updateChecksEnabled: delegate.updateChecksEnabled
+            )
+        }
 
         Window("Pair Phone", id: MacWindowID.pairPhone) {
             MacPairPhoneSheet(server: delegate.server)
@@ -48,8 +56,16 @@ struct MacBottoApp: App {
 private struct MacBottoCommands: Commands {
     let server: LocalT3ServerManager
     let store: MacBottoStore
+    let updaterController: SPUStandardUpdaterController
+    let updateChecksEnabled: Bool
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                updaterController.checkForUpdates(nil)
+            }
+            .disabled(!updateChecksEnabled || !updaterController.updater.canCheckForUpdates)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Space") { store.showFreshPage() }
                 .keyboardShortcut("n")
@@ -112,10 +128,26 @@ struct MacEngineMenu: View {
 @MainActor
 final class MacBottoDelegate: MacEngineLifecycle {
     let store = MacBottoStore()
+    let updateChannelSettings: MacUpdateChannelSettings
+    let updateChecksEnabled: Bool
+    let updaterController: SPUStandardUpdaterController
     private(set) var pushListener: T3PushListener?
     private(set) var pushBridge: T3PushBridge?
     private(set) var pushSetupFailed = false
     private var connectionTask: Task<Void, Never>?
+
+    override init(server: LocalT3ServerManager) {
+        let channelSettings = MacUpdateChannelSettings()
+        let checksEnabled = MacUpdateAvailability.isEnabled()
+        self.updateChannelSettings = channelSettings
+        self.updateChecksEnabled = checksEnabled
+        self.updaterController = SPUStandardUpdaterController(
+            startingUpdater: checksEnabled,
+            updaterDelegate: channelSettings,
+            userDriverDelegate: nil
+        )
+        super.init(server: server)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let configuredOrigin = UserDefaults.standard.string(forKey: "T3PushRelayURL"), !configuredOrigin.isEmpty {
@@ -179,6 +211,11 @@ private struct MacEngineSettings: View {
             LabeledContent("Server port", value: String(server.port))
             LabeledContent("Server data", value: server.baseDirectory.path)
                 .textSelection(.enabled)
+            MacUpdateSettingsSection(
+                settings: delegate.updateChannelSettings,
+                updater: delegate.updaterController.updater,
+                checksEnabled: delegate.updateChecksEnabled
+            )
             Section("Phone notifications") {
                 if delegate.pushSetupFailed {
                     Text("Check the relay configuration and restart Botto.")
