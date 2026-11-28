@@ -12,11 +12,21 @@ Use the **Main Space** to coordinate your work with Botto. Keep ongoing work
 in named **Spaces** with their own history and drafts. Send files and photos,
 answer approvals and questions, and preview the files Botto makes.
 
+## Install on Mac
+
+Install the signed, notarized macOS beta (Apple Silicon, macOS 15+) via Homebrew:
+
+```sh
+brew install --cask sreejithraman/tap/botto@beta
+```
+
+Once stable releases are published, install the stable channel with `brew install --cask sreejithraman/tap/botto`. Botto checks for updates automatically with Sparkle, and you can switch beta updates on or off in **Botto → Settings**.
+
 ## Try it
 
-1. Open `Botto.xcodeproj` in Xcode and run **BottoMac**. On Apple Silicon,
-   **Wake Botto** starts the bundled T3 engine. See [engine setup](docs/t3-engine-bundling.md)
-   for Intel Macs and custom executable paths.
+1. Install **Botto.app** via Homebrew above, or open `Botto.xcodeproj` in Xcode and
+   run **BottoMac**. On Apple Silicon, **Wake Botto** starts the bundled T3 engine.
+   See [engine setup](docs/t3-engine-bundling.md) for Intel Macs and custom executable paths.
 2. Name your bot and choose its face, then follow the provider setup guide if shown.
 3. On the Mac, open **Pair Phone…**. On iPhone or iPad, choose **Pair with your
    Mac** and scan the code or paste the link. Pairing uses a short-lived local

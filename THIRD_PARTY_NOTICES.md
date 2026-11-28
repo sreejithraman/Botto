@@ -74,3 +74,7 @@ assets download at runtime.
 
 Botto's push relay retains its [MIT notice](Push/relay/LICENSE). Historical
 project names in copyright notices identify the original authorship.
+
+The macOS app uses [Sparkle](https://sparkle-project.org/) **2.9.6** for
+signed in-app updates, licensed under the MIT License. The full notice is in
+[LICENSES/Sparkle.txt](LICENSES/Sparkle.txt).

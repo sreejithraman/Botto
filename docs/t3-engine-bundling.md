@@ -51,7 +51,7 @@ files. Removing that cache makes the next build fetch the pinned release again.
 ## App bundle layout
 
 ```text
-BottoMac.app/Contents/Resources/T3Engine/
+Botto.app/Contents/Resources/T3Engine/
 ├── t3                 upstream executable with embedded Node.js
 ├── client/            upstream web and pairing assets
 ├── node_modules/      upstream runtime dependencies and native add-ons
@@ -69,7 +69,7 @@ headless `serve` command and uses the same executable to mint Pair Phone links.
 ## Check engine shutdown
 
 After building the Apple Silicon app, run
-`python3 scripts/check-botto-mac-sigterm.py /path/to/BottoMac.app` to exercise
+`python3 scripts/check-botto-mac-sigterm.py /path/to/Botto.app` to exercise
 SIGTERM and Quit against the bundled engine. The test uses disposable data and
 verifies that a separately launched engine keeps responding in both cases. It
 also checks escalation when an engine's child ignores SIGTERM.
